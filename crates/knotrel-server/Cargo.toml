@@ -1,0 +1,23 @@
+[package]
+name = "knotrel-server"
+description = "HTTP API for the Knotrel connectivity engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+knotrel-core.workspace = true
+axum.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

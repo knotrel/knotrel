@@ -1,0 +1,48 @@
+//! Standalone in-memory Knotrel HTTP server.
+
+use knotrel_core::Graph;
+use std::{error::Error, net::SocketAddr};
+use tracing_subscriber::EnvFilter;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .try_init()?;
+    let address: SocketAddr = std::env::var("KNOTREL_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:8080".into())
+        .parse()?;
+    let listener = tokio::net::TcpListener::bind(address).await?;
+    tracing::info!(address = %listener.local_addr()?, "Knotrel listening; graph state is in memory");
+    axum::serve(listener, knotrel_server::router(Graph::new()))
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    Ok(())
+}
+
+/// Stops accepting connections on Ctrl-C or Unix SIGTERM and drains requests.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "failed to listen for Ctrl-C; shutting down");
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! { () = ctrl_c => {}, () = terminate => {} }
+    tracing::info!("shutdown requested");
+}
