@@ -42,3 +42,7 @@ ehthumbs_vista.db
 .fuse_hidden*
 .directory
 .Trash-*
+
+# Python bytecode and interpreter caches
+__pycache__/
+*.py[cod]

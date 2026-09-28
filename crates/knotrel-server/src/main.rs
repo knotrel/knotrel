@@ -1,7 +1,6 @@
 //! Standalone in-memory Knotrel HTTP server.
 
-use knotrel_core::Graph;
-use std::{error::Error, net::SocketAddr};
+use std::error::Error;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -11,12 +10,18 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .try_init()?;
-    let address: SocketAddr = std::env::var("KNOTREL_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:8080".into())
-        .parse()?;
+    let config = knotrel_server::ServerConfig::from_env()?;
+    let address = config.address();
+    let engine = config.engine();
+    let max_pending_jobs = config.max_pending_jobs();
+    let app = knotrel_server::router_with_config(config);
     let listener = tokio::net::TcpListener::bind(address).await?;
-    tracing::info!(address = %listener.local_addr()?, "Knotrel listening; graph state is in memory");
-    axum::serve(listener, knotrel_server::router(Graph::new()))
+    tracing::info!(
+        address = %listener.local_addr()?, engine = engine.as_str(),
+        experimental = engine.is_experimental(), max_pending_jobs,
+        "Knotrel listening; graph state is in memory"
+    );
+    axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())

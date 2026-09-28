@@ -110,3 +110,65 @@ fn updates_match_independent_transitive_closure() {
         );
     }
 }
+
+#[test]
+fn growth_preserves_indices_isolation_and_shared_queries() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Graph>();
+    let mut graph = Graph::new();
+    let ids: Vec<_> = (0..257).map(|i| u64::MAX - i * 7919).collect();
+    graph.add_node(0);
+    for pair in ids.windows(2) {
+        assert_eq!(graph.link(pair[0], pair[1]), Ok(true));
+        assert_eq!(graph.connected(ids[0], pair[1]), Ok(true));
+        assert_eq!(graph.connected(0, pair[1]), Ok(false));
+    }
+    for pair in ids.windows(2).step_by(3) {
+        assert_eq!(graph.cut(pair[1], pair[0]), Ok(true));
+        assert_eq!(graph.connected(pair[0], pair[1]), Ok(false));
+        assert_eq!(graph.link(pair[1], pair[0]), Ok(true));
+        assert_eq!(graph.connected(pair[0], pair[1]), Ok(true));
+    }
+    assert_eq!((graph.node_count(), graph.edge_count()), (258, 256));
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            let graph = &graph;
+            let ids = &ids;
+            scope.spawn(move || {
+                for _ in 0..20 {
+                    assert_eq!(graph.connected(ids[0], ids[256]), Ok(true));
+                    assert_eq!(graph.connected(0, ids[0]), Ok(false));
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn arbitrary_growing_histories_match_original_reference() {
+    let mut compact = Graph::new();
+    let mut reference = knotrel_core::ReferenceGraph::new();
+    let mut seed = 913_u64;
+    for step in 0..1500 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let universe = 2 + step / 30;
+        let a = u64::MAX - ((seed >> 32) % universe) * 7919;
+        let b = u64::MAX - ((seed >> 48) % universe) * 7919;
+        match step % 5 {
+            0 => assert_eq!(compact.add_node(a), reference.add_node(a)),
+            1 | 2 => assert_eq!(compact.link(a, b), reference.link(a, b)),
+            _ => assert_eq!(compact.cut(a, b), reference.cut(a, b)),
+        }
+        for (source, target) in [(a, b), (b, a), (0, a), (a, a), (u64::MAX, b)] {
+            for _ in 0..2 {
+                assert_eq!(
+                    compact.connected(source, target),
+                    reference.connected(source, target),
+                    "step {step}"
+                );
+            }
+        }
+        assert_eq!(compact.node_count(), reference.node_count());
+        assert_eq!(compact.edge_count(), reference.edge_count());
+    }
+}

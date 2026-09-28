@@ -1,15 +1,16 @@
 //! Bounded CPU work and exclusive graph ownership for each request.
 
 use crate::api::{Operation, Outcome};
-use knotrel_core::Graph;
+use knotrel_core::ConnectivityGraph;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 
 /// Shared graph state plus a strict limit on outstanding worker jobs.
 #[derive(Clone)]
 pub(crate) struct Service {
-    graph: Arc<Mutex<Graph>>,
+    graph: Arc<Mutex<ConnectivityGraph>>,
     permits: Arc<Semaphore>,
+    info: crate::ServerInfo,
 }
 
 /// Admission failure or a worker that cannot safely use the graph.
@@ -21,11 +22,24 @@ pub(crate) enum ServiceError {
 
 impl Service {
     /// Creates the service; zero capacity intentionally rejects every request.
-    pub(crate) fn new(graph: Graph, capacity: usize) -> Self {
+    pub(crate) fn new(graph: ConnectivityGraph, capacity: usize) -> Self {
+        let engine = graph.engine();
         Self {
+            info: crate::ServerInfo {
+                engine: engine.as_str(),
+                experimental: engine.is_experimental(),
+                max_pending_jobs: capacity,
+                max_body_bytes: crate::MAX_BODY_BYTES,
+                max_batch_operations: crate::MAX_BATCH_OPERATIONS,
+            },
             graph: Arc::new(Mutex::new(graph)),
             permits: Arc::new(Semaphore::new(capacity)),
         }
+    }
+
+    /// Reads effective immutable settings without waiting for graph work.
+    pub(crate) fn info(&self) -> crate::ServerInfo {
+        self.info.clone()
     }
 
     /// Executes a request on a blocking worker, preserving batch isolation.
@@ -77,7 +91,7 @@ mod tests {
 
     #[tokio::test]
     async fn saturated_service_rejects_without_mutating() {
-        let service = Service::new(Graph::new(), 1);
+        let service = Service::new(ConnectivityGraph::default(), 1);
         let permit = service.permits.clone().acquire_owned().await.unwrap();
         assert!(matches!(
             service.execute(vec![add(9)]).await,
@@ -92,7 +106,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_caller_does_not_release_a_running_workers_permit() {
-        let service = Service::new(Graph::new(), 1);
+        let service = Service::new(ConnectivityGraph::default(), 1);
         let graph = service.graph.clone();
         let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();

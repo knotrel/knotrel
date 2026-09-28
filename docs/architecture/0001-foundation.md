@@ -7,7 +7,7 @@ connectivity algorithm. It establishes semantics and a measurable baseline.
 ## Components
 
 The `knotrel` Cargo workspace contains `knotrel-core` (synchronous, dependency-free)
-and `knotrel-server` (Axum and Tokio). The independent `knotrel-benchmarks`
+and `knotrel-server` (Axum and Tokio). The independent [`knotrel-benchmarks`](https://github.com/knotrel/knotrel-benchmarks)
 workspace consumes the sibling core by path during local development.
 Both workspaces pin Rust 1.98.1, edition 2024, resolver 3. Packages are unpublished.
 Every exported item needs English Rustdoc; nontrivial private algorithms document
@@ -21,9 +21,12 @@ invariants, correctness and complexity. CI checks formatting, Clippy, tests and 
 - Edges are undirected, unique and have distinct endpoints. Self-loops are errors.
 - Repeated links and cuts are idempotent; cuts leave vertices alive.
 - Queries require both vertices to exist; an existing vertex connects to itself.
-- The core uses ordered adjacency sets and breadth-first traversal. Link and cut
-  take O(log V); connectivity takes O((V + E) log V) worst case and O(V) scratch
-  memory. Storage is O(V + E). There are no amortized performance claims.
+- The original `ReferenceGraph` uses ordered adjacency sets: O(log V) link/cut
+  and O((V + E) log V) queries. The default `Graph` now uses stable indices and
+  sorted compact adjacency: O(V + E) queries with O(V) per-call scratch. Updates
+  cost O(log V + deg(source) + deg(target)) amortized; adding vertices can trigger
+  O(V) outer-vector growth. Logical storage is O(V + E); retained capacity tracks
+  historical per-vertex maximum degrees. See [compact core](0004-compact-core.md).
 
 ## HTTP contract
 

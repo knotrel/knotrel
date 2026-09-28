@@ -211,3 +211,123 @@ async fn concurrent_duplicate_links_change_the_graph_once() {
     }
     assert_eq!(changes, 1);
 }
+
+async fn info(app: &Router) -> Value {
+    let response = app
+        .clone()
+        .oneshot(Request::get("/v1/info").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn configured_engines_report_actual_settings_and_observe_every_mutation() {
+    use knotrel_core::EngineConfig;
+    use knotrel_server::{ServerConfig, router_with_config};
+    for (engine, name, experimental) in [
+        (EngineConfig::CompactBfs, "compact-bfs", false),
+        (EngineConfig::EulerTour, "ett", true),
+        (EngineConfig::Hdt, "hdt", true),
+    ] {
+        let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 1).unwrap();
+        let app = router_with_config(config);
+        assert_eq!(
+            info(&app).await,
+            json!({
+                "engine":name, "experimental":experimental,
+                "max_pending_jobs":1, "max_body_bytes":1048576, "max_batch_operations":1024
+            })
+        );
+        let (status, body) = post(
+            &app,
+            "/v1/batch",
+            json!({"operations":[
+                {"op":"link","source":"0","target":"18446744073709551615"},
+                {"op":"link","source":"0","target":"1"},
+                {"op":"link","source":"1","target":"18446744073709551615"},
+                {"op":"cut","source":"0","target":"18446744073709551615"},
+                {"op":"connected","source":"0","target":"18446744073709551615"},
+                {"op":"cut","source":"0","target":"1"},
+                {"op":"connected","source":"0","target":"18446744073709551615"},
+                {"op":"link","source":"7","target":"7"},
+                {"op":"connected","source":"7","target":"7"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["results"][4]["connected"], true);
+        assert_eq!(body["results"][6]["connected"], false);
+        assert_eq!(body["results"][7]["code"], "self_loop");
+        assert_eq!(body["results"][8]["code"], "unknown_node");
+        // A per-request engine override is rejected before the link executes.
+        assert_eq!(
+            post(
+                &app,
+                "/v1/operations",
+                json!({
+                    "op":"link","source":"0","target":"1","engine":"ett"
+                })
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                post(
+                    &app,
+                    "/v1/operations",
+                    json!({
+                        "op":"connected","source":"0","target":"1"
+                    })
+                )
+                .await
+                .1["connected"],
+                false
+            );
+        }
+        assert_eq!(info(&app).await["engine"], name);
+    }
+}
+
+#[tokio::test]
+async fn legacy_router_retains_populated_state_and_reports_defaults() {
+    let mut graph = Graph::new();
+    graph.add_node(99);
+    graph.link(1, 2).unwrap();
+    let app = knotrel_server::router(graph);
+    assert_eq!(info(&app).await["engine"], "compact-bfs");
+    assert_eq!(info(&app).await["max_pending_jobs"], 32);
+    for (source, target) in [("99", "99"), ("1", "2")] {
+        assert_eq!(
+            post(
+                &app,
+                "/v1/operations",
+                json!({
+                    "op":"connected","source":source,"target":target
+                })
+            )
+            .await
+            .1["connected"],
+            true
+        );
+    }
+}
+
+#[test]
+fn invalid_admission_limits_are_rejected_before_router_construction() {
+    use knotrel_core::EngineConfig;
+    use knotrel_server::ServerConfig;
+    for capacity in [0, usize::MAX] {
+        assert!(
+            ServerConfig::new(
+                "127.0.0.1:0".parse().unwrap(),
+                EngineConfig::CompactBfs,
+                capacity
+            )
+            .is_err()
+        );
+    }
+}

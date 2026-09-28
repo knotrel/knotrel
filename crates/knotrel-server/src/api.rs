@@ -7,7 +7,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use knotrel_core::{Graph, GraphError};
+use knotrel_core::{ConnectivityGraph, GraphError};
 use serde::{Deserialize, Serialize};
 
 /// A decimal-string node identifier with lossless JSON representation.
@@ -37,7 +37,7 @@ pub(crate) enum Operation {
 
 impl Operation {
     /// Applies one operation, keeping graph errors local to this operation.
-    pub(crate) fn apply(self, graph: &mut Graph) -> Outcome {
+    pub(crate) fn apply(self, graph: &mut ConnectivityGraph) -> Outcome {
         match self {
             Self::AddNode { node } => Outcome::Changed {
                 changed: graph.add_node(node.0),
@@ -130,11 +130,14 @@ pub(crate) async fn batch(
         Ok(Json(batch)) => batch,
         Err(error) => return invalid_json(error),
     };
-    if batch.operations.is_empty() || batch.operations.len() > 1024 {
+    if batch.operations.is_empty() || batch.operations.len() > crate::MAX_BATCH_OPERATIONS {
         return error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_batch_size",
-            "batches must contain 1 to 1024 operations".into(),
+            format!(
+                "batches must contain 1 to {} operations",
+                crate::MAX_BATCH_OPERATIONS
+            ),
         );
     }
     match service.execute(batch.operations).await {
@@ -157,4 +160,9 @@ fn service_error(error: ServiceError) -> Response {
 
 fn error_response(status: StatusCode, code: &'static str, message: String) -> Response {
     (status, Json(Outcome::Error { code, message })).into_response()
+}
+
+/// Returns startup metadata without taking the graph lock or a worker permit.
+pub(crate) async fn info(State(service): State<Service>) -> Json<crate::ServerInfo> {
+    Json(service.info())
 }
