@@ -30,7 +30,7 @@ mod hdt_profile;
 pub use hdt::{HdtGraph, HdtStats};
 pub use hdt_profile::{HdtLevelStorage, HdtStorageStats};
 mod reference;
-pub use configuration::{ConnectivityGraph, EngineConfig};
+pub use configuration::{ConnectivityGraph, EngineConfig, GraphLimits};
 pub use dynamic::{ForestGraph, ForestStats};
 pub use reference::ReferenceGraph;
 
@@ -40,6 +40,16 @@ pub type NodeId = u64;
 /// An invalid graph operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphError {
+    /// A mutation would exceed the registered vertex ceiling.
+    NodeLimitExceeded {
+        /// Configured maximum vertex count.
+        limit: usize,
+    },
+    /// A mutation would exceed the live edge ceiling.
+    EdgeLimitExceeded {
+        /// Configured maximum edge count.
+        limit: usize,
+    },
     /// A self-loop was requested.
     SelfLoop {
         /// The repeated endpoint.
@@ -55,6 +65,8 @@ pub enum GraphError {
 impl fmt::Display for GraphError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NodeLimitExceeded { limit } => write!(formatter, "node limit exceeded: {limit}"),
+            Self::EdgeLimitExceeded { limit } => write!(formatter, "edge limit exceeded: {limit}"),
             Self::SelfLoop { node } => write!(formatter, "self-loops are not supported: {node}"),
             Self::UnknownNode { node } => write!(formatter, "unknown node: {node}"),
         }
@@ -77,6 +89,13 @@ pub struct Graph {
 }
 
 impl Graph {
+    pub(crate) fn contains_edge(&self, source: NodeId, target: NodeId) -> bool {
+        let (Some(&a), Some(&b)) = (self.ids.get(&source), self.ids.get(&target)) else {
+            return false;
+        };
+        self.adjacency[a].binary_search(&b).is_ok()
+    }
+
     /// Creates an empty graph in O(1) time.
     #[must_use]
     pub fn new() -> Self {

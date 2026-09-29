@@ -12,6 +12,12 @@ fn invalid_environment_exits_promptly_with_the_setting_name() {
     let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = occupied.local_addr().unwrap().to_string();
     for (key, value) in [
+        ("KNOTREL_MAX_NODES", ""),
+        ("KNOTREL_MAX_NODES", "-1"),
+        ("KNOTREL_MAX_NODES", "18446744073709551616"),
+        ("KNOTREL_MAX_EDGES", "+1"),
+        ("KNOTREL_MAX_EDGES", " 1"),
+        ("KNOTREL_MAX_EDGES", "1.5"),
         ("KNOTREL_ENGINE", "unknown"),
         ("KNOTREL_ENGINE", ""),
         ("KNOTREL_ADDR", "not-an-address"),

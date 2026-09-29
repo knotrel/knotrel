@@ -160,6 +160,13 @@ pub struct HdtGraph {
 }
 
 impl HdtGraph {
+    pub(crate) fn contains_edge(&self, source: NodeId, target: NodeId) -> bool {
+        let (Some(&a), Some(&b)) = (self.ids.get(&source), self.ids.get(&target)) else {
+            return false;
+        };
+        self.edges.contains_key(&(a.min(b), a.max(b)))
+    }
+
     /// Creates an empty graph in O(1) time.
     #[must_use]
     pub fn new() -> Self {

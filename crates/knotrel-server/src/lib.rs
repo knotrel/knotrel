@@ -35,7 +35,7 @@ pub fn router(graph: knotrel_core::Graph) -> axum::Router {
 /// This function does not read the environment.
 pub fn router_with_config(config: ServerConfig) -> axum::Router {
     build_router(
-        knotrel_core::ConnectivityGraph::new(config.engine()),
+        knotrel_core::ConnectivityGraph::with_limits(config.engine(), config.graph_limits()),
         config.max_pending_jobs(),
     )
 }
@@ -70,4 +70,6 @@ pub(crate) struct ServerInfo {
     max_pending_jobs: usize,
     max_body_bytes: usize,
     max_batch_operations: usize,
+    max_nodes: Option<usize>,
+    max_edges: Option<usize>,
 }

@@ -31,6 +31,8 @@ impl Service {
                 max_pending_jobs: capacity,
                 max_body_bytes: crate::MAX_BODY_BYTES,
                 max_batch_operations: crate::MAX_BATCH_OPERATIONS,
+                max_nodes: graph.limits().max_nodes,
+                max_edges: graph.limits().max_edges,
             },
             graph: Arc::new(Mutex::new(graph)),
             permits: Arc::new(Semaphore::new(capacity)),

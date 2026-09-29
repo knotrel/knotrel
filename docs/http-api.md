@@ -37,7 +37,7 @@ Successful operations return 200. A graph error has this shape:
 | 404 | Unknown query vertex (`unknown_node`) |
 | 413 | Body exceeds 1 MiB (`invalid_request`) |
 | 415 | Missing/unsupported JSON content type (`invalid_request`) |
-| 422 | Invalid fields/IDs (`invalid_request`), self-loop (`self_loop`), or batch size (`invalid_batch_size`) |
+| 422 | Invalid fields/IDs (`invalid_request`), self-loop (`self_loop`), batch size (`invalid_batch_size`), or graph capacity (`node_limit_exceeded`, `edge_limit_exceeded`) |
 | 503 | Graph job capacity exhausted (`busy`) or worker unavailable (`unavailable`) |
 
 Clients should branch on `code`, not human-readable message text. Unregistered
@@ -101,6 +101,8 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_ADDR` | IP socket address, such as `127.0.0.1:8080` or `[::1]:8080` | `127.0.0.1:8080` |
 | `KNOTREL_ENGINE` | Exactly `compact-bfs`, `ett` or `hdt` | `compact-bfs` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
+| `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize` | unlimited |
+| `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize` | unlimited |
 
 Unknown variables in the reserved `KNOTREL_` namespace, empty or non-Unicode
 values, unsupported engines and invalid addresses/limits fail startup. Values
@@ -130,7 +132,9 @@ size (1 MiB) and batch size (1–1024) are fixed in this version.
   "experimental": true,
   "max_pending_jobs": 16,
   "max_body_bytes": 1048576,
-  "max_batch_operations": 1024
+  "max_batch_operations": 1024,
+  "max_nodes": null,
+  "max_edges": null
 }
 ```
 
@@ -154,3 +158,28 @@ not bind the configured address: the caller owns its listener. The original
 `router(Graph)` preserves its supplied, possibly populated graph and uses the
 default limits. Direct core callers use `ConnectivityGraph::new(EngineConfig)`;
 the core never loads server configuration or reads the environment.
+
+## Graph capacity errors
+
+`KNOTREL_MAX_NODES` and `KNOTREL_MAX_EDGES` optionally set per-instance ceilings
+at startup. Missing values are unlimited; zero is allowed. Empty, signed,
+non-decimal, whitespace-padded and out-of-range values fail before binding.
+`GET /v1/info` includes `max_nodes` and `max_edges`, each an integer or `null`.
+These settings cannot be overridden in operation requests or changed at runtime.
+
+An `add_node` or `link` that would exceed capacity returns HTTP 422 with
+`result: "error"` and code `node_limit_exceeded` or `edge_limit_exceeded`.
+Self-loop validation precedes capacity checks; if both ceilings would be
+exceeded, the node error takes precedence. A duplicate remains a successful
+no-op even at capacity. Rejection leaves graph state unchanged, including all
+new endpoints of a link. Missing-edge cuts keep their existing no-op semantics.
+
+Batches retain HTTP 200 and ordered per-operation outcomes. A capacity error
+does not roll back earlier operations or prevent later operations. A later cut
+can release edge capacity for a subsequent link within that batch. Cuts never
+remove registered vertices. Concurrent requests check and mutate under the same
+graph lock, so they cannot jointly exceed the configured ceilings.
+
+These bounds limit cardinalities, not memory, execution time or total process
+RSS. They apply independently to each router/graph instance; cloned routers
+share one instance. No hierarchy or typed-node model is introduced.

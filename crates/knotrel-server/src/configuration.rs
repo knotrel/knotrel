@@ -1,6 +1,6 @@
 //! Startup-only configuration loading and validation.
 
-use knotrel_core::EngineConfig;
+use knotrel_core::{EngineConfig, GraphLimits};
 use std::{collections::BTreeMap, error::Error, ffi::OsString, fmt, net::SocketAddr};
 
 /// Validated standalone server settings.
@@ -13,6 +13,7 @@ pub struct ServerConfig {
     address: SocketAddr,
     engine: EngineConfig,
     max_pending_jobs: usize,
+    graph_limits: GraphLimits,
 }
 
 /// A malformed or unsupported startup setting.
@@ -33,6 +34,7 @@ impl Default for ServerConfig {
             address: SocketAddr::from(([127, 0, 0, 1], 8080)),
             engine: EngineConfig::default(),
             max_pending_jobs: 32,
+            graph_limits: GraphLimits::default(),
         }
     }
 }
@@ -58,14 +60,28 @@ impl ServerConfig {
             address,
             engine,
             max_pending_jobs,
+            graph_limits: GraphLimits::default(),
         })
+    }
+
+    /// Sets immutable graph cardinality limits; zero is valid, None is unlimited.
+    pub fn with_graph_limits(mut self, limits: GraphLimits) -> Self {
+        self.graph_limits = limits;
+        self
+    }
+
+    /// Returns the cardinality ceilings for this server's graph instance.
+    pub fn graph_limits(&self) -> GraphLimits {
+        self.graph_limits
     }
 
     /// Loads and validates a snapshot of the process environment.
     ///
     /// Recognized variables are `KNOTREL_ADDR` (default `127.0.0.1:8080`),
     /// `KNOTREL_ENGINE` (`compact-bfs` by default, or experimental `ett` / `hdt`) and
-    /// `KNOTREL_MAX_PENDING_JOBS` (default `32`).
+    /// `KNOTREL_MAX_PENDING_JOBS` (default `32`). `KNOTREL_MAX_NODES` and
+    /// `KNOTREL_MAX_EDGES` are optional nonnegative decimal integers; absent
+    /// means unlimited, zero forbids new entries.
     ///
     /// Returns [`ConfigError`] for unknown `KNOTREL_` keys, non-Unicode names
     /// or values in that namespace, unsupported engines and malformed values.
@@ -103,7 +119,11 @@ impl ServerConfig {
                 .map_err(|_| ConfigError("KNOTREL_ setting name must be valid Unicode".into()))?;
             if !matches!(
                 name.as_str(),
-                "KNOTREL_ADDR" | "KNOTREL_ENGINE" | "KNOTREL_MAX_PENDING_JOBS"
+                "KNOTREL_ADDR"
+                    | "KNOTREL_ENGINE"
+                    | "KNOTREL_MAX_PENDING_JOBS"
+                    | "KNOTREL_MAX_NODES"
+                    | "KNOTREL_MAX_EDGES"
             ) {
                 return Err(ConfigError(format!("unknown setting: {name}")));
             }
@@ -144,7 +164,27 @@ impl ServerConfig {
             }
             None => defaults.max_pending_jobs,
         };
-        Self::new(address, engine, max_pending_jobs)
+        let parse_limit = |key: &str| -> Result<Option<usize>, ConfigError> {
+            settings
+                .get(key)
+                .map(|value| {
+                    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err(ConfigError(format!(
+                            "{key} must be a nonnegative decimal integer"
+                        )));
+                    }
+                    value
+                        .parse()
+                        .map_err(|_| ConfigError(format!("{key} is out of range")))
+                })
+                .transpose()
+        };
+        Ok(
+            Self::new(address, engine, max_pending_jobs)?.with_graph_limits(GraphLimits {
+                max_nodes: parse_limit("KNOTREL_MAX_NODES")?,
+                max_edges: parse_limit("KNOTREL_MAX_EDGES")?,
+            }),
+        )
     }
 }
 
@@ -171,6 +211,34 @@ mod tests {
         assert_eq!(selected.address(), "[::1]:0".parse().unwrap());
         assert_eq!(selected.engine(), EngineConfig::EulerTour);
         assert_eq!(selected.max_pending_jobs(), 7);
+    }
+
+    #[test]
+    fn graph_limits_load_independently_and_accept_zero() {
+        let unlimited = ServerConfig::from_variables([]).unwrap();
+        assert_eq!(unlimited.graph_limits(), GraphLimits::default());
+        let limits = ServerConfig::from_variables([
+            ("KNOTREL_MAX_NODES".into(), "0".into()),
+            ("KNOTREL_MAX_EDGES".into(), "12".into()),
+        ])
+        .unwrap()
+        .graph_limits();
+        assert_eq!(
+            limits,
+            GraphLimits {
+                max_nodes: Some(0),
+                max_edges: Some(12)
+            }
+        );
+        let only_edges =
+            ServerConfig::from_variables([("KNOTREL_MAX_EDGES".into(), "0".into())]).unwrap();
+        assert_eq!(
+            only_edges.graph_limits(),
+            GraphLimits {
+                max_nodes: None,
+                max_edges: Some(0)
+            }
+        );
     }
 
     #[cfg(unix)]

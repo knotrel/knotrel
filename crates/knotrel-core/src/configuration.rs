@@ -2,6 +2,19 @@
 
 use crate::{ForestGraph, Graph, GraphError, HdtGraph, NodeId};
 
+/// Immutable cardinality ceilings for one graph instance.
+///
+/// `None` is unlimited (the default); zero forbids new entries. Cuts retain
+/// vertices. These limits do not bound allocator capacity or resident memory.
+/// Enforced by [`ConnectivityGraph`]; raw algorithm types remain unlimited.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GraphLimits {
+    /// Maximum registered vertices, including isolated vertices.
+    pub max_nodes: Option<usize>,
+    /// Maximum live undirected edges.
+    pub max_edges: Option<usize>,
+}
+
 /// The implementation chosen when creating a graph.
 ///
 /// Selection is immutable for the lifetime of a [`ConnectivityGraph`].
@@ -52,6 +65,7 @@ impl EngineConfig {
 #[derive(Debug)]
 pub struct ConnectivityGraph {
     backend: Backend,
+    limits: GraphLimits,
 }
 
 #[derive(Debug)]
@@ -72,6 +86,7 @@ impl From<Graph> for ConnectivityGraph {
     fn from(graph: Graph) -> Self {
         Self {
             backend: Backend::Compact(graph),
+            limits: GraphLimits::default(),
         }
     }
 }
@@ -79,13 +94,24 @@ impl From<Graph> for ConnectivityGraph {
 impl ConnectivityGraph {
     /// Creates an empty graph. Every typed configuration is supported.
     pub fn new(config: EngineConfig) -> Self {
+        Self::with_limits(config, GraphLimits::default())
+    }
+
+    /// Creates an empty graph with immutable cardinality ceilings.
+    pub fn with_limits(config: EngineConfig, limits: GraphLimits) -> Self {
         Self {
+            limits,
             backend: match config {
                 EngineConfig::CompactBfs => Backend::Compact(Graph::new()),
                 EngineConfig::EulerTour => Backend::EulerTour(ForestGraph::new()),
                 EngineConfig::Hdt => Backend::Hdt(HdtGraph::new()),
             },
         }
+    }
+
+    /// Returns the immutable limits configured for this instance.
+    pub fn limits(&self) -> GraphLimits {
+        self.limits
     }
 
     /// Returns the engine that actually owns this graph's state.
@@ -98,19 +124,59 @@ impl ConnectivityGraph {
     }
 
     /// Adds a vertex; returns whether it was absent.
-    pub fn add_node(&mut self, node: NodeId) -> bool {
-        match &mut self.backend {
+    /// # Errors
+    /// Returns [`GraphError::NodeLimitExceeded`] without mutation at capacity.
+    /// An existing vertex always returns `Ok(false)`.
+    pub fn add_node(&mut self, node: NodeId) -> Result<bool, GraphError> {
+        if let Some(limit) = self.limits.max_nodes {
+            if self.connected(node, node).is_ok() {
+                return Ok(false);
+            }
+            if self.node_count() >= limit {
+                return Err(GraphError::NodeLimitExceeded { limit });
+            }
+        }
+        Ok(match &mut self.backend {
             Backend::Compact(graph) => graph.add_node(node),
             Backend::EulerTour(graph) => graph.add_node(node),
             Backend::Hdt(graph) => graph.add_node(node),
-        }
+        })
     }
 
     /// Adds an undirected edge, creating absent endpoints.
     ///
     /// Returns whether the edge was absent. A self-loop returns
     /// [`GraphError::SelfLoop`] without creating its endpoint.
+    /// Limit checks precede all mutation; node limits take precedence over edge
+    /// limits. Duplicate edges succeed unchanged even at capacity. Each check
+    /// uses ordered index lookups, never a graph traversal or speculative insert.
+    /// # Errors
+    /// Self-loops or cardinality violations leave the entire graph unchanged.
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
+        if source == target {
+            return Err(GraphError::SelfLoop { node: source });
+        }
+        if let Some(limit) = self.limits.max_nodes {
+            let missing = usize::from(self.connected(source, source).is_err())
+                + usize::from(self.connected(target, target).is_err());
+            if missing > limit.saturating_sub(self.node_count()) {
+                return Err(GraphError::NodeLimitExceeded { limit });
+            }
+        }
+        if let Some(limit) = self.limits.max_edges
+            && self.edge_count() >= limit
+        {
+            let exists = match &self.backend {
+                Backend::Compact(g) => g.contains_edge(source, target),
+                Backend::EulerTour(g) => g.contains_edge(source, target),
+                Backend::Hdt(g) => g.contains_edge(source, target),
+            };
+            return if exists {
+                Ok(false)
+            } else {
+                Err(GraphError::EdgeLimitExceeded { limit })
+            };
+        }
         match &mut self.backend {
             Backend::Compact(graph) => graph.link(source, target),
             Backend::EulerTour(graph) => graph.link(source, target),

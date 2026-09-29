@@ -237,7 +237,8 @@ async fn configured_engines_report_actual_settings_and_observe_every_mutation() 
             info(&app).await,
             json!({
                 "engine":name, "experimental":experimental,
-                "max_pending_jobs":1, "max_body_bytes":1048576, "max_batch_operations":1024
+                "max_pending_jobs":1, "max_body_bytes":1048576, "max_batch_operations":1024,
+                "max_nodes":null, "max_edges":null
             })
         );
         let (status, body) = post(
@@ -329,5 +330,79 @@ fn invalid_admission_limits_are_rejected_before_router_construction() {
             )
             .is_err()
         );
+    }
+}
+
+#[tokio::test]
+async fn graph_limits_apply_to_batches_and_concurrent_requests() {
+    use knotrel_core::{EngineConfig, GraphLimits};
+    for engine in [
+        EngineConfig::CompactBfs,
+        EngineConfig::EulerTour,
+        EngineConfig::Hdt,
+    ] {
+        let config = knotrel_server::ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 32)
+            .unwrap()
+            .with_graph_limits(GraphLimits {
+                max_nodes: Some(3),
+                max_edges: Some(1),
+            });
+        let app = knotrel_server::router_with_config(config);
+        let response = app
+            .clone()
+            .oneshot(Request::get("/v1/info").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let info: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(info["max_nodes"], 3);
+        assert_eq!(info["max_edges"], 1);
+        let (a, b) = tokio::join!(
+            post(
+                &app,
+                "/v1/operations",
+                json!({"op":"link","source":"1","target":"2"})
+            ),
+            post(
+                &app,
+                "/v1/operations",
+                json!({"op":"link","source":"1","target":"3"})
+            )
+        );
+        assert_eq!(
+            [a.0, b.0]
+                .into_iter()
+                .filter(|s| *s == StatusCode::OK)
+                .count(),
+            1
+        );
+        let loser = if a.0 == StatusCode::OK { "3" } else { "2" };
+        let winner = if a.0 == StatusCode::OK { "2" } else { "3" };
+        let error = if a.0 == StatusCode::OK { b } else { a };
+        assert_eq!(error.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(error.1["code"], "edge_limit_exceeded");
+        let (status, body) = post(
+            &app,
+            "/v1/batch",
+            json!({"operations":[
+                {"op":"connected","source":loser,"target":loser},
+                {"op":"link","source":winner,"target":"1"},
+                {"op":"link","source":"4","target":"5"},
+                {"op":"cut","source":"1","target":winner},
+                {"op":"link","source":"1","target":loser},
+                {"op":"add_node","node":"4"},
+                {"op":"connected","source":"1","target":loser}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let results = &body["results"];
+        assert_eq!(results[0]["code"], "unknown_node");
+        assert_eq!(results[1]["changed"], false);
+        assert_eq!(results[2]["code"], "node_limit_exceeded");
+        assert_eq!(results[3]["changed"], true);
+        assert_eq!(results[4]["changed"], true);
+        assert_eq!(results[5]["code"], "node_limit_exceeded");
+        assert_eq!(results[6]["connected"], true);
     }
 }

@@ -11,8 +11,8 @@ fn selected_engines_preserve_exact_connectivity_after_mutations() {
     ] {
         let mut graph = ConnectivityGraph::new(engine);
         assert_eq!(graph.engine(), engine);
-        assert!(graph.add_node(u64::MAX));
-        assert!(!graph.add_node(u64::MAX));
+        assert_eq!(graph.add_node(u64::MAX), Ok(true));
+        assert_eq!(graph.add_node(u64::MAX), Ok(false));
         assert_eq!(
             graph.connected(8, 9),
             Err(GraphError::UnknownNode { node: 8 })

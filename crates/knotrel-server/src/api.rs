@@ -39,9 +39,10 @@ impl Operation {
     /// Applies one operation, keeping graph errors local to this operation.
     pub(crate) fn apply(self, graph: &mut ConnectivityGraph) -> Outcome {
         match self {
-            Self::AddNode { node } => Outcome::Changed {
-                changed: graph.add_node(node.0),
-            },
+            Self::AddNode { node } => graph
+                .add_node(node.0)
+                .map(|changed| Outcome::Changed { changed })
+                .unwrap_or_else(Outcome::from),
             Self::Link { source, target } => graph
                 .link(source.0, target.0)
                 .map(|changed| Outcome::Changed { changed })
@@ -70,6 +71,8 @@ pub(crate) enum Outcome {
 impl From<GraphError> for Outcome {
     fn from(error: GraphError) -> Self {
         let code = match error {
+            GraphError::NodeLimitExceeded { .. } => "node_limit_exceeded",
+            GraphError::EdgeLimitExceeded { .. } => "edge_limit_exceeded",
             GraphError::SelfLoop { .. } => "self_loop",
             GraphError::UnknownNode { .. } => "unknown_node",
         };

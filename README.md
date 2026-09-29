@@ -1,5 +1,15 @@
 # Knotrel
 
+[![Version](https://img.shields.io/github/v/release/knotrel/knotrel?color=blue&label=version)](https://github.com/knotrel/knotrel/releases)
+[![License: ELv2](https://img.shields.io/badge/License-Elastic%202.0-blue.svg)](LICENSE.md)
+[![CI](https://github.com/knotrel/knotrel/actions/workflows/ci.yml/badge.svg)](https://github.com/knotrel/knotrel/actions/workflows/ci.yml)
+[![Lint](https://github.com/knotrel/knotrel/actions/workflows/lint.yml/badge.svg)](https://github.com/knotrel/knotrel/actions/workflows/lint.yml)
+[![Vulnerabilities](https://github.com/knotrel/knotrel/actions/workflows/vulnerabilities.yml/badge.svg)](https://github.com/knotrel/knotrel/actions/workflows/vulnerabilities.yml)
+[![Coverage](https://codecov.io/gh/knotrel/knotrel/branch/main/graph/badge.svg)](https://codecov.io/gh/knotrel/knotrel)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=knotrel_knotrel&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=knotrel_knotrel)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=knotrel_knotrel&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=knotrel_knotrel)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=knotrel_knotrel&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=knotrel_knotrel)
+
 Dynamic connectivity for undirected graphs: insert edges, delete edges, and ask
 whether two vertices are connected.
 
@@ -33,6 +43,8 @@ Configuration is read once before binding:
 | `KNOTREL_ADDR` | `127.0.0.1:8080` | IP address and port |
 | `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
+| `KNOTREL_MAX_NODES` | unlimited | Maximum registered nodes; zero allowed |
+| `KNOTREL_MAX_EDGES` | unlimited | Maximum live edges; zero allowed |
 | `RUST_LOG` | `info` | Logging filter |
 
 For example, to opt into the experimental forest:
@@ -109,3 +121,30 @@ repeated failed replacement work. Select it with `KNOTREL_ENGINE=hdt` or
 `ConnectivityGraph::new(EngineConfig::Hdt)`. It uses O(E + V log V) logical memory;
 update bounds are amortized, not per-request latency guarantees. Compact BFS
 remains the default. See [HDT design and limits](docs/architecture/0008-experimental-hdt.md).
+
+## Graph cardinality limits
+
+Set `KNOTREL_MAX_NODES` and/or `KNOTREL_MAX_EDGES` before starting the server:
+
+```sh
+KNOTREL_MAX_NODES=100000 KNOTREL_MAX_EDGES=200000 cargo run --locked -p knotrel-server
+```
+
+Absent variables mean unlimited for backward-compatible startup. Zero forbids
+new entries; values must be ASCII decimal integers fitting `usize`. Limits are
+fixed for each graph instance and reported by `/v1/info` (`null` for unlimited).
+A rejected operation changes nothing, including implicitly created endpoints.
+Duplicate vertices/edges remain successful no-ops. Cuts free edge capacity but
+retain vertices and their capacity usage. These are not RAM limits: allocation
+capacities can remain high after cuts.
+
+Embedded callers use `ConnectivityGraph::with_limits(engine, GraphLimits {
+max_nodes: Some(100000), max_edges: Some(200000) })`. The raw `Graph`,
+`ForestGraph` and `HdtGraph` algorithm types remain unlimited; use the wrapper
+for enforced limits. `ConnectivityGraph::add_node` now returns
+`Result<bool, GraphError>` so callers must handle capacity errors. Server
+embedders can use `ServerConfig::with_graph_limits`; the legacy `router(Graph)`
+retains unlimited cardinality. See [ADR 0009](docs/architecture/0009-graph-limits.md).
+
+Rust callers matching `GraphError` exhaustively must also handle the new
+`NodeLimitExceeded` and `EdgeLimitExceeded` variants.

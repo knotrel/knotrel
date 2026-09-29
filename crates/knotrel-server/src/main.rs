@@ -14,11 +14,13 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let address = config.address();
     let engine = config.engine();
     let max_pending_jobs = config.max_pending_jobs();
+    let graph_limits = config.graph_limits();
     let app = knotrel_server::router_with_config(config);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(
         address = %listener.local_addr()?, engine = engine.as_str(),
         experimental = engine.is_experimental(), max_pending_jobs,
+        max_nodes = ?graph_limits.max_nodes, max_edges = ?graph_limits.max_edges,
         "Knotrel listening; graph state is in memory"
     );
     axum::serve(listener, app)
