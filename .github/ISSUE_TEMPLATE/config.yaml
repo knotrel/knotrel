@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Architecture Decision Records (ADRs)
+    url: https://github.com/knotrel/knotrel/tree/main/docs/architecture
+    about: Read design records and algorithmic guarantees before opening an issue.
+  - name: Security Vulnerabilities
+    url: https://github.com/knotrel/knotrel/security/policy
+    about: Please report security vulnerabilities privately.

@@ -1,0 +1,42 @@
+name: Feature Request
+description: Propose a new feature, algorithm, engine optimization, or API enhancement
+title: "[FEAT]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting an improvement to Knotrel!
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: Is your feature request related to a problem or limitation?
+      placeholder: e.g. We need batch deletion of vertices or support for directed graphs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution / Design
+      description: Describe how you would like this feature to work and what the API or algorithmic bounds look like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any alternative solutions or workarounds?
+    validations:
+      required: false
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References / Papers
+      description: Any academic papers, benchmark data, or existing implementations relevant to this proposal.
+    validations:
+      required: false

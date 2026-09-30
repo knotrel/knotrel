@@ -1,0 +1,75 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in Knotrel core or HTTP server
+title: "[BUG]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue!
+        Please fill in the details below to help us reproduce and address the bug.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component / Engine
+      description: Which part of Knotrel is affected?
+      options:
+        - "knotrel-core: Default Compact Core"
+        - "knotrel-core: HDT Engine"
+        - "knotrel-core: Euler-Tour Forest"
+        - "knotrel-core: ReferenceGraph (Baseline)"
+        - "knotrel-server: HTTP API & Runtime"
+        - "Documentation / Examples"
+        - "Other / Unsure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the bug is.
+      placeholder: e.g. Deleting a bridge edge in the HDT engine leaves two vertices reporting as connected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal sequence of graph operations (or HTTP requests) to reproduce the behavior.
+      placeholder: |
+        1. Insert vertex 1 and 2
+        2. Link edge (1, 2)
+        3. Cut edge (1, 2)
+        4. Query connected(1, 2)
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating System, Rust version, runner architecture, etc.
+      value: |
+        - OS: [e.g. macOS 15, Ubuntu 24.04, Windows 11]
+        - Rust toolchain: [e.g. 1.98.1]
+        - Knotrel version/commit: [e.g. main / commit hash]
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Error Output
+      description: Paste any panic traces, server error responses, or compiler logs.
+      render: shell

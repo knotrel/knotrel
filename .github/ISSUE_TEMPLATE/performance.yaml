@@ -1,0 +1,46 @@
+name: Performance / Benchmark Report
+description: Report a latency regression, throughput drop, or memory anomaly in Knotrel
+title: "[PERF]: "
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to report performance anomalies, latency regressions, or benchmark findings.
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Graph Engine
+      options:
+        - "Default Compact Core (CompactAdjacency)"
+        - "HDT Dynamic Engine"
+        - "Euler-Tour Forest"
+        - "ReferenceGraph"
+        - "HTTP Server / Endpoint Latency"
+    validations:
+      required: true
+
+  - type: textarea
+    id: workload
+    attributes:
+      label: Workload & Graph Topology
+      description: Describe graph scale (|V|, |E|), update patterns (link/cut ratio), degree distribution, or benchmark configuration.
+      placeholder: e.g. 50k vertices, sparse random graph with 80% cuts and 20% links.
+    validations:
+      required: true
+
+  - type: textarea
+    id: observations
+    attributes:
+      label: Observed vs Expected Metrics
+      description: Quantify the latency (p50, p99), throughput (ops/sec), or memory footprint.
+    validations:
+      required: true
+
+  - type: textarea
+    id: profiling
+    attributes:
+      label: Profiling / Flamegraph / Bench Output
+      description: Attach benchmark numbers, Criterion output, or perf/flamegraph traces if available.
+      render: shell
