@@ -120,8 +120,8 @@ memory, O(E + V log V), and a single cut can still be expensive. All three engin
 provide the same exact graph and batch semantics. None caches query answers;
 the indexed engines maintain their connectivity structures on updates.
 
-The job limit covers admitted queued plus running graph work, not concurrent
-mutation workers. All graph operations still acquire the same mutex. Body
+The job limit covers admitted queued plus running graph work, including
+`GET /v1/stats`, not concurrent mutation workers. All graph operations still acquire the same mutex. Body
 size (1 MiB) and batch size (1–1024) are fixed in this version.
 
 `GET /v1/info` returns HTTP 200 and immutable effective settings, for example:
@@ -183,3 +183,66 @@ graph lock, so they cannot jointly exceed the configured ceilings.
 These bounds limit cardinalities, not memory, execution time or total process
 RSS. They apply independently to each router/graph instance; cloned routers
 share one instance. No hierarchy or typed-node model is introduced.
+
+## Live graph snapshot versus instance information
+
+| Contract | `GET /v1/info` | `GET /v1/stats` |
+| --- | --- | --- |
+| Purpose | Effective immutable configuration | Current coherent graph state |
+| Graph mutex | Not acquired | Acquired on a blocking worker |
+| Admission permit | Not required | Shares the graph job limit |
+| Saturated graph workers | Still available | HTTP 503 `busy` |
+| State changes | No live fields | Reflects completed effective mutations |
+
+`GET /v1/stats` returns HTTP 200 with this shape:
+
+```json
+{
+  "node_count": 42000,
+  "edge_count": 68000,
+  "max_nodes": 100000,
+  "max_edges": 200000,
+  "remaining_nodes": 58000,
+  "remaining_edges": 132000,
+  "state_version": "157"
+}
+```
+
+Counts are integers; each maximum and remaining capacity is an integer or
+`null` (unlimited). The two limits are repeated to make this snapshot usable
+without a second request. Zero capacity is reported as zero, not null.
+Remaining node capacity counts isolated vertices too: cuts do not remove nodes.
+The endpoint does not report RAM, allocator capacities or estimated throughput.
+
+All fields are captured while holding the same lock as graph operations. They
+represent one logical instant, even if another request changes the graph before
+the response reaches the client. A snapshot sees either the state before a batch
+or the state after its entire execution, including any per-operation errors;
+it cannot see an intermediate batch state. JSON serialization occurs after the
+lock is released. Responses carry `Cache-Control: no-store`, including errors.
+
+`state_version` is a decimal string, not a JSON number or timestamp:
+
+- It starts at `"0"` when the router/service instance is created. This also applies
+  to the legacy `router(Graph)` with an already populated graph: earlier changes
+  are not counted. Cloned routers share state and revision; distinct instances
+  have independent revisions.
+- Each operation returning `changed: true` increments it once. A link creating
+  two endpoints still increments once. A batch increments once per effective
+  operation, not once per request. Removing and then reinserting an edge advances
+  it twice even if the final topology equals the original topology.
+- Duplicates, missing-edge cuts, queries, rejected operations, malformed requests
+  and stats reads never increment it. An admitted mutation that finishes after
+  its caller disconnects still increments it.
+- The revision is instance-local and not persisted. It does not identify a
+  restart, provide a global ordering across instances, or authorize a conditional
+  write. Do not compare it lexicographically or parse it as a JavaScript Number;
+  clients can compare for equality or parse it as an arbitrary-precision integer.
+  The decimal counter neither wraps nor saturates at a machine-integer boundary.
+
+Stats reads use the same bounded admission and blocking-worker execution as
+mutations: they can wait behind a graph operation, or receive HTTP 503 `busy`
+when all permits are occupied. A poisoned/unavailable worker returns HTTP 503
+`unavailable`, using the existing error envelope. Disconnecting an admitted
+stats caller does not release its permit before its worker finishes. `/v1/info`
+and `/health` remain independent of this queue and are not readiness checks.

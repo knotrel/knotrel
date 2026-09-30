@@ -148,3 +148,21 @@ retains unlimited cardinality. See [ADR 0009](docs/architecture/0009-graph-limit
 
 Rust callers matching `GraphError` exhaustively must also handle the new
 `NodeLimitExceeded` and `EdgeLimitExceeded` variants.
+
+## Inspecting the running instance
+
+`GET /v1/info` reports fixed engine/configuration settings without entering the
+graph queue. `GET /v1/stats` reports a coherent snapshot of node/edge counts,
+limits, remaining capacity and a decimal-string `state_version`. The version
+starts at zero for each instance and advances once per effective operation,
+including each effective operation in a batch. Errors and no-ops do not advance
+it; a restart resets it. Stats shares the graph job limit and can return 503
+`busy`, while info remains available. Stats responses disable HTTP storage via
+`Cache-Control: no-store`.
+
+```sh
+curl -sS http://127.0.0.1:8080/v1/stats
+```
+
+See the [snapshot contract](docs/http-api.md#live-graph-snapshot-versus-instance-information)
+for batch isolation, unlimited capacities, precision and instance scope.

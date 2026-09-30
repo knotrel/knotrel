@@ -169,3 +169,17 @@ fn error_response(status: StatusCode, code: &'static str, message: String) -> Re
 pub(crate) async fn info(State(service): State<Service>) -> Json<crate::ServerInfo> {
     Json(service.info())
 }
+
+/// Reads live graph state through bounded worker admission and the graph mutex.
+pub(crate) async fn stats(State(service): State<Service>) -> Response {
+    let mut response = match service.stats().await {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) => service_error(error),
+    };
+    // Monitoring reads must not be served from an intermediary's stored response.
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}

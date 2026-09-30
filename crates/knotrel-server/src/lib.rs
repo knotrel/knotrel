@@ -14,7 +14,7 @@ mod service;
 
 /// Builds the HTTP API around an owned, in-memory graph.
 ///
-/// Routes are `GET /health`, `GET /v1/info`, `POST /v1/operations` and
+/// Routes are `GET /health`, `GET /v1/info`, `GET /v1/stats`, `POST /v1/operations` and
 /// `POST /v1/batch`. Request
 /// bodies are limited to 1 MiB; batches contain 1–1024 operations. At most 32
 /// graph jobs may be queued or running. Excess graph requests receive HTTP 503.
@@ -51,6 +51,7 @@ fn build_router(graph: knotrel_core::ConnectivityGraph, max_pending_jobs: usize)
             get(|| async { axum::Json(Health { status: "ok" }) }),
         )
         .route("/v1/info", get(api::info))
+        .route("/v1/stats", get(api::stats))
         .route("/v1/operations", post(api::single))
         .route("/v1/batch", post(api::batch))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
