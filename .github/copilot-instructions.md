@@ -23,5 +23,5 @@ When modifying or generating code for Knotrel, strictly adhere to the following 
 
 ## 4. Git & Rulesets Conventions
 - **Branches**: Must match `^(feature|bugfix|fix|hotfix|docs|chore|refactor|test|ci|dependabot)/.+$`
-- **Commits**: Must follow Conventional Commits: `^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_-]+\))?!?: .+$`
+- **Commits**: Must follow Conventional Commits: `^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_./-]+\))?!?: .+$`
 

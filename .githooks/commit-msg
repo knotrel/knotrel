@@ -10,12 +10,12 @@ if [[ "$COMMIT_MSG" =~ ^Merge ]]; then
     exit 0
 fi
 
-COMMIT_REGEX='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_-]+\))?!?: .+$'
+COMMIT_REGEX='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_./-]+\))?!?: .+$'
 
 if [[ ! "$COMMIT_MSG" =~ $COMMIT_REGEX ]]; then
     echo "ERROR: Commit message does not follow Conventional Commits."
     echo "Message was: '$COMMIT_MSG'"
-    echo "Pattern must match: ^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_-]+\))?!?: .+$"
+    echo "Pattern must match: ^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_./-]+\))?!?: .+$"
     echo "Examples: feat(core): add pruning, fix(server): handle zero capacity, chore: update deps"
     exit 1
 fi
