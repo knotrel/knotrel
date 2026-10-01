@@ -7,10 +7,10 @@ cd "$repo_root"
 
 cargo llvm-cov clean --workspace
 
-if [ "${1:-}" = "--html" ]; then
+if [[ "${1:-}" == "--html" ]]; then
     cargo llvm-cov --workspace --locked --html
     echo "Coverage HTML report generated at target/llvm-cov/html/index.html"
-elif [ "${1:-}" = "--summary" ]; then
+elif [[ "${1:-}" == "--summary" ]]; then
     cargo llvm-cov --workspace --locked
 else
     cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
