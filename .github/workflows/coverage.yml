@@ -31,7 +31,7 @@ jobs:
       - name: Generate code coverage
         run: bash scripts/coverage.sh
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@e96185f4044c2f0cedf0f022454acf9811cf8057 # v5.4.0
+        uses: codecov/codecov-action@0565863a31f2c772f9f0395002a31e3f06189574 # v5.4.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
