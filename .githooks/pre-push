@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+
+if [[ -z "$CURRENT_BRANCH" || "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+    exit 0
+fi
+
+BRANCH_REGEX='^(feature|bugfix|fix|hotfix|docs|chore|refactor|test|ci|dependabot)/.+$'
+
+if [[ ! "$CURRENT_BRANCH" =~ $BRANCH_REGEX ]]; then
+    echo "ERROR: Branch '$CURRENT_BRANCH' violates branch naming convention."
+    echo "Branch name must match: ^(feature|bugfix|fix|hotfix|docs|chore|refactor|test|ci|dependabot)/.+$"
+    echo "Allowed prefixes: feature/, bugfix/, fix/, hotfix/, docs/, chore/, refactor/, test/, ci/, dependabot/"
+    exit 1
+fi

@@ -10,3 +10,12 @@
 - Verify formatting, Clippy with warnings denied, workspace tests/doctests, and Rustdoc with warnings denied.
 - Keep benchmarks reproducible. Never present unmeasured performance claims or compare different consistency/result contracts.
 - Do not commit or push unless the user explicitly asks for it.
+
+## Git & Naming Rulesets
+
+- **Branch Naming**: All branches must follow the pattern:
+  `^(feature|bugfix|fix|hotfix|docs|chore|refactor|test|ci|dependabot)/.+$`
+  Allowed prefixes: `feature/`, `bugfix/`, `fix/`, `hotfix/`, `docs/`, `chore/`, `refactor/`, `test/`, `ci/`, `dependabot/`.
+- **Commit Messages**: All commits and PR titles must follow Conventional Commits matching:
+  `^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_-]+\))?!?: .+$`
+  Examples: `feat(core): add pruning`, `fix(server): handle zero capacity`, `chore: update dependencies`.

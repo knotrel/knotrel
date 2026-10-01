@@ -1,0 +1,96 @@
+name: conventions
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-conventions:
+    name: branch & conventional commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate branch name
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [[ -z "$HEAD_REF" ]]; then
+            echo "Not a pull request head branch, skipping branch name check."
+            exit 0
+          fi
+
+          echo "Checking branch name: $HEAD_REF"
+          BRANCH_REGEX='^(feature|bugfix|fix|hotfix|docs|chore|refactor|test|ci|dependabot)/.+$'
+
+          if [[ ! "$HEAD_REF" =~ $BRANCH_REGEX ]]; then
+            echo "::error::Branch name '$HEAD_REF' violates naming convention."
+            echo "Branch name must match: ^(feature|bugfix|fix|hotfix|docs|chore|refactor|test|ci|dependabot)/.+$"
+            echo "Example: feature/add-stats-endpoint, fix/memory-leak, chore/update-deps"
+            exit 1
+          fi
+          echo "Branch name is valid."
+
+      - name: Validate commit messages and PR title
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          COMMIT_REGEX='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_-]+\))?!?: .+$'
+          FAILED=0
+
+          # Validate PR title if present
+          if [[ -n "$PR_TITLE" ]]; then
+            echo "Checking PR title: '$PR_TITLE'"
+            if [[ ! "$PR_TITLE" =~ $COMMIT_REGEX ]]; then
+              echo "::error::PR title '$PR_TITLE' does not follow Conventional Commits."
+              FAILED=1
+            else
+              echo "PR title is valid."
+            fi
+          fi
+
+          # If triggered on pull_request, validate every commit in the PR
+          if [[ -n "$BASE_REF" ]]; then
+            echo "Checking commits between origin/$BASE_REF and HEAD..."
+            COMMITS=$(git log "origin/$BASE_REF..HEAD" --format="%H %s")
+
+            while IFS= read -r line; do
+              [[ -z "$line" ]] && continue
+              SHA="${line%% *}"
+              SUBJECT="${line#* }"
+
+              # Ignore merge commits
+              if [[ "$SUBJECT" =~ ^Merge ]]; then
+                continue
+              fi
+
+              if [[ ! "$SUBJECT" =~ $COMMIT_REGEX ]]; then
+                echo "::error::Commit $SHA violates Conventional Commits: '$SUBJECT'"
+                FAILED=1
+              else
+                echo "Commit $SHA is valid: '$SUBJECT'"
+              fi
+            done <<< "$COMMITS"
+          fi
+
+          if [[ $FAILED -ne 0 ]]; then
+            echo ""
+            echo "Commit messages and PR titles must match: ^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_-]+\))?!?: .+$"
+            echo "Examples:"
+            echo "  feat(core): add dynamic graph pruning"
+            echo "  fix: handle zero node capacity in admission"
+            echo "  docs(http): document /v1/stats response schema"
+            exit 1
+          fi
+
+          echo "All commit messages and PR title conform to Conventional Commits."
