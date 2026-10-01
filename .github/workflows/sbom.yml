@@ -19,11 +19,11 @@ jobs:
     name: sbom
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c # v2.7.7
       - run: cargo install cargo-cyclonedx --locked
       - name: Generate CycloneDX SBOMs
         shell: bash
@@ -40,7 +40,7 @@ jobs:
             cp "$file" "sbom/${relative_dir}-workspace-sbom.json"
           done
           test -n "$(find sbom -type f -name '*.json' -print -quit)"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: knotrel-sbom
           path: sbom/
