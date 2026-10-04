@@ -111,7 +111,8 @@ impl Level {
     }
     // Sets always store global indices; only the owning vertex is translated.
     // Creating a sparse record is charged to its first edge promotion, O(log V).
-    fn incidence(&mut self, a: usize, b: usize, tree: bool, insert: bool) {
+    // Return the stable local endpoints so callers can reuse this translation.
+    fn incidence(&mut self, a: usize, b: usize, tree: bool, insert: bool) -> (usize, usize) {
         let (local_a, local_b) = if insert {
             (self.ensure(a), self.ensure(b))
         } else {
@@ -134,6 +135,7 @@ impl Level {
         }
         self.refresh(local_a);
         self.refresh(local_b);
+        (local_a, local_b)
     }
 }
 
@@ -302,9 +304,10 @@ impl HdtGraph {
             self.levels.push(Level::default());
         }
         self.levels[i].incidence(a, b, tree, false);
-        self.levels[i + 1].incidence(a, b, tree, true);
+        let (local_a, local_b) = self.levels[i + 1].incidence(a, b, tree, true);
         let arcs = if tree {
-            Some(self.levels[i + 1].link(a, b))
+            // Incidence insertion already materialized and translated both endpoints.
+            Some(self.levels[i + 1].forest.link(local_a, local_b))
         } else {
             debug_assert!(self.levels[i + 1].connected(a, b));
             None
@@ -515,6 +518,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn promoted_tree_uses_local_handles_for_sparse_global_indices() {
+        let mut level = super::Level::default();
+        level.ensure(900);
+        level.ensure(400);
+        let (a, b) = level.incidence(400, 900, true, true);
+        let arcs = level.forest.link(a, b);
+        assert!(level.connected(400, 900));
+        assert_eq!(level.component_size(400), 2);
+        assert!(level.marked_vertex(900, true).is_some());
+        level.forest.cut(arcs);
+        assert!(!level.connected(400, 900));
+        level.incidence(400, 900, true, false);
+        assert!(level.marked_vertex(900, true).is_none());
+        assert!(level.marked_vertex(400, true).is_none());
     }
 
     #[test]

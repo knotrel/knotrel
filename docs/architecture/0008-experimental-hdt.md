@@ -157,3 +157,12 @@ falls from 547.211 to 293.961 MiB. Cyclic-block base-call time increases from
 448.397 to 633.770 ms with identical repair counters. Keep this representation
 for its memory saving, but retain experimental status and target promotion-path
 lookup/allocation overhead next. No default or runtime configuration change.
+
+The [2026-10-04 endpoint-reuse experiment](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/2026-10-04-hdt-localids/README.md)
+removes two redundant upper-level endpoint lookups per tree promotion by reusing
+the local indices returned by incidence insertion. It preserves all level and
+forest invariants, work counters and public contracts. The 272-process paired
+reference replay shows mixed runtime results: large cyclic-block warmed cells
+improve by 3.30–11.15%, while 17 of 24 dense cells regress. Keep experimental
+status; do not interpret this local reduction as a universal speedup. The report
+preserves all outcomes and discloses uncaptured build-environment overrides.
