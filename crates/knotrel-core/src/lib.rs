@@ -21,6 +21,9 @@ use std::{
     fmt,
 };
 
+mod workspace;
+pub use workspace::BfsWorkspace;
+
 mod configuration;
 mod dynamic;
 mod forest;
