@@ -166,3 +166,12 @@ reference replay shows mixed runtime results: large cyclic-block warmed cells
 improve by 3.30–11.15%, while 17 of 24 dense cells regress. Keep experimental
 status; do not interpret this local reduction as a universal speedup. The report
 preserves all outcomes and discloses uncaptured build-environment overrides.
+
+The [2026-10-05 direct-join experiment](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/2026-10-05-hdt-joins/README.md)
+uses the two new directed edge tokens as AVL join pivots, avoiding the three
+concatenations' pivot-extraction splits. Tour order, aggregates, stable handles
+and logarithmic worst-case link cost are preserved; AVL shape may differ.
+The full 272-process paired matrix shows 14.75–35.79% lower warmed 100k cyclic-block
+runtime and 9.65–12.25% lower Cogentco runtime. A separate 48-process adaptive
+confirmation still finds an 11.62% warmed 100k path / 50% query regression.
+Retain experimental status and both reports; this is not a universal speedup.

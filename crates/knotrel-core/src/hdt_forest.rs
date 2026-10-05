@@ -230,9 +230,11 @@ impl Forest {
         let right = self.reroot(self.vertex_tokens[b]);
         let ab = self.allocate(None);
         let ba = self.allocate(None);
-        let left = self.concat(left, Some(ab));
-        let left = self.concat(left, right);
-        self.concat(left, Some(ba));
+        // The new directed tokens are pivots: preserve the tour sequence
+        // left, ab, right, ba without splitting tours to recover pivots.
+        // Both joins retain AVL balance and O(log V) worst-case link cost.
+        let tour = self.join(left, ab, right);
+        self.join(Some(tour), ba, None);
         (ab, ba)
     }
     pub(crate) fn cut(&mut self, arcs: (usize, usize)) {
