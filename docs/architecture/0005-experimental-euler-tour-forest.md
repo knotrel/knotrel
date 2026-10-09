@@ -73,3 +73,28 @@ That would reduce unnecessary scan work without claiming an HDT amortized bound.
 Measure added metadata/update costs and arena memory; do not assume the change
 wins on every query/update mix. Cluster Forest remains a research alternative,
 not an implemented or commercially validated dependency.
+
+## Packed token indices (2026-10-09)
+
+The measured packed-index candidate is integrated into the experimental ETT
+forest. Four private optional indices use checked `index + 1` encoding in
+`Option<NonZeroUsize>`. Absence uses zero; `usize::MAX` cannot name a valid arena
+element and is rejected without wrapping. Encoding and decoding take constant
+time. Public graph IDs remain arbitrary `u64`. Algorithms, APIs, asymptotic
+bounds, configuration, default engine and experimental status are unchanged.
+No unsafe code or dependency is introduced. Tokens occupy 64 rather than 96
+bytes on the measured 64-bit target; unit tests cover layout, index boundaries,
+clearing and overflow, alongside existing invariant and token-reuse tests.
+
+The [38-cell paired matrix](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/2026-10-09-ett-packed-tokens-matrix/README.md)
+uses the exact candidate from the isolated pilot. All 304 processes succeeded;
+all 38 runtime medians improved and 141/152 pairs were faster. Median cell runtime
+changes were -18.69% sparse, -12.53% dense and -8.60% Cogentco. Sparse peak process
+RSS decreased in all 24 cells, with median change -18.25%. These are unweighted
+cell summaries, not aggregate throughput or graph-only allocation measurements.
+
+The sparse setup tradeoff remains: median cell change +4.56%, maximum +8.73%.
+Individual adverse pairs and short-path timing variability remain in the report.
+Four pairs per cell do not establish universal speedups or tail guarantees.
+This integration preserves all historical results and combines no other isolated
+algorithm candidate.

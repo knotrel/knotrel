@@ -6,28 +6,51 @@
 //! section 2: <https://www.cs.princeton.edu/courses/archive/fall07/cos521/handouts/poly.pdf>
 //! This module implements forest connectivity only, not HDT replacement levels.
 
+/// Optional arena index encoded as index + 1, leaving zero for absence.
+/// Every stored index names a Vec element, hence cannot be usize::MAX.
+/// Checked encoding rejects invalid sentinel overflow; decoding is O(1).
+#[derive(Clone, Copy, Debug, Default)]
+struct Index(Option<std::num::NonZeroUsize>);
+impl Index {
+    const NONE: Self = Self(None);
+    fn from(value: Option<usize>) -> Self {
+        Self(value.map(|i| {
+            std::num::NonZeroUsize::new(i.checked_add(1).expect("arena index overflow"))
+                .expect("encoded index is nonzero")
+        }))
+    }
+    fn get(self) -> Option<usize> {
+        self.0.map(|i| i.get() - 1)
+    }
+    fn take(&mut self) -> Option<usize> {
+        let old = self.get();
+        *self = Self::NONE;
+        old
+    }
+}
+
 #[derive(Debug)]
 struct Token {
-    left: Option<usize>,
-    right: Option<usize>,
-    parent: Option<usize>,
+    left: Index,
+    right: Index,
+    parent: Index,
     height: usize,
     size: usize,
     vertices: usize,
-    vertex: Option<usize>,
+    vertex: Index,
     candidate: bool,
     has_candidates: bool,
 }
 impl Token {
     fn new(vertex: Option<usize>) -> Self {
         Self {
-            left: None,
-            right: None,
-            parent: None,
+            left: Index::NONE,
+            right: Index::NONE,
+            parent: Index::NONE,
             height: 1,
             size: 1,
             vertices: usize::from(vertex.is_some()),
-            vertex,
+            vertex: Index::from(vertex),
             candidate: false,
             has_candidates: false,
         }
@@ -70,64 +93,69 @@ impl Forest {
         root.is_some_and(|i| self.tokens[i].has_candidates)
     }
     fn pull(&mut self, i: usize) {
-        let (l, r) = (self.tokens[i].left, self.tokens[i].right);
+        let (l, r) = (self.tokens[i].left.get(), self.tokens[i].right.get());
         self.tokens[i].height = 1 + self.height(l).max(self.height(r));
         self.tokens[i].size = 1 + self.size(l) + self.size(r);
-        self.tokens[i].vertices =
-            usize::from(self.tokens[i].vertex.is_some()) + self.vertices(l) + self.vertices(r);
+        self.tokens[i].vertices = usize::from(self.tokens[i].vertex.get().is_some())
+            + self.vertices(l)
+            + self.vertices(r);
         self.tokens[i].has_candidates =
             self.tokens[i].candidate || self.has_candidates(l) || self.has_candidates(r);
         if let Some(l) = l {
-            self.tokens[l].parent = Some(i);
+            self.tokens[l].parent = Index::from(Some(i));
         }
         if let Some(r) = r {
-            self.tokens[r].parent = Some(i);
+            self.tokens[r].parent = Index::from(Some(i));
         }
-        self.tokens[i].parent = None;
+        self.tokens[i].parent = Index::from(None);
     }
     fn take_left(&mut self, i: usize) -> Option<usize> {
         let child = self.tokens[i].left.take();
         if let Some(c) = child {
-            self.tokens[c].parent = None;
+            self.tokens[c].parent = Index::from(None);
         }
         child
     }
     fn take_right(&mut self, i: usize) -> Option<usize> {
         let child = self.tokens[i].right.take();
         if let Some(c) = child {
-            self.tokens[c].parent = None;
+            self.tokens[c].parent = Index::from(None);
         }
         child
     }
     fn rotate_left(&mut self, i: usize) -> usize {
         let r = self.take_right(i).expect("right child");
-        self.tokens[i].right = self.take_left(r);
+        self.tokens[i].right = Index::from(self.take_left(r));
         self.pull(i);
-        self.tokens[r].left = Some(i);
+        self.tokens[r].left = Index::from(Some(i));
         self.pull(r);
         r
     }
     fn rotate_right(&mut self, i: usize) -> usize {
         let l = self.take_left(i).expect("left child");
-        self.tokens[i].left = self.take_right(l);
+        self.tokens[i].left = Index::from(self.take_right(l));
         self.pull(i);
-        self.tokens[l].right = Some(i);
+        self.tokens[l].right = Index::from(Some(i));
         self.pull(l);
         l
     }
     fn balance(&mut self, i: usize) -> usize {
         self.pull(i);
-        let (l, r) = (self.tokens[i].left, self.tokens[i].right);
+        let (l, r) = (self.tokens[i].left.get(), self.tokens[i].right.get());
         if self.height(l) > self.height(r) + 1 {
             let left = l.expect("left heavy");
-            if self.height(self.tokens[left].right) > self.height(self.tokens[left].left) {
-                self.tokens[i].left = Some(self.rotate_left(left));
+            if self.height(self.tokens[left].right.get())
+                > self.height(self.tokens[left].left.get())
+            {
+                self.tokens[i].left = Index::from(Some(self.rotate_left(left)));
             }
             self.rotate_right(i)
         } else if self.height(r) > self.height(l) + 1 {
             let right = r.expect("right heavy");
-            if self.height(self.tokens[right].left) > self.height(self.tokens[right].right) {
-                self.tokens[i].right = Some(self.rotate_right(right));
+            if self.height(self.tokens[right].left.get())
+                > self.height(self.tokens[right].right.get())
+            {
+                self.tokens[i].right = Index::from(Some(self.rotate_right(right)));
             }
             self.rotate_left(i)
         } else {
@@ -141,17 +169,17 @@ impl Forest {
             let l = left.expect("taller left");
             let child = self.take_right(l);
             let root = self.join(child, pivot, right);
-            self.tokens[l].right = Some(root);
+            self.tokens[l].right = Index::from(Some(root));
             self.balance(l)
         } else if self.height(right) > self.height(left) + 1 {
             let r = right.expect("taller right");
             let child = self.take_left(r);
             let root = self.join(left, pivot, child);
-            self.tokens[r].left = Some(root);
+            self.tokens[r].left = Index::from(Some(root));
             self.balance(r)
         } else {
-            self.tokens[pivot].left = left;
-            self.tokens[pivot].right = right;
+            self.tokens[pivot].left = Index::from(left);
+            self.tokens[pivot].right = Index::from(right);
             self.pull(pivot);
             pivot
         }
@@ -163,7 +191,7 @@ impl Forest {
             debug_assert_eq!(k, 0);
             return (None, None);
         };
-        let size = self.size(self.tokens[i].left);
+        let size = self.size(self.tokens[i].left.get());
         let left = self.take_left(i);
         let right = self.take_right(i);
         if k <= size {
@@ -187,16 +215,16 @@ impl Forest {
         }
     }
     fn root(&self, mut i: usize) -> usize {
-        while let Some(parent) = self.tokens[i].parent {
+        while let Some(parent) = self.tokens[i].parent.get() {
             i = parent;
         }
         i
     }
     fn rank(&self, mut i: usize) -> usize {
-        let mut rank = self.size(self.tokens[i].left);
-        while let Some(parent) = self.tokens[i].parent {
-            if self.tokens[parent].right == Some(i) {
-                rank += 1 + self.size(self.tokens[parent].left);
+        let mut rank = self.size(self.tokens[i].left.get());
+        while let Some(parent) = self.tokens[i].parent.get() {
+            if self.tokens[parent].right.get() == Some(i) {
+                rank += 1 + self.size(self.tokens[parent].left.get());
             }
             i = parent;
         }
@@ -245,13 +273,13 @@ impl Forest {
         let mut current = Some(token);
         while let Some(i) = current {
             let value = self.tokens[i].candidate
-                || self.has_candidates(self.tokens[i].left)
-                || self.has_candidates(self.tokens[i].right);
+                || self.has_candidates(self.tokens[i].left.get())
+                || self.has_candidates(self.tokens[i].right.get());
             if self.tokens[i].has_candidates == value {
                 break;
             }
             self.tokens[i].has_candidates = value;
-            current = self.tokens[i].parent;
+            current = self.tokens[i].parent.get();
         }
     }
 
@@ -298,12 +326,14 @@ impl Forest {
         ) -> (usize, usize, usize, bool) {
             assert!(seen.insert(i));
             let t = &f.tokens[i];
-            assert_eq!(t.parent, parent);
+            assert_eq!(t.parent.get(), parent);
             let l = t
                 .left
+                .get()
                 .map_or((0, 0, 0, false), |l| visit(f, l, Some(i), seen));
             let r = t
                 .right
+                .get()
                 .map_or((0, 0, 0, false), |r| visit(f, r, Some(i), seen));
             assert!(l.0.abs_diff(r.0) <= 1);
             assert_eq!(
@@ -311,10 +341,10 @@ impl Forest {
                 (
                     1 + l.0.max(r.0),
                     1 + l.1 + r.1,
-                    usize::from(t.vertex.is_some()) + l.2 + r.2
+                    usize::from(t.vertex.get().is_some()) + l.2 + r.2
                 )
             );
-            assert!(!t.candidate || t.vertex.is_some());
+            assert!(!t.candidate || t.vertex.get().is_some());
             assert_eq!(t.has_candidates, t.candidate || l.3 || r.3);
             (t.height, t.size, t.vertices, t.has_candidates)
         }
@@ -337,13 +367,13 @@ impl Iterator for Candidates<'_> {
         while let Some(i) = self.stack.pop() {
             let token = &self.forest.tokens[i];
             // Preserve v1's node/right/left traversal order among candidates.
-            for child in [token.left, token.right].into_iter().flatten() {
+            for child in [token.left.get(), token.right.get()].into_iter().flatten() {
                 if self.forest.tokens[child].has_candidates {
                     self.stack.push(child);
                 }
             }
             if token.candidate {
-                return token.vertex;
+                return token.vertex.get();
             }
         }
         None
@@ -378,5 +408,34 @@ mod tests {
             }
         }
         assert_eq!(f.tokens.len(), 100 + 198);
+    }
+}
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod compact_layout_tests {
+    use super::Token;
+    #[test]
+    fn token_budget() {
+        assert_eq!(size_of::<Token>(), 64);
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::Index;
+    #[test]
+    fn optional_indices_round_trip_and_clear() {
+        assert_eq!(size_of::<Index>(), size_of::<usize>());
+        for value in [None, Some(0), Some(1), Some(usize::MAX - 1)] {
+            let mut index = Index::from(value);
+            assert_eq!(index.get(), value);
+            assert_eq!(index.take(), value);
+            assert_eq!(index.get(), None);
+        }
+    }
+    #[test]
+    #[should_panic(expected = "arena index overflow")]
+    fn rejects_unrepresentable_index_without_wrapping() {
+        Index::from(Some(usize::MAX));
     }
 }
