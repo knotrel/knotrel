@@ -2,7 +2,8 @@
 
 use crate::api::{Operation, Outcome};
 use knotrel_core::ConnectivityGraph;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 /// Shared graph state plus a strict limit on outstanding worker jobs.
@@ -152,14 +153,14 @@ impl Service {
         let graph = self.graph.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let mut graph = graph.lock().map_err(|_| ServiceError::Unavailable)?;
-            Ok(work(&mut graph))
+            let mut graph = graph.lock();
+            work(&mut graph)
         })
         .await
         .map_err(|error| {
             tracing::error!(%error, "graph worker failed");
             ServiceError::Unavailable
-        })?
+        })
     }
 }
 
@@ -199,7 +200,7 @@ mod tests {
         // Hold the graph from a dedicated thread so the worker stays pending
         // without blocking the async test executor or depending on a large graph.
         let holder = std::thread::spawn(move || {
-            let _guard = graph.lock().unwrap();
+            let _guard = graph.lock();
             locked_tx.send(()).unwrap();
             let _ = release_rx.recv();
         });
@@ -225,10 +226,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(
-            service.graph.lock().unwrap().graph.connected(7, 7),
-            Ok(true)
-        );
+        assert_eq!(service.graph.lock().graph.connected(7, 7), Ok(true));
     }
     #[test]
     fn decimal_version_carries_without_wrapping_or_losing_precision() {
@@ -254,7 +252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stats_admission_does_not_block_info_and_poison_fails_closed() {
+    async fn stats_admission_does_not_block_info_and_worker_failure_fails_closed() {
         use axum::{
             Router,
             body::{Body, to_bytes},
@@ -285,19 +283,14 @@ mod tests {
         assert_eq!(info.status(), StatusCode::OK);
         drop(permit);
         assert_eq!(service.stats().await.unwrap().state_version, "0");
-        let graph = service.graph.clone();
         assert!(
-            std::thread::spawn(move || {
-                let _guard = graph.lock().unwrap();
-                panic!("test poisoning");
-            })
-            .join()
-            .is_err()
+            service
+                .run(|_| {
+                    panic!("test worker panic");
+                })
+                .await
+                .is_err()
         );
-        assert!(matches!(
-            service.stats().await,
-            Err(ServiceError::Unavailable)
-        ));
         assert_eq!(service.permits.available_permits(), 1);
         assert_eq!(service.info().engine, "compact-bfs");
     }

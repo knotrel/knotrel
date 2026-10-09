@@ -3,8 +3,9 @@
 use crate::service::{Service, ServiceError};
 use axum::{
     Json,
-    extract::{State, rejection::JsonRejection},
-    http::StatusCode,
+    body::Bytes,
+    extract::{FromRequest, Request, State},
+    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
 use knotrel_core::{ConnectivityGraph, GraphError};
@@ -109,14 +110,61 @@ struct BatchResult {
     results: Vec<Outcome>,
 }
 
+/// SIMD-accelerated JSON extractor parsing request bodies in-place.
+pub(crate) struct SimdJson<T>(pub(crate) T);
+
+impl<S, T> FromRequest<S> for SimdJson<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let (parts, body) = req.into_parts();
+        if let Some(rejection) = check_json_content_type(&parts.headers) {
+            return Err(rejection);
+        }
+        let bytes = Bytes::from_request(Request::from_parts(parts, body), state)
+            .await
+            .map_err(|err| error_response(err.status(), "invalid_request", err.body_text()))?;
+        let mut buffer = bytes.to_vec();
+        let value = simd_json::from_slice(&mut buffer).map_err(|err| {
+            let status = if err.is_data() {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            error_response(status, "invalid_request", err.to_string())
+        })?;
+        Ok(Self(value))
+    }
+}
+
+fn check_json_content_type(headers: &HeaderMap) -> Option<Response> {
+    let valid = headers
+        .get(CONTENT_TYPE)
+        .and_then(|val| val.to_str().ok())
+        .is_some_and(|val| val.starts_with("application/json") || val.contains("+json"));
+    if valid {
+        None
+    } else {
+        Some(error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "invalid_request",
+            "Expected request with `Content-Type: application/json`".into(),
+        ))
+    }
+}
+
 /// Executes a single parsed operation.
 pub(crate) async fn single(
     State(service): State<Service>,
-    request: Result<Json<Operation>, JsonRejection>,
+    request: Result<SimdJson<Operation>, Response>,
 ) -> Response {
-    let operation = match request {
-        Ok(Json(operation)) => operation,
-        Err(error) => return invalid_json(error),
+    let SimdJson(operation) = match request {
+        Ok(operation) => operation,
+        Err(response) => return response,
     };
     match service.execute(vec![operation]).await {
         Ok(mut results) => results.remove(0).into_response(),
@@ -127,11 +175,11 @@ pub(crate) async fn single(
 /// Runs a bounded, ordered batch without rollback on individual graph errors.
 pub(crate) async fn batch(
     State(service): State<Service>,
-    request: Result<Json<Batch>, JsonRejection>,
+    request: Result<SimdJson<Batch>, Response>,
 ) -> Response {
-    let batch = match request {
-        Ok(Json(batch)) => batch,
-        Err(error) => return invalid_json(error),
+    let SimdJson(batch) = match request {
+        Ok(batch) => batch,
+        Err(response) => return response,
     };
     if batch.operations.is_empty() || batch.operations.len() > crate::MAX_BATCH_OPERATIONS {
         return error_response(
@@ -147,10 +195,6 @@ pub(crate) async fn batch(
         Ok(results) => Json(BatchResult { results }).into_response(),
         Err(error) => service_error(error),
     }
-}
-
-fn invalid_json(error: JsonRejection) -> Response {
-    error_response(error.status(), "invalid_request", error.body_text())
 }
 
 fn service_error(error: ServiceError) -> Response {

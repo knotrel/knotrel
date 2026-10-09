@@ -1,5 +1,6 @@
 //! Exact general-graph connectivity using one Euler-tour spanning forest.
 use crate::{GraphError, NodeId, forest::Forest};
+use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
 use std::collections::{BTreeSet, hash_map::Entry};
 
@@ -35,7 +36,7 @@ pub struct ForestStats {
 /// Queries allocate no scratch, cache no answers and use no internal locks.
 #[derive(Debug, Default)]
 pub struct ForestGraph {
-    ids: FxHashMap<NodeId, usize>,
+    ids: IntMap<NodeId, usize>,
     non_tree: Vec<BTreeSet<usize>>,
     edges: FxHashMap<(usize, usize), Option<(usize, usize)>>,
     forest: Forest,

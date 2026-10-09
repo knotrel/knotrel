@@ -9,6 +9,9 @@ publish.workspace = true
 
 [dependencies]
 rustc-hash.workspace = true
+nohash-hasher.workspace = true
+fixedbitset.workspace = true
+tinyvec.workspace = true
 
 [lints]
 workspace = true

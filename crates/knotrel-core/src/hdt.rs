@@ -6,6 +6,7 @@
 //! next power of two of the current vertex count. Growing U only relaxes bounds.
 
 use crate::{GraphError, NodeId, hdt_forest::Forest};
+use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
 use std::collections::BTreeSet;
 
@@ -33,7 +34,7 @@ pub struct HdtStats {
 struct Edge {
     level: usize,
     // Empty for non-tree edges; otherwise one handle pair for each F_0..F_level.
-    arcs: Vec<Arcs>,
+    arcs: tinyvec::TinyVec<[Arcs; 4]>,
 }
 
 // F_0 is dense to keep queries free of an extra translation. Higher levels
@@ -45,7 +46,7 @@ struct Level {
     tree: Vec<BTreeSet<usize>>,
     non_tree: Vec<BTreeSet<usize>>,
     dense: bool,
-    local_ids: FxHashMap<usize, usize>,
+    local_ids: IntMap<usize, usize>,
     global_ids: Vec<usize>,
 }
 impl Level {
@@ -156,7 +157,7 @@ impl Level {
 /// Neither graph state nor query answers are protected by internal locks.
 #[derive(Debug, Default)]
 pub struct HdtGraph {
-    ids: FxHashMap<NodeId, usize>,
+    ids: IntMap<NodeId, usize>,
     edges: FxHashMap<Key, Edge>,
     levels: Vec<Level>,
     stats: HdtStats,
@@ -212,9 +213,9 @@ impl HdtGraph {
         }
         let tree = !self.levels[0].forest.connected(a, b);
         let arcs = if tree {
-            vec![self.levels[0].forest.link(a, b)]
+            tinyvec::tiny_vec!([Arcs; 4] => self.levels[0].forest.link(a, b))
         } else {
-            Vec::new()
+            tinyvec::TinyVec::new()
         };
         self.levels[0].incidence(a, b, tree, true);
         self.edges.insert(key, Edge { level: 0, arcs });
@@ -281,7 +282,7 @@ impl HdtGraph {
                 } else {
                     self.levels[i].incidence(v, w, false, false);
                     self.levels[i].incidence(v, w, true, true);
-                    let mut arcs = Vec::with_capacity(i + 1);
+                    let mut arcs = tinyvec::TinyVec::new();
                     for level in &mut self.levels[..=i] {
                         arcs.push(level.link(v, w));
                     }

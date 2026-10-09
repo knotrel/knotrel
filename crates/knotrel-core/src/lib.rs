@@ -15,7 +15,8 @@
 //! # Ok::<(), knotrel_core::GraphError>(())
 //! ```
 
-use rustc_hash::FxHashMap;
+use fixedbitset::FixedBitSet;
+use nohash_hasher::IntMap;
 use std::{collections::hash_map::Entry, error::Error, fmt};
 
 mod workspace;
@@ -95,7 +96,7 @@ impl Error for GraphError {}
 /// the sum of per-vertex historical maximum degrees (capacity is retained). No query answers are cached.
 #[derive(Debug, Default)]
 pub struct Graph {
-    ids: FxHashMap<NodeId, usize>,
+    ids: IntMap<NodeId, usize>,
     adjacency: Vec<Vec<usize>>,
     edges: usize,
 }
@@ -196,9 +197,9 @@ impl Graph {
         if a == b {
             return Ok(true);
         }
-        let mut visited = vec![false; self.adjacency.len()];
+        let mut visited = FixedBitSet::with_capacity(self.adjacency.len());
         let mut queue = Vec::new();
-        visited[a] = true;
+        visited.insert(a);
         queue.push(a);
         let mut cursor = 0;
         // Mark on enqueue: each vertex is visited at most once and every queued
@@ -209,8 +210,8 @@ impl Graph {
                 if neighbor == b {
                     return Ok(true);
                 }
-                if !visited[neighbor] {
-                    visited[neighbor] = true;
+                if !visited.contains(neighbor) {
+                    visited.insert(neighbor);
                     queue.push(neighbor);
                 }
             }

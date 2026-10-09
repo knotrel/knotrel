@@ -19,6 +19,12 @@ tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rustc-hash = "2.1"
+mimalloc = { version = "0.1", default-features = false }
+parking_lot = "0.12"
+simd-json = "0.14"
+tinyvec = { version = "1.8", features = ["alloc"] }
+nohash-hasher = "0.2"
+fixedbitset = "0.5"
 
 [workspace.lints.rust]
 missing_docs = "deny"

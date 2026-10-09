@@ -248,9 +248,8 @@ impl Forest {
         } else {
             b
         };
-        let mut stack = Vec::new();
+        let mut stack = tinyvec::TinyVec::new();
         if self.tokens[root].has_candidates {
-            stack.reserve_exact(self.tokens[root].height);
             stack.push(root);
         }
         Candidates {
@@ -312,7 +311,7 @@ impl Forest {
 /// Borrowing prevents forest rotations or candidate changes during a scan.
 pub(crate) struct Candidates<'a> {
     forest: &'a Forest,
-    stack: Vec<usize>,
+    stack: tinyvec::TinyVec<[usize; 32]>,
 }
 impl Iterator for Candidates<'_> {
     type Item = usize;
