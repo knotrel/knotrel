@@ -6,7 +6,8 @@
 //! next power of two of the current vertex count. Growing U only relaxes bounds.
 
 use crate::{GraphError, NodeId, hdt_forest::Forest};
-use std::collections::{BTreeMap, BTreeSet};
+use rustc_hash::FxHashMap;
+use std::collections::BTreeSet;
 
 type Key = (usize, usize);
 type Arcs = (usize, usize);
@@ -44,7 +45,7 @@ struct Level {
     tree: Vec<BTreeSet<usize>>,
     non_tree: Vec<BTreeSet<usize>>,
     dense: bool,
-    local_ids: BTreeMap<usize, usize>,
+    local_ids: FxHashMap<usize, usize>,
     global_ids: Vec<usize>,
 }
 impl Level {
@@ -145,18 +146,18 @@ impl Level {
 /// vertices. This is an experimental implementation, not a production latency
 /// guarantee. Compact BFS remains the default engine.
 ///
-/// Queries cost O(log V) worst case, including ID translation, and allocate no
+/// Queries cost O(log V) worst case, with O(1) ID translation, and allocate no
 /// scratch. Across a history with at most N registered vertices, edge updates
 /// have O(log² N) amortized cost; one cut may still inspect many edges. Logical
 /// storage is O(E + V log V). Arenas/adjacency capacities retain historical highs.
-/// Vertex insertion costs O(log V) amortized, including ID indexing. Upper
+/// Vertex insertion costs O(1) amortized for base forest, including ID indexing. Upper
 /// levels store only vertices touched by promotions; creating these records is
 /// charged to promotions. Vector reallocations can still cause linear spikes.
 /// Neither graph state nor query answers are protected by internal locks.
 #[derive(Debug, Default)]
 pub struct HdtGraph {
-    ids: BTreeMap<NodeId, usize>,
-    edges: BTreeMap<Key, Edge>,
+    ids: FxHashMap<NodeId, usize>,
+    edges: FxHashMap<Key, Edge>,
     levels: Vec<Level>,
     stats: HdtStats,
 }
@@ -367,7 +368,7 @@ impl HdtGraph {
     ///
     /// Takes O(V log V + E) time in the worst case and allocates the returned
     /// per-level snapshot. Call outside measured operations. Vector capacities
-    /// exclude allocator overhead; ordered payload excludes B-tree node overhead
+    /// exclude allocator overhead; mapping payload excludes hash table overhead
     /// and spare slots. This is deliberately not a total heap or RSS estimate.
     #[must_use]
     pub fn storage_stats(&self) -> crate::HdtStorageStats {

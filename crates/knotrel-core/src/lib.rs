@@ -15,11 +15,8 @@
 //! # Ok::<(), knotrel_core::GraphError>(())
 //! ```
 
-use std::{
-    collections::{BTreeMap, btree_map::Entry},
-    error::Error,
-    fmt,
-};
+use rustc_hash::FxHashMap;
+use std::{collections::hash_map::Entry, error::Error, fmt};
 
 mod workspace;
 pub use workspace::BfsWorkspace;
@@ -87,7 +84,7 @@ impl Error for GraphError {}
 /// the sum of per-vertex historical maximum degrees (capacity is retained). No query answers are cached.
 #[derive(Debug, Default)]
 pub struct Graph {
-    ids: BTreeMap<NodeId, usize>,
+    ids: FxHashMap<NodeId, usize>,
     adjacency: Vec<Vec<usize>>,
     edges: usize,
 }
@@ -108,7 +105,7 @@ impl Graph {
 
     /// Adds an isolated vertex, returning true only if it was absent.
     ///
-    /// Existing edges are unchanged. O(log V) amortized time; growing the outer
+    /// Existing edges are unchanged. O(1) amortized time; growing the outer
     /// vector can take O(V) in a single insertion. Indices never change.
     pub fn add_node(&mut self, node: NodeId) -> bool {
         if let Entry::Vacant(entry) = self.ids.entry(node) {
@@ -124,7 +121,7 @@ impl Graph {
     /// Inserts an undirected edge, creating absent endpoints.
     ///
     /// Reversed endpoints identify the same edge; duplicates return false.
-    /// O(log V + deg(source) + deg(target)) amortized time, including sorted
+    /// O(1 + deg(source) + deg(target)) amortized time, including sorted
     /// vector shifts. A new vertex can trigger an O(V) capacity growth.
     ///
     /// # Errors
@@ -149,7 +146,7 @@ impl Graph {
 
     /// Removes an edge, preserving vertices; absent edges return false.
     ///
-    /// Worst-case time: O(log V + deg(source) + deg(target)), due to vector shifts.
+    /// Worst-case time: O(1 + deg(source) + deg(target)), due to vector shifts.
     ///
     /// # Errors
     /// Returns [`GraphError::SelfLoop`] for equal IDs without changing the graph.
@@ -171,7 +168,7 @@ impl Graph {
     /// Reports whether a path exists between two existing vertices.
     ///
     /// Existing vertices connect to themselves. Worst-case time O(V + E), with
-    /// O(log V) endpoint lookup and O(V) local scratch initialization/allocation.
+    /// O(1) endpoint lookup and O(V) local scratch initialization/allocation.
     /// Scratch is private to each call, so shared queries need no internal lock.
     ///
     /// # Errors

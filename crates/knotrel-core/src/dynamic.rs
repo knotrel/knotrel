@@ -1,6 +1,7 @@
 //! Exact general-graph connectivity using one Euler-tour spanning forest.
 use crate::{GraphError, NodeId, forest::Forest};
-use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use rustc_hash::FxHashMap;
+use std::collections::{BTreeSet, hash_map::Entry};
 
 /// Cumulative replacement-search work; counters saturate at u64::MAX.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +25,7 @@ pub struct ForestStats {
 /// trees, or exhaustion proves a real split. This is not HDT: repeated scans have
 /// no polylogarithmic amortized bound. The default [`crate::Graph`] is unchanged.
 ///
-/// AVL root queries cost O(log V), plus O(log V) ID translation. Link costs
+/// AVL root queries cost O(log V), with O(1) ID translation. Link costs
 /// O(log V + log E) amortized including arena growth. A tree cut costs (amortized for free-list growth)
 /// O(log V + log E + min(s, (k+1) log V) + c log V), where s is the
 /// smaller side size, k the yielded candidate-bearing vertices, and c the
@@ -34,9 +35,9 @@ pub struct ForestStats {
 /// Queries allocate no scratch, cache no answers and use no internal locks.
 #[derive(Debug, Default)]
 pub struct ForestGraph {
-    ids: BTreeMap<NodeId, usize>,
+    ids: FxHashMap<NodeId, usize>,
     non_tree: Vec<BTreeSet<usize>>,
-    edges: BTreeMap<(usize, usize), Option<(usize, usize)>>,
+    edges: FxHashMap<(usize, usize), Option<(usize, usize)>>,
     forest: Forest,
     stats: ForestStats,
 }
@@ -56,7 +57,7 @@ impl ForestGraph {
 
     /// Registers an isolated vertex; returns false for an existing ID.
     ///
-    /// O(log V) amortized; arena/vector growth can take O(V) in one call.
+    /// O(1) amortized; arena/vector growth can take O(V) in one call.
     pub fn add_node(&mut self, node: NodeId) -> bool {
         if let Entry::Vacant(entry) = self.ids.entry(node) {
             let index = self.non_tree.len();

@@ -7,5 +7,8 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+rustc-hash.workspace = true
+
 [lints]
 workspace = true
