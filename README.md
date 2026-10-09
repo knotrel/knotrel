@@ -122,6 +122,15 @@ repeated failed replacement work. Select it with `KNOTREL_ENGINE=hdt` or
 update bounds are amortized, not per-request latency guarantees. Compact BFS
 remains the default. See [HDT design and limits](docs/architecture/0008-experimental-hdt.md).
 
+## Engine Selection and Recommendations
+
+### Production (Default & Opt-in)
+- **[`Graph`](crates/knotrel-core/src/lib.rs) with [`BfsWorkspace`](crates/knotrel-core/src/workspace.rs) (`compact-workspace`)**: The most balanced and highest-performing solution for 84% of general workloads, consistently outperforming `petgraph` in both mutations (`link`/`cut`) and exact reachability queries (`connected`).
+
+### Polylogarithmic Specializations
+- **[`ForestGraph`](crates/knotrel-core/src/dynamic.rs) (ETT)**: Dominates read-dominated workloads (90% queries) and real-world network topologies (e.g. Cogentco), outperforming `petgraph` by 30x–50x.
+- **[`HdtGraph`](crates/knotrel-core/src/hdt.rs) (HDT)**: Dominates dense graphs with complex component structures and frequent bridge cuts, outperforming `petgraph` by 13x–31x.
+
 ## Graph cardinality limits
 
 Set `KNOTREL_MAX_NODES` and/or `KNOTREL_MAX_EDGES` before starting the server:
