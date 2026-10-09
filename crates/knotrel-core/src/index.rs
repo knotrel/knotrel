@@ -49,6 +49,43 @@ impl Index {
     }
 }
 
+/// Compact 64-byte AVL tour token representing a directed edge or permanent vertex arc.
+///
+/// Stores left, right, and parent tree indices as compact 8-byte [`Index`] instances,
+/// alongside subtree height, size, vertex counters, and candidate flags of type `C`.
+///
+/// On 64-bit architectures, this struct occupies exactly 64 bytes (one L1 cache line).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Token<C> {
+    pub(crate) left: Index,
+    pub(crate) right: Index,
+    pub(crate) parent: Index,
+    pub(crate) height: usize,
+    pub(crate) size: usize,
+    pub(crate) vertices: usize,
+    pub(crate) vertex: Index,
+    pub(crate) candidate: C,
+    pub(crate) has_candidates: C,
+}
+
+impl<C: Default> Token<C> {
+    /// Creates a newly initialized leaf token with unit size and height.
+    #[inline]
+    pub(crate) fn new(vertex: Option<usize>) -> Self {
+        Self {
+            left: Index::NONE,
+            right: Index::NONE,
+            parent: Index::NONE,
+            height: 1,
+            size: 1,
+            vertices: usize::from(vertex.is_some()),
+            vertex: Index::from(vertex),
+            candidate: C::default(),
+            has_candidates: C::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Index;
@@ -68,5 +105,11 @@ mod tests {
     #[should_panic(expected = "arena index overflow")]
     fn rejects_unrepresentable_index_without_wrapping() {
         Index::from(Some(usize::MAX));
+    }
+
+    #[test]
+    fn token_layout_occupies_cache_line() {
+        assert_eq!(size_of::<super::Token<bool>>(), 64);
+        assert_eq!(size_of::<super::Token<u8>>(), 64);
     }
 }

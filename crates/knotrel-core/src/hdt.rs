@@ -202,7 +202,7 @@ impl HdtGraph {
     /// # Errors
     /// Rejects self-loops before creating any vertex.
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
-        Self::distinct(source, target)?;
+        GraphError::check_distinct(source, target)?;
         self.add_node(source);
         self.add_node(target);
         let (a, b) = (self.ids[&source], self.ids[&target]);
@@ -228,7 +228,7 @@ impl HdtGraph {
     /// # Errors
     /// Rejects self-loops without changing state.
     pub fn cut(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
-        Self::distinct(source, target)?;
+        GraphError::check_distinct(source, target)?;
         let (Some(&a), Some(&b)) = (self.ids.get(&source), self.ids.get(&target)) else {
             return Ok(false);
         };
@@ -434,13 +434,6 @@ impl HdtGraph {
 
     fn key(a: usize, b: usize) -> Key {
         (a.min(b), a.max(b))
-    }
-    fn distinct(a: NodeId, b: NodeId) -> Result<(), GraphError> {
-        if a == b {
-            Err(GraphError::SelfLoop { node: a })
-        } else {
-            Ok(())
-        }
     }
 }
 

@@ -42,7 +42,7 @@ impl ReferenceGraph {
     /// # Errors
     /// Returns [`GraphError::SelfLoop`] for equal endpoints, without changing the graph.
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
-        Self::check_distinct(source, target)?;
+        GraphError::check_distinct(source, target)?;
         let inserted = self.adjacency.entry(source).or_default().insert(target);
         self.adjacency.entry(target).or_default().insert(source);
         self.edges += usize::from(inserted);
@@ -57,7 +57,7 @@ impl ReferenceGraph {
     /// # Errors
     /// Returns [`GraphError::SelfLoop`] for equal endpoints, without changing the graph.
     pub fn cut(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
-        Self::check_distinct(source, target)?;
+        GraphError::check_distinct(source, target)?;
         let removed = self
             .adjacency
             .get_mut(&source)
@@ -123,14 +123,5 @@ impl ReferenceGraph {
     #[must_use]
     pub fn edge_count(&self) -> usize {
         self.edges
-    }
-
-    /// Validates endpoints before mutations so rejected loops cannot create vertices.
-    fn check_distinct(source: NodeId, target: NodeId) -> Result<(), GraphError> {
-        if source == target {
-            Err(GraphError::SelfLoop { node: source })
-        } else {
-            Ok(())
-        }
     }
 }

@@ -75,7 +75,7 @@ impl ForestGraph {
     /// # Errors
     /// Rejects self-loops before registering either endpoint.
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
-        Self::distinct(source, target)?;
+        GraphError::check_distinct(source, target)?;
         self.add_node(source);
         self.add_node(target);
         let (a, b) = (self.ids[&source], self.ids[&target]);
@@ -101,7 +101,7 @@ impl ForestGraph {
     /// # Errors
     /// Rejects self-loops without changing graph state.
     pub fn cut(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
-        Self::distinct(source, target)?;
+        GraphError::check_distinct(source, target)?;
         let (Some(&a), Some(&b)) = (self.ids.get(&source), self.ids.get(&target)) else {
             return Ok(false);
         };
@@ -177,13 +177,6 @@ impl ForestGraph {
     /// Clears only diagnostic counters, preserving all graph state.
     pub fn reset_stats(&mut self) {
         self.stats = ForestStats::default();
-    }
-    fn distinct(a: NodeId, b: NodeId) -> Result<(), GraphError> {
-        if a == b {
-            Err(GraphError::SelfLoop { node: a })
-        } else {
-            Ok(())
-        }
     }
 }
 

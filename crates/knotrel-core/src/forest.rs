@@ -6,35 +6,9 @@
 //! section 2: <https://www.cs.princeton.edu/courses/archive/fall07/cos521/handouts/poly.pdf>
 //! This module implements forest connectivity only, not HDT replacement levels.
 
-use crate::index::Index;
+use crate::index::{Index, Token as GenericToken};
 
-#[derive(Debug)]
-struct Token {
-    left: Index,
-    right: Index,
-    parent: Index,
-    height: usize,
-    size: usize,
-    vertices: usize,
-    vertex: Index,
-    candidate: bool,
-    has_candidates: bool,
-}
-impl Token {
-    fn new(vertex: Option<usize>) -> Self {
-        Self {
-            left: Index::NONE,
-            right: Index::NONE,
-            parent: Index::NONE,
-            height: 1,
-            size: 1,
-            vertices: usize::from(vertex.is_some()),
-            vertex: Index::from(vertex),
-            candidate: false,
-            has_candidates: false,
-        }
-    }
-}
+type Token = GenericToken<bool>;
 
 /// Stable handles; released edge tokens are reused before the arena grows.
 #[derive(Debug, Default)]

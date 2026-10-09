@@ -8,35 +8,9 @@
 //! and non-tree incidence bits allow O(log V) marked-vertex lookups without
 //! enumerating a component. The original forest stays unchanged for comparisons.
 
-use crate::index::Index;
+use crate::index::{Index, Token as GenericToken};
 
-#[derive(Debug)]
-struct Token {
-    left: Index,
-    right: Index,
-    parent: Index,
-    height: usize,
-    size: usize,
-    vertices: usize,
-    vertex: Index,
-    candidate: u8,
-    has_candidates: u8,
-}
-impl Token {
-    fn new(vertex: Option<usize>) -> Self {
-        Self {
-            left: Index::NONE,
-            right: Index::NONE,
-            parent: Index::NONE,
-            height: 1,
-            size: 1,
-            vertices: usize::from(vertex.is_some()),
-            vertex: Index::from(vertex),
-            candidate: 0,
-            has_candidates: 0,
-        }
-    }
-}
+type Token = GenericToken<u8>;
 
 /// Stable handles; released edge tokens are reused before the arena grows.
 #[derive(Debug, Default)]

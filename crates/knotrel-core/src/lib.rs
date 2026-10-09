@@ -74,6 +74,17 @@ impl fmt::Display for GraphError {
     }
 }
 
+impl GraphError {
+    #[inline]
+    pub(crate) fn check_distinct(source: NodeId, target: NodeId) -> Result<(), Self> {
+        if source == target {
+            Err(Self::SelfLoop { node: source })
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl Error for GraphError {}
 
 /// An undirected simple graph with compact adjacency and exact BFS queries.
@@ -127,7 +138,7 @@ impl Graph {
     /// # Errors
     /// Returns [`GraphError::SelfLoop`] without creating vertices for equal IDs.
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
-        Self::check_distinct(source, target)?;
+        GraphError::check_distinct(source, target)?;
         self.add_node(source);
         self.add_node(target);
         let a = self.ids[&source];
@@ -151,7 +162,7 @@ impl Graph {
     /// # Errors
     /// Returns [`GraphError::SelfLoop`] for equal IDs without changing the graph.
     pub fn cut(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
-        Self::check_distinct(source, target)?;
+        GraphError::check_distinct(source, target)?;
         let (Some(&a), Some(&b)) = (self.ids.get(&source), self.ids.get(&target)) else {
             return Ok(false);
         };
@@ -218,13 +229,5 @@ impl Graph {
     #[must_use]
     pub fn edge_count(&self) -> usize {
         self.edges
-    }
-
-    fn check_distinct(source: NodeId, target: NodeId) -> Result<(), GraphError> {
-        if source == target {
-            Err(GraphError::SelfLoop { node: source })
-        } else {
-            Ok(())
-        }
     }
 }
