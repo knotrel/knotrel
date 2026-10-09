@@ -8,28 +8,7 @@
 //! and non-tree incidence bits allow O(log V) marked-vertex lookups without
 //! enumerating a component. The original forest stays unchanged for comparisons.
 
-/// Optional arena index encoded as index + 1, leaving zero for absence.
-/// Every stored index names a Vec element, hence cannot be usize::MAX.
-/// Checked encoding rejects invalid sentinel overflow; decoding is O(1).
-#[derive(Clone, Copy, Debug, Default)]
-struct Index(Option<std::num::NonZeroUsize>);
-impl Index {
-    const NONE: Self = Self(None);
-    fn from(value: Option<usize>) -> Self {
-        Self(value.map(|i| {
-            std::num::NonZeroUsize::new(i.checked_add(1).expect("arena index overflow"))
-                .expect("encoded index is nonzero")
-        }))
-    }
-    fn get(self) -> Option<usize> {
-        self.0.map(|i| i.get() - 1)
-    }
-    fn take(&mut self) -> Option<usize> {
-        let old = self.get();
-        *self = Self::NONE;
-        old
-    }
-}
+use crate::index::Index;
 
 #[derive(Debug)]
 struct Token {
@@ -428,25 +407,5 @@ mod compact_layout_tests {
             f.add_vertex();
         }
         assert_eq!(f.storage().token_capacity_bytes, f.tokens.capacity() * 64);
-    }
-}
-
-#[cfg(test)]
-mod index_tests {
-    use super::Index;
-    #[test]
-    fn optional_indices_round_trip_and_clear() {
-        assert_eq!(size_of::<Index>(), size_of::<usize>());
-        for value in [None, Some(0), Some(1), Some(usize::MAX - 1)] {
-            let mut index = Index::from(value);
-            assert_eq!(index.get(), value);
-            assert_eq!(index.take(), value);
-            assert_eq!(index.get(), None);
-        }
-    }
-    #[test]
-    #[should_panic(expected = "arena index overflow")]
-    fn rejects_unrepresentable_index_without_wrapping() {
-        Index::from(Some(usize::MAX));
     }
 }

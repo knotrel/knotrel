@@ -30,6 +30,7 @@ mod forest;
 mod hdt;
 mod hdt_forest;
 mod hdt_profile;
+mod index;
 pub use hdt::{HdtGraph, HdtStats};
 pub use hdt_profile::{HdtLevelStorage, HdtStorageStats};
 mod reference;
