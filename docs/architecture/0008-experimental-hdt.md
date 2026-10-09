@@ -175,3 +175,45 @@ The full 272-process paired matrix shows 14.75–35.79% lower warmed 100k cyclic
 runtime and 9.65–12.25% lower Cogentco runtime. A separate 48-process adaptive
 confirmation still finds an 11.62% warmed 100k path / 50% query regression.
 Retain experimental status and both reports; this is not a universal speedup.
+
+The subsequent [fixed path investigation](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/2026-10-05-hdt-path-investigation/README.md)
+adds 12 paired trials per cache regime using the same executables and trace.
+The warmed median changes from +11.62% to −8.98%, with 5/12 pairs still slower;
+the fresh median is −11.30%. Therefore the earlier regression is an observation,
+not a demonstrated stable magnitude or an isolated algorithmic cause. Preserve
+all collections separately. No production change follows from this data-only
+investigation; deterministic structural counters would be the next diagnostic.
+
+The [isolated structural probe](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/2026-10-05-hdt-structural-probe/README.md)
+subsequently measures identical aggregate split/join/pull and root/rank traversal
+counts for all 498 cuts and 500 queries of this trace. Its two replay links need
+less structural work after the optimization. This rules out an increase in these
+aggregate counts as the explanation for the observed timing gap; memory-access
+effects remain unmeasured. No production instrumentation or path fallback is
+introduced. Keep the original timing observations and experimental status.
+
+## Packed token indices (2026-10-09)
+
+Integrate the separately measured packed-index candidate into the experimental
+HDT engine. Four private optional indices use `Option<NonZeroUsize>` with
+`index + 1` encoding. Zero denotes absence; valid arena indices cannot equal
+`usize::MAX`, and checked encoding rejects that invalid value. Decoding is
+constant time. Graph IDs remain arbitrary `u64`; public APIs, configuration,
+forest operations and asymptotic bounds are unchanged. No unsafe code or new
+dependency is needed. On the measured 64-bit target, tokens shrink from 96 to
+64 bytes; storage counters continue to use the actual token size.
+
+The [full paired matrix](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/2026-10-08-hdt-packed-tokens-matrix/README.md)
+reports lower peak RSS in all 24 sparse cells (6.51–22.31%) and lower runtime in
+all 12 cyclic-block cells (6.57–10.48%). It also retains one flagged fresh
+million-node path regression (+119.85%). The subsequent
+[resource diagnosis and separate confirmation](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/2026-10-09-hdt-packed-resources/README.md)
+do not reproduce that median slowdown: -21.88% with instrumentation and -16.51%
+with the original binaries, each faster in 6/8 pairs. Adverse pairs remain;
+neither the cause nor improved tail latency is established. Integrate for the
+memory saving, without claiming a universal speedup or changing the default
+engine or experimental status. Other isolated candidate patches remain separate.
+
+Unit tests cover optional-index boundaries, clearing, overflow rejection, the
+64-bit token budget and storage accounting. Existing forest/HDT differential
+and invariant tests continue to cover graph behavior and token reuse.
