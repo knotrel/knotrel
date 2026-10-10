@@ -145,7 +145,11 @@ fn check_json_content_type(headers: &HeaderMap) -> Option<Response> {
     let valid = headers
         .get(CONTENT_TYPE)
         .and_then(|val| val.to_str().ok())
-        .is_some_and(|val| val.starts_with("application/json") || val.contains("+json"));
+        .and_then(|value| value.parse::<mime::Mime>().ok())
+        .is_some_and(|value| {
+            value.type_() == mime::APPLICATION
+                && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
+        });
     if valid {
         None
     } else {

@@ -347,6 +347,7 @@ dependencies = [
  "axum",
  "knotrel-core",
  "mimalloc",
+ "mime",
  "parking_lot",
  "serde",
  "serde_json",

@@ -19,6 +19,10 @@ pub(crate) struct Service {
 /// embedding a pre-populated graph; it counts this service instance's changes.
 struct GraphState {
     graph: ConnectivityGraph,
+    // parking_lot does not poison on unwind. Mark each job before execution;
+    // only normal completion clears this bit, while still holding the lock.
+    // Queued jobs therefore cannot observe state left by a panicked worker.
+    failed: bool,
     // Little-endian decimal digits avoid wraparound or saturation. Increment is
     // amortized O(1), worst-case O(log M), after M effective mutations. Storage
     // and snapshot conversion are O(log M); this adds no core-engine state.
@@ -101,6 +105,7 @@ impl Service {
             },
             graph: Arc::new(Mutex::new(GraphState {
                 graph,
+                failed: false,
                 version: vec![0],
             })),
             permits: Arc::new(Semaphore::new(capacity)),
@@ -120,7 +125,8 @@ impl Service {
     /// inside that closure, keeping traversal and lock contention off async
     /// executor threads. One guard spans the entire batch, so no other request
     /// can observe its intermediate states. Per-operation errors do not roll
-    /// back earlier updates. A poisoned mutex fails closed.
+    /// back earlier updates. A panic permanently marks the graph unavailable,
+    /// including to queued jobs, until this service instance is replaced.
     pub(crate) async fn execute(
         &self,
         operations: Vec<Operation>,
@@ -154,13 +160,19 @@ impl Service {
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let mut graph = graph.lock();
-            work(&mut graph)
+            if graph.failed {
+                return Err(ServiceError::Unavailable);
+            }
+            graph.failed = true;
+            let result = work(&mut graph);
+            graph.failed = false;
+            Ok(result)
         })
         .await
         .map_err(|error| {
             tracing::error!(%error, "graph worker failed");
             ServiceError::Unavailable
-        })
+        })?
     }
 }
 
@@ -242,6 +254,7 @@ mod tests {
         ] {
             let mut state = GraphState {
                 graph: ConnectivityGraph::default(),
+                failed: false,
                 version: before.bytes().rev().map(|b| b - b'0').collect(),
             };
             state.apply(add(1));
@@ -291,7 +304,75 @@ mod tests {
                 .await
                 .is_err()
         );
+        let response = app
+            .clone()
+            .oneshot(Request::get("/v1/stats").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body["code"], "unavailable");
+        let response = app
+            .oneshot(Request::get("/v1/info").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(service.permits.available_permits(), 1);
+        assert_eq!(service.info().engine, "compact-bfs");
+    }
+
+    #[tokio::test]
+    async fn panicked_writer_rejects_queued_and_future_work() {
+        let service = Service::new(ConnectivityGraph::default(), 2);
+        let writer = service.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let job = tokio::spawn(async move {
+            writer
+                .run(move |state| {
+                    state.apply(add(1));
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    panic!("panic after partial mutation");
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+        let reader = service.clone();
+        let queued = tokio::spawn(async move { reader.stats().await });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while service.permits.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Dropping the requester must not disable the worker's failure tracking.
+        job.abort();
+        let _ = job.await;
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            queued.await.unwrap(),
+            Err(ServiceError::Unavailable)
+        ));
+        assert!(matches!(
+            service.execute(vec![add(2)]).await,
+            Err(ServiceError::Unavailable)
+        ));
+        assert!(matches!(
+            service.stats().await,
+            Err(ServiceError::Unavailable)
+        ));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while service.permits.available_permits() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(service.graph.lock().graph.node_count(), 1);
         assert_eq!(service.info().engine, "compact-bfs");
     }
 

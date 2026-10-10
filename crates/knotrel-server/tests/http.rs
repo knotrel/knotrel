@@ -406,3 +406,62 @@ async fn graph_limits_apply_to_batches_and_concurrent_requests() {
         assert_eq!(results[6]["connected"], true);
     }
 }
+
+#[tokio::test]
+async fn content_type_requires_a_json_media_type_before_mutation() {
+    for path in ["/v1/operations", "/v1/batch"] {
+        for (content_type, accepted) in [
+            (None, false),
+            (Some("application/jsonp"), false),
+            (Some("application/json-invalid"), false),
+            (Some("text/plain; note=+json"), false),
+            (Some("text/example+json"), false),
+            (Some("application/json; broken"), false),
+            (Some("application/json"), true),
+            (Some("Application/JSON"), true),
+            (Some("application/json; charset=utf-8"), true),
+            (Some("application/vnd.knotrel+json; charset=utf-8"), true),
+        ] {
+            let app = knotrel_server::router(Graph::new());
+            let operation = json!({"op":"add_node", "node":"42"});
+            let body = if path == "/v1/batch" {
+                json!({"operations":[operation]})
+            } else {
+                operation
+            };
+            let mut request = Request::post(path);
+            if let Some(value) = content_type {
+                request = request.header("content-type", value);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::from(body.to_string())).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if accepted {
+                    StatusCode::OK
+                } else {
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE
+                },
+                "{path} {content_type:?}"
+            );
+            if !accepted {
+                let body: Value =
+                    serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                        .unwrap();
+                assert_eq!(body["code"], "invalid_request");
+            }
+            let response = app
+                .oneshot(Request::get("/v1/stats").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let stats: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                    .unwrap();
+            assert_eq!(stats["node_count"], usize::from(accepted));
+            assert_eq!(stats["state_version"], if accepted { "1" } else { "0" });
+        }
+    }
+}

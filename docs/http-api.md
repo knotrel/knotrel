@@ -7,6 +7,11 @@ this initial server. Use it as a local reference service.
 ## Single operations
 
 Send JSON to `POST /v1/operations` with `Content-Type: application/json`.
+Both operation endpoints also accept valid `application/*+json` media types and
+parameters such as `charset=utf-8`. Media type names are case-insensitive.
+Missing, malformed or unsupported types (including `application/jsonp` and
+`text/*+json`) return 415 before graph execution. A `+json` string in a parameter
+does not make another media type JSON.
 
 | Operation | Request | Success response |
 | --- | --- | --- |
@@ -242,7 +247,12 @@ lock is released. Responses carry `Cache-Control: no-store`, including errors.
 
 Stats reads use the same bounded admission and blocking-worker execution as
 mutations: they can wait behind a graph operation, or receive HTTP 503 `busy`
-when all permits are occupied. A poisoned/unavailable worker returns HTTP 503
-`unavailable`, using the existing error envelope. Disconnecting an admitted
-stats caller does not release its permit before its worker finishes. `/v1/info`
+when all permits are occupied. A panic while executing a graph job permanently
+marks this service instance unavailable: queued and subsequently admitted graph
+jobs return HTTP 503 `unavailable`,
+using the existing error envelope, even if the original caller disconnected.
+The marker is protected by the graph mutex and does not depend on mutex poisoning.
+A partial mutation is not rolled back and cannot be read through `/v1/stats`.
+Recover by replacing/restarting the service; in-memory data is not persisted.
+Disconnecting an admitted stats caller does not release its permit before its worker finishes. `/v1/info`
 and `/health` remain independent of this queue and are not readiness checks.

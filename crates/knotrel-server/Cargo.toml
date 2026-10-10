@@ -17,6 +17,7 @@ tracing-subscriber.workspace = true
 mimalloc.workspace = true
 parking_lot.workspace = true
 simd-json.workspace = true
+mime.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
