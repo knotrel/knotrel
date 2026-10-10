@@ -8,11 +8,20 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .try_init()?;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let json_format = std::env::var("LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    if json_format {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter)
+            .try_init()?;
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .try_init()?;
+    }
     let config = knotrel_server::ServerConfig::from_env()?;
     let address = config.address();
     let engine = config.engine();

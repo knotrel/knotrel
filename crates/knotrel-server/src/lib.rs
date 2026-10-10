@@ -43,6 +43,7 @@ pub fn router_with_config(config: ServerConfig) -> axum::Router {
 fn build_router(graph: knotrel_core::ConnectivityGraph, max_pending_jobs: usize) -> axum::Router {
     use axum::{
         extract::DefaultBodyLimit,
+        middleware,
         routing::{get, post},
     };
     axum::Router::new()
@@ -55,6 +56,7 @@ fn build_router(graph: knotrel_core::ConnectivityGraph, max_pending_jobs: usize)
         .route("/v1/operations", post(api::single))
         .route("/v1/batch", post(api::batch))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(middleware::from_fn(api::logging_middleware))
         .with_state(service::Service::new(graph, max_pending_jobs))
 }
 

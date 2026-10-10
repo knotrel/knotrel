@@ -151,16 +151,19 @@ impl Service {
         &self,
         work: impl FnOnce(&mut GraphState) -> R + Send + 'static,
     ) -> Result<R, ServiceError> {
-        let permit = self
-            .permits
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| ServiceError::Busy)?;
+        let permit = self.permits.clone().try_acquire_owned().map_err(|_| {
+            tracing::warn!(
+                capacity = self.info.max_pending_jobs,
+                "request capacity exhausted; rejecting with 503 busy"
+            );
+            ServiceError::Busy
+        })?;
         let graph = self.graph.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let mut graph = graph.lock();
             if graph.failed {
+                tracing::warn!("graph worker state marked as failed; rejecting work");
                 return Err(ServiceError::Unavailable);
             }
             graph.failed = true;
@@ -170,7 +173,7 @@ impl Service {
         })
         .await
         .map_err(|error| {
-            tracing::error!(%error, "graph worker failed");
+            tracing::error!(%error, "graph worker thread panicked or aborted");
             ServiceError::Unavailable
         })?
     }

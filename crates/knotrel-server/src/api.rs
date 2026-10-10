@@ -123,11 +123,15 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let (parts, body) = req.into_parts();
         if let Some(rejection) = check_json_content_type(&parts.headers) {
+            tracing::debug!("rejected request with invalid or missing Content-Type");
             return Err(rejection);
         }
         let bytes = Bytes::from_request(Request::from_parts(parts, body), state)
             .await
-            .map_err(|err| error_response(err.status(), "invalid_request", err.body_text()))?;
+            .map_err(|err| {
+                tracing::warn!(status = %err.status(), "failed to read request body bytes");
+                error_response(err.status(), "invalid_request", err.body_text())
+            })?;
         let mut buffer = bytes.to_vec();
         let value = simd_json::from_slice(&mut buffer).map_err(|err| {
             let status = if err.is_data() {
@@ -135,6 +139,7 @@ where
             } else {
                 StatusCode::BAD_REQUEST
             };
+            tracing::debug!(%err, is_data = err.is_data(), "failed to parse request JSON with simd-json");
             error_response(status, "invalid_request", err.to_string())
         })?;
         Ok(Self(value))
@@ -161,6 +166,42 @@ fn check_json_content_type(headers: &HeaderMap) -> Option<Response> {
     }
 }
 
+/// Traces incoming HTTP requests, recording method, path, response status, and duration.
+pub(crate) async fn logging_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let method = request.method().clone();
+    let uri = request.uri().path().to_string();
+    let start = std::time::Instant::now();
+
+    let response = next.run(request).await;
+
+    let latency = start.elapsed();
+    let status = response.status().as_u16();
+
+    // Log health checks at trace level to avoid log pollution in orchestration environments.
+    if uri == "/health" {
+        tracing::trace!(
+            method = %method,
+            uri = %uri,
+            status,
+            latency_us = latency.as_micros(),
+            "health check"
+        );
+    } else {
+        tracing::info!(
+            method = %method,
+            uri = %uri,
+            status,
+            latency_us = latency.as_micros(),
+            "handled request"
+        );
+    }
+
+    response
+}
+
 /// Executes a single parsed operation.
 pub(crate) async fn single(
     State(service): State<Service>,
@@ -170,6 +211,7 @@ pub(crate) async fn single(
         Ok(operation) => operation,
         Err(response) => return response,
     };
+    tracing::debug!("executing single operation");
     match service.execute(vec![operation]).await {
         Ok(mut results) => results.remove(0).into_response(),
         Err(error) => service_error(error),
@@ -186,6 +228,11 @@ pub(crate) async fn batch(
         Err(response) => return response,
     };
     if batch.operations.is_empty() || batch.operations.len() > crate::MAX_BATCH_OPERATIONS {
+        tracing::warn!(
+            count = batch.operations.len(),
+            max = crate::MAX_BATCH_OPERATIONS,
+            "rejected batch exceeding size bounds"
+        );
         return error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_batch_size",
@@ -195,6 +242,7 @@ pub(crate) async fn batch(
             ),
         );
     }
+    tracing::debug!(count = batch.operations.len(), "executing batch operations");
     match service.execute(batch.operations).await {
         Ok(results) => Json(BatchResult { results }).into_response(),
         Err(error) => service_error(error),
@@ -204,7 +252,10 @@ pub(crate) async fn batch(
 fn service_error(error: ServiceError) -> Response {
     let (code, message) = match error {
         ServiceError::Busy => ("busy", "request capacity exhausted; retry later"),
-        ServiceError::Unavailable => ("unavailable", "graph worker unavailable"),
+        ServiceError::Unavailable => {
+            tracing::error!("graph worker unavailable while handling request");
+            ("unavailable", "graph worker unavailable")
+        }
     };
     error_response(StatusCode::SERVICE_UNAVAILABLE, code, message.into())
 }
