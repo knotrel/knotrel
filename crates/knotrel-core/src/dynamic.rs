@@ -114,11 +114,12 @@ impl ForestGraph {
             self.forest.cut(arcs);
             self.stats.tree_cuts = self.stats.tree_cuts.saturating_add(1);
             let mut replacement = None;
-            'search: for v in self.forest.smaller_candidates(a, b) {
+            let mut candidates = self.forest.smaller_candidates(a, b);
+            'search: while let Some(v) = candidates.next() {
                 self.stats.scanned_vertices = self.stats.scanned_vertices.saturating_add(1);
                 for &w in &self.non_tree[v] {
                     self.stats.candidate_edges = self.stats.candidate_edges.saturating_add(1);
-                    if !self.forest.connected(v, w) {
+                    if !candidates.contains_vertex(w) {
                         replacement = Some((v, w));
                         break 'search;
                     }
