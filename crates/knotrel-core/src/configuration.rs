@@ -109,6 +109,65 @@ impl ConnectivityGraph {
         }
     }
 
+    /// Builds an owned graph by registering `nodes`, then inserting `edges`,
+    /// in the supplied order using [`Self::add_node`] and [`Self::link`].
+    ///
+    /// Duplicate nodes and duplicate/reversed edges are no-ops, including at
+    /// capacity. Edges create missing endpoints; `nodes` is not a closed universe.
+    /// Empty inputs, isolated vertices and disconnected components are valid.
+    /// The returned graph supports the same subsequent dynamic operations and
+    /// retains the selected engine and limits.
+    ///
+    /// Construction is atomic with respect to publication: on error the local
+    /// graph is dropped, not returned partially built. This is not an in-place
+    /// batch or snapshot restore, and returns no per-item change flags.
+    ///
+    /// Work and allocation behavior are those of the ordered incremental calls;
+    /// the constructor adds O(nodes.len() + edges.len()) iteration overhead and
+    /// O(1) auxiliary space. It does not reserve, sort or stage the input.
+    /// No performance improvement is promised.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`GraphError`] from the ordered calls: all explicit
+    /// nodes precede every edge; each edge checks self-loop, node limit, then
+    /// edge limit. Later invalid input is not inspected ahead of that error.
+    /// Limits bound cardinality, not memory. As with incremental construction,
+    /// allocation failure is not a recoverable `GraphError`; collection capacity
+    /// overflow may panic and memory exhaustion may abort.
+    ///
+    /// ```
+    /// use knotrel_core::{ConnectivityGraph, EngineConfig, GraphLimits};
+    /// let mut graph = ConnectivityGraph::try_from_edges(
+    ///     EngineConfig::EulerTour,
+    ///     GraphLimits::default(),
+    ///     &[99, 99],
+    ///     &[(1, 2), (2, 1), (2, 3)],
+    /// )?;
+    /// assert_eq!(graph.node_count(), 4);
+    /// assert_eq!(graph.edge_count(), 2);
+    /// assert!(graph.connected(1, 3)?);
+    /// assert!(!graph.connected(99, 1)?);
+    /// assert!(graph.cut(2, 3)?);
+    /// assert!(!graph.connected(1, 3)?);
+    /// # Ok::<(), knotrel_core::GraphError>(())
+    /// ```
+    pub fn try_from_edges(
+        engine: EngineConfig,
+        limits: GraphLimits,
+        nodes: &[NodeId],
+        edges: &[(NodeId, NodeId)],
+    ) -> Result<Self, GraphError> {
+        let mut graph = Self::with_limits(engine, limits);
+        for &node in nodes {
+            graph.add_node(node)?;
+        }
+        for &(source, target) in edges {
+            graph.link(source, target)?;
+        }
+        Ok(graph)
+    }
+
     /// Returns the immutable limits configured for this instance.
     pub fn limits(&self) -> GraphLimits {
         self.limits

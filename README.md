@@ -115,6 +115,18 @@ without environment or HTTP dependencies. Existing `Graph`, `ForestGraph` and
 `knotrel_server::router(Graph)` APIs remain available. See
 [startup configuration design](docs/architecture/0007-startup-engine-configuration.md).
 
+For ordered bulk initialization, use
+`ConnectivityGraph::try_from_edges(engine, limits, nodes, edges)` with borrowed
+node and edge slices. It registers nodes first, then links edges in input order
+through the existing limit-enforcing operations. Duplicate vertices and
+duplicate/reversed edges are no-ops; missing endpoints are created implicitly.
+The first incremental error is returned and no partial graph is published.
+Successful graphs retain their limits and support normal dynamic operations.
+This convenience API does not reserve or reorder input, build forests directly,
+restore snapshots, provide recoverable allocation failure, or change HTTP batch
+semantics. No speedup has been established; its work is the ordered incremental
+construction work, with constant auxiliary space beyond the graph.
+
 
 Experimental `HdtGraph` adds deterministic edge levels and promotions to avoid
 repeated failed replacement work. Select it with `KNOTREL_ENGINE=hdt` or
