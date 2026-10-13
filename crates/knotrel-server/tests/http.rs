@@ -28,6 +28,65 @@ async fn post(app: &Router, path: &str, body: Value) -> (StatusCode, Value) {
 }
 
 #[tokio::test]
+async fn preview_health_and_configured_state_ownership() {
+    use knotrel_core::EngineConfig;
+    use knotrel_server::{ServerConfig, router_with_config};
+
+    for engine in [
+        EngineConfig::CompactBfs,
+        EngineConfig::EulerTour,
+        EngineConfig::Hdt,
+    ] {
+        let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 32).unwrap();
+        let app = router_with_config(config.clone());
+        let health = app
+            .clone()
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(health.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body, json!({"status":"ok"}));
+
+        let clone = app.clone();
+        assert_eq!(
+            post(
+                &clone,
+                "/v1/operations",
+                json!({"op":"link","source":"0","target":"18446744073709551615"})
+            )
+            .await,
+            (StatusCode::OK, json!({"result":"changed","changed":true}))
+        );
+        let query = json!({"op":"connected","source":"0","target":"18446744073709551615"});
+        assert_eq!(
+            post(&app, "/v1/operations", query.clone()).await,
+            (
+                StatusCode::OK,
+                json!({"result":"connected","connected":true})
+            )
+        );
+
+        let independent = router_with_config(config);
+        assert_eq!(
+            post(&independent, "/v1/operations", query.clone()).await,
+            (
+                StatusCode::NOT_FOUND,
+                json!({"result":"error","code":"unknown_node","message":"unknown node: 0"})
+            )
+        );
+        assert_eq!(
+            post(&app, "/v1/operations", query).await,
+            (
+                StatusCode::OK,
+                json!({"result":"connected","connected":true})
+            )
+        );
+    }
+}
+
+#[tokio::test]
 async fn serves_mutations_and_exact_queries_with_full_width_ids() {
     let app = knotrel_server::router(Graph::new());
     let link = json!({"op":"link", "source":"0", "target":"18446744073709551615"});

@@ -26,7 +26,7 @@ Track high-level feature readiness across releases. Check off each feature when 
 
 ### v0.1.0 — Public Preview
 - [ ] **Feature 0.1.1:** Inventory and freeze minimum release scope (P0)
-- [ ] **Feature 0.1.2:** Document v0.1.0 service contract (M0-min, P0)
+- [x] **Feature 0.1.2:** Document v0.1.0 service contract (M0-min, P0)
 - [ ] **Feature 0.1.3:** Establish a safe deployment boundary (M8-min, P0)
 - [ ] **Feature 0.1.4:** Minimal health, readiness and lifecycle (M4-min, P0)
 - [ ] **Feature 0.1.5:** Rust library adoption, API and examples (P0)
@@ -108,22 +108,31 @@ Track high-level feature readiness across releases. Check off each feature when 
 ### 0.1.1 — Inventory and freeze the minimum release scope (P0)
 
 - [ ] **Feature Complete: 0.1.1 — Inventory and freeze the minimum release scope**
-- [ ] **Audit HEAD and the current working tree.** Confirm crate/package layout, supported BFS/ETT/HDT entry points, HTTP routes, state ownership, locking, validation, existing health endpoints, test coverage and outstanding changes. Record what already exists; avoid duplicate work.
-- [ ] **Define the public-preview scope.** List supported graph operations, supported engines, single-graph assumption, accepted node identifiers, default configuration and non-goals in one release-scope note.
-- [ ] **Choose a supported runtime matrix.** State Rust MSRV if intended, supported OS/architectures, and whether the service binary is supported outside the development environment. Do not claim platforms that CI has not verified.
-- [ ] **Record release blockers separately from future enhancements.** Decide whether any known correctness, memory/resource, or API contract issue must be fixed before tagging.
+- [x] **Audit HEAD and the current working tree.** Confirm crate/package layout, supported BFS/ETT/HDT entry points, HTTP routes, state ownership, locking, validation, existing health endpoints, test coverage and outstanding changes. Record what already exists; avoid duplicate work.
+- [x] **Define the public-preview scope.** List supported graph operations, supported engines, single-graph assumption, accepted node identifiers, default configuration and non-goals in one release-scope note.
+- [x] **Choose a supported runtime matrix.** State Rust MSRV if intended, supported OS/architectures, and whether the service binary is supported outside the development environment. Do not claim platforms that CI has not verified.
+- [x] **Record release blockers separately from future enhancements.** Decide whether any known correctness, memory/resource, or API contract issue must be fixed before tagging.
 - [ ] **Acceptance:** A short `docs/releases/v0.1.0-scope.md` (or repo-conventional equivalent) maps required features to current implementation/tests and has no unresolved release-blocking questions.
+
+Evidence and execution plan: [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
+Acceptance remains pending while full local startup testing and `codectl`
+validation are blocked; later features are not implicitly complete.
 
 ### 0.1.2 — Document the v0.1.0 service contract (M0-min, P0)
 
-- [ ] **Feature Complete: 0.1.2 — Document the v0.1.0 service contract**
-- [ ] **Specify server state semantics:** one in-memory graph per process (unless current implementation proves otherwise), graph initialization, lifetime, restart behavior, and visibility of successful changes.
-- [ ] **Specify requests and responses:** existing route paths, payloads, success/no-op behavior, error/status mapping, unknown nodes, duplicate/reversed edges, self-loops, graph size limits and request validation order. Preserve existing behavior or explicitly document deliberate changes.
-- [ ] **Specify concurrency and order:** when two requests overlap, define the observable serialization/consistency guarantee supported by the current lock/handler implementation. Do not promise parallel reads or transactional batches without evidence.
-- [ ] **Specify resource bounds:** max request bytes, graph node/edge limits, invalid payload handling, timeouts and behavior on resource exhaustion. Define safe defaults or document unsupported limits as release blockers if exploitable.
-- [ ] **Label all non-guarantees:** no persistence, no recovery, no HA, no rollback across multiple requests, no cross-request transaction and no external-exposure security guarantee.
-- [ ] **Add protocol-level contract tests** for supported operations, malformed inputs and error codes. Confirm both Rust library and HTTP behavior without relying on performance benchmarks.
-- [ ] **Acceptance:** A caller can use the API and predict the result of every supported operation and what is lost on restart. Automated contract tests match the documentation.
+- [x] **Feature Complete: 0.1.2 — Document the v0.1.0 service contract**
+- [x] **Specify server state semantics:** one in-memory graph per process (unless current implementation proves otherwise), graph initialization, lifetime, restart behavior, and visibility of successful changes.
+- [x] **Specify requests and responses:** existing route paths, payloads, success/no-op behavior, error/status mapping, unknown nodes, duplicate/reversed edges, self-loops, graph size limits and request validation order. Preserve existing behavior or explicitly document deliberate changes.
+- [x] **Specify concurrency and order:** when two requests overlap, define the observable serialization/consistency guarantee supported by the current lock/handler implementation. Do not promise parallel reads or transactional batches without evidence.
+- [x] **Specify resource bounds:** max request bytes, graph node/edge limits, invalid payload handling, timeouts and behavior on resource exhaustion. Define safe defaults or document unsupported limits as release blockers if exploitable.
+- [x] **Label all non-guarantees:** no persistence, no recovery, no HA, no rollback across multiple requests, no cross-request transaction and no external-exposure security guarantee.
+- [x] **Add protocol-level contract tests** for supported operations, malformed inputs and error codes. Confirm both Rust library and HTTP behavior without relying on performance benchmarks.
+- [x] **Acceptance:** A caller can use the API and predict the result of every supported operation and what is lost on restart. Automated contract tests match the documentation.
+
+Evidence: [HTTP contract](docs/http-api.md) and
+[contract tests](crates/knotrel-server/tests/contract.rs). Unlimited graph size
+and absent timeouts are documented unsupported bounds, so exposure to untrusted
+clients stays blocked until 0.1.3/0.1.4.
 
 ### 0.1.3 — Establish a safe deployment boundary (M8-min, P0)
 

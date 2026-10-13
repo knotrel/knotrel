@@ -140,9 +140,18 @@ where
                 StatusCode::BAD_REQUEST
             };
             tracing::debug!(%err, is_data = err.is_data(), "failed to parse request JSON with simd-json");
-            error_response(status, "invalid_request", err.to_string())
+            error_response(status, "invalid_request", request_error_message(&err))
         })?;
         Ok(Self(value))
+    }
+}
+
+/// Builds a stable client message without parser internals or echoed input bytes.
+fn request_error_message(err: &simd_json::Error) -> String {
+    match err.error() {
+        simd_json::ErrorType::Serde(message) if err.is_data() => message.clone(),
+        _ if err.is_data() => "request body does not match the expected shape".into(),
+        _ => "request body is not valid JSON".into(),
     }
 }
 

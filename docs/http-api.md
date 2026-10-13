@@ -1,8 +1,74 @@
 # HTTP API v1
 
-The server owns one in-memory undirected simple graph. Default address:
-`127.0.0.1:8080`. There is no authentication, persistence or TLS termination in
-this initial server. Use it as a local reference service.
+This document is the v0.1.0 preview contract. Every statement here is backed by
+an automated test (`crates/knotrel-server/tests/`) or is explicitly labeled a
+non-guarantee. Default address: `127.0.0.1:8080`.
+
+## State and lifetime
+
+- One server process owns one in-memory undirected simple graph. Routers created
+  by `router(Graph)` or `router_with_config(ServerConfig)` own exactly one graph;
+  clones of a router share it and independent routers never do.
+- The standalone executable starts with an empty graph using the engine chosen
+  by `KNOTREL_ENGINE`. `router(Graph)` starts from the supplied graph.
+- A successful mutation is visible to every request that acquires the graph
+  after it completes. Graph state changes only through `/v1/operations` and
+  `/v1/batch`.
+- **Restart loses the whole graph.** Nothing is written to disk and nothing is
+  recovered.
+
+## Non-guarantees
+
+The v0.1.0 preview does not provide any of the following:
+
+- persistence, snapshots, write-ahead logging or recovery after a restart or crash;
+- high availability, replication or failover;
+- rollback of earlier operations in a batch, or any transaction spanning
+  several requests;
+- request deduplication or exactly-once delivery;
+- authentication, authorization, TLS or protection against untrusted clients.
+  Exposing the service beyond a trusted local boundary is unsupported;
+- request, connection or graph-operation timeouts (see
+  [Resource bounds](#resource-bounds));
+- readiness or capacity signalling from `/health`.
+
+## Resource bounds
+
+| Resource | Bound in v0.1.0 |
+| --- | --- |
+| Request body | 1 MiB, fixed; larger bodies get 413 |
+| Batch length | 1–1024 operations, fixed |
+| Queued plus running graph jobs | `KNOTREL_MAX_PENDING_JOBS`, default 32; excess gets 503 `busy` |
+| Graph nodes / edges | `KNOTREL_MAX_NODES` / `KNOTREL_MAX_EDGES`; **unlimited by default** |
+| Request, connection and read timeouts | none |
+| Concurrent connections and buffered bodies | none |
+| Memory and CPU per request | not bounded beyond the limits above |
+
+Because graph limits default to unlimited and no timeouts exist, an untrusted
+client can exhaust memory or hold connections. This is why untrusted exposure is
+unsupported. Operators sharing the service with less-trusted callers inside a
+private boundary should set the graph limits. Safer defaults and a deployment
+boundary are tracked by the roadmap (0.1.3 and 0.1.4) and are not part of this
+contract.
+
+## Request validation order
+
+For `POST /v1/operations` and `POST /v1/batch`, the first failing step decides
+the response, and nothing is executed unless every step passes:
+
+| Step | Check | Failure |
+| --- | --- | --- |
+| 1 | Route and method | 404 / 405 (Axum default, empty body) |
+| 2 | `Content-Type` is a JSON media type | 415 `invalid_request` |
+| 3 | Body is at most 1 MiB | 413 `invalid_request` |
+| 4 | Body is syntactically valid JSON | 400 `invalid_request` |
+| 5 | Shape: known `op`, required fields, no unknown or duplicate fields, valid node IDs (the whole batch) | 422 `invalid_request` |
+| 6 | Batch length is 1–1024 | 422 `invalid_batch_size` |
+| 7 | A graph job slot is available | 503 `busy` / `unavailable` |
+| 8 | Operations run in order under the graph lock | per-operation outcome |
+
+Steps 2–6 never touch the graph, so a rejected request changes nothing. Step 7
+happens after parsing; `busy` means no operation was admitted.
 
 ## Single operations
 
@@ -45,8 +111,12 @@ Successful operations return 200. A graph error has this shape:
 | 422 | Invalid fields/IDs (`invalid_request`), self-loop (`self_loop`), batch size (`invalid_batch_size`), or graph capacity (`node_limit_exceeded`, `edge_limit_exceeded`) |
 | 503 | Graph job capacity exhausted (`busy`) or worker unavailable (`unavailable`) |
 
-Clients should branch on `code`, not human-readable message text. Unregistered
-paths/methods use Axum's default 404/405 responses, which may have an empty body.
+Clients should branch on `code`, not human-readable message text. The message of
+a 400 response is fixed (`request body is not valid JSON`) and never contains
+parser internals, byte offsets or echoed input. A 422 shape error carries a
+short description such as "missing field `op`" or "request body does not match
+the expected shape". Unregistered paths use Axum's default 404 and wrong methods
+a 405 with an `Allow` header; both have an empty body. There is no `/ready` route.
 
 ## Batches
 
@@ -77,6 +147,16 @@ request before any graph operation executes.
 One mutex spans the entire batch, so other graph requests cannot interleave with
 it. Separate requests execute in lock-acquisition order, not necessarily arrival
 order. A connectivity result reflects all earlier operations in that order.
+
+## Concurrency and order
+
+Every graph operation, including queries and `GET /v1/stats`, takes the same
+mutex. Overlapping requests are therefore serialized: the outcome equals some
+sequential order of whole requests (a batch is one indivisible unit in that
+order). Queries are not run in parallel with each other or with mutations. The
+order is the order of lock acquisition and is not otherwise specified, so
+clients must not infer ordering between requests that overlap in time. A
+request that is admitted but whose client disconnects can still complete.
 
 ## Admission, cancellation and health
 

@@ -22,7 +22,7 @@ explicitly; no production scalability claim has been established.
 
 | Crate | Responsibility |
 | --- | --- |
-| `knotrel-core` | Dependency-free synchronous graph operations and exact connectivity |
+| `knotrel-core` | Synchronous graph operations and exact connectivity |
 | `knotrel-server` | Axum HTTP API, validation and bounded blocking graph work |
 
 Rust **1.98.1**, edition **2024**, and Cargo resolver **3** are pinned. The
@@ -89,10 +89,13 @@ RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
 Public items require English Rustdoc. Nontrivial private algorithms also require
 documentation of invariants, correctness and complexity. Workspace lints enforce
 missing docs and forbid unsafe code; each crate inherits them explicitly.
-CI runs the quality gates on Linux and macOS.
+CI builds and tests on Linux, Windows and macOS; formatting, Clippy and Rustdoc
+gates run on Linux.
 
 ## Documentation and measurements
 
+- [v0.1.0 release scope](docs/releases/v0.1.0-scope.md): supported preview surface,
+  verified runtime matrix, release blockers and performance-validation plan.
 - [HTTP API](docs/http-api.md): operations, batch semantics, limits and errors.
 - [Architecture](docs/architecture/0001-foundation.md): contract, costs and scope.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.
