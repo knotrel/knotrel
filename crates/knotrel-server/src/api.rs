@@ -147,9 +147,20 @@ where
 }
 
 /// Builds a stable client message without parser internals or echoed input bytes.
+///
+/// Serde messages are passed through only when their text comes from the fixed
+/// schema (field names, our own node-ID text). Others, such as unknown variants
+/// or invalid types, quote client input and are replaced by a generic message.
 fn request_error_message(err: &simd_json::Error) -> String {
     match err.error() {
-        simd_json::ErrorType::Serde(message) if err.is_data() => message.clone(),
+        simd_json::ErrorType::Serde(message)
+            if err.is_data()
+                && (message.starts_with("missing field `")
+                    || message.starts_with("duplicate field `")
+                    || message.starts_with("node IDs must be")) =>
+        {
+            message.clone()
+        }
         _ if err.is_data() => "request body does not match the expected shape".into(),
         _ => "request body is not valid JSON".into(),
     }

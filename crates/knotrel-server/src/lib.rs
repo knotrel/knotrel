@@ -1,7 +1,9 @@
 //! Axum HTTP transport for a single in-memory Knotrel graph.
 //!
 //! The server uses exact connectivity with bounded blocking work.
-//! State is ephemeral and there is no authentication or persistence layer.
+//! State is ephemeral and there is no authentication, authorization, TLS or
+//! persistence layer: serve it only to trusted local clients. The standalone
+//! executable binds to loopback unless explicitly configured otherwise.
 //! See the repository's `docs/http-api.md` for wire formats and batch semantics.
 
 mod api;
@@ -20,6 +22,9 @@ mod service;
 /// graph jobs may be queued or running. Excess graph requests receive HTTP 503.
 /// A graph mutex isolates each request, including all operations in a batch.
 /// Cloned routers share graph state; separate calls construct separate graphs.
+///
+/// The supplied graph keeps its own cardinality limits (unlimited for a plain
+/// [`knotrel_core::Graph`]); use [`router_with_config`] for the server defaults.
 ///
 /// Request handling requires a Tokio runtime. Health reports process liveness,
 /// not graph-worker readiness. See `docs/http-api.md` for retry semantics.

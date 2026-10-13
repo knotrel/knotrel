@@ -297,7 +297,7 @@ async fn configured_engines_report_actual_settings_and_observe_every_mutation() 
             json!({
                 "engine":name, "experimental":experimental,
                 "max_pending_jobs":1, "max_body_bytes":1048576, "max_batch_operations":1024,
-                "max_nodes":null, "max_edges":null
+                "max_nodes":100000, "max_edges":500000
             })
         );
         let (status, body) = post(

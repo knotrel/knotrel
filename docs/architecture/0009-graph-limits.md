@@ -27,7 +27,9 @@ methods stay unchanged. GraphError gains node/edge capacity variants.
 
 The server snapshots optional MAX_NODES/MAX_EDGES environment variables with
 the other KNOTREL settings. Invalid values fail before listening; missing
-values stay unlimited to preserve existing deployments. Settings are available
+values use the server defaults of 100 000 nodes and 500 000 edges (v0.1.0
+security baseline, superseding the original unlimited default); the literal
+`unlimited` opts out. `router(Graph)` and raw core types stay unlimited. Settings are available
 in /v1/info and startup logs. HTTP 422 and stable per-operation error codes
 follow the existing semantic-error convention. The existing graph mutex covers
 checks and mutation, including ordered non-transactional batches.

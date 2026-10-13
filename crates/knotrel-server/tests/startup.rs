@@ -26,6 +26,11 @@ fn invalid_environment_exits_promptly_with_the_setting_name() {
         ("KNOTREL_MAX_PENDING_JOBS", "-1"),
         ("KNOTREL_MAX_PENDING_JOBS", "1.5"),
         ("KNOTREL_ENGIEN", "ett"),
+        ("KNOTREL_MAX_NODES", "Unlimited"),
+        ("KNOTREL_ADDR", "0.0.0.0:0"),
+        ("KNOTREL_ADDR", "[::]:0"),
+        ("KNOTREL_ALLOW_NON_LOOPBACK", "maybe"),
+        ("KNOTREL_ALLOW_NON_LOOPBACK", "1"),
     ] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_knotrel-server"))
             .env_clear()

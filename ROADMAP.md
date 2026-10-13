@@ -25,9 +25,9 @@
 Track high-level feature readiness across releases. Check off each feature when all its underlying sub-tasks, tests and acceptance criteria are satisfied:
 
 ### v0.1.0 — Public Preview
-- [ ] **Feature 0.1.1:** Inventory and freeze minimum release scope (P0)
+- [x] **Feature 0.1.1:** Inventory and freeze minimum release scope (P0)
 - [x] **Feature 0.1.2:** Document v0.1.0 service contract (M0-min, P0)
-- [ ] **Feature 0.1.3:** Establish a safe deployment boundary (M8-min, P0)
+- [x] **Feature 0.1.3:** Establish a safe deployment boundary (M8-min, P0)
 - [ ] **Feature 0.1.4:** Minimal health, readiness and lifecycle (M4-min, P0)
 - [ ] **Feature 0.1.5:** Rust library adoption, API and examples (P0)
 - [ ] **Feature 0.1.6:** CI, packaging and release candidate validation (M9-min, P0)
@@ -107,16 +107,17 @@ Track high-level feature readiness across releases. Check off each feature when 
 
 ### 0.1.1 — Inventory and freeze the minimum release scope (P0)
 
-- [ ] **Feature Complete: 0.1.1 — Inventory and freeze the minimum release scope**
+- [x] **Feature Complete: 0.1.1 — Inventory and freeze the minimum release scope**
 - [x] **Audit HEAD and the current working tree.** Confirm crate/package layout, supported BFS/ETT/HDT entry points, HTTP routes, state ownership, locking, validation, existing health endpoints, test coverage and outstanding changes. Record what already exists; avoid duplicate work.
 - [x] **Define the public-preview scope.** List supported graph operations, supported engines, single-graph assumption, accepted node identifiers, default configuration and non-goals in one release-scope note.
 - [x] **Choose a supported runtime matrix.** State Rust MSRV if intended, supported OS/architectures, and whether the service binary is supported outside the development environment. Do not claim platforms that CI has not verified.
 - [x] **Record release blockers separately from future enhancements.** Decide whether any known correctness, memory/resource, or API contract issue must be fixed before tagging.
-- [ ] **Acceptance:** A short `docs/releases/v0.1.0-scope.md` (or repo-conventional equivalent) maps required features to current implementation/tests and has no unresolved release-blocking questions.
+- [x] **Acceptance:** A short `docs/releases/v0.1.0-scope.md` (or repo-conventional equivalent) maps required features to current implementation/tests and has no unresolved release-blocking questions.
 
 Evidence and execution plan: [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
-Acceptance remains pending while full local startup testing and `codectl`
-validation are blocked; later features are not implicitly complete.
+Closed after the local gates passed on the uncommitted working tree: fmt,
+Clippy, Rustdoc, the full workspace test run (including `tests/startup.rs`) and
+`codectl` from the workspace root. Later features are not implicitly complete.
 
 ### 0.1.2 — Document the v0.1.0 service contract (M0-min, P0)
 
@@ -132,17 +133,29 @@ validation are blocked; later features are not implicitly complete.
 Evidence: [HTTP contract](docs/http-api.md) and
 [contract tests](crates/knotrel-server/tests/contract.rs). Unlimited graph size
 and absent timeouts are documented unsupported bounds, so exposure to untrusted
-clients stays blocked until 0.1.3/0.1.4.
+clients stays blocked until 0.1.3/0.1.4 (0.1.3 has since added finite default
+graph limits; timeouts and connection limits remain 0.1.4 work).
 
 ### 0.1.3 — Establish a safe deployment boundary (M8-min, P0)
 
-- [ ] **Feature Complete: 0.1.3 — Establish a safe deployment boundary**
-- [ ] **Default to loopback binding** (`127.0.0.1` or platform equivalent) unless the existing server already has a demonstrably safer policy. Make non-loopback exposure an explicit operator choice.
-- [ ] **Document the trust model:** no built-in authentication/authorization is promised for the preview unless verified. Provide reverse-proxy/private-network guidance, but do not describe a private network alone as sufficient security.
-- [ ] **Validate input and bound requests** before expensive parsing/allocation where possible; set reasonable request-body limits and reject malformed data with safe errors.
-- [ ] **Verify no secrets or graph payloads leak** through default logs, panic output or release artifacts. Avoid shipping benchmark environment paths where not necessary.
-- [ ] **Test exposure/configuration:** startup defaults, invalid bind/config values, oversized/malformed input and clear failure when an unsupported deployment mode is requested.
-- [ ] **Acceptance:** Out-of-box use is restricted to a trusted local boundary. Any deployment exposed to untrusted clients remains explicitly unsupported until full M8 is delivered.
+- [x] **Feature Complete: 0.1.3 — Establish a safe deployment boundary**
+- [x] **Default to loopback binding** (`127.0.0.1` or platform equivalent) unless the existing server already has a demonstrably safer policy. Make non-loopback exposure an explicit operator choice.
+- [x] **Document the trust model:** no built-in authentication/authorization is promised for the preview unless verified. Provide reverse-proxy/private-network guidance, but do not describe a private network alone as sufficient security.
+- [x] **Validate input and bound requests** before expensive parsing/allocation where possible; set reasonable request-body limits and reject malformed data with safe errors.
+- [x] **Verify no secrets or graph payloads leak** through default logs, panic output or release artifacts. Avoid shipping benchmark environment paths where not necessary.
+- [x] **Test exposure/configuration:** startup defaults, invalid bind/config values, oversized/malformed input and clear failure when an unsupported deployment mode is requested.
+- [x] **Acceptance:** Out-of-box use is restricted to a trusted local boundary. Any deployment exposed to untrusted clients remains explicitly unsupported until full M8 is delivered.
+
+Evidence: [trust model](docs/http-api.md#trust-model),
+[security tests](crates/knotrel-server/tests/security.rs) (defaults and
+boundaries on all engines, 413 before parse, batch cap, error sanitization,
+non-loopback gate) and the configuration unit tests. Defaults of 100 000 nodes
+and 500 000 edges are conservative cardinality caps, not benchmark-derived
+memory bounds. The process-level `tests/startup.rs` check (invalid bind/config
+exits before listening) passed locally (`1 passed`). It runs in the normal CI
+suite (`cargo test --workspace --locked` on Linux, Windows and macOS), but no CI
+run exists yet for these uncommitted changes, so CI evidence on the exact
+revision is still to be collected once the change is pushed.
 
 ### 0.1.4 — Minimal health, readiness and lifecycle (M4-min, P0)
 

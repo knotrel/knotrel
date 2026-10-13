@@ -40,11 +40,12 @@ Configuration is read once before binding:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KNOTREL_ADDR` | `127.0.0.1:8080` | IP address and port |
+| `KNOTREL_ADDR` | `127.0.0.1:8080` | IP address and port; non-loopback needs `KNOTREL_ALLOW_NON_LOOPBACK=true` |
+| `KNOTREL_ALLOW_NON_LOOPBACK` | `false` | `true` permits a non-loopback `KNOTREL_ADDR` (no auth/TLS; see [trust model](docs/http-api.md#trust-model)) |
 | `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
-| `KNOTREL_MAX_NODES` | unlimited | Maximum registered nodes; zero allowed |
-| `KNOTREL_MAX_EDGES` | unlimited | Maximum live edges; zero allowed |
+| `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
+| `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges; zero allowed; `unlimited` opts out |
 | `RUST_LOG` | `info` | Logging filter |
 
 For example, to opt into the experimental forest:
@@ -54,6 +55,12 @@ KNOTREL_ENGINE=ett KNOTREL_MAX_PENDING_JOBS=16 \
   cargo run --release --locked -p knotrel-server
 curl -sS http://127.0.0.1:8080/v1/info
 ```
+
+> **Security:** v0.1.0 has no authentication, authorization or TLS, and no
+> protection for exposure to untrusted clients or the public internet. The server
+> listens on loopback by default and refuses a non-loopback `KNOTREL_ADDR` unless
+> `KNOTREL_ALLOW_NON_LOOPBACK=true` is set. A private network alone is not
+> sufficient; see the [trust model](docs/http-api.md#trust-model).
 
 Invalid values and unknown `KNOTREL_` variables stop startup. `hdt` selects the
 experimental level-based HDT engine. `GET /v1/info` reports the effective engine and limits without
@@ -148,15 +155,17 @@ remains the default. See [HDT design and limits](docs/architecture/0008-experime
 
 ## Graph cardinality limits
 
-Set `KNOTREL_MAX_NODES` and/or `KNOTREL_MAX_EDGES` before starting the server:
+The standalone server defaults to 100 000 nodes and 500 000 edges. Override them
+with `KNOTREL_MAX_NODES` and/or `KNOTREL_MAX_EDGES` before starting the server:
 
 ```sh
 KNOTREL_MAX_NODES=100000 KNOTREL_MAX_EDGES=200000 cargo run --locked -p knotrel-server
 ```
 
-Absent variables mean unlimited for backward-compatible startup. Zero forbids
-new entries; values must be ASCII decimal integers fitting `usize`. Limits are
-fixed for each graph instance and reported by `/v1/info` (`null` for unlimited).
+Absent variables use the defaults; the literal `unlimited` removes a ceiling.
+Zero forbids new entries; other values must be ASCII decimal integers fitting
+`usize`. Limits are fixed for each graph instance and reported by `/v1/info`
+(`null` for unlimited).
 A rejected operation changes nothing, including implicitly created endpoints.
 Duplicate vertices/edges remain successful no-ops. Cuts free edge capacity but
 retain vertices and their capacity usage. These are not RAM limits: allocation
@@ -167,8 +176,8 @@ max_nodes: Some(100000), max_edges: Some(200000) })`. The raw `Graph`,
 `ForestGraph` and `HdtGraph` algorithm types remain unlimited; use the wrapper
 for enforced limits. `ConnectivityGraph::add_node` now returns
 `Result<bool, GraphError>` so callers must handle capacity errors. Server
-embedders can use `ServerConfig::with_graph_limits`; the legacy `router(Graph)`
-retains unlimited cardinality. See [ADR 0009](docs/architecture/0009-graph-limits.md).
+embedders can use `ServerConfig::with_graph_limits`; `ServerConfig::new` applies
+the defaults, while the legacy `router(Graph)` retains unlimited cardinality. See [ADR 0009](docs/architecture/0009-graph-limits.md).
 
 Rust callers matching `GraphError` exhaustively must also handle the new
 `NodeLimitExceeded` and `EdgeLimitExceeded` variants.

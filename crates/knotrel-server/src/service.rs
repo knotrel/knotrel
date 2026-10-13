@@ -173,7 +173,8 @@ impl Service {
         })
         .await
         .map_err(|error| {
-            tracing::error!(%error, "graph worker thread panicked or aborted");
+            // Never log the error itself: a panic message may embed request data.
+            tracing::error!(panicked = error.is_panic(), "graph worker thread failed");
             ServiceError::Unavailable
         })?
     }

@@ -34,22 +34,67 @@ impl Default for ServerConfig {
             address: SocketAddr::from(([127, 0, 0, 1], 8080)),
             engine: EngineConfig::default(),
             max_pending_jobs: 32,
-            graph_limits: GraphLimits::default(),
+            graph_limits: Self::DEFAULT_GRAPH_LIMITS,
         }
     }
 }
 
 impl ServerConfig {
+    /// Default ceiling on registered vertices for configured servers.
+    pub const DEFAULT_MAX_NODES: usize = 100_000;
+    /// Default ceiling on live edges for configured servers.
+    pub const DEFAULT_MAX_EDGES: usize = 500_000;
+    /// Graph limits applied by [`Self::default`], [`Self::new`] and [`Self::from_env`].
+    pub const DEFAULT_GRAPH_LIMITS: GraphLimits = GraphLimits {
+        max_nodes: Some(Self::DEFAULT_MAX_NODES),
+        max_edges: Some(Self::DEFAULT_MAX_EDGES),
+    };
+
     /// Validates explicit settings without reading the environment.
     ///
-    /// Returns [`ConfigError`] if `max_pending_jobs` is zero or exceeds
+    /// Returns [`ConfigError`] if `address` is not a loopback address (use
+    /// [`Self::new_allowing_non_loopback`] for deliberate exposure), or if
+    /// `max_pending_jobs` is zero or exceeds
     /// [`tokio::sync::Semaphore::MAX_PERMITS`]. The limit covers queued plus
-    /// running graph jobs, not parallel access to the graph.
+    /// running graph jobs, not parallel access to the graph. Graph limits start
+    /// at [`Self::DEFAULT_GRAPH_LIMITS`].
     pub fn new(
         address: SocketAddr,
         engine: EngineConfig,
         max_pending_jobs: usize,
     ) -> Result<Self, ConfigError> {
+        Self::build(address, false, engine, max_pending_jobs)
+    }
+
+    /// Like [`Self::new`], but explicitly accepts a non-loopback listener address.
+    ///
+    /// Knotrel v0.1.0 has no authentication, authorization or TLS; see
+    /// `docs/http-api.md` before using this.
+    pub fn new_allowing_non_loopback(
+        address: SocketAddr,
+        engine: EngineConfig,
+        max_pending_jobs: usize,
+    ) -> Result<Self, ConfigError> {
+        Self::build(address, true, engine, max_pending_jobs)
+    }
+
+    /// Reports whether the listener address is outside the loopback interface.
+    pub fn is_exposed(&self) -> bool {
+        !self.address.ip().is_loopback()
+    }
+
+    fn build(
+        address: SocketAddr,
+        allow_non_loopback: bool,
+        engine: EngineConfig,
+        max_pending_jobs: usize,
+    ) -> Result<Self, ConfigError> {
+        if !allow_non_loopback && !address.ip().is_loopback() {
+            return Err(ConfigError(
+                "KNOTREL_ADDR must be a loopback address unless KNOTREL_ALLOW_NON_LOOPBACK=true"
+                    .into(),
+            ));
+        }
         if max_pending_jobs == 0 || max_pending_jobs > tokio::sync::Semaphore::MAX_PERMITS {
             return Err(ConfigError(format!(
                 "KNOTREL_MAX_PENDING_JOBS must be between 1 and {}",
@@ -60,11 +105,11 @@ impl ServerConfig {
             address,
             engine,
             max_pending_jobs,
-            graph_limits: GraphLimits::default(),
+            graph_limits: Self::DEFAULT_GRAPH_LIMITS,
         })
     }
 
-    /// Sets immutable graph cardinality limits; zero is valid, None is unlimited.
+    /// Replaces the immutable graph cardinality limits; zero is valid, None is unlimited.
     pub fn with_graph_limits(mut self, limits: GraphLimits) -> Self {
         self.graph_limits = limits;
         self
@@ -80,8 +125,10 @@ impl ServerConfig {
     /// Recognized variables are `KNOTREL_ADDR` (default `127.0.0.1:8080`),
     /// `KNOTREL_ENGINE` (`compact-bfs` by default, or experimental `ett` / `hdt`) and
     /// `KNOTREL_MAX_PENDING_JOBS` (default `32`). `KNOTREL_MAX_NODES` and
-    /// `KNOTREL_MAX_EDGES` are optional nonnegative decimal integers; absent
-    /// means unlimited, zero forbids new entries.
+    /// `KNOTREL_MAX_EDGES` are nonnegative decimal integers or `unlimited`; absent
+    /// means [`Self::DEFAULT_MAX_NODES`] / [`Self::DEFAULT_MAX_EDGES`], zero
+    /// forbids new entries. A non-loopback `KNOTREL_ADDR` is rejected unless
+    /// `KNOTREL_ALLOW_NON_LOOPBACK` is exactly `true` (`false` is also accepted).
     ///
     /// Returns [`ConfigError`] for unknown `KNOTREL_` keys, non-Unicode names
     /// or values in that namespace, unsupported engines and malformed values.
@@ -124,6 +171,7 @@ impl ServerConfig {
                     | "KNOTREL_MAX_PENDING_JOBS"
                     | "KNOTREL_MAX_NODES"
                     | "KNOTREL_MAX_EDGES"
+                    | "KNOTREL_ALLOW_NON_LOOPBACK"
             ) {
                 return Err(ConfigError(format!("unknown setting: {name}")));
             }
@@ -140,6 +188,18 @@ impl ServerConfig {
                 )
             })?,
             None => defaults.address,
+        };
+        let allow_non_loopback = match settings
+            .get("KNOTREL_ALLOW_NON_LOOPBACK")
+            .map(String::as_str)
+        {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(_) => {
+                return Err(ConfigError(
+                    "KNOTREL_ALLOW_NON_LOOPBACK must be true or false".into(),
+                ));
+            }
         };
         let engine = match settings.get("KNOTREL_ENGINE").map(String::as_str) {
             None | Some("compact-bfs") => EngineConfig::CompactBfs,
@@ -164,26 +224,30 @@ impl ServerConfig {
             }
             None => defaults.max_pending_jobs,
         };
-        let parse_limit = |key: &str| -> Result<Option<usize>, ConfigError> {
-            settings
-                .get(key)
-                .map(|value| {
+        let parse_limit =
+            |key: &str, default: Option<usize>| -> Result<Option<usize>, ConfigError> {
+                settings.get(key).map_or(Ok(default), |value| {
+                    if value == "unlimited" {
+                        return Ok(None);
+                    }
                     if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
                         return Err(ConfigError(format!(
-                            "{key} must be a nonnegative decimal integer"
+                            "{key} must be a nonnegative decimal integer or unlimited"
                         )));
                     }
                     value
                         .parse()
+                        .map(Some)
                         .map_err(|_| ConfigError(format!("{key} is out of range")))
                 })
-                .transpose()
+            };
+        let limits = GraphLimits {
+            max_nodes: parse_limit("KNOTREL_MAX_NODES", Self::DEFAULT_GRAPH_LIMITS.max_nodes)?,
+            max_edges: parse_limit("KNOTREL_MAX_EDGES", Self::DEFAULT_GRAPH_LIMITS.max_edges)?,
         };
         Ok(
-            Self::new(address, engine, max_pending_jobs)?.with_graph_limits(GraphLimits {
-                max_nodes: parse_limit("KNOTREL_MAX_NODES")?,
-                max_edges: parse_limit("KNOTREL_MAX_EDGES")?,
-            }),
+            Self::build(address, allow_non_loopback, engine, max_pending_jobs)?
+                .with_graph_limits(limits),
         )
     }
 }
@@ -215,8 +279,8 @@ mod tests {
 
     #[test]
     fn graph_limits_load_independently_and_accept_zero() {
-        let unlimited = ServerConfig::from_variables([]).unwrap();
-        assert_eq!(unlimited.graph_limits(), GraphLimits::default());
+        let defaults = ServerConfig::from_variables([]).unwrap();
+        assert_eq!(defaults.graph_limits(), ServerConfig::DEFAULT_GRAPH_LIMITS);
         let limits = ServerConfig::from_variables([
             ("KNOTREL_MAX_NODES".into(), "0".into()),
             ("KNOTREL_MAX_EDGES".into(), "12".into()),
@@ -235,10 +299,65 @@ mod tests {
         assert_eq!(
             only_edges.graph_limits(),
             GraphLimits {
-                max_nodes: None,
+                max_nodes: ServerConfig::DEFAULT_GRAPH_LIMITS.max_nodes,
                 max_edges: Some(0)
             }
         );
+        let unlimited = ServerConfig::from_variables([
+            ("KNOTREL_MAX_NODES".into(), "unlimited".into()),
+            ("KNOTREL_MAX_EDGES".into(), "unlimited".into()),
+        ])
+        .unwrap();
+        assert_eq!(unlimited.graph_limits(), GraphLimits::default());
+        for value in ["Unlimited", "none", "-1", ""] {
+            let error = ServerConfig::from_variables([("KNOTREL_MAX_NODES".into(), value.into())])
+                .unwrap_err();
+            assert!(error.to_string().starts_with("KNOTREL_MAX_NODES"));
+        }
+    }
+
+    #[test]
+    fn non_loopback_addresses_need_explicit_opt_in() {
+        for address in [
+            "0.0.0.0:8080",
+            "[::]:8080",
+            "192.168.1.10:8080",
+            "[::ffff:127.0.0.1]:1",
+        ] {
+            let error = ServerConfig::from_variables([("KNOTREL_ADDR".into(), address.into())])
+                .unwrap_err();
+            assert!(error.to_string().contains("KNOTREL_ALLOW_NON_LOOPBACK"));
+            assert!(!error.to_string().contains(address), "echoed {address}");
+            let allowed = ServerConfig::from_variables([
+                ("KNOTREL_ADDR".into(), address.into()),
+                ("KNOTREL_ALLOW_NON_LOOPBACK".into(), "true".into()),
+            ])
+            .unwrap();
+            assert!(allowed.is_exposed());
+            assert!(
+                ServerConfig::from_variables([
+                    ("KNOTREL_ADDR".into(), address.into()),
+                    ("KNOTREL_ALLOW_NON_LOOPBACK".into(), "false".into()),
+                ])
+                .is_err()
+            );
+        }
+        for address in ["127.0.0.1:0", "127.9.9.9:80", "[::1]:80"] {
+            let config =
+                ServerConfig::from_variables([("KNOTREL_ADDR".into(), address.into())]).unwrap();
+            assert!(!config.is_exposed());
+        }
+        for value in ["", "TRUE", "1", "yes", " true"] {
+            let error = ServerConfig::from_variables([
+                ("KNOTREL_ADDR".into(), "0.0.0.0:1".into()),
+                ("KNOTREL_ALLOW_NON_LOOPBACK".into(), value.into()),
+            ])
+            .unwrap_err();
+            assert!(error.to_string().starts_with("KNOTREL_ALLOW_NON_LOOPBACK"));
+        }
+        let any: SocketAddr = "0.0.0.0:1".parse().unwrap();
+        assert!(ServerConfig::new(any, EngineConfig::Hdt, 1).is_err());
+        assert!(ServerConfig::new_allowing_non_loopback(any, EngineConfig::Hdt, 1).is_ok());
     }
 
     #[cfg(unix)]

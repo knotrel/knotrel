@@ -27,8 +27,15 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let engine = config.engine();
     let max_pending_jobs = config.max_pending_jobs();
     let graph_limits = config.graph_limits();
+    let exposed = config.is_exposed();
     let app = knotrel_server::router_with_config(config);
     let listener = tokio::net::TcpListener::bind(address).await?;
+    if exposed {
+        tracing::warn!(
+            "listening on a non-loopback address; v0.1.0 has no authentication, \
+             authorization or TLS and is unsupported for untrusted clients"
+        );
+    }
     tracing::info!(
         address = %listener.local_addr()?, engine = engine.as_str(),
         experimental = engine.is_experimental(), max_pending_jobs,

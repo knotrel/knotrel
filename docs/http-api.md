@@ -27,7 +27,8 @@ The v0.1.0 preview does not provide any of the following:
   several requests;
 - request deduplication or exactly-once delivery;
 - authentication, authorization, TLS or protection against untrusted clients.
-  Exposing the service beyond a trusted local boundary is unsupported;
+  Exposing the service beyond a trusted local boundary is unsupported (see
+  [Trust model](#trust-model));
 - request, connection or graph-operation timeouts (see
   [Resource bounds](#resource-bounds));
 - readiness or capacity signalling from `/health`.
@@ -39,17 +40,39 @@ The v0.1.0 preview does not provide any of the following:
 | Request body | 1 MiB, fixed; larger bodies get 413 |
 | Batch length | 1–1024 operations, fixed |
 | Queued plus running graph jobs | `KNOTREL_MAX_PENDING_JOBS`, default 32; excess gets 503 `busy` |
-| Graph nodes / edges | `KNOTREL_MAX_NODES` / `KNOTREL_MAX_EDGES`; **unlimited by default** |
+| Graph nodes / edges | `KNOTREL_MAX_NODES` / `KNOTREL_MAX_EDGES`; default 100 000 nodes and 500 000 edges, `unlimited` is an explicit opt-out |
 | Request, connection and read timeouts | none |
 | Concurrent connections and buffered bodies | none |
 | Memory and CPU per request | not bounded beyond the limits above |
 
-Because graph limits default to unlimited and no timeouts exist, an untrusted
-client can exhaust memory or hold connections. This is why untrusted exposure is
-unsupported. Operators sharing the service with less-trusted callers inside a
-private boundary should set the graph limits. Safer defaults and a deployment
-boundary are tracked by the roadmap (0.1.3 and 0.1.4) and are not part of this
-contract.
+The body and batch limits are enforced before the request is parsed or
+admitted to the graph worker. Graph limits are cardinalities, not memory, CPU or
+RSS ceilings, and no timeouts exist, so a client can still hold connections and
+consume CPU within them. This is why untrusted exposure is unsupported.
+Embedders that call `router(Graph)` keep the supplied graph's own (unlimited)
+limits; only `router_with_config` and the standalone executable apply the
+defaults above.
+
+## Trust model
+
+Knotrel v0.1.0 has **no authentication, authorization or TLS**. Anyone who can
+open a TCP connection to the listener can read and mutate the graph. The
+supported deployment is a single trusted local client:
+
+- The listener defaults to `127.0.0.1:8080`. A non-loopback `KNOTREL_ADDR`
+  (including `0.0.0.0` and `[::]`) fails startup unless
+  `KNOTREL_ALLOW_NON_LOOPBACK=true` is also set. When it is set the executable
+  logs a warning at startup.
+- Opting in is an operator acknowledgement, not a hardening step. Exposure to
+  untrusted clients, including the public internet, stays unsupported.
+- If you must expose it to other hosts, put it behind a reverse proxy or
+  gateway that provides TLS, authentication, authorization, rate limiting and
+  timeouts, and restrict the network path. A private network on its own is not
+  sufficient: every host on it is then trusted with full read/write access.
+- Logs contain the method, path, status and latency of each request and the
+  startup settings. They never contain request bodies, node IDs or parser
+  messages. Client error messages never quote request input, parser positions or
+  internal paths.
 
 ## Request validation order
 
@@ -183,11 +206,12 @@ its listener. There is no file loader or runtime reload in this version.
 
 | Variable | Accepted value | Default |
 | --- | --- | --- |
-| `KNOTREL_ADDR` | IP socket address, such as `127.0.0.1:8080` or `[::1]:8080` | `127.0.0.1:8080` |
+| `KNOTREL_ADDR` | IP socket address, such as `127.0.0.1:8080` or `[::1]:8080`; non-loopback requires `KNOTREL_ALLOW_NON_LOOPBACK=true` | `127.0.0.1:8080` |
+| `KNOTREL_ALLOW_NON_LOOPBACK` | Exactly `true` or `false` | `false` |
 | `KNOTREL_ENGINE` | Exactly `compact-bfs`, `ett` or `hdt` | `compact-bfs` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
-| `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize` | unlimited |
-| `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize` | unlimited |
+| `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
+| `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |
 
 Unknown variables in the reserved `KNOTREL_` namespace, empty or non-Unicode
 values, unsupported engines and invalid addresses/limits fail startup. Values
@@ -247,7 +271,8 @@ the core never loads server configuration or reads the environment.
 ## Graph capacity errors
 
 `KNOTREL_MAX_NODES` and `KNOTREL_MAX_EDGES` optionally set per-instance ceilings
-at startup. Missing values are unlimited; zero is allowed. Empty, signed,
+at startup. Missing values default to 100 000 nodes and 500 000 edges; the
+literal `unlimited` removes a ceiling; zero is allowed. Empty, signed,
 non-decimal, whitespace-padded and out-of-range values fail before binding.
 `GET /v1/info` includes `max_nodes` and `max_edges`, each an integer or `null`.
 These settings cannot be overridden in operation requests or changed at runtime.
