@@ -3,7 +3,10 @@
 use crate::api::{Operation, Outcome};
 use knotrel_core::ConnectivityGraph;
 use parking_lot::Mutex;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::sync::Semaphore;
 
 /// Shared graph state plus a strict limit on outstanding worker jobs.
@@ -11,6 +14,8 @@ use tokio::sync::Semaphore;
 pub(crate) struct Service {
     graph: Arc<Mutex<GraphState>>,
     permits: Arc<Semaphore>,
+    // Lock-free mirror of GraphState::failed so readiness never waits for graph work.
+    unavailable: Arc<AtomicBool>,
     info: crate::ServerInfo,
 }
 
@@ -109,7 +114,13 @@ impl Service {
                 version: vec![0],
             })),
             permits: Arc::new(Semaphore::new(capacity)),
+            unavailable: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Reports whether a worker failure permanently disabled graph work.
+    pub(crate) fn is_unavailable(&self) -> bool {
+        self.unavailable.load(Ordering::Acquire)
     }
 
     /// Reads effective immutable settings without waiting for graph work.
@@ -159,11 +170,14 @@ impl Service {
             ServiceError::Busy
         })?;
         let graph = self.graph.clone();
+        let unavailable = self.unavailable.clone();
+        let failure_flag = self.unavailable.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let mut graph = graph.lock();
             if graph.failed {
                 tracing::warn!("graph worker state marked as failed; rejecting work");
+                unavailable.store(true, Ordering::Release);
                 return Err(ServiceError::Unavailable);
             }
             graph.failed = true;
@@ -175,6 +189,7 @@ impl Service {
         .map_err(|error| {
             // Never log the error itself: a panic message may embed request data.
             tracing::error!(panicked = error.is_panic(), "graph worker thread failed");
+            failure_flag.store(true, Ordering::Release);
             ServiceError::Unavailable
         })?
     }
@@ -369,6 +384,11 @@ mod tests {
             service.stats().await,
             Err(ServiceError::Unavailable)
         ));
+        assert!(service.is_unavailable());
+        assert_eq!(
+            crate::lifecycle::readiness(&crate::Lifecycle::ready(), &service).status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
         tokio::time::timeout(Duration::from_secs(3), async {
             while service.permits.available_permits() != 2 {
                 tokio::task::yield_now().await;

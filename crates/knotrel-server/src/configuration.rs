@@ -1,7 +1,9 @@
 //! Startup-only configuration loading and validation.
 
 use knotrel_core::{EngineConfig, GraphLimits};
-use std::{collections::BTreeMap, error::Error, ffi::OsString, fmt, net::SocketAddr};
+use std::{
+    collections::BTreeMap, error::Error, ffi::OsString, fmt, net::SocketAddr, time::Duration,
+};
 
 /// Validated standalone server settings.
 ///
@@ -14,6 +16,10 @@ pub struct ServerConfig {
     engine: EngineConfig,
     max_pending_jobs: usize,
     graph_limits: GraphLimits,
+    max_connections: usize,
+    header_read_timeout: Duration,
+    request_timeout: Duration,
+    shutdown_timeout: Duration,
 }
 
 /// A malformed or unsupported startup setting.
@@ -35,6 +41,10 @@ impl Default for ServerConfig {
             engine: EngineConfig::default(),
             max_pending_jobs: 32,
             graph_limits: Self::DEFAULT_GRAPH_LIMITS,
+            max_connections: Self::DEFAULT_MAX_CONNECTIONS,
+            header_read_timeout: Self::DEFAULT_HEADER_READ_TIMEOUT,
+            request_timeout: Self::DEFAULT_REQUEST_TIMEOUT,
+            shutdown_timeout: Self::DEFAULT_SHUTDOWN_TIMEOUT,
         }
     }
 }
@@ -44,6 +54,18 @@ impl ServerConfig {
     pub const DEFAULT_MAX_NODES: usize = 100_000;
     /// Default ceiling on live edges for configured servers.
     pub const DEFAULT_MAX_EDGES: usize = 500_000;
+    /// Default ceiling on simultaneously open client connections.
+    pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+    /// Largest accepted connection ceiling.
+    pub const MAX_CONNECTIONS_LIMIT: usize = 1_000_000;
+    /// Default time a client may take to send request headers or stay idle between requests.
+    pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+    /// Default time allowed to receive a request body and produce its response.
+    pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+    /// Default time admitted requests may take to finish after shutdown begins.
+    pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Largest accepted timeout; timeouts must be positive so every wait is bounded.
+    pub const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
     /// Graph limits applied by [`Self::default`], [`Self::new`] and [`Self::from_env`].
     pub const DEFAULT_GRAPH_LIMITS: GraphLimits = GraphLimits {
         max_nodes: Some(Self::DEFAULT_MAX_NODES),
@@ -106,7 +128,63 @@ impl ServerConfig {
             engine,
             max_pending_jobs,
             graph_limits: Self::DEFAULT_GRAPH_LIMITS,
+            max_connections: Self::DEFAULT_MAX_CONNECTIONS,
+            header_read_timeout: Self::DEFAULT_HEADER_READ_TIMEOUT,
+            request_timeout: Self::DEFAULT_REQUEST_TIMEOUT,
+            shutdown_timeout: Self::DEFAULT_SHUTDOWN_TIMEOUT,
         })
+    }
+
+    /// Replaces the open-connection ceiling.
+    ///
+    /// Returns [`ConfigError`] unless `limit` is in `1..=`[`Self::MAX_CONNECTIONS_LIMIT`].
+    pub fn with_max_connections(mut self, limit: usize) -> Result<Self, ConfigError> {
+        self.max_connections = check_connections(limit)?;
+        Ok(self)
+    }
+
+    /// Replaces the header-read timeout, which also bounds keep-alive idle time.
+    ///
+    /// Returns [`ConfigError`] unless the value is positive and at most [`Self::MAX_TIMEOUT`].
+    pub fn with_header_read_timeout(mut self, timeout: Duration) -> Result<Self, ConfigError> {
+        self.header_read_timeout = check_timeout("KNOTREL_HEADER_READ_TIMEOUT_MS", timeout)?;
+        Ok(self)
+    }
+
+    /// Replaces the per-request timeout covering body receipt and handling.
+    ///
+    /// Returns [`ConfigError`] unless the value is positive and at most [`Self::MAX_TIMEOUT`].
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Result<Self, ConfigError> {
+        self.request_timeout = check_timeout("KNOTREL_REQUEST_TIMEOUT_MS", timeout)?;
+        Ok(self)
+    }
+
+    /// Replaces the bounded drain period used after a shutdown request.
+    ///
+    /// Returns [`ConfigError`] unless the value is positive and at most [`Self::MAX_TIMEOUT`].
+    pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Result<Self, ConfigError> {
+        self.shutdown_timeout = check_timeout("KNOTREL_SHUTDOWN_TIMEOUT_MS", timeout)?;
+        Ok(self)
+    }
+
+    /// Returns the maximum number of simultaneously served connections.
+    pub fn max_connections(&self) -> usize {
+        self.max_connections
+    }
+
+    /// Returns how long a client may take to send headers or remain idle.
+    pub fn header_read_timeout(&self) -> Duration {
+        self.header_read_timeout
+    }
+
+    /// Returns the limit on receiving a request body and producing its response.
+    pub fn request_timeout(&self) -> Duration {
+        self.request_timeout
+    }
+
+    /// Returns the drain deadline applied after a shutdown request.
+    pub fn shutdown_timeout(&self) -> Duration {
+        self.shutdown_timeout
     }
 
     /// Replaces the immutable graph cardinality limits; zero is valid, None is unlimited.
@@ -129,6 +207,11 @@ impl ServerConfig {
     /// means [`Self::DEFAULT_MAX_NODES`] / [`Self::DEFAULT_MAX_EDGES`], zero
     /// forbids new entries. A non-loopback `KNOTREL_ADDR` is rejected unless
     /// `KNOTREL_ALLOW_NON_LOOPBACK` is exactly `true` (`false` is also accepted).
+    ///
+    /// `KNOTREL_MAX_CONNECTIONS` (default 1024) is a positive integer.
+    /// `KNOTREL_HEADER_READ_TIMEOUT_MS` (5000), `KNOTREL_REQUEST_TIMEOUT_MS` (30000) and
+    /// `KNOTREL_SHUTDOWN_TIMEOUT_MS` (10000) are positive millisecond counts of at most
+    /// one hour.
     ///
     /// Returns [`ConfigError`] for unknown `KNOTREL_` keys, non-Unicode names
     /// or values in that namespace, unsupported engines and malformed values.
@@ -172,6 +255,10 @@ impl ServerConfig {
                     | "KNOTREL_MAX_NODES"
                     | "KNOTREL_MAX_EDGES"
                     | "KNOTREL_ALLOW_NON_LOOPBACK"
+                    | "KNOTREL_MAX_CONNECTIONS"
+                    | "KNOTREL_HEADER_READ_TIMEOUT_MS"
+                    | "KNOTREL_REQUEST_TIMEOUT_MS"
+                    | "KNOTREL_SHUTDOWN_TIMEOUT_MS"
             ) {
                 return Err(ConfigError(format!("unknown setting: {name}")));
             }
@@ -245,11 +332,68 @@ impl ServerConfig {
             max_nodes: parse_limit("KNOTREL_MAX_NODES", Self::DEFAULT_GRAPH_LIMITS.max_nodes)?,
             max_edges: parse_limit("KNOTREL_MAX_EDGES", Self::DEFAULT_GRAPH_LIMITS.max_edges)?,
         };
-        Ok(
-            Self::build(address, allow_non_loopback, engine, max_pending_jobs)?
-                .with_graph_limits(limits),
-        )
+        let max_connections = match settings.get("KNOTREL_MAX_CONNECTIONS") {
+            Some(value) => parse_decimal("KNOTREL_MAX_CONNECTIONS", value)?,
+            None => defaults.max_connections,
+        };
+        let timeout = |key: &str, default: Duration| -> Result<Duration, ConfigError> {
+            match settings.get(key) {
+                Some(value) => Ok(Duration::from_millis(
+                    parse_decimal(key, value)?
+                        .try_into()
+                        .map_err(|_| ConfigError(format!("{key} is out of range")))?,
+                )),
+                None => Ok(default),
+            }
+        };
+        Self::build(address, allow_non_loopback, engine, max_pending_jobs)?
+            .with_graph_limits(limits)
+            .with_max_connections(max_connections)?
+            .with_header_read_timeout(timeout(
+                "KNOTREL_HEADER_READ_TIMEOUT_MS",
+                defaults.header_read_timeout,
+            )?)?
+            .with_request_timeout(timeout(
+                "KNOTREL_REQUEST_TIMEOUT_MS",
+                defaults.request_timeout,
+            )?)?
+            .with_shutdown_timeout(timeout(
+                "KNOTREL_SHUTDOWN_TIMEOUT_MS",
+                defaults.shutdown_timeout,
+            )?)
     }
+}
+
+// Strict ASCII decimal: no sign, whitespace, separators or empty strings.
+fn parse_decimal(key: &str, value: &str) -> Result<usize, ConfigError> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ConfigError(format!(
+            "{key} must be a positive decimal integer"
+        )));
+    }
+    value
+        .parse()
+        .map_err(|_| ConfigError(format!("{key} is out of range")))
+}
+
+fn check_connections(limit: usize) -> Result<usize, ConfigError> {
+    if limit == 0 || limit > ServerConfig::MAX_CONNECTIONS_LIMIT {
+        return Err(ConfigError(format!(
+            "KNOTREL_MAX_CONNECTIONS must be between 1 and {}",
+            ServerConfig::MAX_CONNECTIONS_LIMIT
+        )));
+    }
+    Ok(limit)
+}
+
+fn check_timeout(key: &str, timeout: Duration) -> Result<Duration, ConfigError> {
+    if timeout.is_zero() || timeout > ServerConfig::MAX_TIMEOUT {
+        return Err(ConfigError(format!(
+            "{key} must be between 1 and {} milliseconds",
+            ServerConfig::MAX_TIMEOUT.as_millis()
+        )));
+    }
+    Ok(timeout)
 }
 
 #[cfg(test)]
@@ -358,6 +502,63 @@ mod tests {
         let any: SocketAddr = "0.0.0.0:1".parse().unwrap();
         assert!(ServerConfig::new(any, EngineConfig::Hdt, 1).is_err());
         assert!(ServerConfig::new_allowing_non_loopback(any, EngineConfig::Hdt, 1).is_ok());
+    }
+
+    #[test]
+    fn lifecycle_settings_default_load_and_reject_unbounded_values() {
+        let defaults = ServerConfig::from_variables([]).unwrap();
+        assert_eq!(defaults.max_connections(), 1024);
+        assert_eq!(defaults.header_read_timeout(), Duration::from_secs(5));
+        assert_eq!(defaults.request_timeout(), Duration::from_secs(30));
+        assert_eq!(defaults.shutdown_timeout(), Duration::from_secs(10));
+        let loaded = ServerConfig::from_variables([
+            ("KNOTREL_MAX_CONNECTIONS".into(), "3".into()),
+            ("KNOTREL_HEADER_READ_TIMEOUT_MS".into(), "1".into()),
+            ("KNOTREL_REQUEST_TIMEOUT_MS".into(), "250".into()),
+            ("KNOTREL_SHUTDOWN_TIMEOUT_MS".into(), "3600000".into()),
+        ])
+        .unwrap();
+        assert_eq!(loaded.max_connections(), 3);
+        assert_eq!(loaded.header_read_timeout(), Duration::from_millis(1));
+        assert_eq!(loaded.request_timeout(), Duration::from_millis(250));
+        assert_eq!(loaded.shutdown_timeout(), Duration::from_secs(3600));
+        let common = [
+            "",
+            "0",
+            "-1",
+            "+1",
+            " 1",
+            "1.5",
+            "1s",
+            "unlimited",
+            "18446744073709551616",
+        ];
+        let cases = [
+            ("KNOTREL_MAX_CONNECTIONS", "1000001"),
+            ("KNOTREL_HEADER_READ_TIMEOUT_MS", "3600001"),
+            ("KNOTREL_REQUEST_TIMEOUT_MS", "3600001"),
+            ("KNOTREL_SHUTDOWN_TIMEOUT_MS", "3600001"),
+        ];
+        for (key, over_limit) in cases {
+            for value in common.into_iter().chain([over_limit]) {
+                let error = ServerConfig::from_variables([(key.into(), value.into())])
+                    .map(|_| ())
+                    .unwrap_err();
+                assert!(error.to_string().starts_with(key), "{key}={value}");
+            }
+        }
+        assert!(defaults.clone().with_max_connections(0).is_err());
+        assert!(
+            defaults
+                .clone()
+                .with_request_timeout(Duration::ZERO)
+                .is_err()
+        );
+        assert!(
+            defaults
+                .with_shutdown_timeout(Duration::from_secs(3601))
+                .is_err()
+        );
     }
 
     #[cfg(unix)]

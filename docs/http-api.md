@@ -15,7 +15,8 @@ non-guarantee. Default address: `127.0.0.1:8080`.
   after it completes. Graph state changes only through `/v1/operations` and
   `/v1/batch`.
 - **Restart loses the whole graph.** Nothing is written to disk and nothing is
-  recovered.
+  recovered. A clean shutdown (SIGINT/SIGTERM) discards the graph too: the next
+  process always starts empty.
 
 ## Non-guarantees
 
@@ -29,9 +30,11 @@ The v0.1.0 preview does not provide any of the following:
 - authentication, authorization, TLS or protection against untrusted clients.
   Exposing the service beyond a trusted local boundary is unsupported (see
   [Trust model](#trust-model));
-- request, connection or graph-operation timeouts (see
-  [Resource bounds](#resource-bounds));
-- readiness or capacity signalling from `/health`.
+- cancellation of graph work: a request that times out, or whose client
+  disconnects, can still have its mutation applied (see
+  [Lifecycle, health and shutdown](#lifecycle-health-and-shutdown));
+- a graph-operation deadline, write timeouts or slow-reader protection;
+- capacity signalling from `/health` or `/ready`.
 
 ## Resource bounds
 
@@ -41,14 +44,17 @@ The v0.1.0 preview does not provide any of the following:
 | Batch length | 1–1024 operations, fixed |
 | Queued plus running graph jobs | `KNOTREL_MAX_PENDING_JOBS`, default 32; excess gets 503 `busy` |
 | Graph nodes / edges | `KNOTREL_MAX_NODES` / `KNOTREL_MAX_EDGES`; default 100 000 nodes and 500 000 edges, `unlimited` is an explicit opt-out |
-| Request, connection and read timeouts | none |
-| Concurrent connections and buffered bodies | none |
-| Memory and CPU per request | not bounded beyond the limits above |
+| Header read and keep-alive idle time | `KNOTREL_HEADER_READ_TIMEOUT_MS`, default 5000 ms |
+| Request time (body receipt plus handling) | `KNOTREL_REQUEST_TIMEOUT_MS`, default 30000 ms |
+| Concurrent connections | `KNOTREL_MAX_CONNECTIONS`, default 1024; excess gets 503 `too_many_connections` |
+| Shutdown drain | `KNOTREL_SHUTDOWN_TIMEOUT_MS`, default 10000 ms |
+| Write timeouts, per-request memory and CPU | not bounded beyond the limits above |
 
 The body and batch limits are enforced before the request is parsed or
 admitted to the graph worker. Graph limits are cardinalities, not memory, CPU or
-RSS ceilings, and no timeouts exist, so a client can still hold connections and
-consume CPU within them. This is why untrusted exposure is unsupported.
+RSS ceilings. Connection and time bounds limit idle and stalled clients, but a
+client can still consume CPU within them and a slow reader is not detected. This
+is why untrusted exposure is unsupported.
 Embedders that call `router(Graph)` keep the supplied graph's own (unlimited)
 limits; only `router_with_config` and the standalone executable apply the
 defaults above.
@@ -67,7 +73,7 @@ supported deployment is a single trusted local client:
   untrusted clients, including the public internet, stays unsupported.
 - If you must expose it to other hosts, put it behind a reverse proxy or
   gateway that provides TLS, authentication, authorization, rate limiting and
-  timeouts, and restrict the network path. A private network on its own is not
+  rate limiting and write timeouts, and restrict the network path. A private network on its own is not
   sufficient: every host on it is then trusted with full read/write access.
 - Logs contain the method, path, status and latency of each request and the
   startup settings. They never contain request bodies, node IDs or parser
@@ -181,11 +187,12 @@ order is the order of lock acquisition and is not otherwise specified, so
 clients must not infer ordering between requests that overlap in time. A
 request that is admitted but whose client disconnects can still complete.
 
-## Admission, cancellation and health
+## Admission and cancellation
 
 Each request body is limited to 1 MiB. By default, at most 32 graph jobs can be
-queued or running; `KNOTREL_MAX_PENDING_JOBS` sets this limit at startup. Admission occurs after JSON parsing; this limit bounds graph work, not
-the number of network connections or concurrently buffered HTTP bodies. Workers
+queued or running; `KNOTREL_MAX_PENDING_JOBS` sets this limit at startup.
+Admission occurs after JSON parsing; this limit bounds graph work, not buffered
+HTTP bodies (those are bounded by the connection limit times 1 MiB). Workers
 run outside Tokio's async executor. `busy` means no graph operation was admitted.
 
 Once admitted, a job may complete after a client disconnects. A lost response or
@@ -194,10 +201,72 @@ retried idempotently, although `changed` may differ on retry. A retry of a batch
 containing queries can observe newer state. There is no request deduplication or
 exactly-once delivery guarantee.
 
-`GET /health` returns `{"status":"ok"}` without taking the graph lock. This is
-process liveness, not a graph readiness or capacity check. Shutdown waits for
-active work; it does not impose a hard deadline on graph traversal or slow clients.
+## Lifecycle, health and shutdown
 
+### Probes
+
+| Route | Status | Body | Meaning |
+| --- | --- | --- | --- |
+| `GET /health` | 200 | `{"status":"ok"}` | Process liveness. Never takes the graph lock; stays 200 while draining. |
+| `GET /ready` | 200 | `{"status":"ready"}` | Initialized and accepting graph work. |
+| `GET /ready` | 503 | `{"status":"starting"}` | Router built, listener not yet serving. |
+| `GET /ready` | 503 | `{"status":"draining"}` | Shutdown has begun. |
+| `GET /ready` | 503 | `{"status":"unavailable"}` | The graph worker failed (panic or lost task). Work is rejected with `unavailable`; restart the process. |
+
+Precedence is `draining`, then `starting`, then `unavailable`. `/ready` carries
+`Cache-Control: no-store`, does not take the graph lock or an admission permit,
+and is not a capacity check (a full job queue still reports ready; clients see
+`busy`). In the standalone executable `starting` lasts only until the listener
+is serving, so external probes normally see connection refused rather than
+`starting` before readiness. Embedded routers created with `router(...)` or
+`router_with_config(...)` are always ready; `router_with_lifecycle(config,
+lifecycle)` exposes the phases, and `serve(...)` drives them.
+
+### Graceful shutdown
+
+On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:
+
+1. switches `/ready` to 503 `draining`;
+2. keeps accepting connections only so it can answer them: any request other
+   than `/health` or `/ready` is rejected with 503 and
+   `{"result":"error","code":"shutting_down",...}`, and every response carries
+   `Connection: close`;
+3. closes idle keep-alive connections and connections still reading request
+   headers, and lets requests that were already admitted (being received or
+   running) finish and answer normally, with `Connection: close`;
+4. exits once every connection has finished, or after
+   `KNOTREL_SHUTDOWN_TIMEOUT_MS`, whichever comes first. Connections still open
+   at the deadline are dropped.
+
+A rejection with `shutting_down` means the request was not admitted and no graph
+change occurred, so it is safe to retry elsewhere. A second signal forces
+immediate exit.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | Drained completely |
+| 1 | Invalid configuration or the listener could not be bound |
+| 2 | Drain deadline exceeded; connections were abandoned |
+| 130 | Second signal received during the drain |
+
+### Timeouts and connection bound
+
+- **Header read / idle.** `KNOTREL_HEADER_READ_TIMEOUT_MS` bounds the time
+  allowed to receive a complete request head, including the wait for the next
+  request on a keep-alive connection. A silent, slow-header or idle connection
+  is closed. There is no separate idle setting.
+- **Request.** `KNOTREL_REQUEST_TIMEOUT_MS` bounds body receipt plus handling.
+  When exceeded the client gets 503 `request_timeout` with `Connection: close`.
+  Cancelling the handler does not cancel a graph job that was already handed to
+  a worker, so **the outcome of a timed-out mutation is unknown**; reading the
+  graph afterwards (or retrying idempotently) resolves it.
+- **Connections.** At most `KNOTREL_MAX_CONNECTIONS` are served concurrently. An
+  extra connection receives a static 503 `too_many_connections` and is closed;
+  this write is best effort and a client may instead see a reset. Capacity is
+  reclaimed as connections close.
+- **Not provided.** Write timeouts and slow-reader protection, per-request CPU or
+  memory limits, and a deadline on an admitted graph traversal. A drain whose
+  graph job outlasts the shutdown timeout ends with exit status 2.
 
 ## Startup configuration and engine selection
 
@@ -212,6 +281,10 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
 | `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
 | `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |
+| `KNOTREL_MAX_CONNECTIONS` | ASCII decimal integer from 1 through 1000000 | `1024` |
+| `KNOTREL_HEADER_READ_TIMEOUT_MS` | ASCII decimal milliseconds from 1 through 3600000 | `5000` |
+| `KNOTREL_REQUEST_TIMEOUT_MS` | ASCII decimal milliseconds from 1 through 3600000 | `30000` |
+| `KNOTREL_SHUTDOWN_TIMEOUT_MS` | ASCII decimal milliseconds from 1 through 3600000 | `10000` |
 
 Unknown variables in the reserved `KNOTREL_` namespace, empty or non-Unicode
 values, unsupported engines and invalid addresses/limits fail startup. Values
@@ -248,7 +321,7 @@ size (1 MiB) and batch size (1–1024) are fixed in this version.
 ```
 
 The endpoint does not acquire the graph mutex or an admission permit, and
-contains no graph data. Like `/health`, it is not a readiness check. Engine and
+contains no graph data. It does not report the lifecycle phase; use `/ready`. Engine and
 limit fields describe the actual service instance, including embedded routers.
 The default response has `engine: "compact-bfs"`, `experimental: false` and
 `max_pending_jobs: 32`.
@@ -360,4 +433,4 @@ The marker is protected by the graph mutex and does not depend on mutex poisonin
 A partial mutation is not rolled back and cannot be read through `/v1/stats`.
 Recover by replacing/restarting the service; in-memory data is not persisted.
 Disconnecting an admitted stats caller does not release its permit before its worker finishes. `/v1/info`
-and `/health` remain independent of this queue and are not readiness checks.
+`/health` and `/ready` remain independent of this queue.

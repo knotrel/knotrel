@@ -28,7 +28,7 @@ Track high-level feature readiness across releases. Check off each feature when 
 - [x] **Feature 0.1.1:** Inventory and freeze minimum release scope (P0)
 - [x] **Feature 0.1.2:** Document v0.1.0 service contract (M0-min, P0)
 - [x] **Feature 0.1.3:** Establish a safe deployment boundary (M8-min, P0)
-- [ ] **Feature 0.1.4:** Minimal health, readiness and lifecycle (M4-min, P0)
+- [x] **Feature 0.1.4:** Minimal health, readiness and lifecycle (M4-min, P0)
 - [ ] **Feature 0.1.5:** Rust library adoption, API and examples (P0)
 - [ ] **Feature 0.1.6:** CI, packaging and release candidate validation (M9-min, P0)
 
@@ -159,13 +159,23 @@ revision is still to be collected once the change is pushed.
 
 ### 0.1.4 — Minimal health, readiness and lifecycle (M4-min, P0)
 
-- [ ] **Feature Complete: 0.1.4 — Minimal health, readiness and lifecycle**
-- [ ] **Implement or verify liveness** (`/health` or repo-consistent route) responding while the server process is functional; do not imply graph persistence.
-- [ ] **Implement or verify readiness** (`/ready` or repo-consistent route), true only after initialization and false during startup/shutdown or known fatal conditions; define exact states in documentation.
-- [ ] **Handle SIGINT/SIGTERM gracefully:** stop accepting requests, bound the drain period, exit with a meaningful status and avoid leaving corrupted protocol output. No disk-flush guarantee is required for a volatile graph.
-- [ ] **Validate startup configuration:** bind address/port, engine, graph limits, request size, logging and timeout defaults. Reject obviously inconsistent values clearly.
-- [ ] **Add lifecycle smoke tests:** startup, readiness transition, one mutation plus connectivity query, shutdown, restart with empty graph, failed bind and malformed configuration.
-- [ ] **Acceptance:** The server can be started, probed, stopped and restarted predictably, and the docs explicitly state that restart loses graph state.
+- [x] **Feature Complete: 0.1.4 — Minimal health, readiness and lifecycle**
+- [x] **Implement or verify liveness** (`/health` or repo-consistent route) responding while the server process is functional; do not imply graph persistence.
+- [x] **Implement or verify readiness** (`/ready` or repo-consistent route), true only after initialization and false during startup/shutdown or known fatal conditions; define exact states in documentation.
+- [x] **Handle SIGINT/SIGTERM gracefully:** stop accepting requests, bound the drain period, exit with a meaningful status and avoid leaving corrupted protocol output. No disk-flush guarantee is required for a volatile graph.
+- [x] **Validate startup configuration:** bind address/port, engine, graph limits, request size, logging and timeout defaults. Reject obviously inconsistent values clearly.
+- [x] **Add lifecycle smoke tests:** startup, readiness transition, one mutation plus connectivity query, shutdown, restart with empty graph, failed bind and malformed configuration.
+- [x] **Acceptance:** The server can be started, probed, stopped and restarted predictably, and the docs explicitly state that restart loses graph state.
+
+Evidence: [`/ready` and lifecycle contract](docs/http-api.md#lifecycle-health-and-shutdown);
+in-process socket tests ([lifecycle](crates/knotrel-server/tests/lifecycle.rs)) and
+real-binary SIGTERM/SIGINT tests ([process](crates/knotrel-server/tests/process.rs), Unix only);
+invalid-configuration cases in [startup](crates/knotrel-server/tests/startup.rs).
+"Stop accepting" means new work is rejected with 503 `shutting_down` (the listener
+stays open during the drain only to answer such requests). Limits: tests ran in debug
+mode locally only, so release-mode smoke tests per target, Windows signal behavior and
+CI on the exact revision remain unevidenced; there is no write timeout or slow-reader
+protection, and a timed-out mutation has an unknown outcome.
 
 ### 0.1.5 — Rust library adoption and examples (P0)
 

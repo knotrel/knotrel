@@ -67,8 +67,14 @@ experimental level-based HDT engine. `GET /v1/info` reports the effective engine
 locking the graph. Settings cannot be changed through operation requests.
 See [configuration and API details](docs/http-api.md#startup-configuration-and-engine-selection).
 
-Ctrl-C and Unix SIGTERM drain active requests. All graph data is lost when the
-process exits; restarting with another engine does not migrate existing data.
+`GET /ready` reports readiness (`ready`, or 503 `starting`/`draining`/`unavailable`);
+`GET /health` is liveness only. On SIGINT or Unix SIGTERM the server turns
+unready, rejects new graph work with 503 `shutting_down`, lets admitted requests
+finish and exits 0, or exits 2 once `KNOTREL_SHUTDOWN_TIMEOUT_MS` (default 10 s)
+expires. Header-read, request and connection limits are configurable; see
+[lifecycle details](docs/http-api.md#lifecycle-health-and-shutdown). All graph
+data is lost when the process exits or restarts; restarting with another engine
+does not migrate existing data.
 
 ```sh
 curl -sS http://127.0.0.1:8080/v1/operations \

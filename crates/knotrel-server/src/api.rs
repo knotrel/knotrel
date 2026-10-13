@@ -200,14 +200,14 @@ pub(crate) async fn logging_middleware(
     let latency = start.elapsed();
     let status = response.status().as_u16();
 
-    // Log health checks at trace level to avoid log pollution in orchestration environments.
-    if uri == "/health" {
+    // Log probes at trace level to avoid log pollution in orchestration environments.
+    if uri == "/health" || uri == "/ready" {
         tracing::trace!(
             method = %method,
             uri = %uri,
             status,
             latency_us = latency.as_micros(),
-            "health check"
+            "probe"
         );
     } else {
         tracing::info!(
@@ -280,7 +280,7 @@ fn service_error(error: ServiceError) -> Response {
     error_response(StatusCode::SERVICE_UNAVAILABLE, code, message.into())
 }
 
-fn error_response(status: StatusCode, code: &'static str, message: String) -> Response {
+pub(crate) fn error_response(status: StatusCode, code: &'static str, message: String) -> Response {
     (status, Json(Outcome::Error { code, message })).into_response()
 }
 

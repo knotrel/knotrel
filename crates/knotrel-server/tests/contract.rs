@@ -272,7 +272,8 @@ async fn unregistered_paths_and_methods_are_rejected_without_state_changes() {
         ("POST", "/health", StatusCode::METHOD_NOT_ALLOWED),
         ("POST", "/v1/info", StatusCode::METHOD_NOT_ALLOWED),
         ("POST", "/v1/stats", StatusCode::METHOD_NOT_ALLOWED),
-        ("GET", "/ready", StatusCode::NOT_FOUND),
+        ("POST", "/ready", StatusCode::METHOD_NOT_ALLOWED),
+        ("GET", "/readyz", StatusCode::NOT_FOUND),
         ("POST", "/v1/operations/", StatusCode::NOT_FOUND),
         ("POST", "/operations", StatusCode::NOT_FOUND),
     ] {

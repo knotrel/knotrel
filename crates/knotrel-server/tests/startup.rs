@@ -31,6 +31,16 @@ fn invalid_environment_exits_promptly_with_the_setting_name() {
         ("KNOTREL_ADDR", "[::]:0"),
         ("KNOTREL_ALLOW_NON_LOOPBACK", "maybe"),
         ("KNOTREL_ALLOW_NON_LOOPBACK", "1"),
+        ("KNOTREL_MAX_CONNECTIONS", "0"),
+        ("KNOTREL_MAX_CONNECTIONS", "1000001"),
+        ("KNOTREL_MAX_CONNECTIONS", "unlimited"),
+        ("KNOTREL_HEADER_READ_TIMEOUT_MS", "0"),
+        ("KNOTREL_HEADER_READ_TIMEOUT_MS", "5s"),
+        ("KNOTREL_REQUEST_TIMEOUT_MS", ""),
+        ("KNOTREL_REQUEST_TIMEOUT_MS", "-1"),
+        ("KNOTREL_REQUEST_TIMEOUT_MS", "3600001"),
+        ("KNOTREL_SHUTDOWN_TIMEOUT_MS", "0"),
+        ("KNOTREL_SHUTDOWN_TIMEOUT_MS", "1.5"),
     ] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_knotrel-server"))
             .env_clear()
