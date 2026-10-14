@@ -150,14 +150,76 @@ repeated failed replacement work. Select it with `KNOTREL_ENGINE=hdt` or
 update bounds are amortized, not per-request latency guarantees. Compact BFS
 remains the default. See [HDT design and limits](docs/architecture/0008-experimental-hdt.md).
 
-## Engine Selection and Recommendations
+## Using `knotrel-core` as a Rust Library
 
-### Production (Default & Opt-in)
-- **[`Graph`](crates/knotrel-core/src/lib.rs) with [`BfsWorkspace`](crates/knotrel-core/src/workspace.rs) (`compact-workspace`)**: The most balanced and highest-performing solution for 84% of general workloads, consistently outperforming `petgraph` in both mutations (`link`/`cut`) and exact reachability queries (`connected`).
+`knotrel-core` provides synchronous, exact dynamic connectivity without HTTP or async dependencies.
 
-### Polylogarithmic Specializations
-- **[`ForestGraph`](crates/knotrel-core/src/dynamic.rs) (ETT)**: Dominates read-dominated workloads (90% queries) and real-world network topologies (e.g. Cogentco), outperforming `petgraph` by 30x–50x.
-- **[`HdtGraph`](crates/knotrel-core/src/hdt.rs) (HDT)**: Dominates dense graphs with complex component structures and frequent bridge cuts, outperforming `petgraph` by 13x–31x.
+Because packages in this repository are currently in preview development (`publish = false`),
+integrate `knotrel-core` via path or git:
+
+```toml
+[dependencies]
+# Local path dependency:
+knotrel-core = { path = "path/to/knotrel/crates/knotrel-core" }
+# Or via git repository:
+# knotrel-core = { git = "https://github.com/knotrel/knotrel.git" }
+# Future registry dependency (once published):
+# knotrel-core = "0.1.0"
+```
+
+### Quick start
+
+```rust
+use knotrel_core::{ConnectivityGraph, EngineConfig};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut graph = ConnectivityGraph::new(EngineConfig::CompactBfs);
+
+    graph.add_node(1)?;
+    graph.add_node(2)?;
+    graph.link(1, 2)?;
+
+    assert!(graph.connected(1, 2)?);
+
+    graph.cut(1, 2)?;
+    assert!(!graph.connected(1, 2)?);
+
+    Ok(())
+}
+```
+
+See runnable Cargo examples in [`crates/knotrel-core/examples`](crates/knotrel-core/examples):
+- `cargo run -p knotrel-core --example basic`
+- `cargo run -p knotrel-core --example bulk_import`
+- `cargo run -p knotrel-core --example engine_selection`
+
+## Engine Selection and Guidance
+
+Knotrel provides three dynamic connectivity engines via [`EngineConfig`](crates/knotrel-core/src/configuration.rs):
+
+### 1. Compact BFS (`EngineConfig::CompactBfs`) — Default
+- **Algorithmic properties**: Sorted adjacency vectors with stable internal indices; $O(V + E)$ worst-case BFS queries; $O(\text{deg}(u) + \text{deg}(v))$ amortized link and cut; $O(V + E)$ logical memory. Adding vertices can trigger an $O(V)$ outer-vector reallocation.
+- **Workload expectations**: Contiguous memory layout and low allocation overhead. Best suited for general workloads or mutation-heavy workloads where mutations dominate queries.
+- **Limitations**: Query latency scales with component size in the worst case.
+
+### 2. Euler Tour Trees (`EngineConfig::EulerTour`) — Experimental
+- **Algorithmic properties**: Single spanning forest using AVL-balanced Euler tour sequences. $O(\log V)$ algorithmic queries by comparing tour roots. $O(\log V + \log E)$ amortized link and non-tree cut. Tree cuts partition the tree and scan non-tree edges of the smaller component ($O(\log V + \log E + s + c \log V)$ amortized) using candidate-pruned subtrees.
+- **Workload expectations**: Effective for query-dominated workloads and tree-like topologies where replacement searches are rare.
+- **Limitations**: In dense cyclic subgraphs with frequent bridge cuts, lacking an edge-level hierarchy can cause repeated scans over the same non-tree edges.
+
+### 3. Holm–de Lichtenberg–Thorup (`EngineConfig::Hdt`) — Experimental
+- **Algorithmic properties**: Deterministic implementation of Holm, de Lichtenberg, and Thorup (2001) with an append-only growth policy for expanding vertex universes. Maintains a hierarchy of $O(\log V)$ levels materialized lazily as promotions require them. Promotes examined tree and non-tree edges to upper levels during downward search, bounding amortized updates to $O(\log^2 V)$; queries take $O(\log V)$; logical memory is $O(E + V \log V)$.
+- **Workload expectations**: Avoids repeated scan storms in dense graphs undergoing frequent bridge cuts.
+- **Limitations**: Higher structural complexity and memory footprint can mean higher constant factors on small or sparse graphs; verify against your actual workload. Amortized bounds represent sequence averages rather than worst-case per-request latency bounds.
+
+### Complexity & Memory Qualifications
+- **Algorithmic vs. API costs**: Algorithmic complexity bounds apply to internal index structures. The public API maps external `NodeId` (`u64`) keys via hash maps (`IntMap` / `FxHashMap`), which rely on expected $O(1)$ lookups and do not offer deterministic worst-case constant bounds for arbitrary ID distributions.
+- **Logical memory vs. heap/RSS**: Stated memory bounds ($O(V + E)$ and $O(E + V \log V)$) describe logical graph entity storage. Allocated vector capacities are retained after cuts and do not bound process heap memory or RSS.
+
+### Empirical findings and recommendations
+- **No universal winner**: Benchmark comparisons show that no single engine dominates across all topologies and operation mixes.
+- **Uncertain workloads**: If the benchmark repository does not test your specific graph scale and topology, do not assume polylogarithmic engines are faster.
+- **Pragmatic advice**: Start with **Compact BFS** (`EngineConfig::CompactBfs`) as the simple, robust, low-memory default. Consider **ETT** for query-dominated workloads on trees/forests, or **HDT** for dense graphs with frequent bridge cuts, empirically measuring actual topology, scale, and mutation mix.
 
 ## Graph cardinality limits
 

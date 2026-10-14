@@ -147,7 +147,7 @@ impl Level {
 /// vertices. This is an experimental implementation, not a production latency
 /// guarantee. Compact BFS remains the default engine.
 ///
-/// Queries cost O(log V) worst case, with O(1) ID translation, and allocate no
+/// Queries cost O(log V) algorithmically on the base forest, with expected O(1) hash map ID lookup, and allocate no
 /// scratch. Across a history with at most N registered vertices, edge updates
 /// have O(log² N) amortized cost; one cut may still inspect many edges. Logical
 /// storage is O(E + V log V). Arenas/adjacency capacities retain historical highs.
@@ -328,7 +328,7 @@ impl HdtGraph {
         }
     }
 
-    /// Answers exact connectivity in O(log V), without allocation or mutation.
+    /// Answers exact connectivity in O(log V) algorithmic tree root time on level 0, with expected O(1) hash map ID lookup, without allocation or mutation.
     ///
     /// A known vertex connects to itself. Unknown source is reported first.
     /// # Errors

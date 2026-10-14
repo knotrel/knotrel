@@ -26,7 +26,7 @@ pub struct ForestStats {
 /// trees, or exhaustion proves a real split. This is not HDT: repeated scans have
 /// no polylogarithmic amortized bound. The default [`crate::Graph`] is unchanged.
 ///
-/// AVL root queries cost O(log V), with O(1) ID translation. Link costs
+/// AVL root queries cost O(log V) algorithmically, with expected O(1) ID hash map translation. Link costs
 /// O(log V + log E) amortized including arena growth. A tree cut costs (amortized for free-list growth)
 /// O(log V + log E + min(s, (k+1) log V) + c log V), where s is the
 /// smaller side size, k the yielded candidate-bearing vertices, and c the
@@ -145,7 +145,7 @@ impl ForestGraph {
         }
         Ok(true)
     }
-    /// Answers exact connectivity in O(log V) worst-case time without allocation.
+    /// Answers exact connectivity in O(log V) algorithmic tree root time, plus expected O(1) hash map lookup for node IDs, without allocation.
     ///
     /// Existing vertices connect to themselves, including isolated vertices.
     /// # Errors

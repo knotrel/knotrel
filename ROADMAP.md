@@ -193,13 +193,13 @@ because it may still be queued or running in the background, racing with later r
 
 ### 0.1.5 — Rust library adoption and examples (P0)
 
-- [ ] **Feature Complete: 0.1.5 — Rust library adoption and examples**
-- [ ] **Document public library API:** graph construction (`try_from_edges`), `add_node`, `link`, `cut`, `connected`, supported backends, limits, errors and update behavior. Verify names/signatures against source.
-- [ ] **Add runnable Rust examples:** minimal connected/disconnected graph, dynamic bridge cut/relink and bulk construction, with expected output. Ensure examples compile in CI.
-- [ ] **Explain engine choice:** simple, evidence-grounded guidance on BFS/ETT/HDT trade-offs; link to benchmark evidence while clearly stating limits and avoiding unsupported blanket performance claims.
-- [ ] **Audit public docs and API hygiene:** crate descriptions, license/README links, rustdoc examples, exposed types/traits, and whether package metadata is suitable for publication. Do not promise API stability before 1.0.
-- [ ] **Cross-check standalone library use:** examples should not require the HTTP server, private benchmark tools or a development-only directory structure.
-- [ ] **Acceptance:** A new Rust user can copy the README example into a fresh project and use core connectivity operations without understanding the internal algorithms.
+- [x] **Feature Complete: 0.1.5 — Rust library adoption and examples**
+- [x] **Document public library API:** graph construction (`try_from_edges`), `add_node`, `link`, `cut`, `connected`, supported backends, limits, errors and update behavior. Verify names/signatures against source.
+- [x] **Add runnable Rust examples:** minimal connected/disconnected graph, dynamic bridge cut/relink and bulk construction, with expected output. Ensure examples compile in CI.
+- [x] **Explain engine choice:** simple, evidence-grounded guidance on BFS/ETT/HDT trade-offs; link to benchmark evidence while clearly stating limits and avoiding unsupported blanket performance claims.
+- [x] **Audit public docs and API hygiene:** crate descriptions, license/README links, rustdoc examples, exposed types/traits, and whether package metadata is suitable for publication. Do not promise API stability before 1.0.
+- [x] **Cross-check standalone library use:** examples should not require the HTTP server, private benchmark tools or a development-only directory structure.
+- [x] **Acceptance:** A new Rust user can copy the README example into a fresh project and use core connectivity operations without understanding the internal algorithms.
 
 ### 0.1.6 — CI, packaging and release candidate (M9-min, P0)
 

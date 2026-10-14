@@ -7,10 +7,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98.1"
 repository = "https://github.com/knotrel/knotrel"
+license = "Elastic-2.0"
 publish = false
 
 [workspace.dependencies]
-knotrel-core = { path = "crates/knotrel-core" }
+knotrel-core = { path = "crates/knotrel-core", version = "0.1.0" }
 axum = "0.8.9"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "service"] }
@@ -42,3 +43,4 @@ broken_intra_doc_links = "deny"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
