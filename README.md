@@ -109,7 +109,7 @@ gates run on Linux.
 
 - [v0.1.0 release scope](docs/releases/v0.1.0-scope.md): supported preview surface,
   verified runtime matrix, release blockers and performance-validation plan.
-- [HTTP API](docs/http-api.md): operations, batch semantics, limits and errors.
+- [HTTP API](docs/http-api.md) ([OpenAPI specification](docs/openapi.yaml)): operations, batch semantics, limits, errors and standard OpenAPI definition.
 - [Architecture](docs/architecture/0001-foundation.md): contract, costs and scope.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.
 - [knotrel-benchmarks](https://github.com/knotrel/knotrel-benchmarks): reproducible

@@ -1,6 +1,9 @@
 //! Bounded CPU work and exclusive graph ownership for each request.
 
-use crate::api::{Operation, Outcome};
+use crate::{
+    Lifecycle,
+    api::{Operation, Outcome},
+};
 use knotrel_core::ConnectivityGraph;
 use parking_lot::Mutex;
 use std::sync::{
@@ -16,6 +19,7 @@ pub(crate) struct Service {
     permits: Arc<Semaphore>,
     // Lock-free mirror of GraphState::failed so readiness never waits for graph work.
     unavailable: Arc<AtomicBool>,
+    lifecycle: Lifecycle,
     info: crate::ServerInfo,
 }
 
@@ -94,9 +98,24 @@ pub(crate) enum ServiceError {
     Unavailable,
 }
 
+/// Worker-owned RAII failure guard ensuring any panic during execution immediately
+/// marks the service unavailable, even if the awaiting async caller was cancelled.
+struct WorkerPanicGuard {
+    unavailable: Arc<AtomicBool>,
+    success: bool,
+}
+
+impl Drop for WorkerPanicGuard {
+    fn drop(&mut self) {
+        if !self.success {
+            self.unavailable.store(true, Ordering::Release);
+        }
+    }
+}
+
 impl Service {
     /// Creates the service; zero capacity intentionally rejects every request.
-    pub(crate) fn new(graph: ConnectivityGraph, capacity: usize) -> Self {
+    pub(crate) fn new(graph: ConnectivityGraph, capacity: usize, lifecycle: Lifecycle) -> Self {
         let engine = graph.engine();
         Self {
             info: crate::ServerInfo {
@@ -115,6 +134,7 @@ impl Service {
             })),
             permits: Arc::new(Semaphore::new(capacity)),
             unavailable: Arc::new(AtomicBool::new(false)),
+            lifecycle,
         }
     }
 
@@ -169,20 +189,29 @@ impl Service {
             );
             ServiceError::Busy
         })?;
+        let job_guard = self.lifecycle.track_job();
+        let lifecycle = self.lifecycle.clone();
         let graph = self.graph.clone();
         let unavailable = self.unavailable.clone();
         let failure_flag = self.unavailable.clone();
         tokio::task::spawn_blocking(move || {
+            let _job_guard = job_guard;
             let _permit = permit;
+            let mut panic_guard = WorkerPanicGuard {
+                unavailable: unavailable.clone(),
+                success: false,
+            };
+            lifecycle.check_worker_hook();
             let mut graph = graph.lock();
             if graph.failed {
                 tracing::warn!("graph worker state marked as failed; rejecting work");
-                unavailable.store(true, Ordering::Release);
+                panic_guard.unavailable.store(true, Ordering::Release);
                 return Err(ServiceError::Unavailable);
             }
             graph.failed = true;
             let result = work(&mut graph);
             graph.failed = false;
+            panic_guard.success = true;
             Ok(result)
         })
         .await
@@ -209,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn saturated_service_rejects_without_mutating() {
-        let service = Service::new(ConnectivityGraph::default(), 1);
+        let service = Service::new(ConnectivityGraph::default(), 1, Lifecycle::new());
         let permit = service.permits.clone().acquire_owned().await.unwrap();
         assert!(matches!(
             service.execute(vec![add(9)]).await,
@@ -224,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_caller_does_not_release_a_running_workers_permit() {
-        let service = Service::new(ConnectivityGraph::default(), 1);
+        let service = Service::new(ConnectivityGraph::default(), 1, Lifecycle::new());
         let graph = service.graph.clone();
         let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -259,6 +288,7 @@ mod tests {
         .unwrap();
         assert_eq!(service.graph.lock().graph.connected(7, 7), Ok(true));
     }
+
     #[test]
     fn decimal_version_carries_without_wrapping_or_losing_precision() {
         for (before, after) in [
@@ -292,7 +322,7 @@ mod tests {
             routing::get,
         };
         use tower::ServiceExt;
-        let service = Service::new(ConnectivityGraph::default(), 1);
+        let service = Service::new(ConnectivityGraph::default(), 1, Lifecycle::new());
         let app = Router::new()
             .route("/v1/stats", get(crate::api::stats))
             .route("/v1/info", get(crate::api::info))
@@ -344,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn panicked_writer_rejects_queued_and_future_work() {
-        let service = Service::new(ConnectivityGraph::default(), 2);
+        let service = Service::new(ConnectivityGraph::default(), 2, Lifecycle::new());
         let writer = service.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -401,8 +431,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worker_panic_after_caller_cancellation_marks_ready_unavailable() {
+        let lifecycle = Lifecycle::ready();
+        let service = Service::new(ConnectivityGraph::default(), 1, lifecycle.clone());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let writer = service.clone();
+        let job = tokio::spawn(async move {
+            writer
+                .run(move |state| {
+                    state.apply(add(1));
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    panic!("test worker panic after caller cancel");
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+        // Cancel the awaiting caller before the panic occurs.
+        job.abort();
+        let _ = job.await;
+        // Release worker so it panics on the blocking thread.
+        release_tx.send(()).unwrap();
+        // Wait until worker thread completes unwind and releases job guard.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while lifecycle.outstanding_jobs() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Without submitting any further graph jobs, /ready must become 503 unavailable!
+        assert!(service.is_unavailable());
+        let response = crate::lifecycle::readiness(&lifecycle, &service);
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
     async fn admitted_stats_wait_for_the_entire_locked_job_and_retain_permit_on_cancel() {
-        let service = Service::new(ConnectivityGraph::default(), 2);
+        let service = Service::new(ConnectivityGraph::default(), 2, Lifecycle::new());
         let writer = service.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -442,5 +512,83 @@ mod tests {
         let snapshot = service.stats().await.unwrap();
         assert_eq!(snapshot.node_count, 2);
         assert_eq!(snapshot.state_version, "2");
+    }
+
+    #[tokio::test]
+    async fn queued_job_behind_blocked_worker_preserves_accounting_on_caller_cancellation() {
+        let lifecycle = Lifecycle::ready();
+        let service = Service::new(ConnectivityGraph::default(), 2, lifecycle.clone());
+
+        let (w1_started_tx, w1_started_rx) = tokio::sync::oneshot::channel();
+        let (w1_release_tx, w1_release_rx) = std::sync::mpsc::channel();
+        let (w2_done_tx, w2_done_rx) = std::sync::mpsc::channel();
+
+        let s1 = service.clone();
+        let job1 = tokio::spawn(async move {
+            s1.run(move |state| {
+                state.apply(add(1));
+                w1_started_tx.send(()).unwrap();
+                w1_release_rx.recv().unwrap();
+            })
+            .await
+        });
+        w1_started_rx.await.unwrap();
+        assert_eq!(lifecycle.outstanding_jobs(), 1);
+
+        let s2 = service.clone();
+        let job2 = tokio::spawn(async move {
+            s2.run(move |state| {
+                state.apply(add(2));
+                w2_done_tx.send(()).unwrap();
+            })
+            .await
+        });
+
+        // Wait until job2 is admitted and running in spawn_blocking (accounting = 2).
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while lifecycle.outstanding_jobs() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // Cancel job2's awaiting async caller.
+        job2.abort();
+        let _ = job2.await;
+
+        // Accounting must remain 2 while job2 is queued/blocked behind job1.
+        assert_eq!(lifecycle.outstanding_jobs(), 2);
+
+        // Release job1 so job2 can acquire the lock and finish.
+        w1_release_tx.send(()).unwrap();
+        job1.await.unwrap().unwrap();
+        w2_done_rx.recv().unwrap();
+
+        // Once job2 finishes, accounting must drop to 0.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while lifecycle.outstanding_jobs() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(lifecycle.outstanding_jobs(), 0);
+    }
+
+    #[tokio::test]
+    async fn early_rejection_due_to_failed_graph_decrements_job_accounting_to_zero() {
+        let lifecycle = Lifecycle::ready();
+        let service = Service::new(ConnectivityGraph::default(), 1, lifecycle.clone());
+
+        // Mark graph as failed directly.
+        service.graph.lock().failed = true;
+
+        // Submitting an operation must be rejected with Unavailable.
+        let result = service.execute(vec![add(1)]).await;
+        assert!(matches!(result, Err(ServiceError::Unavailable)));
+
+        // Job guard must have been dropped, returning outstanding jobs to 0.
+        assert_eq!(lifecycle.outstanding_jobs(), 0);
     }
 }

@@ -1,0 +1,670 @@
+openapi: 3.1.0
+info:
+  title: Knotrel HTTP API
+  version: 0.1.0-preview
+  description: |
+    REST API for Knotrel, an in-memory dynamic graph connectivity service.
+
+    Knotrel maintains an undirected simple graph in memory and answers dynamic connectivity
+    queries across incremental edge/vertex insertions and deletions.
+
+    For full operational semantics, trust model, and lifecycle details, see
+    [http-api.md](http-api.md).
+servers:
+  - url: http://127.0.0.1:8080
+    description: Default local server address
+
+paths:
+  /health:
+    get:
+      summary: Liveness probe
+      description: |
+        Process liveness probe. Returns HTTP 200 while the server process is functional.
+        Never acquires the graph lock and stays 200 during graceful shutdown draining.
+      tags:
+        - Lifecycle
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+
+  /ready:
+    get:
+      summary: Readiness probe
+      description: |
+        Reports whether the server is initialized and accepting graph operations.
+        Does not acquire the graph lock or an admission permit. Always returns
+        `Cache-Control: no-store`.
+      tags:
+        - Lifecycle
+      responses:
+        '200':
+          description: Server is initialized and accepting graph work
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessReadyResponse'
+              example:
+                status: ready
+        '503':
+          description: Server is not ready (starting up, draining for shutdown, or graph worker failed)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessNotReadyResponse'
+              examples:
+                starting:
+                  summary: Starting up
+                  value:
+                    status: starting
+                draining:
+                  summary: Graceful shutdown in progress
+                  value:
+                    status: draining
+                unavailable:
+                  summary: Graph worker failed or panicked
+                  value:
+                    status: unavailable
+
+  /v1/info:
+    get:
+      summary: Server configuration and metadata
+      description: |
+        Returns effective immutable configuration settings and engine selection.
+        Does not acquire the graph lock or an admission permit.
+      tags:
+        - Metadata
+      responses:
+        '200':
+          description: Effective server configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerInfo'
+              example:
+                engine: compact-bfs
+                experimental: false
+                max_pending_jobs: 32
+                max_body_bytes: 1048576
+                max_batch_operations: 1024
+                max_nodes: 100000
+                max_edges: 500000
+
+  /v1/stats:
+    get:
+      summary: Live graph state snapshot
+      description: |
+        Returns a coherent snapshot of the live graph's node and edge counts,
+        configured capacity bounds, remaining capacity, and state revision.
+        Acquires the graph lock on a blocking worker and shares the bounded admission queue.
+        Always returns `Cache-Control: no-store`.
+      tags:
+        - Metadata
+      responses:
+        '200':
+          description: Coherent graph snapshot
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphSnapshot'
+              example:
+                node_count: 42000
+                edge_count: 68000
+                max_nodes: 100000
+                max_edges: 500000
+                remaining_nodes: 58000
+                remaining_edges: 432000
+                state_version: "157"
+        '503':
+          description: Request capacity exhausted (`busy`) or graph worker unavailable (`unavailable`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              examples:
+                busy:
+                  summary: Queue saturated
+                  value:
+                    result: error
+                    code: busy
+                    message: "request capacity exhausted; retry later"
+                unavailable:
+                  summary: Worker unavailable
+                  value:
+                    result: error
+                    code: unavailable
+                    message: "graph worker unavailable"
+
+  /v1/operations:
+    post:
+      summary: Execute a single graph operation
+      description: |
+        Executes a single graph mutation (`add_node`, `link`, `cut`) or query (`connected`)
+        under exclusive graph lock. Request body must be valid JSON within 1 MiB.
+      tags:
+        - Operations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Operation'
+            examples:
+              add_node:
+                summary: Add isolated vertex
+                value:
+                  op: add_node
+                  node: "1"
+              link:
+                summary: Insert undirected edge
+                value:
+                  op: link
+                  source: "1"
+                  target: "2"
+              cut:
+                summary: Remove undirected edge
+                value:
+                  op: cut
+                  source: "1"
+                  target: "2"
+              connected:
+                summary: Query connectivity
+                value:
+                  op: connected
+                  source: "1"
+                  target: "2"
+      responses:
+        '200':
+          description: Operation completed successfully
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ChangedOutcome'
+                  - $ref: '#/components/schemas/ConnectedOutcome'
+              examples:
+                mutation_changed:
+                  summary: Mutation applied (topology changed)
+                  value:
+                    result: changed
+                    changed: true
+                mutation_noop:
+                  summary: Mutation applied as no-op (no change)
+                  value:
+                    result: changed
+                    changed: false
+                query_connected:
+                  summary: Vertices are connected
+                  value:
+                    result: connected
+                    connected: true
+                query_disconnected:
+                  summary: Vertices are disconnected
+                  value:
+                    result: connected
+                    connected: false
+        '400':
+          description: Malformed JSON syntax
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              example:
+                result: error
+                code: invalid_request
+                message: "request body is not valid JSON"
+        '404':
+          description: Unknown query vertex
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              example:
+                result: error
+                code: unknown_node
+                message: "unknown node: 3"
+        '413':
+          description: Request body exceeds 1 MiB limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              example:
+                result: error
+                code: invalid_request
+                message: "request body exceeded 1048576 bytes"
+        '415':
+          description: Missing or unsupported JSON Content-Type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              example:
+                result: error
+                code: invalid_request
+                message: "Expected request with `Content-Type: application/json`"
+        '422':
+          description: Invalid request shape, self-loop, or capacity limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              examples:
+                shape:
+                  summary: Missing required field or invalid format
+                  value:
+                    result: error
+                    code: invalid_request
+                    message: "missing field `op`"
+                self_loop:
+                  summary: Self-loop not permitted
+                  value:
+                    result: error
+                    code: self_loop
+                    message: "self-loops are not allowed"
+                node_limit:
+                  summary: Node capacity ceiling exceeded
+                  value:
+                    result: error
+                    code: node_limit_exceeded
+                    message: "node capacity limit exceeded"
+                edge_limit:
+                  summary: Edge capacity ceiling exceeded
+                  value:
+                    result: error
+                    code: edge_limit_exceeded
+                    message: "edge capacity limit exceeded"
+        '503':
+          description: Server busy, unavailable, shutting down, or request timeout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              examples:
+                busy:
+                  summary: Job queue capacity exhausted
+                  value:
+                    result: error
+                    code: busy
+                    message: "request capacity exhausted; retry later"
+                unavailable:
+                  summary: Graph worker failed or panicked
+                  value:
+                    result: error
+                    code: unavailable
+                    message: "graph worker unavailable"
+                shutting_down:
+                  summary: Server is draining
+                  value:
+                    result: error
+                    code: shutting_down
+                    message: "server is shutting down"
+
+  /v1/batch:
+    post:
+      summary: Execute an ordered batch of graph operations
+      description: |
+        Executes between 1 and 1024 operations under a single graph lock acquisition.
+        Results correspond one-to-one with the input operations.
+        Batches do not provide rollback: subsequent failures do not revert earlier operations.
+      tags:
+        - Operations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchRequest'
+            example:
+              operations:
+                - op: link
+                  source: "1"
+                  target: "2"
+                - op: connected
+                  source: "1"
+                  target: "2"
+                - op: cut
+                  source: "1"
+                  target: "2"
+      responses:
+        '200':
+          description: Batch executed; per-operation outcomes returned in order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+              example:
+                results:
+                  - result: changed
+                    changed: true
+                  - result: connected
+                    connected: true
+                  - result: changed
+                    changed: true
+        '400':
+          description: Malformed JSON syntax
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              example:
+                result: error
+                code: invalid_request
+                message: "request body is not valid JSON"
+        '413':
+          description: Request body exceeds 1 MiB limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              example:
+                result: error
+                code: invalid_request
+                message: "request body exceeded 1048576 bytes"
+        '415':
+          description: Missing or unsupported JSON Content-Type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              example:
+                result: error
+                code: invalid_request
+                message: "Expected request with `Content-Type: application/json`"
+        '422':
+          description: Invalid batch size (not 1–1024) or invalid operation shape in batch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              examples:
+                batch_size:
+                  summary: Batch size outside 1–1024
+                  value:
+                    result: error
+                    code: invalid_batch_size
+                    message: "batches must contain 1 to 1024 operations"
+                shape:
+                  summary: Invalid field or ID format in operation
+                  value:
+                    result: error
+                    code: invalid_request
+                    message: "node IDs must be nonempty strings of ASCII decimal digits"
+        '503':
+          description: Server busy, unavailable, or shutting down
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+
+components:
+  schemas:
+    NodeId:
+      type: string
+      pattern: '^[0-9]+$'
+      description: |
+        Nonempty string of ASCII decimal digits representing an unsigned 64-bit integer
+        (0 through 18446744073709551615). Leading zeroes are accepted and normalized.
+      example: "42"
+
+    AddNodeOperation:
+      type: object
+      required:
+        - op
+        - node
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [add_node]
+        node:
+          $ref: '#/components/schemas/NodeId'
+
+    LinkOperation:
+      type: object
+      required:
+        - op
+        - source
+        - target
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [link]
+        source:
+          $ref: '#/components/schemas/NodeId'
+        target:
+          $ref: '#/components/schemas/NodeId'
+
+    CutOperation:
+      type: object
+      required:
+        - op
+        - source
+        - target
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [cut]
+        source:
+          $ref: '#/components/schemas/NodeId'
+        target:
+          $ref: '#/components/schemas/NodeId'
+
+    ConnectedOperation:
+      type: object
+      required:
+        - op
+        - source
+        - target
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [connected]
+        source:
+          $ref: '#/components/schemas/NodeId'
+        target:
+          $ref: '#/components/schemas/NodeId'
+
+    Operation:
+      oneOf:
+        - $ref: '#/components/schemas/AddNodeOperation'
+        - $ref: '#/components/schemas/LinkOperation'
+        - $ref: '#/components/schemas/CutOperation'
+        - $ref: '#/components/schemas/ConnectedOperation'
+      discriminator:
+        propertyName: op
+
+    ChangedOutcome:
+      type: object
+      required:
+        - result
+        - changed
+      properties:
+        result:
+          type: string
+          enum: [changed]
+        changed:
+          type: boolean
+          description: True if graph connectivity structure changed; false for no-ops.
+
+    ConnectedOutcome:
+      type: object
+      required:
+        - result
+        - connected
+      properties:
+        result:
+          type: string
+          enum: [connected]
+        connected:
+          type: boolean
+          description: True if both vertices belong to the same connected component.
+
+    ErrorOutcome:
+      type: object
+      required:
+        - result
+        - code
+        - message
+      properties:
+        result:
+          type: string
+          enum: [error]
+        code:
+          type: string
+          description: Machine-readable error code.
+          example: unknown_node
+        message:
+          type: string
+          description: Human-readable error description.
+          example: "unknown node: 3"
+
+    Outcome:
+      oneOf:
+        - $ref: '#/components/schemas/ChangedOutcome'
+        - $ref: '#/components/schemas/ConnectedOutcome'
+        - $ref: '#/components/schemas/ErrorOutcome'
+      discriminator:
+        propertyName: result
+
+    BatchRequest:
+      type: object
+      required:
+        - operations
+      additionalProperties: false
+      properties:
+        operations:
+          type: array
+          minItems: 1
+          maxItems: 1024
+          items:
+            $ref: '#/components/schemas/Operation'
+
+    BatchResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Outcome'
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    ReadinessReadyResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [ready]
+
+    ReadinessNotReadyResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [starting, draining, unavailable]
+
+    ServerInfo:
+      type: object
+      required:
+        - engine
+        - experimental
+        - max_pending_jobs
+        - max_body_bytes
+        - max_batch_operations
+        - max_nodes
+        - max_edges
+      properties:
+        engine:
+          type: string
+          enum: [compact-bfs, ett, hdt]
+          description: Configured connectivity engine.
+        experimental:
+          type: boolean
+          description: Whether the engine is experimental.
+        max_pending_jobs:
+          type: integer
+          description: Maximum queued plus running graph operations.
+        max_body_bytes:
+          type: integer
+          description: Maximum allowed request body size in bytes.
+        max_batch_operations:
+          type: integer
+          description: Maximum operations in a single batch request.
+        max_nodes:
+          type: [integer, "null"]
+          description: Maximum node capacity bound, or null if unlimited.
+        max_edges:
+          type: [integer, "null"]
+          description: Maximum edge capacity bound, or null if unlimited.
+
+    GraphSnapshot:
+      type: object
+      required:
+        - node_count
+        - edge_count
+        - max_nodes
+        - max_edges
+        - remaining_nodes
+        - remaining_edges
+        - state_version
+      properties:
+        node_count:
+          type: integer
+          minimum: 0
+          description: Current count of registered vertices.
+        edge_count:
+          type: integer
+          minimum: 0
+          description: Current count of undirected edges.
+        max_nodes:
+          type: [integer, "null"]
+          description: Configured node limit ceiling, or null if unlimited.
+        max_edges:
+          type: [integer, "null"]
+          description: Configured edge limit ceiling, or null if unlimited.
+        remaining_nodes:
+          type: [integer, "null"]
+          description: Remaining vertex capacity before reaching limit, or null if unlimited.
+        remaining_edges:
+          type: [integer, "null"]
+          description: Remaining edge capacity before reaching limit, or null if unlimited.
+        state_version:
+          type: string
+          description: Decimal string monotonic version counter incremented on effective mutations.

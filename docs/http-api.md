@@ -2,7 +2,8 @@
 
 This document is the v0.1.0 preview contract. Every statement here is backed by
 an automated test (`crates/knotrel-server/tests/`) or is explicitly labeled a
-non-guarantee. Default address: `127.0.0.1:8080`.
+non-guarantee. A machine-readable standard definition is available in the
+[OpenAPI specification](openapi.yaml). Default address: `127.0.0.1:8080`.
 
 ## State and lifetime
 
@@ -145,7 +146,7 @@ a 400 response is fixed (`request body is not valid JSON`) and never contains
 parser internals, byte offsets or echoed input. A 422 shape error carries a
 short description such as "missing field `op`" or "request body does not match
 the expected shape". Unregistered paths use Axum's default 404 and wrong methods
-a 405 with an `Allow` header; both have an empty body. There is no `/ready` route.
+a 405 with an `Allow` header; both have an empty body.
 
 ## Batches
 
@@ -219,8 +220,10 @@ and is not a capacity check (a full job queue still reports ready; clients see
 `busy`). In the standalone executable `starting` lasts only until the listener
 is serving, so external probes normally see connection refused rather than
 `starting` before readiness. Embedded routers created with `router(...)` or
-`router_with_config(...)` are always ready; `router_with_lifecycle(config,
-lifecycle)` exposes the phases, and `serve(...)` drives them.
+`router_with_config(...)` are initially ready (they do not undergo starting or
+draining phases); however, they can transition to 503 `unavailable` if a graph worker
+fails or panics. `router_with_lifecycle(config, lifecycle)` exposes all lifecycle
+phases, and `serve(...)` drives them.
 
 ### Graceful shutdown
 
@@ -234,9 +237,14 @@ On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:
 3. closes idle keep-alive connections and connections still reading request
    headers, and lets requests that were already admitted (being received or
    running) finish and answer normally, with `Connection: close`;
-4. exits once every connection has finished, or after
-   `KNOTREL_SHUTDOWN_TIMEOUT_MS`, whichever comes first. Connections still open
-   at the deadline are dropped.
+4. exits once every connection and every outstanding graph worker job has
+   finished, or after `KNOTREL_SHUTDOWN_TIMEOUT_MS`, whichever comes first.
+   `serve()` aborts open network connection tasks at the deadline, but cannot
+   forcibly terminate running `spawn_blocking` graph workers. In the standalone
+   executable, the process exits with status 2 (terminating the process and any
+   lingering workers). Embedded callers of `serve()` receive
+   `ShutdownOutcome::DeadlineExceeded` and must handle outstanding worker
+   tasks explicitly.
 
 A rejection with `shutting_down` means the request was not admitted and no graph
 change occurred, so it is safe to retry elsewhere. A second signal forces
@@ -246,7 +254,7 @@ immediate exit.
 | --- | --- |
 | 0 | Drained completely |
 | 1 | Invalid configuration or the listener could not be bound |
-| 2 | Drain deadline exceeded; connections were abandoned |
+| 2 | Drain deadline exceeded. The standalone process terminates with status 2; embedded callers receive `DeadlineExceeded` and must account for lingering background workers |
 | 130 | Second signal received during the drain |
 
 ### Timeouts and connection bound
@@ -258,8 +266,10 @@ immediate exit.
 - **Request.** `KNOTREL_REQUEST_TIMEOUT_MS` bounds body receipt plus handling.
   When exceeded the client gets 503 `request_timeout` with `Connection: close`.
   Cancelling the handler does not cancel a graph job that was already handed to
-  a worker, so **the outcome of a timed-out mutation is unknown**; reading the
-  graph afterwards (or retrying idempotently) resolves it.
+  a worker, so **the outcome of a timed-out mutation is unknown**. Reading the
+  graph afterwards or retrying does not immediately resolve it if the mutation
+  worker is still queued or active: a subsequent read can race with the still-running
+  mutation.
 - **Connections.** At most `KNOTREL_MAX_CONNECTIONS` are served concurrently. An
   extra connection receives a static 503 `too_many_connections` and is closed;
   this write is best effort and a client may instead see a reset. Capacity is

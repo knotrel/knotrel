@@ -172,10 +172,24 @@ in-process socket tests ([lifecycle](crates/knotrel-server/tests/lifecycle.rs)) 
 real-binary SIGTERM/SIGINT tests ([process](crates/knotrel-server/tests/process.rs), Unix only);
 invalid-configuration cases in [startup](crates/knotrel-server/tests/startup.rs).
 "Stop accepting" means new work is rejected with 503 `shutting_down` (the listener
-stays open during the drain only to answer such requests). Limits: tests ran in debug
-mode locally only, so release-mode smoke tests per target, Windows signal behavior and
-CI on the exact revision remain unevidenced; there is no write timeout or slow-reader
-protection, and a timed-out mutation has an unknown outcome.
+stays open during the drain only to answer such requests). Outstanding graph operations
+are tracked independently via worker-owned tokens so shutdown drains both HTTP connections
+and graph workers under the configured deadline (exceeding it yields `DeadlineExceeded` and
+process exit code 2). A race-free observation protocol in `serve()` pairs `borrow_and_update()`
+with `changed()` to prevent missed wakeups and disabled arms at worker completion boundaries.
+Worker panic is published directly to readiness via an RAII guard so `/ready` reports 503
+`unavailable` even if the HTTP caller is cancelled or timed out. Fault-injection machinery
+is removed from the default public API and isolated behind an unsupported, disabled-by-default
+`test-support` feature. Standalone process terminates with exit 2 on deadline expiry while
+embedded callers receive `DeadlineExceeded` to account for lingering blocking workers.
+Regression tests cover observation boundaries, queued caller cancellation accounting,
+failed graph early rejection, orphaned workers, deadline expiration, worker panic reflection
+in `/ready`, clean worker drain, and second-signal forced exit.
+Limits: tests ran in debug mode locally only, so release-mode smoke tests per target,
+Windows signal behavior and CI on the exact revision remain unevidenced; there is no
+write timeout or slow-reader protection, and a timed-out mutation has an unknown outcome
+because it may still be queued or running in the background, racing with later reads.
+
 
 ### 0.1.5 — Rust library adoption and examples (P0)
 

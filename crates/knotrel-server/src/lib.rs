@@ -13,6 +13,8 @@ mod lifecycle;
 mod serve;
 mod service;
 pub use configuration::{ConfigError, ServerConfig};
+#[cfg(feature = "test-support")]
+pub use lifecycle::{GateDecision, WorkerPauseHandle};
 pub use lifecycle::{Lifecycle, Phase};
 pub use serve::{ShutdownOutcome, serve};
 
@@ -78,7 +80,7 @@ fn build_router(
         middleware,
         routing::{get, post},
     };
-    let service = service::Service::new(graph, max_pending_jobs);
+    let service = service::Service::new(graph, max_pending_jobs, lifecycle.clone());
     let ready_lifecycle = lifecycle.clone();
     axum::Router::new()
         .route(

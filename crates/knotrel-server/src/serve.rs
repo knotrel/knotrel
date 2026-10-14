@@ -16,11 +16,20 @@ use tokio::{
 /// How a call to [`serve`] ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShutdownOutcome {
-    /// Every admitted connection finished within the shutdown timeout.
+    /// Every admitted connection and graph worker job finished within the shutdown timeout.
     Drained,
-    /// The shutdown timeout elapsed; `abandoned` connections were cut off.
+    /// The shutdown timeout elapsed before all admitted work finished.
+    ///
+    /// [`serve`] reports that the drain deadline has expired. It aborts open network
+    /// connection tasks, but it does **not** forcibly terminate running `spawn_blocking`
+    /// graph workers, which run on Tokio's blocking threadpool until completion.
+    ///
+    /// The standalone executable handles this outcome by calling `std::process::exit(2)`,
+    /// which terminates the process. Embedded callers of [`serve`] must handle this
+    /// outcome explicitly and understand that outstanding graph workers may still be
+    /// running on the threadpool.
     DeadlineExceeded {
-        /// Number of connections still open when the deadline passed.
+        /// Number of connections still open plus graph jobs still running when the deadline passed.
         abandoned: usize,
     },
 }
@@ -48,9 +57,13 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 /// that request with `Connection: close`, and connections opened during the
 /// drain are answered once (probes normally, other routes with `503`
 /// `shutting_down`). The call returns [`ShutdownOutcome::Drained`] as soon as
-/// no connection remains, or [`ShutdownOutcome::DeadlineExceeded`] after
-/// [`ServerConfig::shutdown_timeout`], aborting the rest. A graph job already
-/// running on a worker thread cannot be cancelled.
+/// no connection remains and all outstanding graph worker jobs have finished.
+/// If [`ServerConfig::shutdown_timeout`] elapses first, it returns
+/// [`ShutdownOutcome::DeadlineExceeded`] reporting the number of open connections
+/// and unfinished graph jobs. Network connection tasks are aborted, but running
+/// `spawn_blocking` graph workers cannot be cancelled by `serve()` and run until
+/// completion. The standalone binary calls `std::process::exit(2)` upon
+/// `DeadlineExceeded`; embedded callers must handle this outcome explicitly.
 pub async fn serve(
     listener: TcpListener,
     app: axum::Router,
@@ -63,13 +76,20 @@ pub async fn serve(
     let mut tasks: JoinSet<()> = JoinSet::new();
     let header_read_timeout = config.header_read_timeout();
     let mut deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+    let mut jobs_rx = lifecycle.jobs_receiver();
+    let mut jobs_closed = false;
     tokio::pin!(shutdown);
     lifecycle.mark_ready();
     let mut draining = false;
     loop {
-        if draining && tasks.is_empty() {
+        let active_jobs = *jobs_rx.borrow_and_update();
+        if draining && tasks.is_empty() && active_jobs == 0 {
             return ShutdownOutcome::Drained;
         }
+
+        #[cfg(feature = "test-support")]
+        lifecycle.check_drain_loop_hook(draining, tasks.is_empty(), active_jobs);
+
         tokio::select! {
             biased;
             () = &mut shutdown, if !draining => {
@@ -80,9 +100,20 @@ pub async fn serve(
                 deadline = Some(Box::pin(tokio::time::sleep(config.shutdown_timeout())));
                 tracing::info!(
                     open_connections = tasks.len(),
+                    outstanding_jobs = *jobs_rx.borrow(),
                     timeout_ms = config.shutdown_timeout().as_millis(),
                     "draining"
                 );
+            }
+            Some(finished) = tasks.join_next(), if !tasks.is_empty() => {
+                if let Err(error) = finished {
+                    tracing::error!(panicked = error.is_panic(), "connection task failed");
+                }
+            }
+            jobs_changed = jobs_rx.changed(), if draining && !jobs_closed => {
+                if jobs_changed.is_err() {
+                    jobs_closed = true;
+                }
             }
             () = async {
                 match deadline.as_mut() {
@@ -90,14 +121,12 @@ pub async fn serve(
                     None => std::future::pending().await,
                 }
             } => {
-                let abandoned = tasks.len();
+                let abandoned = tasks.len() + *jobs_rx.borrow_and_update();
+                if abandoned == 0 {
+                    return ShutdownOutcome::Drained;
+                }
                 tasks.abort_all();
                 return ShutdownOutcome::DeadlineExceeded { abandoned };
-            }
-            Some(finished) = tasks.join_next(), if !tasks.is_empty() => {
-                if let Err(error) = finished {
-                    tracing::error!(panicked = error.is_panic(), "connection task failed");
-                }
             }
             accepted = listener.accept() => match accepted {
                 Ok((stream, _peer)) => {

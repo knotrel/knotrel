@@ -15,6 +15,7 @@ use std::{
     },
     time::Duration,
 };
+use tokio::sync::watch;
 
 const STARTING: u8 = 0;
 const READY: u8 = 1;
@@ -31,27 +32,175 @@ pub enum Phase {
     Draining,
 }
 
-/// Shared handle for the lifecycle phase.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerAction {
+    Proceed,
+    Panic,
+}
+
+#[cfg(feature = "test-support")]
+struct WorkerHook {
+    started_tx: tokio::sync::oneshot::Sender<()>,
+    release_rx: std::sync::mpsc::Receiver<WorkerAction>,
+}
+
+#[cfg(feature = "test-support")]
+impl std::fmt::Debug for WorkerHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerHook").finish_non_exhaustive()
+    }
+}
+
+/// Handle allowing test callers to pause or panic the next worker deterministically.
+///
+/// Only available when the `test-support` feature is enabled. Not supported for production use.
+#[cfg(feature = "test-support")]
+pub struct WorkerPauseHandle {
+    started_rx: tokio::sync::oneshot::Receiver<()>,
+    release_tx: std::sync::mpsc::Sender<WorkerAction>,
+}
+
+#[cfg(feature = "test-support")]
+impl WorkerPauseHandle {
+    /// Awaits until the worker has reached the controlled blocking point.
+    pub async fn wait_started(&mut self) {
+        let _ = (&mut self.started_rx).await;
+    }
+
+    /// Releases the worker so it proceeds normally.
+    pub fn release(self) {
+        let _ = self.release_tx.send(WorkerAction::Proceed);
+    }
+
+    /// Releases the worker and instructs it to panic immediately.
+    pub fn panic_on_release(self) {
+        let _ = self.release_tx.send(WorkerAction::Panic);
+    }
+}
+
+#[cfg(feature = "test-support")]
+type DrainLoopCallback = Box<dyn FnMut(bool, bool, usize) + Send + 'static>;
+
+#[cfg(feature = "test-support")]
+struct DrainLoopHook(DrainLoopCallback);
+
+#[cfg(feature = "test-support")]
+impl std::fmt::Debug for DrainLoopHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DrainLoopHook").finish_non_exhaustive()
+    }
+}
+
+/// Decision made by `shutdown_gate` for an incoming request.
+///
+/// Only available when `test-support` feature is enabled.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GateDecision {
+    /// Request was admitted before draining began.
+    Admitted,
+    /// Request reached the gate while draining and was rejected with 503 `shutting_down`.
+    RejectedShuttingDown,
+    /// Request is a probe route (/health, /ready) allowed during drain.
+    Probe,
+}
+
+#[cfg(feature = "test-support")]
+type GateCallback = Box<dyn FnMut(&str, GateDecision) + Send + 'static>;
+
+#[cfg(feature = "test-support")]
+struct GateHook(GateCallback);
+
+#[cfg(feature = "test-support")]
+impl std::fmt::Debug for GateHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateHook").finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug)]
+struct LifecycleInner {
+    phase: AtomicU8,
+    jobs_tx: watch::Sender<usize>,
+    jobs_rx: watch::Receiver<usize>,
+    #[cfg(feature = "test-support")]
+    worker_hook: parking_lot::Mutex<Option<WorkerHook>>,
+    #[cfg(feature = "test-support")]
+    drain_loop_hook: parking_lot::Mutex<Option<DrainLoopHook>>,
+    #[cfg(feature = "test-support")]
+    gate_hook: parking_lot::Mutex<Option<GateHook>>,
+}
+
+/// Token tracking an active graph worker job.
+///
+/// Dropping this token decrements the active worker count on every path,
+/// including normal return, early error, or unwinding from a panic.
+pub(crate) struct JobGuard {
+    jobs_tx: watch::Sender<usize>,
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        self.jobs_tx.send_modify(|count| {
+            *count = count.saturating_sub(1);
+        });
+    }
+}
+
+/// Shared handle for the lifecycle phase and worker tracking.
 ///
 /// Phases only move forward: `Starting`, then `Ready`, then `Draining`.
-/// Cloned handles observe the same phase.
+/// Cloned handles observe the same phase and job count.
 #[derive(Clone, Debug)]
-pub struct Lifecycle(Arc<AtomicU8>);
+pub struct Lifecycle(Arc<LifecycleInner>);
 
 impl Lifecycle {
     /// Creates a handle in [`Phase::Starting`].
     pub fn new() -> Self {
-        Self(Arc::new(AtomicU8::new(STARTING)))
+        let (jobs_tx, jobs_rx) = watch::channel(0);
+        #[cfg(feature = "test-support")]
+        let inner = LifecycleInner {
+            phase: AtomicU8::new(STARTING),
+            jobs_tx,
+            jobs_rx,
+            worker_hook: parking_lot::Mutex::new(None),
+            drain_loop_hook: parking_lot::Mutex::new(None),
+            gate_hook: parking_lot::Mutex::new(None),
+        };
+        #[cfg(not(feature = "test-support"))]
+        let inner = LifecycleInner {
+            phase: AtomicU8::new(STARTING),
+            jobs_tx,
+            jobs_rx,
+        };
+        Self(Arc::new(inner))
     }
 
     /// Creates a handle that already reports [`Phase::Ready`].
     pub(crate) fn ready() -> Self {
-        Self(Arc::new(AtomicU8::new(READY)))
+        let (jobs_tx, jobs_rx) = watch::channel(0);
+        #[cfg(feature = "test-support")]
+        let inner = LifecycleInner {
+            phase: AtomicU8::new(READY),
+            jobs_tx,
+            jobs_rx,
+            worker_hook: parking_lot::Mutex::new(None),
+            drain_loop_hook: parking_lot::Mutex::new(None),
+            gate_hook: parking_lot::Mutex::new(None),
+        };
+        #[cfg(not(feature = "test-support"))]
+        let inner = LifecycleInner {
+            phase: AtomicU8::new(READY),
+            jobs_tx,
+            jobs_rx,
+        };
+        Self(Arc::new(inner))
     }
 
     /// Returns the current phase.
     pub fn phase(&self) -> Phase {
-        match self.0.load(Ordering::Acquire) {
+        match self.0.phase.load(Ordering::Acquire) {
             STARTING => Phase::Starting,
             READY => Phase::Ready,
             _ => Phase::Draining,
@@ -62,12 +211,115 @@ impl Lifecycle {
     pub fn mark_ready(&self) {
         let _ = self
             .0
+            .phase
             .compare_exchange(STARTING, READY, Ordering::AcqRel, Ordering::Acquire);
     }
 
     /// Moves any phase to `Draining`; this is irreversible.
     pub fn begin_draining(&self) {
-        self.0.store(DRAINING, Ordering::Release);
+        self.0.phase.store(DRAINING, Ordering::Release);
+    }
+
+    /// Tracks an outstanding graph worker job.
+    pub(crate) fn track_job(&self) -> JobGuard {
+        self.0.jobs_tx.send_modify(|count| *count += 1);
+        JobGuard {
+            jobs_tx: self.0.jobs_tx.clone(),
+        }
+    }
+
+    /// Number of outstanding graph jobs currently queued or running.
+    pub fn outstanding_jobs(&self) -> usize {
+        *self.0.jobs_rx.borrow()
+    }
+
+    /// Receiver observing changes to the outstanding graph job count.
+    pub(crate) fn jobs_receiver(&self) -> watch::Receiver<usize> {
+        self.0.jobs_rx.clone()
+    }
+
+    /// Installs a pause point for the next worker job to facilitate deterministic testing.
+    ///
+    /// Only available when the `test-support` feature is enabled.
+    #[cfg(feature = "test-support")]
+    pub fn pause_next_worker(&self) -> WorkerPauseHandle {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut hook = self.0.worker_hook.lock();
+        *hook = Some(WorkerHook {
+            started_tx,
+            release_rx,
+        });
+        WorkerPauseHandle {
+            started_rx,
+            release_tx,
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn check_worker_hook(&self) {
+        let hook = {
+            let mut guard = self.0.worker_hook.lock();
+            guard.take()
+        };
+        if let Some(hook) = hook {
+            let _ = hook.started_tx.send(());
+            if let Ok(WorkerAction::Panic) = hook.release_rx.recv() {
+                panic!("worker paused by test hook instructed to panic");
+            }
+        }
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    #[inline(always)]
+    pub(crate) fn check_worker_hook(&self) {}
+
+    /// Installs a callback hook triggered at the drain observation boundary.
+    ///
+    /// Parameters passed to the callback:
+    /// - `draining`: whether `Phase::Draining` has begun.
+    /// - `tasks_empty`: whether `tasks.is_empty()` in `serve()`.
+    /// - `active_jobs`: the outstanding job count read by `borrow_and_update()`.
+    ///
+    /// Only available when the `test-support` feature is enabled.
+    #[cfg(feature = "test-support")]
+    pub fn on_drain_loop<F>(&self, f: F)
+    where
+        F: FnMut(bool, bool, usize) + Send + 'static,
+    {
+        *self.0.drain_loop_hook.lock() = Some(DrainLoopHook(Box::new(f)));
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn check_drain_loop_hook(
+        &self,
+        draining: bool,
+        tasks_empty: bool,
+        active_jobs: usize,
+    ) {
+        let mut hook = self.0.drain_loop_hook.lock();
+        if let Some(hook) = hook.as_mut() {
+            (hook.0)(draining, tasks_empty, active_jobs);
+        }
+    }
+
+    /// Installs a callback hook triggered at the shutdown gate admission boundary.
+    ///
+    /// Only available when the `test-support` feature is enabled.
+    #[cfg(feature = "test-support")]
+    pub fn on_gate<F>(&self, f: F)
+    where
+        F: FnMut(&str, GateDecision) + Send + 'static,
+    {
+        *self.0.gate_hook.lock() = Some(GateHook(Box::new(f)));
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn record_gate_decision(&self, path: &str, decision: GateDecision) {
+        let mut hook = self.0.gate_hook.lock();
+        if let Some(hook) = hook.as_mut() {
+            (hook.0)(path, decision);
+        }
     }
 }
 
@@ -121,10 +373,26 @@ pub(crate) async fn shutdown_gate(
     request: Request,
     next: Next,
 ) -> Response {
-    if lifecycle.phase() != Phase::Draining {
+    let path = request.uri().path();
+    let is_draining = lifecycle.phase() == Phase::Draining;
+    let probe = is_probe(path);
+
+    #[cfg(feature = "test-support")]
+    {
+        let decision = if !is_draining {
+            GateDecision::Admitted
+        } else if probe {
+            GateDecision::Probe
+        } else {
+            GateDecision::RejectedShuttingDown
+        };
+        lifecycle.record_gate_decision(path, decision);
+    }
+
+    if !is_draining {
         return next.run(request).await;
     }
-    let mut response = if is_probe(request.uri().path()) {
+    let mut response = if probe {
         next.run(request).await
     } else {
         api::error_response(

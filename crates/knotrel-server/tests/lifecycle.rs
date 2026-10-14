@@ -4,6 +4,8 @@
 //! permits local networking.
 
 use knotrel_core::EngineConfig;
+#[cfg(feature = "test-support")]
+use knotrel_server::GateDecision;
 use knotrel_server::{
     Lifecycle, Phase, ServerConfig, ShutdownOutcome, router_with_lifecycle, serve,
 };
@@ -234,19 +236,45 @@ async fn shutdown_without_connections_is_prompt() {
 #[tokio::test]
 async fn draining_finishes_admitted_work_and_rejects_new_work() {
     let mut running = Running::start(config()).await;
+    #[cfg(feature = "test-support")]
+    let (gate_tx, mut gate_rx) = tokio::sync::mpsc::unbounded_channel();
+    #[cfg(feature = "test-support")]
+    running.lifecycle.on_gate(move |path, decision| {
+        let _ = gate_tx.send((path.to_string(), decision));
+    });
+
     let mut admitted = start_unfinished_request(&running).await;
-    // Ensure the request was admitted before shutdown begins.
+
+    // Explicit admission acknowledgement: the gate must have admitted the request.
+    #[cfg(feature = "test-support")]
+    {
+        let (path, decision) = gate_rx.recv().await.expect("gate decision");
+        assert_eq!(path, "/v1/operations");
+        assert_eq!(decision, GateDecision::Admitted);
+    }
+    #[cfg(not(feature = "test-support"))]
     assert_eq!(probe(&running, "/ready").await.status, 200);
+
     running.shutdown();
     wait_for_phase(&running.lifecycle, Phase::Draining).await;
 
     let ready = probe(&running, "/ready").await;
+    #[cfg(feature = "test-support")]
+    assert_eq!(
+        gate_rx.recv().await.expect("ready probe gate decision"),
+        ("/ready".to_string(), GateDecision::Probe)
+    );
     assert_eq!(
         (ready.status, ready.body.as_str()),
         (503, r#"{"status":"draining"}"#)
     );
     assert!(ready.closes());
     let health = probe(&running, "/health").await;
+    #[cfg(feature = "test-support")]
+    assert_eq!(
+        gate_rx.recv().await.expect("health probe gate decision"),
+        ("/health".to_string(), GateDecision::Probe)
+    );
     assert_eq!(health.status, 200);
     assert!(health.closes());
     for path in ["/v1/info", "/v1/stats"] {
@@ -257,12 +285,70 @@ async fn draining_finishes_admitted_work_and_rejects_new_work() {
             rejected.body,
             r#"{"result":"error","code":"shutting_down","message":"server is shutting down; retry against another instance"}"#
         );
+        #[cfg(feature = "test-support")]
+        {
+            let (dec_path, decision) = gate_rx
+                .recv()
+                .await
+                .expect("gate decision for rejected route");
+            assert_eq!(dec_path, path);
+            assert_eq!(decision, GateDecision::RejectedShuttingDown);
+        }
     }
 
     let finished = finish_request(&mut admitted).await;
     assert_eq!(finished.status, 200);
     assert_eq!(finished.body, r#"{"result":"changed","changed":true}"#);
     assert!(finished.closes());
+    assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+}
+
+/// Proves both sides of the `shutdown_gate` boundary explicitly.
+///
+/// Uses deterministic synchronization via [`GateDecision`] at the exact
+/// shutdown-gate boundary to prove:
+/// 1. A request admitted before shutdown completes according to contract (200).
+/// 2. A request reaching the gate after Draining begins is rejected (503 shutting_down).
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn shutdown_gate_boundary_explicit_admission_and_rejection() {
+    let mut running = Running::start(config()).await;
+    let (gate_tx, mut gate_rx) = tokio::sync::mpsc::unbounded_channel();
+    running.lifecycle.on_gate(move |path, decision| {
+        let _ = gate_tx.send((path.to_string(), decision));
+    });
+
+    // 1. Pre-draining side: submit an unfinished request and wait for the gate
+    // to explicitly acknowledge admission before shutdown begins.
+    let mut admitted = start_unfinished_request(&running).await;
+    let (path, decision) = gate_rx.recv().await.expect("gate decision");
+    assert_eq!(path, "/v1/operations");
+    assert_eq!(decision, GateDecision::Admitted);
+
+    // 2. Trigger shutdown — moves lifecycle to Draining.
+    running.shutdown();
+    wait_for_phase(&running.lifecycle, Phase::Draining).await;
+
+    // 3. Post-draining side: submit a request reaching the gate after Draining.
+    // It must be rejected with 503 shutting_down and Connection: close.
+    let rejected = probe(&running, "/v1/stats").await;
+    assert_eq!(rejected.status, 503);
+    assert!(rejected.closes());
+    assert_eq!(
+        rejected.body,
+        r#"{"result":"error","code":"shutting_down","message":"server is shutting down; retry against another instance"}"#
+    );
+    let (dec_path, dec) = gate_rx.recv().await.expect("gate decision");
+    assert_eq!(dec_path, "/v1/stats");
+    assert_eq!(dec, GateDecision::RejectedShuttingDown);
+
+    // 4. Complete the admitted pre-draining request: it finishes successfully (200).
+    let finished = finish_request(&mut admitted).await;
+    assert_eq!(finished.status, 200);
+    assert_eq!(finished.body, r#"{"result":"changed","changed":true}"#);
+    assert!(finished.closes());
+
+    // 5. All admitted work finished; clean drain.
     assert_eq!(running.finished().await, ShutdownOutcome::Drained);
 }
 
@@ -282,8 +368,22 @@ async fn drain_deadline_aborts_stuck_connections() {
         .with_shutdown_timeout(Duration::from_millis(200))
         .unwrap();
     let mut running = Running::start(config).await;
+    #[cfg(feature = "test-support")]
+    let (gate_tx, mut gate_rx) = tokio::sync::mpsc::unbounded_channel();
+    #[cfg(feature = "test-support")]
+    running.lifecycle.on_gate(move |path, decision| {
+        let _ = gate_tx.send((path.to_string(), decision));
+    });
+
     let mut stuck = start_unfinished_request(&running).await;
+    #[cfg(feature = "test-support")]
+    {
+        let (_path, decision) = gate_rx.recv().await.expect("gate decision");
+        assert_eq!(decision, GateDecision::Admitted);
+    }
+    #[cfg(not(feature = "test-support"))]
     assert_eq!(probe(&running, "/ready").await.status, 200);
+
     running.shutdown();
     let outcome = running.finished().await;
     assert_eq!(outcome, ShutdownOutcome::DeadlineExceeded { abandoned: 1 });
@@ -396,4 +496,323 @@ async fn request_timeout_bounds_a_stalled_body() {
     assert!(stats.body.contains(r#""node_count":0"#), "{}", stats.body);
     running.shutdown();
     assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+}
+
+#[tokio::test]
+async fn normal_drain_with_no_remaining_connections_or_jobs() {
+    let mut running = Running::start(config()).await;
+    let mut stream = running.connect().await;
+    let body = r#"{"op":"link","source":"10","target":"20"}"#;
+    let request = format!(
+        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let reply = read_reply(&mut stream).await.expect("operation response");
+    assert_eq!(reply.status, 200);
+    drop(stream);
+
+    assert_eq!(running.lifecycle.outstanding_jobs(), 0);
+    running.shutdown();
+    assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn http_request_timeout_leaves_worker_active_and_shutdown_waits_for_it() {
+    let config = config()
+        .with_request_timeout(Duration::from_millis(50))
+        .unwrap()
+        .with_shutdown_timeout(Duration::from_secs(5))
+        .unwrap();
+    let mut running = Running::start(config).await;
+    let mut pause = running.lifecycle.pause_next_worker();
+    let mut stream = running.connect().await;
+
+    let body = r#"{"op":"link","source":"1","target":"2"}"#;
+    let request = format!(
+        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    pause.wait_started().await;
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+
+    let reply = read_reply(&mut stream).await.expect("a timeout response");
+    assert_eq!(reply.status, 503);
+    assert!(reply.body.contains(r#""code":"request_timeout""#));
+    drop(stream);
+
+    running.shutdown();
+
+    // Verify shutdown remains pending while the worker is active.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+    assert!(
+        !running.task.is_finished(),
+        "serve must wait for outstanding graph workers"
+    );
+
+    let lifecycle = running.lifecycle.clone();
+    pause.release();
+    assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+    assert_eq!(lifecycle.outstanding_jobs(), 0);
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn worker_exceeding_shutdown_deadline_produces_deadline_exceeded_with_no_connections() {
+    let config = config()
+        .with_request_timeout(Duration::from_millis(50))
+        .unwrap()
+        .with_shutdown_timeout(Duration::from_millis(150))
+        .unwrap();
+    let mut running = Running::start(config).await;
+    let mut pause = running.lifecycle.pause_next_worker();
+    let mut stream = running.connect().await;
+
+    let body = r#"{"op":"link","source":"1","target":"2"}"#;
+    let request = format!(
+        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    pause.wait_started().await;
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+
+    let reply = read_reply(&mut stream).await.expect("a timeout response");
+    assert_eq!(reply.status, 503);
+    drop(stream);
+
+    running.shutdown();
+
+    let outcome = running.finished().await;
+    assert_eq!(outcome, ShutdownOutcome::DeadlineExceeded { abandoned: 1 });
+
+    pause.release();
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn worker_panic_after_caller_cancellation_marks_ready_unavailable() {
+    let config = config()
+        .with_request_timeout(Duration::from_millis(50))
+        .unwrap();
+    let mut running = Running::start(config).await;
+    let mut pause = running.lifecycle.pause_next_worker();
+    let mut stream = running.connect().await;
+
+    let body = r#"{"op":"link","source":"1","target":"2"}"#;
+    let request = format!(
+        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    pause.wait_started().await;
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+
+    let reply = read_reply(&mut stream).await.expect("a timeout response");
+    assert_eq!(reply.status, 503);
+    drop(stream);
+
+    pause.panic_on_release();
+
+    tokio::time::timeout(STEP, async {
+        while running.lifecycle.outstanding_jobs() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Without submitting any further graph jobs, /ready must become 503 unavailable!
+    let ready = probe(&running, "/ready").await;
+    assert_eq!(ready.status, 503);
+    assert_eq!(ready.body, r#"{"status":"unavailable"}"#);
+
+    running.shutdown();
+    assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn worker_completing_before_deadline_permits_clean_drain() {
+    let config = config()
+        .with_request_timeout(Duration::from_millis(50))
+        .unwrap()
+        .with_shutdown_timeout(Duration::from_secs(5))
+        .unwrap();
+    let mut running = Running::start(config).await;
+    let mut pause = running.lifecycle.pause_next_worker();
+    let mut stream = running.connect().await;
+
+    let body = r#"{"op":"link","source":"1","target":"2"}"#;
+    let request = format!(
+        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    pause.wait_started().await;
+    let reply = read_reply(&mut stream).await.expect("a timeout response");
+    assert_eq!(reply.status, 503);
+    drop(stream);
+
+    running.shutdown();
+    pause.release();
+
+    assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn final_worker_completing_at_drain_observation_boundary_returns_drained() {
+    // This test enforces a strict 6-step ordering to prove that the drain loop
+    // correctly observes the final worker's completion even when it happens
+    // inside the observation window — between borrow_and_update() reading count==1
+    // and the select! actually entering its wait.
+    //
+    // The six steps verified here are:
+    //   1. Shutdown has entered Draining.
+    //   2. No remaining HTTP connection tasks.
+    //   3. Drain loop observes outstanding_jobs == 1 via borrow_and_update().
+    //   4. Test releases the final worker.
+    //   5. Hook confirms count reaches 0 before returning to the drain loop.
+    //   6. Drain loop re-evaluates at its top, reads 0, and returns Drained.
+    //
+    // Regression: old code guarded the watch-arm with `*jobs_rx.borrow() > 0`,
+    // which evaluated to false after step 5, permanently disabling the only
+    // notification path and causing serve() to hang until the shutdown deadline.
+    let config = config()
+        .with_request_timeout(Duration::from_millis(50))
+        .unwrap()
+        .with_shutdown_timeout(Duration::from_secs(5))
+        .unwrap();
+    let mut running = Running::start(config).await;
+    let mut pause = running.lifecycle.pause_next_worker();
+    let mut stream = running.connect().await;
+
+    let body = r#"{"op":"link","source":"1","target":"2"}"#;
+    let request = format!(
+        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    // Steps 1-2: wait for the worker to start, then let the HTTP handler time out
+    // (503 response) so the connection task finishes — leaving zero open connections.
+    pause.wait_started().await;
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+
+    let reply = read_reply(&mut stream).await.expect("a timeout response");
+    assert_eq!(reply.status, 503);
+    drop(stream);
+
+    // Confirm: no connection tasks, exactly one graph worker still paused.
+    timeout(STEP, async {
+        while running.lifecycle.outstanding_jobs() != 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Observable flags for asserting step boundaries from the test body.
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let hook_fired = std::sync::Arc::new(AtomicBool::new(false));
+    let draining_observed = std::sync::Arc::new(AtomicBool::new(false));
+    let tasks_empty_observed = std::sync::Arc::new(AtomicBool::new(false));
+    let active_jobs_observed = std::sync::Arc::new(AtomicUsize::new(0));
+    let worker_released = std::sync::Arc::new(AtomicBool::new(false));
+    let count_reached_zero = std::sync::Arc::new(AtomicBool::new(false));
+
+    let hook_fired_c = hook_fired.clone();
+    let draining_observed_c = draining_observed.clone();
+    let tasks_empty_observed_c = tasks_empty_observed.clone();
+    let active_jobs_observed_c = active_jobs_observed.clone();
+    let worker_released_c = worker_released.clone();
+    let count_reached_zero_c = count_reached_zero.clone();
+
+    let pause_holder = std::sync::Arc::new(parking_lot::Mutex::new(Some(pause)));
+    let pause_clone = pause_holder.clone();
+    let lifecycle_clone = running.lifecycle.clone();
+
+    running
+        .lifecycle
+        .on_drain_loop(move |draining, tasks_empty, active_jobs| {
+            // Enforce all three preconditions:
+            // 1. Shutdown has entered Draining.
+            // 2. No remaining HTTP connection tasks in JoinSet (tasks.is_empty()).
+            // 3. Drain loop observes active_jobs == 1 via borrow_and_update().
+            if !draining || !tasks_empty || active_jobs != 1 {
+                return;
+            }
+
+            if hook_fired_c.swap(true, Ordering::AcqRel) {
+                return;
+            }
+
+            draining_observed_c.store(draining, Ordering::Release);
+            tasks_empty_observed_c.store(tasks_empty, Ordering::Release);
+            active_jobs_observed_c.store(active_jobs, Ordering::Release);
+
+            // Step 4: release the final worker so it can run to completion.
+            if let Some(p) = pause_clone.lock().take() {
+                p.release();
+                worker_released_c.store(true, Ordering::Release);
+            }
+
+            // Step 5: busy-wait until the blocking thread decrements the count to 0.
+            // The worker runs on Tokio's blocking pool independently of this async
+            // executor thread, so it makes progress while we wait here.
+            // Bounded to 500 ms to fail fast without delaying the outer timeout.
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            while lifecycle_clone.outstanding_jobs() != 0 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker did not complete within 500 ms after release"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            count_reached_zero_c.store(true, Ordering::Release);
+            // Step 6 follows: the drain loop enters select!.
+        });
+
+    // Initiate shutdown — moves the lifecycle to Draining (step 1).
+    running.shutdown();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(2), running.finished())
+        .await
+        .expect("serve must not hang until the 5 s shutdown timeout");
+    assert_eq!(outcome, ShutdownOutcome::Drained);
+
+    // Assert that all ordering steps were strictly observed.
+    assert!(
+        hook_fired.load(Ordering::Acquire),
+        "hook must have fired at the drain-loop observation boundary"
+    );
+    assert!(
+        draining_observed.load(Ordering::Acquire),
+        "Step 1: must be in Phase::Draining when hook fires"
+    );
+    assert!(
+        tasks_empty_observed.load(Ordering::Acquire),
+        "Step 2: tasks.is_empty() must be true when hook fires (no remaining HTTP connection tasks)"
+    );
+    assert_eq!(
+        active_jobs_observed.load(Ordering::Acquire),
+        1,
+        "Step 3: drain loop must have observed active_jobs == 1"
+    );
+    assert!(
+        worker_released.load(Ordering::Acquire),
+        "Step 4: the final worker must have been released inside the hook"
+    );
+    assert!(
+        count_reached_zero.load(Ordering::Acquire),
+        "Step 5: outstanding_jobs must have reached 0 before the drain loop entered select!"
+    );
 }
