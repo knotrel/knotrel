@@ -775,7 +775,7 @@ async fn final_worker_completing_at_drain_observation_boundary_returns_drained()
                     std::time::Instant::now() < deadline,
                     "worker did not complete within 500 ms after release"
                 );
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::yield_now();
             }
             count_reached_zero_c.store(true, Ordering::Release);
             // Step 6 follows: the drain loop enters select!.
