@@ -32,7 +32,10 @@ use std::{
 static START_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn acquire_start_lock() -> std::sync::MutexGuard<'static, ()> {
-    START_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    START_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 const STEP: Duration = Duration::from_secs(10);
@@ -101,11 +104,12 @@ impl Server {
                         _ => panic!("unexpected IO error during wait_ready: {err}"),
                     },
                 },
-                Err(err) => {
-                    if err.kind() != std::io::ErrorKind::ConnectionRefused {
-                        panic!("unexpected connect error during wait_ready: {err}");
+                Err(err) => match err.kind() {
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset => {
+                        // Server is not yet listening or TCP handshake reset during socket initialization; retry.
                     }
-                }
+                    _ => panic!("unexpected connect error during wait_ready: {err}"),
+                },
             }
             assert!(Instant::now() < deadline, "server never became ready");
             sleep(Duration::from_millis(20));
