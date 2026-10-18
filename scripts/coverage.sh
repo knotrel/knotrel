@@ -13,6 +13,6 @@ if [[ "${1:-}" == "--html" ]]; then
 elif [[ "${1:-}" == "--summary" ]]; then
     cargo llvm-cov --workspace --locked
 else
-    cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+    cargo llvm-cov --workspace --locked --remap-path-prefix --lcov --output-path lcov.info
     echo "Generated lcov.info successfully."
 fi
