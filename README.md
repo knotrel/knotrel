@@ -29,7 +29,37 @@ Rust **1.98.1**, edition **2024**, and Cargo resolver **3** are pinned. The
 toolchain file installs Clippy and rustfmt when using rustup. Cargo.lock records
 the resolved dependency versions. Packages are currently unpublished.
 
-## Run
+## Installation and Running
+
+### From a prebuilt release binary
+
+Download the archive for your platform from the GitHub Releases page, verify its SHA-256 checksum, and run:
+
+```sh
+# Verify checksum on Linux:
+sha256sum -c knotrel-server-v0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+# Or on macOS:
+# shasum -a 256 -c knotrel-server-v0.1.0-aarch64-apple-darwin.tar.gz.sha256
+
+# Extract and start on Linux (x86_64):
+tar -xzf knotrel-server-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd knotrel-server-v0.1.0-x86_64-unknown-linux-gnu
+./knotrel-server
+
+# Or on macOS (Apple Silicon):
+# tar -xzf knotrel-server-v0.1.0-aarch64-apple-darwin.tar.gz
+# cd knotrel-server-v0.1.0-aarch64-apple-darwin
+# ./knotrel-server
+```
+
+On Windows (PowerShell):
+```powershell
+Expand-Archive knotrel-server-v0.1.0-x86_64-pc-windows-msvc.zip
+cd knotrel-server-v0.1.0-x86_64-pc-windows-msvc
+.\knotrel-server.exe
+```
+
+### From source
 
 ```sh
 cargo run --release --locked -p knotrel-server
@@ -68,10 +98,13 @@ locking the graph. Settings cannot be changed through operation requests.
 See [configuration and API details](docs/http-api.md#startup-configuration-and-engine-selection).
 
 `GET /ready` reports readiness (`ready`, or 503 `starting`/`draining`/`unavailable`);
-`GET /health` is liveness only. On SIGINT or Unix SIGTERM the server turns
+`GET /health` is liveness only.
+On Unix (Linux/macOS), graceful shutdown is initiated by SIGINT or SIGTERM: the server turns
 unready, rejects new graph work with 503 `shutting_down`, lets admitted requests
-finish and exits 0, or exits 2 once `KNOTREL_SHUTDOWN_TIMEOUT_MS` (default 10 s)
-expires. Header-read, request and connection limits are configurable; see
+finish, and exits 0. If the drain deadline expires before all work finishes, the server
+exits 2; a second signal forces immediate exit (130). On Windows, Unix signals are not
+supported by the OS; process shutdown is initiated via Ctrl+C or platform termination.
+Header-read, request and connection limits are configurable; see
 [lifecycle details](docs/http-api.md#lifecycle-health-and-shutdown). All graph
 data is lost when the process exits or restarts; restarting with another engine
 does not migrate existing data.
@@ -90,13 +123,16 @@ IDs are decimal strings over HTTP, preserving the full `u64` range. Links create
 absent endpoints. Repeated links and cuts are idempotent; cuts retain vertices.
 Self-loops are rejected. Queries involving unknown vertices return an error.
 
-## Development
+## Development and Quality Gates
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo test --workspace --locked --features knotrel-server/test-support
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+./scripts/verify-source-packages.sh
+./scripts/smoke-test-release-binary.sh
 ```
 
 Public items require English Rustdoc. Nontrivial private algorithms also require
@@ -107,6 +143,8 @@ gates run on Linux.
 
 ## Documentation and measurements
 
+- [v0.1.0 release notes](docs/releases/v0.1.0-release-notes.md): preview highlights, support matrix, checksum verification, and known limitations.
+- [Release procedure](docs/releases/release-procedure.md): step-by-step verification, artifact packaging, and authorized publication protocol.
 - [v0.1.0 release scope](docs/releases/v0.1.0-scope.md): supported preview surface,
   verified runtime matrix, release blockers and performance-validation plan.
 - [HTTP API](docs/http-api.md) ([OpenAPI specification](docs/openapi.yaml)): operations, batch semantics, limits, errors and standard OpenAPI definition.

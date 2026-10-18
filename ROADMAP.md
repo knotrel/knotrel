@@ -204,13 +204,13 @@ because it may still be queued or running in the background, racing with later r
 ### 0.1.6 — CI, packaging and release candidate (M9-min, P0)
 
 - [ ] **Feature Complete: 0.1.6 — CI, packaging and release candidate**
-- [ ] **Automate correctness gates:** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and warning-denied Rustdoc for supported workspaces, plus any relevant Python collector tests where the benchmark repo participates.
-- [ ] **Pin reproducible build inputs:** commit/revision identifiers, lockfile policy, compiler/toolchain information and supported build instructions. Avoid conflating the benchmark repo's independent version with the service release.
-- [ ] **Build/test the release binary:** clean build, startup, health/readiness, an API mutation/query, graceful shutdown and restart-empty behavior on every claimed supported platform.
-- [ ] **Review legal and publishing metadata:** license and third-party notices, package naming/availability, dependency licenses, release artifacts, GitHub README/repository links and any security contact policy.
-- [ ] **Publish documentation:** quick start, Rust example, curl/API examples, config reference, HTTP error table, architecture overview and **known limitations** prominently describing volatile state.
-- [ ] **Prepare release notes and compatibility policy:** summarize supported behavior, known gaps, preview status, breaking-change expectations before 1.0 and upgrade expectations (none for in-memory state).
-- [ ] **Perform a final clean-tree / diff / artifact review** for source, datasets and personal paths. Decide explicitly what benchmark raw evidence should be published; do not silently commit thousands of experimental files.
+- [x] **Automate correctness gates:** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and warning-denied Rustdoc for supported workspaces, plus any relevant Python collector tests where the benchmark repo participates.
+- [x] **Pin reproducible build inputs:** commit/revision identifiers, lockfile policy, compiler/toolchain information and supported build instructions. Avoid conflating the benchmark repo's independent version with the service release.
+- [ ] **Build/test the release binary:** clean build, startup, health/readiness, an API mutation/query, graceful shutdown and restart-empty behavior on every claimed supported platform (verified locally on macOS aarch64; Linux and Windows native CI jobs configured pending remote push).
+- [x] **Review legal and publishing metadata:** license and third-party notices, package naming/availability, dependency licenses, release artifacts, GitHub README/repository links and any security contact policy.
+- [x] **Publish documentation:** quick start, Rust example, curl/API examples, config reference, HTTP error table, architecture overview and **known limitations** prominently describing volatile state.
+- [x] **Prepare release notes and compatibility policy:** summarize supported behavior, known gaps, preview status, breaking-change expectations before 1.0 and upgrade expectations (none for in-memory state).
+- [x] **Perform a final clean-tree / diff / artifact review** for source, datasets and personal paths. Decide explicitly what benchmark raw evidence should be published; do not silently commit thousands of experimental files.
 - [ ] **Create release artifacts only after approval:** tag `v0.1.0`, publish binary/container and optionally crate(s) only if the build/publish audit passes. Tagging/pushing/publishing is a separate authorized action, not implicit in completing this checklist.
 - [ ] **Acceptance / v0.1.0 release gate:** Contract tests, examples, security boundary, smoke tests, documentation and supported-platform CI are green. The service is clearly labeled **experimental and in-memory**; there is no unsubstantiated production-readiness claim.
 

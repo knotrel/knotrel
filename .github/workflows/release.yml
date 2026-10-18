@@ -1,0 +1,430 @@
+name: release
+run-name: "Release Candidate (version: ${{ inputs.version }}, dry_run: ${{ inputs.dry_run != false }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version matching workspace Cargo.toml (e.g. 0.1.0)"
+        required: true
+        default: "0.1.0"
+      commit_sha:
+        description: "Immutable candidate commit SHA to build and publish (defaults to current workflow SHA)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run (build, test, assemble, and verify bundle without publishing release)"
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.98.1
+
+jobs:
+  validate-inputs-and-metadata:
+    name: validate-inputs-and-metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      commit_sha: ${{ steps.validate.outputs.commit_sha }}
+    env:
+      INPUT_VERSION: ${{ inputs.version }}
+      INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
+      INPUT_DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Validate inputs and check out candidate commit
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1. Strict anchored regex validation for version (Finding 1)
+          if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid version format '$INPUT_VERSION'. Must strictly match 'X.Y.Z'." >&2
+            exit 1
+          fi
+
+          # 2. Determine and validate candidate commit SHA
+          CANDIDATE_SHA="$INPUT_COMMIT_SHA"
+          if [[ -z "$CANDIDATE_SHA" ]]; then
+            CANDIDATE_SHA="${{ github.sha }}"
+          fi
+
+          if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: Invalid commit SHA format '$CANDIDATE_SHA'. Must be a 40-character hex SHA." >&2
+            exit 1
+          fi
+
+          echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Validated inputs: version=$INPUT_VERSION, commit_sha=$CANDIDATE_SHA"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.validate.outputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Verify workspace manifest and remote tag binding (Finding 2)
+        env:
+          VALID_VERSION: ${{ steps.validate.outputs.version }}
+          CANDIDATE_SHA: ${{ steps.validate.outputs.commit_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Verify HEAD is candidate SHA
+          ACTUAL_HEAD="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_HEAD" != "$CANDIDATE_SHA" ]]; then
+            echo "ERROR: Checked out HEAD ($ACTUAL_HEAD) does not match candidate SHA ($CANDIDATE_SHA)!" >&2
+            exit 1
+          fi
+
+          # Verify version matches Cargo.toml
+          MANIFEST_VERSION="$(python3 -c "
+          import re
+          with open('Cargo.toml') as f:
+              m = re.search(r'version\s*=\s*\"([^\"]+)\"', f.read())
+              print(m.group(1) if m else '')
+          ")"
+
+          if [[ "$MANIFEST_VERSION" != "$VALID_VERSION" ]]; then
+            echo "ERROR: Cargo.toml version ($MANIFEST_VERSION) does not match requested release version ($VALID_VERSION)!" >&2
+            exit 1
+          fi
+
+          # Verify candidate commit is part of the authorized release lineage (origin/main)
+          echo "Verifying candidate commit lineage against origin/main..."
+          if ! git fetch origin main; then
+            echo "ERROR: Failed to fetch origin/main! Cannot verify authorized release lineage." >&2
+            exit 1
+          fi
+
+          if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+            echo "ERROR: Authorized release branch ref 'origin/main' does not exist!" >&2
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main; then
+            if [[ "$(git rev-parse origin/main)" != "$CANDIDATE_SHA" ]]; then
+              echo "ERROR: Candidate commit '$CANDIDATE_SHA' is not in the history of origin/main." >&2
+              echo "Releases must be built from the authorized release lineage (main branch)." >&2
+              exit 1
+            fi
+          fi
+          echo "Confirmed: Candidate commit $CANDIDATE_SHA belongs to authorized origin/main lineage."
+
+          # For actual publication (dry_run: false), require pre-existing remote tag pointing to candidate SHA
+          if [[ "$INPUT_DRY_RUN" == "false" ]]; then
+            TAG_NAME="v${VALID_VERSION}"
+            echo "Validating that remote tag $TAG_NAME points to $CANDIDATE_SHA..."
+            git fetch --tags origin
+            if ! git rev-parse "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+              echo "ERROR: Remote tag '${TAG_NAME}' does not exist! Publication requires a pre-existing tag." >&2
+              exit 1
+            fi
+            TAG_COMMIT="$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")"
+            if [[ "$TAG_COMMIT" != "$CANDIDATE_SHA" ]]; then
+              echo "ERROR: Tag '${TAG_NAME}' points to $TAG_COMMIT, but candidate SHA is $CANDIDATE_SHA!" >&2
+              exit 1
+            fi
+            echo "Confirmed: Tag '${TAG_NAME}' exists and points exactly to candidate SHA $CANDIDATE_SHA."
+          else
+            echo "Dry-run mode: Pre-existing tag check skipped."
+          fi
+
+  candidate-quality-gates:
+    name: candidate-quality-gates
+    needs: [validate-inputs-and-metadata]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CANDIDATE_SHA: ${{ needs.validate-inputs-and-metadata.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Strict Clippy check
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Documentation check
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
+      - name: Workspace unit and integration tests
+        run: cargo test --workspace --locked
+
+      - name: Fault-injection lifecycle tests (test-support)
+        run: cargo test --workspace --locked --features knotrel-server/test-support
+
+      - name: Run example (basic)
+        run: cargo run -p knotrel-core --example basic
+
+      - name: Run example (bulk_import)
+        run: cargo run -p knotrel-core --example bulk_import
+
+      - name: Run example (engine_selection)
+        run: cargo run -p knotrel-core --example engine_selection
+
+  build-binaries:
+    name: build-binary (${{ matrix.target }})
+    needs: [validate-inputs-and-metadata, candidate-quality-gates]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: knotrel-server
+            archive_ext: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: knotrel-server
+            archive_ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: knotrel-server.exe
+            archive_ext: zip
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.validate-inputs-and-metadata.outputs.version }}
+      CANDIDATE_SHA: ${{ needs.validate-inputs-and-metadata.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }} -p knotrel-server
+
+      - name: Record build provenance receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_PATH="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          PROV_PATH="target/${{ matrix.target }}/release/build-provenance.json"
+          python3 -c "
+          import hashlib, json, subprocess
+          with open('$BIN_PATH', 'rb') as f:
+              digest = hashlib.sha256(f.read()).hexdigest()
+          rustc_ver = subprocess.check_output(['rustc', '--version'], text=True).strip()
+          receipt = {
+              'product': 'knotrel-server',
+              'version': '${{ env.RELEASE_VERSION }}',
+              'target': '${{ matrix.target }}',
+              'commit_sha': '${{ env.CANDIDATE_SHA }}',
+              'rustc_version': rustc_ver,
+              'binary_name': '${{ matrix.binary_name }}',
+              'binary_sha256': digest,
+          }
+          with open('$PROV_PATH', 'w') as f:
+              json.dump(receipt, f, indent=2)
+          print(f'Recorded build provenance for $BIN_PATH: sha256={digest}')
+          "
+
+      - name: Smoke test release binary (unix)
+        if: runner.os != 'Windows'
+        run: ./scripts/smoke-test-release-binary.sh "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+
+      - name: Smoke test release binary (windows)
+        if: runner.os == 'Windows'
+        run: powershell -File ./scripts/smoke-test-release-binary.ps1 -BinaryPath "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+
+      - name: Package release archive
+        shell: bash
+        env:
+          REQUIRE_PROVENANCE: "1"
+        run: |
+          ./scripts/package-release-binary.sh "$RELEASE_VERSION" "${{ matrix.target }}" "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$CANDIDATE_SHA" "target/${{ matrix.target }}/release/build-provenance.json"
+
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: knotrel-server-pkg-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  build-source:
+    name: build-source
+    needs: [validate-inputs-and-metadata, candidate-quality-gates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.validate-inputs-and-metadata.outputs.version }}
+      CANDIDATE_SHA: ${{ needs.validate-inputs-and-metadata.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+
+      - name: Verify and package source archives
+        run: ./scripts/verify-source-packages.sh
+
+      - name: Prepare source distribution checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-source
+          cp "target/package/knotrel-core-${RELEASE_VERSION}.crate" dist-source/
+          cp "target/package/knotrel-server-${RELEASE_VERSION}.crate" dist-source/
+          cd dist-source
+          sha256sum "knotrel-core-${RELEASE_VERSION}.crate" > "knotrel-core-${RELEASE_VERSION}.crate.sha256"
+          sha256sum "knotrel-server-${RELEASE_VERSION}.crate" > "knotrel-server-${RELEASE_VERSION}.crate.sha256"
+
+      - name: Upload source artifacts
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: knotrel-source-pkg
+          path: dist-source/*
+          if-no-files-found: error
+
+  assemble-release-bundle:
+    name: assemble-release-bundle
+    needs: [validate-inputs-and-metadata, candidate-quality-gates, build-binaries, build-source]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.validate-inputs-and-metadata.outputs.version }}
+    steps:
+      - name: Download all built artifacts
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          path: all-downloaded
+
+      - name: Validate inventory and generate collated SHA256SUMS (Findings 4, 8)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-bundle
+
+          # Copy all downloaded assets into release-bundle
+          find all-downloaded -type f -exec cp {} release-bundle/ \;
+          cd release-bundle
+
+          echo "=== 1. Validating Individual Checksums ==="
+          for sha_file in *.sha256; do
+            echo "Verifying $sha_file..."
+            sha256sum -c "$sha_file"
+          done
+
+          echo "=== 2. Generating collated SHA256SUMS from final artifact bytes ==="
+          # Collated checksums for release distributions (archives and crates)
+          sha256sum *.tar.gz *.zip *.crate > SHA256SUMS
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+          echo "=== 3. Validating Exact Release Inventory ==="
+          EXPECTED_FILES=(
+            "knotrel-server-v${RELEASE_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            "knotrel-server-v${RELEASE_VERSION}-x86_64-unknown-linux-gnu.tar.gz.sha256"
+            "knotrel-server-v${RELEASE_VERSION}-x86_64-unknown-linux-gnu-metadata.json"
+            "knotrel-server-v${RELEASE_VERSION}-aarch64-apple-darwin.tar.gz"
+            "knotrel-server-v${RELEASE_VERSION}-aarch64-apple-darwin.tar.gz.sha256"
+            "knotrel-server-v${RELEASE_VERSION}-aarch64-apple-darwin-metadata.json"
+            "knotrel-server-v${RELEASE_VERSION}-x86_64-pc-windows-msvc.zip"
+            "knotrel-server-v${RELEASE_VERSION}-x86_64-pc-windows-msvc.zip.sha256"
+            "knotrel-server-v${RELEASE_VERSION}-x86_64-pc-windows-msvc-metadata.json"
+            "knotrel-core-${RELEASE_VERSION}.crate"
+            "knotrel-core-${RELEASE_VERSION}.crate.sha256"
+            "knotrel-server-${RELEASE_VERSION}.crate"
+            "knotrel-server-${RELEASE_VERSION}.crate.sha256"
+            "SHA256SUMS"
+          )
+
+          for expected in "${EXPECTED_FILES[@]}"; do
+            if [[ ! -f "$expected" ]]; then
+              echo "ERROR: Missing expected release asset: $expected" >&2
+              exit 1
+            fi
+          done
+
+          ACTUAL_COUNT="$(ls -1 | wc -l | tr -d ' ')"
+          EXPECTED_COUNT="${#EXPECTED_FILES[@]}"
+          if [[ "$ACTUAL_COUNT" -ne "$EXPECTED_COUNT" ]]; then
+            echo "ERROR: Inventory count mismatch! Expected $EXPECTED_COUNT files, found $ACTUAL_COUNT files:" >&2
+            ls -la >&2
+            exit 1
+          fi
+
+          echo "Confirmed: Exact inventory of $EXPECTED_COUNT release assets verified successfully."
+
+      - name: Upload complete release bundle (available in dry-run and release)
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: knotrel-release-bundle-v${{ env.RELEASE_VERSION }}
+          path: release-bundle/*
+          if-no-files-found: error
+
+  publish-release:
+    name: publish-release
+    needs: [validate-inputs-and-metadata, candidate-quality-gates, assemble-release-bundle]
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.validate-inputs-and-metadata.outputs.version }}
+      CANDIDATE_SHA: ${{ needs.validate-inputs-and-metadata.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Download assembled release bundle
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          name: knotrel-release-bundle-v${{ env.RELEASE_VERSION }}
+          path: final-release-assets
+
+      - name: Publish GitHub Release (authorized non-dry-run with verified tag)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_NAME="v${RELEASE_VERSION}"
+          echo "Publishing GitHub Release for verified tag '$TAG_NAME' at commit $CANDIDATE_SHA..."
+
+          # --verify-tag ensures the release only succeeds if the tag already exists remotely
+          gh release create "$TAG_NAME" \
+            --verify-tag \
+            --title "Knotrel $TAG_NAME Preview" \
+            --notes-file docs/releases/v0.1.0-release-notes.md \
+            --draft \
+            final-release-assets/*
+
+          echo "GitHub Release $TAG_NAME published successfully as draft."

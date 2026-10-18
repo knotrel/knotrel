@@ -32,8 +32,47 @@ jobs:
         run: cargo build --workspace --locked
       - name: Build (release)
         run: cargo build --workspace --release --locked
-      - name: Run tests
+      - name: Run tests (workspace)
         run: cargo test --workspace --locked
+      - name: Run tests (test-support)
+        run: cargo test --workspace --locked --features knotrel-server/test-support
+      - name: Run example (basic)
+        run: cargo run -p knotrel-core --example basic
+      - name: Run example (bulk_import)
+        run: cargo run -p knotrel-core --example bulk_import
+      - name: Run example (engine_selection)
+        run: cargo run -p knotrel-core --example engine_selection
+      - name: Run release binary smoke test (unix)
+        if: runner.os != 'Windows'
+        run: ./scripts/smoke-test-release-binary.sh target/release/knotrel-server
+      - name: Run release binary smoke test (windows)
+        if: runner.os == 'Windows'
+        run: powershell -File ./scripts/smoke-test-release-binary.ps1 -BinaryPath target/release/knotrel-server.exe
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  package-verify:
+    name: package-verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+      - name: Verify reproducible source packaging
+        run: ./scripts/verify-source-packages.sh
 
   fmt:
     name: fmt
