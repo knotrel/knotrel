@@ -1,28 +1,36 @@
-# Knotrel Roadmap: Dynamic Connectivity as a Service
+# Knotrel Roadmap: In-Memory Dynamic Connectivity Accelerator
 
-**Status:** Proposed, release-oriented execution plan  
-**Scope:** `knotrel` (independent Rust library and HTTP server) and `knotrel-benchmarks` (correctness/performance evidence)  
-**Product direction:** Specialized service for undirected dynamic graph connectivity, not a general-purpose graph database.  
-**Baseline:** The ordered `ConnectivityGraph::try_from_edges` API and optional benchmark-harness integration have been implemented and reviewed; verify the current repository state before marking any checklist item complete.
+**Status:** Approved product direction; proposed release-oriented execution plan. Future features remain unimplemented until verified.
 
-> **Execution rule:** Work from top to bottom within a release. All **v0.1.0** tasks come first. A task is checked only when verified against the current repository, not because a feature was discussed previously. Version assignments are planning targets and can change after review.
+**Scope:** `knotrel` (independent Rust library and HTTP server) and `knotrel-benchmarks` (correctness/performance evidence).
+
+**Product direction:** An in-memory dynamic connectivity accelerator for evolving undirected graphs. An external system remains the authoritative source of graph data.
+
+**Baseline:** Preserve the released v0.1.0 volatile service, synchronous Rust library, engine selection, graph limits, revisions, existing batch behavior and `ConnectivityGraph::try_from_edges`.
+
+Knotrel maintains a specialized, derived graph representation for graph loading, incremental updates and exact connectivity queries. It is not a general-purpose graph database, a replacement for the customer's authoritative store, a distributed persistence system, an automatically durable service or a Redis-compatible server. Correctness, synchronization, simple integration and measurable connectivity performance are the primary differentiators; commercial advantage requires evidence, not positioning alone.
+
+An external feeder reads the authoritative database or event stream and supplies coherent graph images and ordered updates. Provider-specific PostgreSQL, Kafka, Neo4j or other connectors do not belong inside the server in these milestones. Optional local persistence remains a future startup/recovery accelerator; it does not transfer authority to Knotrel.
+
+**Scope labels:** **REQUIRED** means a release acceptance gate. **OPTIONAL** means a separately enabled capability whose absence does not invalidate the basic product contract. **DEFERRED** means no implementation commitment in that release. A future capability can be optional for operators while its safety criteria are required before shipping it.
+
+> **Execution rule:** Follow dependencies within each release, retain independent review gates, and mark tasks complete only against verified evidence. v0.1.0 is the released baseline. Its historical checklist and evidence below are preserved, including unresolved bookkeeping; this planning update does not certify previously pending platform or publication checks. The 0.1.5 dashboard/detail mismatch remains historical bookkeeping, not a missing library capability. Release numbers beyond v0.1.0 are planning targets.
 
 ## Release overview and scope
 
-| Release | Goal | Required scope | Explicitly not required |
+| Release | Goal | REQUIRED scope | OPTIONAL / DEFERRED scope |
 |---|---|---|---|
-| **v0.1.0 — Public Preview** | An installable and testable Rust library plus an explicitly **volatile, experimental** HTTP service | Reduced service contract, default-safe networking, basic liveness/readiness and shutdown, documentation, CI, release artifacts | Persistence, recovery, HTTP bulk import, batch operations, multi-graph, concurrency optimization, Prometheus |
-| **v0.2.0 — Durable Service** | Single-graph service with documented restart/crash guarantees and bounded HTTP import | Full durability contract; WAL, snapshots and recovery; atomic or contractually safe HTTP import | Multi-graph, advanced concurrency tuning |
-| **v0.3.0 — Operational Service** | Efficient request-level updates and diagnosable operations | Ordered batch mutations, full lifecycle, metrics/tracing, measured concurrency work where justified | Multi-graph unless demanded |
-| **v1.0.0 — Production Readiness** | Stable, supported deployment with verified operational/security properties | Upgrade/compatibility policy, fault injection, deployment security, release hardening, operational guidance | General-purpose graph DB and distributed storage |
+| **v0.1.0 — Public Preview** | Released Rust library and experimental volatile service | Preserve verified API, networking, lifecycle, examples and release history | Persistence/import absent; existing batches remain supported, not future work |
+| **v0.2.0 — Integration & Graph Loading** | Rebuildable single-graph accelerator fed by an external authority | Integration contract, atomic HTTP import, identity/version model, ordered events with duplicate/gap detection, synchronization-aware bootstrap/readiness, external feeder and reproducible measurements | Local WAL/AOF, automatic snapshots and disk recovery DEFERRED; export OPTIONAL; embedded provider connectors, multi-graph and advanced concurrency DEFERRED |
+| **v0.3.0 — Operational Service** | Operable integration and measured update/query efficiency | Batch compatibility and integration improvements, lifecycle, deployment, metrics/tracing; evidence-based contention decision | Concurrency redesign only if justified; local persistence not a prerequisite |
+| **v0.4.0 — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; snapshot-only, AOF-only and combined modes are candidates, not three implementation commitments |
+| **v1.0.0 — Production Readiness** | Supported operational, security and compatibility guarantees | Deployment threat model, supported API/integration compatibility, fault tests and runbooks | Multi-graph demand-gated; local persistence need not be enabled or implemented to qualify a volatile deployment; general-purpose/distributed database features excluded |
 
-**Exposure rule:** v0.1.0 is meant for localhost or a trusted, access-controlled environment only. If any release exposes the server to untrusted clients or networks, authentication/authorization and the corresponding abuse tests become *blocking requirements for that release*, even if listed later.
-
----
+**Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
 
 ## Feature Progress Dashboard
 
-Track high-level feature readiness across releases. Check off each feature when all its underlying sub-tasks, tests and acceptance criteria are satisfied:
+Existing checks describe historical evidence. Every proposed feature below remains unchecked.
 
 ### v0.1.0 — Public Preview
 - [x] **Feature 0.1.1:** Inventory and freeze minimum release scope (P0)
@@ -32,72 +40,46 @@ Track high-level feature readiness across releases. Check off each feature when 
 - [ ] **Feature 0.1.5:** Rust library adoption, API and examples (P0)
 - [ ] **Feature 0.1.6:** CI, packaging and release candidate validation (M9-min, P0)
 
-### v0.2.0 — Durable Single-Graph Service
-- [ ] **Feature 0.2.1:** Complete durability-specific service contract (M0)
-- [ ] **Feature M1.1:** Canonical durable graph representation
-- [ ] **Feature M1.2:** Write-ahead mutation log (WAL) design and implementation
-- [ ] **Feature M1.3:** Atomic snapshot publication
-- [ ] **Feature M1.4:** Startup recovery and replay
-- [ ] **Feature M1.5:** Snapshot lifecycle and compaction
-- [ ] **Feature M1.6:** Recovery fault-injection and migration tests
-- [ ] **Feature M2.1:** Bulk import API contract
-- [ ] **Feature M2.2:** Bounded import request handling
-- [ ] **Feature M2.3:** Build-then-publish isolated import
-- [ ] **Feature M2.4:** Durability-integrated import path
-- [ ] **Feature M2.5:** End-to-end import tests and fixtures
-- [ ] **Feature M2.6:** Total import cost instrumentation
+### v0.2.0 — Integration & Graph Loading
+
+- [ ] **Feature 0.2.1:** External source-of-truth integration contract (REQUIRED)
+- [ ] **Feature 0.2.2:** Bounded atomic HTTP graph import (REQUIRED)
+- [ ] **Feature 0.2.3:** Graph identity, generation, local revision and source position (REQUIRED)
+- [ ] **Feature 0.2.4:** Ordered incremental updates, duplicate and gap detection (REQUIRED)
+- [ ] **Feature 0.2.5:** Synchronization-aware bootstrap and readiness (REQUIRED)
+- [ ] **Feature 0.2.6:** External feeder example, restart/rebuild tests and reproducible measurements (REQUIRED)
 
 ### v0.3.0 — Operational Service
-- [ ] **Feature M3.1:** Batch request/response contract
-- [ ] **Feature M3.2:** Ordered committed-prefix failure model
-- [ ] **Feature M3.3:** Durable replay and retry handling
-- [ ] **Feature M3.4:** Common mutation executor for single and batch ops
-- [ ] **Feature M3.5:** Partial failure and concurrent query tests
-- [ ] **Feature M3.6:** Practical batch throughput measurement
-- [ ] **Feature M4.1:** Recovery-aware liveness probe
-- [ ] **Feature M4.2:** Recovery-aware readiness probe
-- [ ] **Feature M4.3:** Graceful termination and connection draining
-- [ ] **Feature M4.4:** Validated runtime configuration
-- [ ] **Feature M4.5:** Deployability, storage checks and containerization
-- [ ] **Feature M6.1:** Metric vocabulary definition
-- [ ] **Feature M6.2:** Prometheus metrics export
-- [ ] **Feature M6.3:** Structured logging and trace propagation
-- [ ] **Feature M6.4:** Actionable alerts and operational dashboards
-- [ ] **Feature M6.5:** Overhead and cardinality budget verification
-- [ ] **Feature M5.1:** Lock wait and hold time instrumentation
-- [ ] **Feature M5.2:** Mixed-load contention and throughput tests
-- [ ] **Feature M5.3:** Concurrency architecture evaluation
-- [ ] **Feature M5.4:** Revision consistency preservation
-- [ ] **Feature M5.5:** Load-testing and regression gates
+
+- [ ] **Feature M3:** Compatible batch processing, retry semantics and update efficiency
+- [ ] **Feature M4:** Operational lifecycle, configuration and deployability
+- [ ] **Feature M6:** Integration-aware observability
+- [ ] **Feature M5:** Measured contention, query concurrency and isolation
+
+### v0.4.0 — Optional Local Persistence & Fast Recovery
+
+- [ ] **Feature P1:** Persistence value, strategy and support decision
+- [ ] **Feature P2:** Canonical local checkpoint and snapshot evaluation
+- [ ] **Feature P3:** AOF value and protocol evaluation
+- [ ] **Feature P4:** Source-aware recovery, retention and lifecycle
+- [ ] **Feature P5:** Fault injection, migration and recovery-cost evidence
 
 ### v1.0.0 — Production Readiness
-- [ ] **Feature M8.1:** Deployment threat model documentation
-- [ ] **Feature M8.2:** Standardized authentication integration (JWT/mTLS)
-- [ ] **Feature M8.3:** Action and graph-level authorization
-- [ ] **Feature M8.4:** Resource endpoint rate-limiting and audit events
-- [ ] **Feature M8.5:** Security abuse and privilege boundary testing
-- [ ] **Feature M9.1:** Public REST API and schema versioning policy
-- [ ] **Feature M9.2:** Comprehensive service and client examples
-- [ ] **Feature M9.3:** Automated cross-platform CI matrix
-- [ ] **Feature M9.4:** Deployable artifact publication (binaries/containers)
-- [ ] **Feature M9.5:** Operations runbook and disaster recovery guidance
-- [ ] **Feature M7.1:** Multi-graph namespaces and lifecycle (optional)
-- [ ] **Feature M7.2:** Per-graph resource quotas and isolation
-- [ ] **Feature M7.3:** Partitioned storage and recovery streams
-- [ ] **Feature M7.4:** Fair scheduling and starvation prevention
-- [ ] **Feature M7.5:** Multi-graph lifecycle and compatibility tests
 
----
+- [ ] **Feature M8:** Supported security and access control
+- [ ] **Feature M9:** Packaging, compatibility and operations
+- [ ] **Feature M7:** Multi-graph management (OPTIONAL, demand-gated)
 
 ## Guiding principles
 
-1. **Correctness before throughput.** Never weaken the existing graph, error, limit or dynamic-connectivity semantics to improve a benchmark.
-2. **Separate the concerns.** Core algorithms, persistence, protocol handling and operations live behind explicit boundaries. Avoid embedding HTTP/storage concerns in `knotrel-core`.
-3. **Durability must be defined, not implied.** An acknowledged mutation has a documented recovery guarantee; otherwise the endpoint is clearly marked volatile.
-4. **Ordered mutations, explicit consistency.** Mutations have one defined serialization order. Concurrent reads must observe a coherent graph revision.
-5. **Observable, reproducible, bounded.** Resource caps, reproducible failure tests and service-level metrics precede aggressive optimization.
-6. **Backward compatibility.** Existing public APIs and request/response formats are preserved unless an explicit versioning and migration plan is accepted.
-7. **No speculative performance claims.** Measure end-to-end throughput, p95/p99 latency, memory, startup and recovery on controlled workloads; distinguish measurement noise from effects.
+1. **External authority.** In integration mode, source changes are recorded externally before being delivered to Knotrel. An in-memory acknowledgment does not commit anything in the source or guarantee local durability.
+2. **Correctness before throughput.** Preserve exact graph semantics, limits and error behavior. Synchronization failures cannot silently produce a ready but divergent graph.
+3. **Separate concerns.** Core algorithms remain synchronous and independent of HTTP/storage; the server owns protocol and execution; feeders own provider access. Retain Rust 1.98.1, edition 2024 and Elastic-2.0.
+4. **Explicit versions and ordering.** Graph identity, instance identity, generation, local revision, source position and persistence checkpoint are different concepts. Publish coherent graph/version tuples.
+5. **Backward compatibility.** Preserve standalone volatile mode, Rust APIs and the existing ordered, continue-after-domain-error batch endpoint. A new feeder protocol may have a separately documented failure model; do not silently change `/v1/batch`.
+6. **Bounded and observable.** Bound admission, import bodies, candidate construction, replay and deduplication state. Cardinality limits alone do not prove a memory or latency bound.
+7. **Persistence is optional.** Select it only for demonstrated recovery benefits. Local restore never proves source synchronization. No implicit downgrade or unsupported acknowledgment guarantee.
+8. **Evidence before performance claims.** Compare equivalent semantics and include loading, catch-up, HTTP and memory costs where applicable. Preserve before/after workloads and regressions.
 
 ---
 
@@ -216,199 +198,280 @@ because it may still be queued or running in the background, racing with later r
 
 ---
 
-## v0.2.0 — Durable single-graph service
+## v0.2.0 — Integration & Graph Loading
 
-**Order:** First expand the M0 contract for durability and revisions, then implement M1 recovery, then M2 HTTP import. Existing v0.1.0 routes remain supported unless an approved compatibility change is documented.
+**REQUIRED outcome:** A single derived graph can be loaded atomically, advanced by ordered source updates and rebuilt after restart without confusing memory acceptance with durability. Existing standalone volatile and embedded Rust behavior remains supported.
 
-### 0.2.1 — Complete durability-specific service contract (remaining M0)
+**Not a release requirement:** Local WAL/AOF, automatic snapshots, filesystem crash recovery, provider-specific server connectors, multi-graph or concurrency redesign. A transport graph image is not a durable local checkpoint. Optional export must not delay the required integration path.
 
-- [ ] **Feature Complete: 0.2.1 — Complete durability-specific service contract**
-- [ ] Define revision/sequence numbers, mutation acknowledgment and crash consistency (M0.2–M0.3).
-- [ ] Finalize error/limit semantics for storage failure, replay and imports (M0.4).
-- [ ] Confirm representative correctness workloads and record deterministic provenance (M0.5).
-- [ ] Establish provisional graph scale, RTO/RPO, disk/memory and latency objectives before making durability promises (M0.6).
-- [ ] Record storage/FS assumptions and the supported security boundary in ADRs.
+### 0.2.1 — External source-of-truth integration contract (P0, REQUIRED)
 
-### M1 — Persistence, snapshots and recovery (P0)
+- [ ] Define standalone volatile versus opt-in source-managed mode, startup selection, request admission and mode-specific readiness. Existing callers must not acquire an external-source dependency.
+- [ ] Define feeder/source responsibilities: obtain a coherent graph image associated with source position S; retain/consume all relevant changes after S; deliver one logical ordered stream; explicitly complete bootstrap at a declared barrier B. An opaque cursor alone cannot prove continuity: specify a predecessor token, contiguous delivery sequence or another verifiable continuity protocol. Partition merging and database snapshot/event coordination remain feeder responsibilities.
+- [ ] Define acknowledgment, visibility, timeout/disconnect and retry semantics. An accepted update means applied to memory with its cursor; the authoritative source must already contain it. No exactly-once network delivery or disk durability is implied.
+- [ ] Specify version tokens and event failure rules needed by 0.2.2–0.2.5 before implementation. Decide feeder ownership/fencing, stale-session rejection, duplicate retention and behavior when source history is unavailable.
+- [ ] Prevent untracked writes from invalidating the source cursor: select and document a policy for legacy mutating requests in source-managed mode (recommended: reject them); retain legacy behavior in standalone mode. Queries remain compatible. Feeder events do not silently inherit legacy batch error continuation.
+- [ ] Define synchronization/freshness policy after bootstrap: barrier completion is not proof of perpetual freshness. Decide behavior on feeder disconnection, lag, source epoch changes and known gaps, without inventing SLOs.
+- [ ] **Acceptance:** Publish an implementable contract with request/response examples, state transitions, error precedence and a decision table for lost responses, duplicates, conflicting duplicates, gaps, stale generation, invalid source events and restart. Maintainer approval of unresolved decisions precedes coding.
+- [ ] **Tests specified:** Deterministic traces for coherent image S + catch-up to B, event-before-image races, reordered/duplicate events, timeout after admission, old feeder after replacement and source history expiration. Pin seeds and expected graph/version tuples; no runtime implementation is required for this contract feature.
 
-**Goal:** Restore an equivalent graph after controlled shutdown, process crash and interrupted writes without relying on the caller to rebuild it.
+### 0.2.2 — Bounded atomic HTTP graph import (P0, REQUIRED)
 
-- [ ] **Feature Complete: M1 — Persistence, snapshots and recovery**
-- [ ] **M1.1 Define a canonical durable graph representation.** Persist vertices and undirected edges, engine selection/configuration, graph limits, schema version, revision and integrity metadata. Canonicalize undirected edge endpoints; retain isolated vertices. Do not serialize private AVL/ETT/HDT pointers as the portable source of truth.
-  - [ ] **Acceptance M1.1:** Round-trip preserves connectivity, node/edge counts, disconnected components, isolated vertices and future mutation behavior on all supported engines.
-- [ ] **M1.2 Design the write-ahead mutation log (WAL).** Choose record framing, checksum, sequence/revision, ordering, versioning and commit boundary. Define treatment of truncated tails, corruption, duplicate request IDs, log retention and backpressure. Explicitly decide whether WAL writes occur before applying a mutation or via another recoverable protocol.
-  - [ ] **Acceptance M1.2:** Replay is deterministic; no partially acknowledged mutation is silently treated as committed.
-- [ ] **M1.3 Implement atomic snapshot publication.** Write to a temporary file, validate and sync it, atomically publish where supported, and sync directory metadata as required by the supported OS/filesystem. Include checksum, schema and last included WAL revision. Retain a known-good generation until replacement succeeds.
-  - [ ] **Acceptance M1.3:** Crash injection at every snapshot phase restores either the prior valid generation or the new complete generation, never a partial file.
-- [ ] **M1.4 Implement startup recovery.** Load newest valid snapshot, validate limits/integrity, replay subsequent committed records in order, and reject or quarantine irrecoverable state with clear operator diagnostics. Avoid silently starting an empty graph after recovery failure.
-  - [ ] **Acceptance M1.4:** Replay reproduces a reference graph after mixed link/cut sequences; corruption scenarios have deterministic results.
-- [ ] **M1.5 Snapshot lifecycle and compaction.** Configure snapshot triggers by WAL size, mutation count and elapsed time. Bound disk growth and retain a safe number of generations; expose maintenance status.
-  - [ ] **Acceptance M1.5:** Sustained workloads do not grow storage without bound; restart time is measured and meets the agreed RTO target.
-- [ ] **M1.6 Recovery and migration tests.** Cover clean restart, process kill, power-loss-like truncated WAL, checksum mismatch, disk full, insufficient permissions, canceled snapshot, schema mismatch and replay across supported engine configurations.
-  - [ ] **Acceptance M1.6:** Automated fault-injection tests pass on supported platforms and document untestable power-loss assumptions.
-- [ ] **Exit gate M1:** Acknowledged operations meet the defined durability contract, and recovery of every supported graph topology is deterministic and observable.
+**Depends on:** 0.2.1, including the version/precondition model. Implement the minimal identity fields needed for safe publication here; 0.2.3 completes their shared exposure and validation. Do not ship unguarded replacement while waiting for 0.2.3.
 
-### M2 — Bulk graph import over HTTP (P0)
+- [ ] Define create-only versus replace, required preconditions, explicit vertices/edges, source identity/epoch and snapshot position, payload schema, node-ID encoding and error precedence. Preserve `try_from_edges` semantics: nodes before edges, isolates retained, duplicate/reversed edges are no-ops, implicit endpoints allowed, self-loops rejected, configured limits enforced.
+- [ ] Bound body bytes, raw item counts (including duplicates), concurrent imports and candidate resources. A fully buffered bounded format is acceptable; streaming is DEFERRED. Document that graph cardinality limits need not imply the entire graph fits one import body.
+- [ ] Build a candidate away from live state, then recheck generation/revision preconditions under the mutation boundary. Publish topology and all associated metadata together. Failed parse/build/conflict leaves the live graph, generation, revision and cursor unchanged.
+- [ ] Define read behavior during construction and catch-up: old-state reads, if supported, must carry the old generation and obey freshness policy; initial bootstrap must not present an empty or partially synchronized graph as ready. Prevent queued old-generation events from applying to the new graph.
+- [ ] Define cancellation before publication versus an uncertain outcome after admission/publication; do not promise rollback after a successful swap. A process crash loses volatile state and triggers external bootstrap, not local recovery.
+- [ ] **Acceptance:** No reader observes half an imported graph or a graph paired with another generation's cursor. Successful import acknowledges coherent in-memory publication, not readiness or persistence. Reads and metadata obey the selected bootstrap policy.
+- [ ] **Tests:** Every engine; empty/isolate/disconnected/cyclic/dense graphs; full-width IDs; duplicates; malformed/oversized payloads; limits; competing imports/writes; cancellation; crash/restart; differential future mutations against incremental construction.
 
-**Goal:** Load initial topology efficiently and safely without one request per edge.
+### 0.2.3 — Identity, generation, revision and source position (P0, REQUIRED)
 
-- [ ] **Feature Complete: M2 — Bulk graph import over HTTP**
-- [ ] **M2.1 Publish an import API contract.** Decide create-versus-replace semantics, graph identity, accepted JSON format (or versioned streaming format), graph limits, explicit isolated vertices, duplicate/self-loop rules, implicit endpoint behavior and error precedence. Match the core `try_from_edges` contract where appropriate; distinguish service preconditions from core semantics.
-  - [ ] **Acceptance M2.1:** API spec contains success/failure examples and rejects malformed/oversized payloads deterministically.
-- [ ] **M2.2 Apply bounded request handling.** Enforce request byte limit, max vertices/edges, parse limits and cancellation. For v1, a bounded fully buffered request is acceptable; streaming is a later enhancement if scale justifies it.
-  - [ ] **Acceptance M2.2:** Oversized or malformed imports do not cause uncontrolled memory growth or leave a partial published graph.
-- [ ] **M2.3 Implement build-then-publish.** Construct a candidate graph away from the live graph via `try_from_edges`; validate it and publish only after the durability path is complete. Define whether reads continue against the old revision during construction, and specify replacement conflicts using expected revision/ETag or another explicit mechanism.
-  - [ ] **Acceptance M2.3:** Failed imports leave the previous graph and revision unchanged; successful imports become visible atomically.
-- [ ] **M2.4 Integrate import with durability.** Store a complete committed import or recovery-safe equivalent before acknowledgment; ensure recovery never exposes a half-imported graph. Define WAL reset/checkpoint interaction.
-  - [ ] **Acceptance M2.4:** Crash tests at parse, build, persist and publish boundaries recover old or new complete state under the specified acknowledgment rules.
-- [ ] **M2.5 Add end-to-end tests and import fixtures.** Empty graph, isolates, duplicates, reversed duplicates, self-loops, limits, disconnected/cyclic/dense graphs, retries and concurrent readers. Compare imported state and future operations against ordered incremental construction.
-  - [ ] **Acceptance M2.5:** Black-box HTTP tests plus oracle comparisons pass, with versioned fixtures.
-- [ ] **M2.6 Instrument total import cost.** Separately report request parsing, graph construction, durable publication and response time, with memory peak. Do not conflate this with old benchmark setup timings.
-  - [ ] **Acceptance M2.6:** Import observability permits diagnosing slow paths without claiming speedup from bulk core construction.
-- [ ] **Exit gate M2:** An operator/client can safely create or replace a graph via one bounded API call, with predictable behavior across crashes.
+- [ ] Expose coherent metadata for one implicit graph; identity is not multi-graph routing. Separate graph identity (logical projection) from instance identity (process/service incarnation).
+- [ ] A generation identifies a published baseline/rebuild lineage; revision counts effective local changes within its documented scope. Preserve existing decimal revision behavior for standalone mode; define import/reset behavior explicitly. Prevent stale tokens from becoming valid after restart/replacement, even if topology and numeric revision match.
+- [ ] Source position identifies the applied prefix of a specific source stream/epoch. It is not the graph revision: an accepted no-op event can advance source progress without changing topology or local revision. Do not compare opaque provider cursors lexicographically or assume they are contiguous integers.
+- [ ] Reserve a distinct concept for a future local persistence checkpoint: the graph/version/source tuple actually recoverable from local storage, which may lag live state. v0.2.0 has no such durability guarantee.
+- [ ] Add backward-compatible metadata/precondition exposure and error mapping; keep the existing `/v1/info` immutable-settings versus `/v1/stats` coherent-live-state distinction. Do not advertise a token from one snapshot with a query result from another.
+- [ ] **Acceptance:** Identity and version scopes, no-op/error rules, restart behavior and conditional writes are documented and enforced without narrowing the existing arbitrary-precision revision to a machine integer.
+- [ ] **Tests:** Equal numeric revisions in distinct instances/generations, revision carry boundaries, no-op source advancement, errors not falsely advancing progress, coherent concurrent reads and stale preconditions.
 
----
+### 0.2.4 — Ordered incremental updates (P0, REQUIRED)
 
-## v0.3.0 — Operational service
+- [ ] Add a source-managed update contract separate from legacy mutation/batch semantics. Validate source identity/epoch, generation and feeder ownership before applying an event; use one serialization boundary for graph changes and applied cursor.
+- [ ] Define ordering and bounded duplicate detection: same identity with conflicting content is rejected; exact retries do not repeat effects; events outside the retained verification window receive an explicit stale/unverifiable outcome rather than an unearned claim of successful deduplication.
+- [ ] Detect missing predecessors/out-of-order delivery. Do not advance the applied source position past a gap or failed event. A known gap makes synchronized serving unavailable until repaired or rebuilt; arrival of a later event is not evidence that earlier events can be skipped.
+- [ ] For invalid source events, stop progress and report the failing position; require explicit remediation/rebuild. Decide event atomicity before supporting multi-operation source transactions. A safe initial restriction is one graph operation per event; do not invent transaction rollback.
+- [ ] Ensure worker-owned admission, generation checks and result accounting survive HTTP cancellation. Retries after restart must establish the new instance/generation; no durable request ledger is promised.
+- [ ] **Acceptance:** Applied state corresponds to a verified ordered source prefix. Duplicate link/cut idempotence alone is insufficient: an old link retried after a newer cut must not recreate the edge. Capacity rejection cannot be reported as source progress.
+- [ ] **Tests:** Lost acknowledgment, exact/conflicting/expired duplicates, gaps, reordering, source epoch reset, no-op events, limit/error cases, concurrent feeders, queued events racing import, worker panic and restart/rebuild.
 
-**Order:** Batch mutations, full lifecycle and observability first. Concurrency changes are contingent on measured contention, not a prerequisite for release if the existing design meets the agreed capacity target.
+### 0.2.5 — Synchronization-aware bootstrap and readiness (P0, REQUIRED)
 
-### M3 — Ordered batch mutation API (P1)
+- [ ] Implement source-managed transitions covering awaiting-image, loading, catching-up, synchronized, out-of-sync/failed and draining. Map these to the public probe contract without silently changing exhaustive public Rust enums or standalone readiness.
+- [ ] Bind bootstrap completion to the same generation/source epoch and a verified applied position covering barrier B. An arbitrary "ready" request, completed import or local file restore is insufficient.
+- [ ] Keep liveness independent of graph synchronization. Define which graph/admin routes remain available while unready so a feeder can perform bootstrap; diagnostic metadata must identify generation and synchronization state.
+- [ ] Apply the approved ongoing freshness policy for feeder loss/lag. A known gap cannot remain synchronized; uncertain source freshness must be reported without claiming knowledge of the source's current head.
+- [ ] Integrate import/event jobs with existing drain accounting; admitted workers may outlive HTTP callers. Forced exit loses local volatile state; restart starts a new bootstrap, never an empty graph labeled synchronized.
+- [ ] **Acceptance:** Source-managed mode is not ready until bootstrap is verified; a gap invalidates readiness. Standalone mode retains its existing startup semantics. Drain/timeout behavior does not falsely acknowledge canceled or unfinished synchronization.
+- [ ] **Tests:** Barrier before/after catch-up, obsolete completion signals, wrong generation/epoch, feeder disconnect/reconnect, source unavailable, restart, panic, timeout and draining with active import/update workers. Use deterministic synchronization points.
 
-**Goal:** Apply many graph changes per request while retaining an explicit consistency and error contract.
+### 0.2.6 — External feeder and reproducible integration evidence (P0, REQUIRED)
 
-- [ ] **Feature Complete: M3 — Ordered batch mutation API**
-- [ ] **M3.1 Design batch request/response.** Ordered `link`/`cut` operations; operation index, status and resulting revision; maximum batch length/bytes; define duplicate/no-op treatment.
-- [ ] **M3.2 Choose initial failure model.** Recommend **ordered, stop-on-first-error with committed-prefix semantics** for v1, not all-or-nothing. Document that successful prefix updates remain committed when a later operation fails. Evaluate per-operation results versus one batch result. Do not advertise atomic rollback.
-- [ ] **M3.3 Define durable replay and retry.** WAL format must preserve batch order and acknowledgment boundaries, and define behavior if a client retries after timeout. Consider request idempotency keys with retention policy, but do not assume exactly-once network delivery.
-- [ ] **M3.4 Implement a common mutation executor.** Share code between single-operation and batch endpoints to keep validation, limits and revision semantics consistent. Avoid a second graph mutation implementation.
-- [ ] **M3.5 Test partial failures and concurrent queries.** Test failure at every operation index, ordering, repeated operations, disconnect/reconnect, restart during batch, and observable prefix behavior.
-- [ ] **M3.6 Measure practical batch advantages.** Compare HTTP overhead and throughput at varying batch sizes only after correctness; characterize fairness and impact on query tail latency.
-- [ ] **Exit gate M3:** Clients can submit ordered modifications safely, understand exactly what persisted, and resume after interruption.
+- [ ] Provide a minimal feeder outside the server, backed by a deterministic external fixture/event source. Demonstrate coherent image S, ordered updates, barrier B, duplicate retry, gap detection and rebuild when history is missing. A provider-specific production connector is not required.
+- [ ] Document the feeder's source-side obligations: snapshot consistency, event retention, checkpoint ownership, projection/filter version and one ordered delivery stream. Persisting a feeder offset must not cause it to skip rebuilding a restarted volatile Knotrel instance.
+- [ ] Add black-box restart/rebuild scenarios and engine/oracle comparisons. Include source unavailable, stale client session and invalid event recovery; never synthesize a successful source acknowledgment.
+- [ ] Measure parsing, construction, publication, catch-up and total time-to-ready separately, plus query/update latency and memory peak. Record engine, graph/event fixture hashes, source/feeder configuration, versions, hardware, seeds and cold/warm protocol. No benchmarks are required for this roadmap edit.
+- [ ] Compare the same workloads before/after changes; comparisons with competitors must use equivalent visibility, synchronization and durability semantics. Retain regressions and raw evidence; set numerical budgets only after explicit approval.
+- [ ] **Acceptance:** Another engineer can reproduce initial load, incremental synchronization, lost-response retry and full restart/rebuild without an embedded provider connector or local persistence. All declared supported engines pass the same correctness contract; performance reports distinguish measurement from guarantees.
 
-### M4 — Health, readiness and operational lifecycle (P1)
-
-**Goal:** Extend v0.1.0 health/shutdown with recovery-aware readiness, durability-safe draining and deployability; do not reimplement the already verified minimum.
-
-- [ ] **Feature Complete: M4 — Health, readiness and operational lifecycle**
-- [ ] **M4.1 Liveness endpoint.** Respond when the process/event loop is alive; do not couple liveness to storage recovery or graph size.
-- [ ] **M4.2 Readiness endpoint.** Remain unready during recovery, schema incompatibility, fatal persistence problems or resource saturation that prevents serving the promised contract. Specify degraded vs unavailable conditions.
-- [ ] **M4.3 Graceful termination.** Stop admission of new mutations, finish or safely interrupt in-flight operations, finalize durability boundary, and close resources within a configurable drain timeout.
-- [ ] **M4.4 Runtime configuration.** Bind address, storage location, data retention, request limits, timeouts, logs and mode via validated config; fail fast on unsafe combinations.
-- [ ] **M4.5 Deployability checks.** Document storage-volume expectations, permissions, backups/restores, resource limits and local container example. Test restart with persisted data and health transitions.
-- [ ] **Exit gate M4:** Operators can tell when the service is ready, drain it safely and recover its state after restart.
-
-### M6 — Observability (P1)
-
-**Goal:** Make production behavior diagnosable with bounded overhead and cardinality.
-
-- [ ] **Feature Complete: M6 — Observability**
-- [ ] **M6.1 Define a metric vocabulary.** Requests by route/status, mutation/query counts, graph nodes/edges, queue depth, active imports, WAL bytes, snapshot age, recovery state and failures.
-- [ ] **M6.2 Expose Prometheus metrics.** Histograms for HTTP, graph execution, lock wait, durable acknowledgment, import and recovery time; counters for errors and WAL operations; gauges for current graph size and backlog. Never use raw graph IDs, node IDs, edge IDs or request IDs as metric labels.
-- [ ] **M6.3 Add structured logs and trace propagation.** Stable request ID, revision, operation type, duration and errors, with sensitive input redaction. Support trace correlation without logging entire graph payloads.
-- [ ] **M6.4 Create actionable alerts and dashboards.** Recovery failure, readiness flapping, WAL growth, snapshot failures, disk exhaustion, p99 latency, mutation backlog and repeated 5xx errors.
-- [ ] **M6.5 Set overhead and cardinality budgets.** Exercise metrics under high churn and large graphs; verify bounded time series and low instrumentation overhead.
-- [ ] **Exit gate M6:** An operator can explain service health, failures, saturation and recovery behavior from telemetry.
-
-### M5 — Contention, query concurrency and isolation (P1)
-
-**Goal:** Increase useful concurrency only when evidence identifies lock/queueing overhead.
-
-- [ ] **Feature Complete: M5 — Contention, query concurrency and isolation**
-- [ ] **M5.1 Instrument lock wait/hold time.** Distinguish HTTP parse/serialize, queue wait, lock wait, graph operation, WAL/snapshot I/O and response time. Confirm actual current lock scope from source.
-- [ ] **M5.2 Create mixed-load tests.** Vary reader/writer ratios, graph size and batch length; report throughput, p50/p95/p99, fairness, queue depth and memory. Use a dedicated test environment where possible.
-- [ ] **M5.3 Evaluate alternatives.** Keep coarse mutex if sufficient; otherwise compare short critical sections, `RwLock` where reads are truly read-only, actor/single-writer execution, or immutable-version snapshots. Check whether ETT/HDT query paths mutate internal state before adopting read locks.
-- [ ] **M5.4 Preserve consistency.** Every query must observe a documented revision and never a partially applied batch/import. Ensure mutation ordering, cancellation and shutdown cannot violate the WAL/state contract.
-- [ ] **M5.5 Load-test new design and regressions.** Use mixed and update-heavy workloads plus long operations; require meaningful improvements without correctness or tail-latency regressions.
-- [ ] **Exit gate M5:** Either the existing synchronization is supported by evidence, or an alternative has demonstrated better behavior without violating consistency.
+**Exit gate v0.2.0:** 0.2.1–0.2.6 accepted; source-managed synchronization is explicit and testable; standalone/Rust compatibility retained. Export is OPTIONAL and needs its own coherent graph/position contract if selected. No local durability claim is needed to meet this gate.
 
 ---
 
-## v1.0.0 — Production readiness and optional expansion
+## v0.3.0 — Operational Service
 
-**Order:** Close supported security and operational guarantees, harden packaging/compatibility, then decide whether multi-graph is justified by real consumers. Security moves into earlier releases whenever deployment trust assumptions require it.
+**REQUIRED scope:** Build on v0.2.0 integration and v0.1.0 lifecycle. Batch improvements, deployment and observability remain priorities. Concurrency redesign is conditional on measured contention. Local persistence is not a dependency.
 
-### M8 — Security and access control (conditional release gate)
+### M3 — Compatible batch processing and update efficiency (P1)
 
-**Goal:** Prevent unauthorized reads, writes, replacement and destructive operations.
+- [ ] **M3.1 Contract:** Inventory the existing `/v1/batch` behavior and extend result/version reporting compatibly. Preserve ordered execution, per-item domain errors, continuation and lack of rollback.
+- [ ] **M3.2 Failure model:** Specify feeder batch boundaries separately if introduced. A stop-on-error applied-prefix protocol requires explicit new semantics, not a replacement of the legacy endpoint. "Applied" does not mean locally durable.
+- [ ] **M3.3 Retry:** Define source-prefix resume, deduplication limits and uncertain outcomes after timeout; retain generation/session fencing from 0.2.x. Do not assume exactly-once delivery or persist a cursor ahead of applied state.
+- [ ] **M3.4 Execution:** Reuse the common graph mutation path across single, legacy batch and feeder execution while preserving their distinct validation/failure policies.
+- [ ] **M3.5 Tests:** Failure at every index, duplicate/no-op events, concurrent queries, disconnect/restart and source rebuild; preserve existing batch isolation and error-continuation tests.
+- [ ] **M3.6 Measurement:** Measure batching benefits and costs in HTTP overhead, throughput, fairness, queue depth and query tails under equivalent semantics.
+- [ ] **Acceptance M3:** Clients can identify which operations were applied and how to resume/reconcile; no breaking batch change or durability claim is introduced.
 
-- [ ] **Feature Complete: M8 — Security and access control**
-- [ ] **M8.1 Document deployment threat model.** Trusted internal network, reverse-proxy boundary, internet exposure, operators and client identities; decide supported security assumptions.
-- [ ] **M8.2 Integrate authentication at a clear boundary.** Prefer standardized gateway/OIDC/JWT or mTLS where appropriate; avoid custom token cryptography. Define secure local-development mode.
-- [ ] **M8.3 Authorize by action and graph.** Distinguish read, mutate, import/replace, delete, snapshot/restore and administration. Deny by default where access control is enabled.
-- [ ] **M8.4 Protect resource endpoints.** Request/body caps, timeouts, rate controls, cancellation, audit events and sanitized errors; never expose untrusted payloads or secrets in logs/metrics.
-- [ ] **M8.5 Test abuse cases.** Unauthenticated/unauthorized access, cross-graph isolation, malformed tokens, replay/retry behavior, large requests, and privilege boundaries.
-- [ ] **Exit gate M8:** No endpoint is deployed outside the explicitly trusted boundary without matching authentication and authorization controls.
+### M4 — Operational lifecycle, configuration and deployability (P1)
 
-### M9 — Packaging, compatibility and release (P2)
+- [ ] **M4.1 Liveness:** Retain independent process liveness through loading, catch-up and source failure.
+- [ ] **M4.2 Readiness:** Operationalize 0.2.5 with documented degraded/freshness policies and diagnostics; do not reimplement basic bootstrap.
+- [ ] **M4.3 Shutdown:** Drain imports and updates with existing worker-owned accounting and deadlines; report uncertain outcomes and feeder restart requirements, not an invented disk-flush guarantee.
+- [ ] **M4.4 Configuration:** Validate mode, networking, request/resource limits, timeouts, feeder ownership and freshness settings. Explicitly decide any reloadable subset; startup configuration is the baseline, not arbitrary per-request configuration.
+- [ ] **M4.5 Deployment:** Supply an external-feeder/container example, resource and trust-boundary guidance, source retention requirements, restart/rebuild runbook and health transition tests. Storage-volume requirements apply only if optional persistence later ships.
+- [ ] **Acceptance M4:** Operators can distinguish running, synchronized, lagging, rebuilding and draining states and recover through the authoritative source.
 
-- [ ] **Feature Complete: M9 — Packaging, compatibility and release**
-- [ ] **M9.1 Version public REST API and persistence schemas.** Compatibility policy, deprecation rules and migration plan for WAL/snapshots.
-- [ ] **M9.2 Document service examples.** HTTP import, connectivity query, single update, batch update, restart/recovery and error handling. Keep standalone Rust examples for the library.
-- [ ] **M9.3 Automate cross-platform CI.** Correctness, fault-injection, schema migration, container smoke test and security linting; define supported OS/filesystems.
-- [ ] **M9.4 Publish deployable artifacts.** Reproducible image/binary builds, version metadata, SBOM/license review where appropriate and release notes.
-- [ ] **M9.5 Write an operations runbook.** Capacity planning, volume backup/restore, WAL/snapshot repair policy, observability and rolling-update limitations.
-- [ ] **Exit gate M9:** Another engineer can deploy, upgrade, restart and operate Knotrel from written instructions.
+### M6 — Integration-aware observability (P1)
+
+- [ ] **M6.1 Vocabulary:** Requests/status, graph counts, pending jobs, active imports, applied source progress, bootstrap duration, duplicate/gap/conflict counters and feeder health. Report lag only when the source protocol supplies a meaningful comparison.
+- [ ] **M6.2 Prometheus metrics:** Bounded-cardinality HTTP/execution/lock-wait/import/catch-up histograms and backlog gauges. Never use raw node IDs, request IDs, generations or source cursors as metric labels. Persistence metrics are conditional on v0.4.0 capabilities.
+- [ ] **M6.3 Logs:** Structured operation/request correlation, generation/revision and sanitized synchronization diagnostics without graph payloads or credentials.
+- [ ] **M6.4 Alerts:** Readiness flapping, gaps, feeder loss, slow bootstrap, queue saturation and repeated errors; local storage alerts only for an enabled persistence capability.
+- [ ] **M6.5 Budgets:** Verify instrumentation overhead and bounded series counts under churn, rebuilds and repeated source sessions.
+- [ ] **Acceptance M6:** Operators can explain synchronization and performance failures from bounded telemetry, without inferring freshness solely from process health.
+
+### M5 — Measured contention, query concurrency and isolation (P1)
+
+- [ ] **M5.1 Instrument:** Separate parse/serialize, queue, lock, graph work, candidate build and publication costs. Optional storage I/O is not a prerequisite.
+- [ ] **M5.2 Workloads:** Mixed reads/writes, batch sizes, rebuild/import overlap and feeder catch-up; report tails, fairness and memory with reproducible workloads.
+- [ ] **M5.3 Alternatives:** Keep the coarse mutex if adequate; otherwise evaluate shorter critical sections, read locks only where query implementations permit them, or single-writer execution. No speculative redesign.
+- [ ] **M5.4 Invariants:** Preserve coherent graph/generation/revision/cursor observations, legacy batch isolation and import publication; no update to an obsolete generation.
+- [ ] **M5.5 Regression gate:** Require demonstrated benefit without correctness or unacceptable tail-latency regressions. Record a justified no-change decision if the current model meets approved objectives.
+- [ ] **Acceptance M5:** The chosen synchronization design is supported by evidence and the v0.2.0 integration contract remains intact.
 
 ---
 
-### M7 — Multi-graph management (P2)
+## v0.4.0 — Optional Local Persistence & Fast Recovery
 
-**Goal:** Host independent graphs in one process if actual users need it.
+**Tentative placement:** After v0.3.0 is appropriate because stable source-position semantics, operational telemetry and measured rebuild costs are prerequisites for judging local persistence. A measured customer need can move a selected capability earlier only through an explicit scope decision; it must not block v0.2.0 or bypass synchronization correctness. Persistence remains OPTIONAL and disabled by default.
 
-- [ ] **Feature Complete: M7 — Multi-graph management**
-- [ ] **M7.1 Define graph namespaces/IDs and lifecycle.** Create, list, inspect, replace and delete; decide what deletion means for durable storage and recovery.
-- [ ] **M7.2 Per-graph limits and isolation.** Apply memory, node/edge, disk and request quotas; ensure one graph cannot starve the rest.
-- [ ] **M7.3 Partition storage and revisions.** Unique WAL/snapshot streams or an explicitly namespaced format; independent recovery and corruption handling.
-- [ ] **M7.4 Scheduling/fairness.** Ensure large imports or writes in one graph do not block unrelated graphs; benchmark starvation and contention.
-- [ ] **M7.5 Lifecycle and compatibility tests.** Concurrent create/delete, restart, ID collisions, quota enforcement and per-graph metrics without unbounded labels.
-- [ ] **Exit gate M7:** Graphs are independently recoverable, observable and resource-bounded. Keep single-graph mode as a supported low-complexity option.
+**Goal:** Reduce startup cost and dependency on expensive full source reconstruction, while the external store remains authoritative. Local state can be stale. This milestone does not freeze a storage engine, codec, fsync policy, crate boundary or cross-platform durability guarantee.
+
+Redis's [RDB and AOF approaches](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/) are architectural references for periodic full images and append-only replay, not promises of Redis format/protocol compatibility or identical durability. Knotrel must evaluate its own graph reconstruction, source retention, memory and synchronization costs.
+
+| Candidate configuration | Potential benefit for Knotrel | Cost / decision to evaluate |
+|---|---|---|
+| **Snapshot-only** | Start from a canonical graph and cursor, then replay the external suffix | Snapshot capture/I/O and temporary resources; snapshot age versus external history retention; still rebuild the engine |
+| **AOF-only** | Recover an ordered local history before resuming external consumption | Initial baseline must be represented or externally available; unbounded replay/log growth is unacceptable; rotation/rewrite and source-position integrity add complexity |
+| **Snapshot plus AOF** | Load a bounded baseline plus local suffix, then catch up externally | Most complex publication, checkpoint, compaction and failure interactions; extra writes/disk budget; benefit must exceed snapshot plus external replay |
+
+These are alternatives to evaluate, not a requirement to ship all three. Start evaluation with snapshot-only as the simplest candidate, without committing to implement it. An authoritative external event log may already provide all necessary replay: reject or defer AOF if its measured startup benefit does not justify duplicate I/O, retention and failure handling. A local AOF is not a backup of the authoritative database and cannot establish source freshness by itself.
+
+### P1 — Product value and persistence contract (OPTIONAL capability gate)
+
+- [ ] Compare full external rebuild, snapshot plus external replay, AOF-only and combined recovery on the same source history. Record source availability/retention, graph sizes, time-to-ready, RAM, disk, write overhead and operational burden.
+- [ ] Select only justified configurations; explicitly allow a decision to defer AOF or all persistence. Confirm whether any standalone-mode persistence is in scope separately; it is not implied by source-managed fast recovery.
+- [ ] Define enabled-mode acknowledgment and visibility: distinguish in-memory applied position from locally recoverable checkpoint and from authoritative source commit. Choose synchronization policy and OS/filesystem assumptions only with explicit approval; never imply every successful HTTP mutation is locally durable.
+- [ ] **Acceptance:** Approved scope and measurable objectives, including source-log redundancy analysis, resource budgets and documented failure behavior. No unmeasured RPO/RTO guarantee.
+
+### P2 — Canonical local checkpoint and RDB-style snapshot evaluation
+
+- [ ] Evaluate complete engine-independent graph images: all vertices including isolates, canonical undirected edges, schema, engine/configuration, limits, graph identity, generation, local revision, source identity/epoch, applied position and integrity metadata. Do not persist private ETT/HDT trees as portable truth.
+- [ ] Define deterministic serialization, bounded validation and rebuilding on BFS/ETT/HDT; distinguish a canonical graph export from an automatically managed local checkpoint.
+- [ ] Evaluate snapshot frequency/size, capture consistency, query disruption, temporary memory/disk, schema migration, integrity checks, atomic file publication, file/directory synchronization and retaining a known-good generation.
+- [ ] **Acceptance if selected:** Round-trip topology and future mutations across engines; source tuple captured with the graph; fault injection at publication boundaries; no partially written checkpoint accepted.
+
+### P3 — AOF-style append-only log evaluation
+
+- [ ] Establish why external replay alone is insufficient before implementing AOF. Define baseline availability for AOF-only and prerequisites for snapshot-plus-log replay.
+- [ ] Evaluate ordered mutation records with source epoch/position, generation and revision, no-op progress, deduplication consistency, versioned framing/checksums, commit/ack boundaries and deterministic replay. Reuse the integration protocol rather than creating a second source ordering model.
+- [ ] Define truncated-tail versus corruption behavior, log growth limits, rotation, rewrite/compaction, snapshot boundaries and storage failure/backpressure. Never remove the only history needed by a retained checkpoint.
+- [ ] **Acceptance if selected:** Every promised locally recoverable prefix is coherent; replay produces equivalent graph and source progress; crashes, duplicate retries and interrupted rotation cannot silently advance the cursor or mix generations. Document platform assumptions and what remains uncertain after a lost acknowledgment.
+
+### P4 — Source-aware recovery, retention and lifecycle
+
+The recovery principle is mandatory for any selected local persistence strategy:
+
+1. Restore local state only if available, valid and compatible.
+2. Recover its graph generation, local revision and corresponding source identity/epoch/position; fence previous process sessions.
+3. Ask the external feeder to resume consumption after that applied position.
+4. Detect gaps, expired history, changed source epochs/projections or unavailable source history.
+5. Rebuild from the authoritative source when safe incremental recovery is impossible. Remain unready if the source cannot provide a valid rebuild; never turn corruption into a silently ready empty graph.
+6. Become ready only after the synchronization contract, including its completion barrier/freshness policy, is satisfied.
+
+- [ ] Treat local persistence checkpoint, live source position and authoritative state as distinct. A valid local restore is not synchronization proof; do not publish a ready state simply because replay ended.
+- [ ] Define store locking, restart identities, disabled-mode behavior, incompatible files, disk-full/permission errors, cleanup, retention, shutdown deadlines and diagnostics. Fallback/rebuild policy must be explicit and observable, not silently discard corruption.
+- [ ] **Acceptance if selected:** Recovery and full external rebuild converge to equivalent source-derived state. Failed catch-up remains unready. Corrupt/missing local state produces an explicit rebuild or actionable failure, never false synchronization.
+
+### P5 — Fault injection, migration and recovery-cost evidence
+
+- [ ] Cover clean restart, process kill, partial writes, checksum errors, disk full, permission failure, canceled snapshot, schema mismatch, stale generations, expired external history and recovery on each supported engine/platform.
+- [ ] Separate process-kill evidence from power-loss assumptions; test storage ordering with deterministic fault injection and qualify OS/filesystem support explicitly.
+- [ ] Version fixtures and migration policy; reject unknown formats safely. Compare total time-to-ready against external rebuild, including graph reconstruction and source catch-up, not merely file load time.
+- [ ] **Acceptance if selected:** Safety tests and independent protocol review pass; recovery benefits and write/resource costs are reproducible; documentation distinguishes guarantees, assumptions and measurements.
+
+**Exit gate:** Ship only selected, validated optional modes with a source-reconciliation runbook. External authority and the supported no-persistence deployment remain intact. Deferral is a valid product decision, not grounds to relabel the v0.2.0 service incomplete.
 
 ---
+
+## v1.0.0 — Production Readiness and Optional Expansion
+
+### M8 — Security and access control (conditional earlier release gate)
+
+- [ ] **M8.1** Document trusted clients, feeder identities, gateway boundaries and supported exposure models.
+- [ ] **M8.2** Integrate standardized authentication where required; avoid custom cryptography.
+- [ ] **M8.3** Authorize reads, direct mutations, source events, import/replace and bootstrap completion separately; include persistence administration only if shipped.
+- [ ] **M8.4** Bound resources, rate controls and audit output; sanitize payloads and credentials.
+- [ ] **M8.5** Test unauthorized replacement/progress claims, stale feeder ownership, malformed inputs and cross-graph access only if multi-graph exists.
+- [ ] **Acceptance M8:** No supported untrusted exposure without matching authentication, authorization and abuse tests.
+
+### M9 — Packaging, compatibility and operations
+
+- [ ] **M9.1** Version REST/import/event schemas and source-position semantics; add persistence schema/migration policy only for shipped modes.
+- [ ] **M9.2** Publish library, loading, feeder, retry and restart/rebuild examples; add local recovery examples conditionally.
+- [ ] **M9.3** Cross-platform CI for claimed capabilities, including integration fault tests; storage qualification applies only to persistence-enabled platforms.
+- [ ] **M9.4** Release validated binaries/crates and selected deployment artifacts with version and license metadata.
+- [ ] **M9.5** Runbook: capacity, source retention, feeder ownership, rebuild, upgrade and rolling-update limits; optional local backup/repair never replaces authoritative backup policy.
+- [ ] **Acceptance M9:** Another engineer can deploy, integrate, upgrade and operate the supported modes from the documentation.
+
+### M7 — Multi-graph management (OPTIONAL, demand-gated)
+
+- [ ] **M7.1** Decide namespaces/lifecycle only with demonstrated demand; one graph's identity must not be mistaken for implemented multi-graph support.
+- [ ] **M7.2** Define per-graph resource limits and source/feeder isolation.
+- [ ] **M7.3** Partition generations, revisions and source positions; partition local persistence only if enabled.
+- [ ] **M7.4** Evaluate scheduling/fairness for independent imports and update streams.
+- [ ] **M7.5** Test concurrent lifecycle, restart/rebuild, quotas and isolation.
+- [ ] **Acceptance M7:** Independent synchronization and resource isolation; single-graph mode remains supported. Distributed storage and general-purpose graph database features remain excluded.
+
+## Dependencies and sequencing
+
+1. Preserve the released v0.1.0 contract and historical evidence; reconcile old checklist bookkeeping separately rather than claiming new validation here.
+2. **First handoff: Feature 0.2.1 — External source-of-truth integration contract.** Produce the contract/ADR, API examples, state machine and deterministic acceptance-test specification; no import or persistence implementation in that handoff. Resolve D1–D6 before dependent coding.
+3. Implement 0.2.2 using the identity/precondition design from 0.2.1; complete shared metadata in 0.2.3, ordered events in 0.2.4, bootstrap/readiness in 0.2.5 and feeder/evidence in 0.2.6. Keep incomplete source-managed functionality experimental/unready until the release gate passes.
+4. v0.3.0 builds operational controls and measurements on that contract; it does not depend on a local WAL.
+5. v0.4.0 first evaluates value using the source/rebuild contract and operational evidence. Implement only approved persistence strategies; full external rebuild remains the fallback.
+6. Move security forward whenever exposure requires it. Multi-graph and concurrency redesign remain demand/evidence-gated.
+
+**Planning migration:** The previous durability-first Feature 0.2.1 and M1.1–M1.6 are superseded as v0.2.0 requirements; their storage concerns are retained under P1–P5. Previous M2.1–M2.6 import concerns now map to 0.2.1–0.2.3, 0.2.5 and 0.2.6, with durability-before-ack replaced by coherent in-memory publication plus source synchronization. M3–M9 retain their purpose with integration-first dependencies. This remapping does not mark any former or future task complete.
 
 ## Release-aware acceptance matrix
 
-| Area | v0.1.0 Public Preview | v0.2.0 Durable | v0.3.0 Operational | v1.0.0 Production |
-|---|---|---|---|---|
-| Graph correctness | Deterministic oracle/differential and HTTP contract tests | Recovery round trips and fault injection | Batch prefix/retry and mixed-load correctness | Compatibility and long-running stability |
-| Storage | Explicitly volatile | Snapshot/WAL recovery with documented ack guarantees | Maintenance, compaction and recovery telemetry | Upgrade and migration guarantees |
-| Lifecycle | Basic liveness, readiness, graceful shutdown | Recovery-aware readiness | Drain/maintenance and operational alerts | Deploy/upgrade runbook |
-| Security | Loopback/trusted boundary only | Reassess exposure on each new endpoint | Auth if any untrusted exposure | Supported authn/authz for claimed deployment models |
-| Performance | No unsupported claims; normal correctness gates | Bounded load/import measurement | Concurrency/queue and p95/p99 targets | Published capacity envelope with reproducible evidence |
-| Packaging | Preview docs, release binaries/crates as validated | Versioned storage formats | Operational deployment packaging | Backward compatibility and supported upgrades |
+| Area | v0.1.0 Preview | v0.2.0 Integration | v0.3.0 Operational | v0.4.0 Optional Persistence | v1.0.0 Production |
+|---|---|---|---|---|---|
+| Correctness | Existing graph/HTTP oracle tests | Atomic import, ordered source prefix, identity and gaps | Batch compatibility and mixed-load isolation | Selected-mode round trips and replay | Supported compatibility and long-running stability |
+| Authority/storage | Volatile | External authority; no local persistence required | Same contract | Local checkpoints/logs optional; external authority unchanged | Guarantees match deployed mode |
+| Restart | Empty standalone graph | Source-managed rebuild and catch-up | Operational rebuild/runbook | Restore then verify source synchronization or rebuild | Supported recovery/upgrade procedures |
+| Readiness | Basic lifecycle | Bootstrap barrier, gaps and freshness policy | Diagnostics, alerts and drain | Local recovery alone never means ready | Documented deployment guarantees |
+| Security | Trusted boundary | Protect feeder/import/progress control | Auth required for untrusted exposure | Protect storage/admin if enabled | Qualified threat model |
+| Performance | No blanket claims | Full load/catch-up and end-to-end evidence | Measured update/query/queue objectives | Compare total time-to-ready and write costs | Reproducible capacity envelope |
+| Compatibility | Released APIs | Standalone and Rust preserved | Legacy batches preserved | Opt-in formats/version policy | Supported migrations and deprecation |
 
-## Cross-cutting test matrix (select applicable dimensions by release)
+## Cross-cutting test matrix
 
-| Dimension | Minimum scenarios |
+| Dimension | Required scenarios for applicable capabilities |
 |---|---|
-| Engines | BFS, ETT, HDT on the public facade; document exclusions explicitly |
-| Topology | Empty, isolates, path/tree, multiple components, cycles, dense bridge, high churn |
-| Mutations | Duplicate/reversed edge, self-loop, missing endpoints, repeated link/cut, edge/node limits |
-| Lifecycle | Clean restart, kill during mutation/import/snapshot, replay, truncated or corrupted storage |
-| Consistency | Concurrent query vs write, revision monotonicity, failed import unchanged state, ordered batch prefix |
-| Resources | Request size, graph limits, disk full, memory pressure, timeout, cancellation, graceful shutdown |
-| Compatibility | Old API responses, old snapshot/WAL versions when supported, existing benchmark fingerprints |
+| Engines/topology | BFS, ETT, HDT; empty, isolates, trees, components, cycles, dense bridges, churn, full-width IDs |
+| Operations | Duplicate/reversed edge, self-loop, unknown nodes, limits, no-ops, legacy batch continuation |
+| Integration | Image/cursor coherence, gaps, reordering, exact/conflicting/expired duplicates, epoch change, source history expiration |
+| Identity/consistency | Instance/generation fencing, coherent revision/cursor, concurrent replace/update/query, stale bootstrap barrier |
+| Lifecycle | Timeout/caller cancellation, worker panic, drain, process kill, restart and external rebuild |
+| Resources | Body/item limits, concurrent imports, candidate memory, queue saturation, bounded duplicate retention |
+| Optional persistence | Snapshot/log interruption, corruption, disk full, missing files, schema migration, source reconciliation |
+| Compatibility/evidence | Existing public API and benchmark fingerprints, versioned fixtures/seeds, unchanged historical raw results |
 
-**Evidence rule:** Every claimed performance improvement requires a measured before/after comparison on the same revisioned workload, with raw artifacts, environment metadata, fixed stopping rules and an explanation of uncertainty. Failure to establish small-effect precision does not block correctness-first product work.
+**Evidence rule:** Every claimed improvement requires before/after comparison on the same revisioned workload with raw artifacts, environment metadata, fixed stopping rules and uncertainty. Separate kernel performance from HTTP, feeder, loading, catch-up and optional storage costs. Do not infer freshness or durability from speed, and do not block correctness-first work on unresolved small-effect measurements.
 
 ## Definition of Done for each feature issue
 
-- [ ] Public behavior and failure semantics documented, including backward compatibility.
-- [ ] Core invariants preserved, with reference/differential tests where relevant.
-- [ ] Unit, integration and failure/recovery tests added for newly promised behavior.
-- [ ] Resource limits, cancellation, disk/memory failure behavior and observability considered.
-- [ ] Formatting, Clippy, tests and warning-denied Rustdoc green in affected workspaces.
-- [ ] User-facing API docs, examples and operational notes updated.
-- [ ] No unsupported speedup, consistency or durability claims.
-- [ ] Source/evidence changes are scoped; no historical benchmark artifacts rewritten.
+- [ ] REQUIRED/OPTIONAL/DEFERRED scope and dependencies explicit; no future feature implicitly marked complete.
+- [ ] Public behavior, authority, acknowledgment, version scopes and failure semantics documented, including compatibility.
+- [ ] Core invariants and coherent graph/generation/revision/source-position observations verified where applicable.
+- [ ] Deterministic unit/integration/failure tests cover the newly promised contract; reference/differential oracles used where relevant.
+- [ ] Resource bounds, cancellation, restart/rebuild, source unavailability and observability considered; storage faults only for applicable persistence features.
+- [ ] Relevant formatting, Clippy, tests and warning-denied Rustdoc pass for code changes; documentation-only changes receive scoped consistency/link/diff checks.
+- [ ] English docs, examples and operational notes updated; Rust conventions and Elastic-2.0 preserved.
+- [ ] Performance, synchronization and durability claims distinguish measured evidence from assumptions and guarantees.
+- [ ] Source/evidence changes scoped; no historical benchmark artifacts rewritten; independent review completed before feature acceptance.
 
-## Decision log: resolve before implementing M1
+## Architectural decision log
 
-- [ ] **D1:** Is v1 a single named graph, or one implicit graph per process?
-- [ ] **D2:** Is the v1 durability default synchronous acknowledgment after durable write, or explicitly configurable volatile mode?
-- [ ] **D3:** What are the supported OS/filesystem crash-consistency assumptions and durability primitives?
-- [ ] **D4:** What are the acceptable RPO/RTO, disk budget and maximum initial graph size?
-- [ ] **D5:** Will import replace a live graph, create only, or support both with revision-based conflict detection?
-- [ ] **D6:** Is service access restricted to a trusted internal network? If not, M8 is a release prerequisite.
-- [ ] **D7:** Do batch failures persist a committed prefix, or is atomicity truly a product requirement? (Recommended v1: committed prefix.)
-- [ ] **D8:** Is multi-graph a real deployment requirement, or can it be deferred indefinitely?
+The strategic direction (external authority, preserved volatile mode, integration-first v0.2.0 and optional future persistence) is approved. The following implementation decisions remain open; unchecked items are not completed features.
+
+### Resolve in 0.2.1 before dependent implementation
+
+- [ ] **D1 — Identity and ownership:** One implicit graph with what stable identity, generation/incarnation tokens and feeder fencing? How are source identity, source epoch and projection version bound to a generation?
+- [ ] **D2 — Modes and acknowledgment:** How is source-managed mode selected while preserving default standalone behavior? How are untracked direct writes rejected, and timeout/unknown outcomes reported? No v0.2.0 local durability implied.
+- [ ] **D3 — Ordering and retry:** Which source-independent continuity protocol is required? Which duplicate verification window/content identity and stale-event response? How are source errors, transactions and noncontiguous cursors handled?
+- [ ] **D4 — Capacity and freshness:** What graph/body/candidate-memory limits, source retention assumptions, bootstrap objectives and post-bootstrap lag/disconnection policy are approved? No numerical SLO or benchmark result is assumed.
+- [ ] **D5 — Import and publication:** Create-only, conditional replace or both? Define generation/revision transitions, precondition token, read availability during rebuild and the S-to-B handoff.
+- [ ] **D6 — Trust boundary:** Who may feed events, replace graphs and complete bootstrap? If clients are untrusted, bring M8 forward before exposure.
+
+### Resolve when expanding operations or persistence
+
+- [ ] **D7 — Batch evolution:** Preserve legacy continue-after-error behavior; define a separate feeder batch failure/retry model if needed. Is multi-operation event atomicity actually required?
+- [ ] **D8 — Multi-graph demand:** Is there a demonstrated need beyond one implicit graph, or should this remain deferred indefinitely?
+- [ ] **D9 — Persistence value:** Does snapshot-only suffice? Does AOF add measurable value over the authoritative event log? Select zero, one or more configurations explicitly; v0.4.0 timing remains tentative.
+- [ ] **D10 — Storage guarantees:** For selected modes, choose supported OS/filesystems, sync/ack policy, local checkpoint semantics, loss window, disk budget and error behavior. Distinguish power-loss assumptions from process-kill evidence.
+- [ ] **D11 — Recovery and migration:** Define compatible schemas, safe fallback, source-history expiration, restore identity/fencing and operator intervention. Local restore never bypasses source synchronization.
