@@ -127,6 +127,8 @@ struct LifecycleInner {
     #[cfg(feature = "test-support")]
     worker_hook: parking_lot::Mutex<Option<WorkerHook>>,
     #[cfg(feature = "test-support")]
+    worker_post_lock_hook: parking_lot::Mutex<Option<WorkerHook>>,
+    #[cfg(feature = "test-support")]
     drain_loop_hook: parking_lot::Mutex<Option<DrainLoopHook>>,
     #[cfg(feature = "test-support")]
     gate_hook: parking_lot::Mutex<Option<GateHook>>,
@@ -165,6 +167,7 @@ impl Lifecycle {
             jobs_tx,
             jobs_rx,
             worker_hook: parking_lot::Mutex::new(None),
+            worker_post_lock_hook: parking_lot::Mutex::new(None),
             drain_loop_hook: parking_lot::Mutex::new(None),
             gate_hook: parking_lot::Mutex::new(None),
         };
@@ -186,6 +189,7 @@ impl Lifecycle {
             jobs_tx,
             jobs_rx,
             worker_hook: parking_lot::Mutex::new(None),
+            worker_post_lock_hook: parking_lot::Mutex::new(None),
             drain_loop_hook: parking_lot::Mutex::new(None),
             gate_hook: parking_lot::Mutex::new(None),
         };
@@ -273,6 +277,42 @@ impl Lifecycle {
     #[cfg(not(feature = "test-support"))]
     #[inline(always)]
     pub(crate) fn check_worker_hook(&self) {}
+
+    /// Installs a pause point for the next worker job immediately after releasing the graph lock.
+    ///
+    /// Only available when the `test-support` feature is enabled.
+    #[cfg(feature = "test-support")]
+    pub fn pause_next_worker_after_lock(&self) -> WorkerPauseHandle {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut hook = self.0.worker_post_lock_hook.lock();
+        *hook = Some(WorkerHook {
+            started_tx,
+            release_rx,
+        });
+        WorkerPauseHandle {
+            started_rx,
+            release_tx,
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn check_worker_post_lock_hook(&self) {
+        let hook = {
+            let mut guard = self.0.worker_post_lock_hook.lock();
+            guard.take()
+        };
+        if let Some(hook) = hook {
+            let _ = hook.started_tx.send(());
+            if let Ok(WorkerAction::Panic) = hook.release_rx.recv() {
+                panic!("worker paused by post-lock test hook instructed to panic");
+            }
+        }
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    #[inline(always)]
+    pub(crate) fn check_worker_post_lock_hook(&self) {}
 
     /// Installs a callback hook triggered at the drain observation boundary.
     ///

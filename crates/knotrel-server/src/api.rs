@@ -333,7 +333,11 @@ pub(crate) async fn single(
     }
     tracing::debug!("executing single operation");
     match service.execute(vec![operation]).await {
-        Ok(mut results) => results.remove(0).into_response(),
+        Ok(mut exec_result) => {
+            let mut response = exec_result.outcomes.remove(0).into_response();
+            inject_metadata_headers(response.headers_mut(), &exec_result.metadata);
+            response
+        }
         Err(error) => service_error(error),
     }
 }
@@ -378,7 +382,14 @@ pub(crate) async fn batch(
     }
     tracing::debug!(count = batch.operations.len(), "executing batch operations");
     match service.execute(batch.operations).await {
-        Ok(results) => Json(BatchResult { results }).into_response(),
+        Ok(exec_result) => {
+            let mut response = Json(BatchResult {
+                results: exec_result.outcomes,
+            })
+            .into_response();
+            inject_metadata_headers(response.headers_mut(), &exec_result.metadata);
+            response
+        }
         Err(error) => service_error(error),
     }
 }
@@ -542,7 +553,19 @@ pub(crate) async fn feeder_import(
 
     // 3. Dispatch to service.import, transferring owned permit and raw bytes
     match service.import(permit, bytes, if_match).await {
-        Ok(res) => (StatusCode::CREATED, Json(res)).into_response(),
+        Ok(res) => {
+            let metadata = crate::service::ResponseMetadata {
+                instance_id: res.instance_id.clone(),
+                graph_id: "default",
+                generation: res.generation,
+                state_version: res.state_version.clone(),
+                source_position: Some(res.source_position.clone()),
+                sync_status: Some(crate::service::SyncStatus::CatchingUp),
+            };
+            let mut response = (StatusCode::CREATED, Json(res)).into_response();
+            inject_metadata_headers(response.headers_mut(), &metadata);
+            response
+        }
         Err(err) => feeder_error(err),
     }
 }
@@ -594,6 +617,11 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
             "graph_already_initialized",
             "create_only requires uninitialized graph (generation 0)".into(),
         ),
+        FeederError::GenerationExhausted => error_response(
+            StatusCode::CONFLICT,
+            "generation_exhausted",
+            "generation counter exhausted; server restart required".into(),
+        ),
         FeederError::PreconditionFailed(msg) => {
             error_response(StatusCode::PRECONDITION_FAILED, "precondition_failed", msg)
         }
@@ -644,7 +672,11 @@ pub(crate) async fn info(State(service): State<Service>) -> Json<crate::ServerIn
 /// Reads live graph state through bounded worker admission and the graph mutex.
 pub(crate) async fn stats(State(service): State<Service>) -> Response {
     let mut response = match service.stats().await {
-        Ok(snapshot) => Json(snapshot).into_response(),
+        Ok(stats_result) => {
+            let mut res = Json(stats_result.snapshot).into_response();
+            inject_metadata_headers(res.headers_mut(), &stats_result.metadata);
+            res
+        }
         Err(error) => service_error(error),
     };
     // Monitoring reads must not be served from an intermediary's stored response.
@@ -653,4 +685,51 @@ pub(crate) async fn stats(State(service): State<Service>) -> Response {
         axum::http::HeaderValue::from_static("no-store"),
     );
     response
+}
+
+/// Injects coherent graph identity and version headers into an HTTP response.
+pub(crate) fn inject_metadata_headers(
+    headers: &mut HeaderMap,
+    metadata: &crate::service::ResponseMetadata,
+) {
+    if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.etag()) {
+        headers.insert(axum::http::header::ETAG, val);
+    }
+    if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.instance_id) {
+        headers.insert(
+            axum::http::HeaderName::from_static("x-knotrel-instance-id"),
+            val,
+        );
+    }
+    headers.insert(
+        axum::http::HeaderName::from_static("x-knotrel-graph-id"),
+        axum::http::HeaderValue::from_static("default"),
+    );
+    if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.generation.to_string()) {
+        headers.insert(
+            axum::http::HeaderName::from_static("x-knotrel-generation"),
+            val,
+        );
+    }
+    if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.state_version) {
+        headers.insert(
+            axum::http::HeaderName::from_static("x-knotrel-state-version"),
+            val,
+        );
+    }
+    if let Some(ref pos) = metadata.source_position {
+        let encoded = crate::service::percent_encode_position(pos);
+        if let Ok(val) = axum::http::HeaderValue::from_str(&encoded) {
+            headers.insert(
+                axum::http::HeaderName::from_static("x-knotrel-source-position"),
+                val,
+            );
+        }
+    }
+    if let Some(status) = metadata.sync_status {
+        headers.insert(
+            axum::http::HeaderName::from_static("x-knotrel-sync-status"),
+            axum::http::HeaderValue::from_static(status.as_str()),
+        );
+    }
 }

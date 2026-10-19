@@ -178,6 +178,13 @@ One mutex spans the entire batch, so other graph requests cannot interleave with
 it. Separate requests execute in lock-acquisition order, not necessarily arrival
 order. A connectivity result reflects all earlier operations in that order.
 
+Batch response headers (`ETag`, `X-Knotrel-State-Version`, `X-Knotrel-Generation`,
+`X-Knotrel-Instance-Id`, etc.) are captured under the same lock acquisition and
+reflect the graph's **final** coherent state after all operations in the batch
+have completed. Earlier operations in the batch are not labeled individually with
+intermediate revisions: continue-on-error applies each mutation in order, and only
+effective mutations (`changed: true`) advance the revision.
+
 ## Concurrency and order
 
 Every graph operation, including queries and `GET /v1/stats`, takes the same
@@ -444,3 +451,85 @@ A partial mutation is not rolled back and cannot be read through `/v1/stats`.
 Recover by replacing/restarting the service; in-memory data is not persisted.
 Disconnecting an admitted stats caller does not release its permit before its worker finishes. `/v1/info`
 `/health` and `/ready` remain independent of this queue.
+
+## Graph identity, versioning and coherent response headers
+
+Knotrel exposes explicit graph identity and version metadata across graph query
+responses (`POST /v1/operations`), batch responses (`POST /v1/batch`), live stats
+snapshots (`GET /v1/stats`), and atomic import responses (`POST /v1/feeder/import`).
+All query results and their accompanying metadata headers are captured under the
+**same** graph lock acquisition boundary; the server never executes a query and
+subsequently reacquires the lock to read metadata.
+
+### Identity and version concepts
+
+These concepts remain strictly distinct:
+
+1. **`instance_id` (`X-Knotrel-Instance-Id`):**
+   An ephemeral process incarnation identifier (format: `srv-<pid>-<nanos>-<counter>`)
+   generated fresh at process startup. It changes on every start or restart,
+   including separate server instances constructed from cloned configuration.
+   In source-managed mode, every feeder request must supply this token; requests
+   bearing an old `instance_id` from a previous server incarnation are rejected
+   immediately with HTTP 409 `stale_instance_id`.
+
+2. **`graph_id` (`X-Knotrel-Graph-Id`):**
+   The single supported logical graph identifier, always `"default"`. Knotrel is a
+   single-graph connectivity accelerator and does not implement dynamic multi-graph
+   routing. Feeder payloads specifying any `graph_id` other than `"default"` are
+   rejected with HTTP 400 `invalid_graph_id` without touching the graph.
+
+3. **`generation` (`X-Knotrel-Generation`):**
+   A monotonic 64-bit integer (`u64`) identifying the published baseline/rebuild
+   lineage. It is `0` in standalone mode or before initial import, becomes `1`
+   on the first atomic baseline import, and increments monotonically ($g \to g + 1$)
+   on each subsequent atomic replacement.
+   **Generation exhaustion:** If the generation counter reaches `u64::MAX`,
+   subsequent replacement imports are rejected with HTTP 409 `generation_exhausted`
+   without arithmetic overflow or wrapping, leaving live graph state untouched.
+
+4. **`state_version` (`X-Knotrel-State-Version`):**
+   An arbitrary-precision decimal local revision counter (`"0"`, `"1"`, `"2"`, ...),
+   stored internally as little-endian digits without fixed-width integer wraparound.
+   It starts at `"0"` on startup or upon publication of an imported graph image.
+   Each effective graph mutation (`changed: true`) increments it once. Duplicate
+   operations, missing-edge cuts, queries, and rejected operations never increment it.
+   It counts local changes within the current published generation.
+
+5. **`applied_source_position` (`X-Knotrel-Source-Position`):**
+   An opaque UTF-8 cursor string (1 to 256 bytes) identifying the applied prefix
+   of the authoritative external source stream. Knotrel never interprets this string
+   as an integer, never parses its internal structure, and never compares cursors
+   lexicographically.
+   **HTTP safety:** In HTTP headers (`X-Knotrel-Source-Position` and `ETag`),
+   source cursors are safely RFC 3986 percent-encoded (all characters other than
+   `[a-zA-Z0-9\-_~]` are encoded as `%XX`). This prevents header injection,
+   CRLF smuggling, and token delimiter collisions (such as dots or commas).
+
+6. **`sync_status` (`X-Knotrel-Sync-Status`):**
+   Reports current feeder synchronization status: `uninitialized`, `loading`,
+   `catching_up`, `ready`, `stale`, or `desynchronized`.
+   *(Note: Ordered update streaming and progress events belong to Feature 0.2.4;
+   synchronization barrier verification and automated readiness transitions belong
+   to Feature 0.2.5. After Feature 0.2.2/0.2.3 import, source-managed mode remains
+   in `catching_up`.)*
+
+### Replacement precondition exposure (`ETag` and `If-Match`)
+
+Every query response, batch response, stats snapshot, and import publication returns
+an `ETag` header formatted as:
+
+```http
+ETag: "<generation>.<state_version>.<percent_encoded_source_position>"
+```
+
+Example: `ETag: "1.0.pos-10"` (or `ETag: "1.0.0%2F16B3740"` when the cursor contains delimiters such as `/`), or `ETag: "0.15."` (in standalone mode where generation is 0 and source position is omitted).
+
+This `ETag` is directly usable as the mandatory composite `If-Match` header when
+performing an atomic replacement import (`POST /v1/feeder/import` with `mode: "replace"`).
+The token guarantees that:
+- Replacement succeeds only if the live graph remains exactly at the expected
+  generation, state version, and applied source position.
+- If any mutation or replacement occurred concurrently, or if the server restarted
+  with a new `instance_id`, the token becomes stale and replacement is rejected with
+  HTTP 412 `precondition_failed` or HTTP 409 `stale_instance_id`.

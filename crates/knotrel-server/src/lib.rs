@@ -17,6 +17,8 @@ pub use configuration::{ConfigError, ServerConfig, ServerMode};
 pub use lifecycle::{GateDecision, WorkerPauseHandle};
 pub use lifecycle::{Lifecycle, Phase};
 pub use serve::{ShutdownOutcome, serve};
+#[cfg(feature = "test-support")]
+pub use service::{percent_decode_position, percent_encode_position};
 
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_BATCH_OPERATIONS: usize = 1024;
@@ -68,13 +70,38 @@ fn build_router(
     config: ServerConfig,
     lifecycle: Lifecycle,
 ) -> axum::Router {
+    let service =
+        service::Service::with_config(graph, config.max_pending_jobs(), lifecycle.clone(), &config);
+    build_router_from_service(service, config, lifecycle)
+}
+
+/// Builds an HTTP router with a seeded decimal state version for arbitrary-precision testing.
+///
+/// Only available when the `test-support` feature is enabled.
+#[cfg(feature = "test-support")]
+pub fn router_with_seeded_version(
+    config: ServerConfig,
+    lifecycle: Lifecycle,
+    version_str: &str,
+) -> axum::Router {
+    let graph =
+        knotrel_core::ConnectivityGraph::with_limits(config.engine(), config.graph_limits());
+    let service =
+        service::Service::with_config(graph, config.max_pending_jobs(), lifecycle.clone(), &config);
+    service.seed_version_for_test(version_str);
+    build_router_from_service(service, config, lifecycle)
+}
+
+fn build_router_from_service(
+    service: service::Service,
+    config: ServerConfig,
+    lifecycle: Lifecycle,
+) -> axum::Router {
     use axum::{
         extract::{DefaultBodyLimit, State},
         middleware,
         routing::{get, post},
     };
-    let service =
-        service::Service::with_config(graph, config.max_pending_jobs(), lifecycle.clone(), &config);
     let ready_lifecycle = lifecycle.clone();
     let request_timeout = config.request_timeout();
     axum::Router::new()

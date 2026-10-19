@@ -41,6 +41,17 @@ pub(crate) enum SyncStatus {
 }
 
 impl SyncStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Uninitialized => "uninitialized",
+            Self::Loading => "loading",
+            Self::CatchingUp => "catching_up",
+            Self::Ready => "ready",
+            Self::Stale => "stale",
+            Self::Desynchronized => "desynchronized",
+        }
+    }
+
     fn to_code(self) -> u8 {
         match self {
             Self::Uninitialized => 0,
@@ -101,7 +112,8 @@ fn fresh_instance_id() -> String {
     format!("srv-{pid:x}-{nanos:016x}-{count:04x}")
 }
 
-pub(crate) fn percent_encode_position(pos: &str) -> String {
+/// Encodes an opaque source position into an RFC 3986 percent-encoded string.
+pub fn percent_encode_position(pos: &str) -> String {
     let mut encoded = String::with_capacity(pos.len() * 3);
     for b in pos.bytes() {
         match b {
@@ -114,6 +126,29 @@ pub(crate) fn percent_encode_position(pos: &str) -> String {
         }
     }
     encoded
+}
+
+/// Decodes a percent-encoded source position back to its raw UTF-8 string representation.
+#[allow(dead_code)]
+pub fn percent_decode_position(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let h1 = char::from(bytes[i + 1]).to_digit(16)? as u8;
+            let h2 = char::from(bytes[i + 2]).to_digit(16)? as u8;
+            decoded.push((h1 << 4) | h2);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
 }
 
 fn validate_replacement_precondition(
@@ -219,6 +254,7 @@ pub(crate) enum FeederError {
     FencedSession,
     LeaseExpired,
     GraphAlreadyInitialized,
+    GenerationExhausted,
     PreconditionFailed(String),
     InvalidLeaseDuration,
     MalformedJson,
@@ -352,6 +388,31 @@ impl GraphState {
         }
     }
 
+    fn response_metadata(&self, mode: ServerMode, instance_id: &str) -> ResponseMetadata {
+        let state_version = self
+            .version
+            .iter()
+            .rev()
+            .map(|digit| char::from(b'0' + digit))
+            .collect();
+        let (generation, source_position, sync_status) = match mode {
+            ServerMode::Standalone => (0, None, None),
+            ServerMode::SourceManaged => (
+                self.generation,
+                self.source_position.clone(),
+                Some(self.sync_status),
+            ),
+        };
+        ResponseMetadata {
+            instance_id: instance_id.to_string(),
+            graph_id: "default",
+            generation,
+            state_version,
+            source_position,
+            sync_status,
+        }
+    }
+
     fn register_session(
         &mut self,
         req: SessionRequest,
@@ -443,6 +504,61 @@ pub(crate) struct GraphSnapshot {
     sync_status: Option<SyncStatus>,
 }
 
+/// Coherent response metadata captured under the graph lock alongside outcomes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResponseMetadata {
+    pub(crate) instance_id: String,
+    pub(crate) graph_id: &'static str,
+    pub(crate) generation: u64,
+    pub(crate) state_version: String,
+    pub(crate) source_position: Option<String>,
+    pub(crate) sync_status: Option<SyncStatus>,
+}
+
+impl ResponseMetadata {
+    /// Formats the composite ETag value enclosed in double quotes:
+    /// `"<generation>.<state_version>.<percent_encoded_source_position>"`
+    pub(crate) fn etag(&self) -> String {
+        let pos_encoded = self
+            .source_position
+            .as_deref()
+            .map(percent_encode_position)
+            .unwrap_or_default();
+        format!(
+            "\"{}.{}.{}\"",
+            self.generation, self.state_version, pos_encoded
+        )
+    }
+}
+
+/// Query/mutation outcomes paired with coherent graph metadata under one lock boundary.
+#[derive(Debug)]
+pub(crate) struct ExecutionResult {
+    pub(crate) outcomes: Vec<Outcome>,
+    pub(crate) metadata: ResponseMetadata,
+}
+
+impl std::ops::Deref for ExecutionResult {
+    type Target = [Outcome];
+    fn deref(&self) -> &Self::Target {
+        &self.outcomes
+    }
+}
+
+/// Graph snapshot paired with coherent response metadata under one lock boundary.
+#[derive(Debug)]
+pub(crate) struct StatsResult {
+    pub(crate) snapshot: GraphSnapshot,
+    pub(crate) metadata: ResponseMetadata,
+}
+
+impl std::ops::Deref for StatsResult {
+    type Target = GraphSnapshot;
+    fn deref(&self) -> &Self::Target {
+        &self.snapshot
+    }
+}
+
 /// Admission failure or a worker that cannot safely use the graph.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ServiceError {
@@ -531,6 +647,12 @@ impl Service {
     /// Returns the maximum allowed size in bytes for a graph import payload.
     pub(crate) fn max_import_body_bytes(&self) -> usize {
         self.max_import_body_bytes
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn seed_version_for_test(&self, decimal_str: &str) {
+        let mut state = self.graph.lock();
+        state.version = decimal_str.bytes().rev().map(|b| b - b'0').collect();
     }
 
     /// Reports whether a worker failure permanently disabled graph work.
@@ -752,6 +874,11 @@ impl Service {
                     }
                 }
                 ImportMode::Replace => {
+                    if state.generation == 0 {
+                        return Err(FeederError::PreconditionFailed(
+                            "replacement requires an initialized graph (generation > 0)".into(),
+                        ));
+                    }
                     let Some(ref expected_etag) = if_match else {
                         return Err(FeederError::PreconditionFailed(
                             "If-Match header is mandatory when mode is replace".into(),
@@ -761,10 +888,15 @@ impl Service {
                 }
             }
 
+            let next_generation = state
+                .generation
+                .checked_add(1)
+                .ok_or(FeederError::GenerationExhausted)?;
+
             // 4. ATOMIC PUBLICATION
             state.failed = true;
             state.graph = candidate;
-            state.generation += 1;
+            state.generation = next_generation;
             state.version = vec![0];
             state.source_id = Some(req.source_id);
             state.source_epoch = Some(req.source_epoch);
@@ -813,22 +945,30 @@ impl Service {
     pub(crate) async fn execute(
         &self,
         operations: Vec<Operation>,
-    ) -> Result<Vec<Outcome>, ServiceError> {
+    ) -> Result<ExecutionResult, ServiceError> {
+        let mode = self.mode;
+        let instance_id = self.instance_id.clone();
         self.run(move |state| {
-            operations
+            let outcomes = operations
                 .into_iter()
                 .map(|operation| state.apply(operation))
-                .collect()
+                .collect();
+            let metadata = state.response_metadata(mode, &instance_id);
+            ExecutionResult { outcomes, metadata }
         })
         .await
     }
 
     /// Takes a coherent snapshot through the same bounded worker path as writes.
-    pub(crate) async fn stats(&self) -> Result<GraphSnapshot, ServiceError> {
+    pub(crate) async fn stats(&self) -> Result<StatsResult, ServiceError> {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
-        self.run(move |state| state.snapshot(mode, &instance_id))
-            .await
+        self.run(move |state| {
+            let snapshot = state.snapshot(mode, &instance_id);
+            let metadata = state.response_metadata(mode, &instance_id);
+            StatsResult { snapshot, metadata }
+        })
+        .await
     }
 
     // One admission/cancellation/poisoning policy for reads and writes. The
@@ -870,6 +1010,8 @@ impl Service {
             graph.failed = true;
             let result = work(&mut graph);
             graph.failed = false;
+            drop(graph);
+            lifecycle.check_worker_post_lock_hook();
             panic_guard.success = true;
             Ok(result)
         })
@@ -892,6 +1034,13 @@ mod tests {
     fn add(node: u64) -> Operation {
         Operation::AddNode {
             node: WireNode(node),
+        }
+    }
+
+    fn link(source: u64, target: u64) -> Operation {
+        Operation::Link {
+            source: WireNode(source),
+            target: WireNode(target),
         }
     }
 
@@ -1132,6 +1281,52 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn post_lock_hook_panic_after_caller_cancellation_marks_service_unavailable() {
+        let lifecycle = Lifecycle::ready();
+        let service = Service::new(ConnectivityGraph::default(), 1, lifecycle.clone());
+
+        // Install post-lock pause hook on the lifecycle
+        let mut pause_handle = lifecycle.pause_next_worker_after_lock();
+
+        let writer = service.clone();
+        let job = tokio::spawn(async move { writer.execute(vec![add(1)]).await });
+
+        // Wait until worker finishes mutation, drops graph lock, and pauses at post-lock hook
+        pause_handle.wait_started().await;
+
+        // Cancel the awaiting caller before the panic occurs in the post-lock hook
+        job.abort();
+        let _ = job.await;
+
+        // Instruct the post-lock hook to panic on the blocking thread
+        pause_handle.panic_on_release();
+
+        // Wait until worker thread completes unwind and releases job guard
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while lifecycle.outstanding_jobs() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // Service must be permanently marked unavailable even though caller was cancelled
+        assert!(service.is_unavailable());
+        let response = crate::lifecycle::readiness(&lifecycle, &service);
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        // Future requests must immediately fail closed with Unavailable
+        assert!(matches!(
+            service.execute(vec![add(2)]).await,
+            Err(ServiceError::Unavailable)
+        ));
+    }
+
     #[tokio::test]
     async fn admitted_stats_wait_for_the_entire_locked_job_and_retain_permit_on_cancel() {
         let service = Service::new(ConnectivityGraph::default(), 2, Lifecycle::new());
@@ -1252,5 +1447,222 @@ mod tests {
 
         // Job guard must have been dropped, returning outstanding jobs to 0.
         assert_eq!(lifecycle.outstanding_jobs(), 0);
+    }
+
+    #[test]
+    fn percent_encoding_and_decoding_round_trip() {
+        let test_positions = [
+            "pos-10",
+            "0/16B3740",
+            "epoch=3,pos=9912",
+            "complex+cursor;part=1&part=2",
+            "with spaces and \"quotes\"",
+            "newline\r\nand\ttabs",
+            "dots.and.more.dots",
+            "special_chars~-_",
+            "utf8-§-äöü-🚀",
+        ];
+        for original in test_positions {
+            let encoded = percent_encode_position(original);
+            // Must not contain unencoded dots, quotes, or whitespace
+            assert!(!encoded.contains('.'));
+            assert!(!encoded.contains('"'));
+            assert!(!encoded.contains(' '));
+            assert!(!encoded.contains('\r'));
+            assert!(!encoded.contains('\n'));
+
+            let decoded =
+                percent_decode_position(&encoded).expect("failed to decode valid encoded position");
+            assert_eq!(decoded, original);
+        }
+    }
+
+    #[test]
+    fn response_metadata_etag_formatting() {
+        let meta_standalone = ResponseMetadata {
+            instance_id: "inst-1".into(),
+            graph_id: "default",
+            generation: 0,
+            state_version: "42".into(),
+            source_position: None,
+            sync_status: None,
+        };
+        assert_eq!(meta_standalone.etag(), "\"0.42.\"");
+
+        let meta_source_managed = ResponseMetadata {
+            instance_id: "inst-1".into(),
+            graph_id: "default",
+            generation: 3,
+            state_version: "0".into(),
+            source_position: Some("0/16B3740".into()),
+            sync_status: Some(SyncStatus::CatchingUp),
+        };
+        assert_eq!(meta_source_managed.etag(), "\"3.0.0%2F16B3740\"");
+    }
+
+    #[test]
+    fn generation_exhaustion_arithmetic_check() {
+        let max_gen = u64::MAX;
+        assert_eq!(max_gen.checked_add(1), None);
+    }
+
+    #[tokio::test]
+    async fn service_level_actual_generation_exhaustion_on_import_publication_path() {
+        use crate::ServerConfig;
+        use axum::body::Bytes;
+        use knotrel_core::EngineConfig;
+
+        let lifecycle = Lifecycle::ready();
+        let config =
+            ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
+                .unwrap()
+                .with_mode(ServerMode::SourceManaged);
+        let graph = ConnectivityGraph::default();
+        let service = Service::with_config(graph, 32, lifecycle, &config);
+
+        // Seed live state: generation = u64::MAX, valid session & lease, baseline edge (1, 2)
+        let session_id = "sess-exhaustion".to_string();
+        let source_id = "stream-alpha".to_string();
+        let source_position = "pos-initial".to_string();
+        {
+            let mut state = service.graph.lock();
+            state.graph.link(1, 2).unwrap();
+            state.generation = u64::MAX;
+            state.version = "42".bytes().rev().map(|b| b - b'0').collect();
+            state.source_id = Some(source_id.clone());
+            state.source_epoch = Some("ep-7".to_string());
+            state.source_position = Some(source_position.clone());
+            state.feeder_session_id = Some(session_id.clone());
+            state.feeder_epoch = 1;
+            state.lease_deadline = Some(Instant::now() + Duration::from_secs(60));
+        }
+        service
+            .sync_status
+            .store(SyncStatus::CatchingUp.to_code(), Ordering::Release);
+
+        let matching_etag = format!(
+            "\"{}.42.{}\"",
+            u64::MAX,
+            percent_encode_position(&source_position)
+        );
+
+        let import_payload = serde_json::json!({
+            "mode": "replace",
+            "instance_id": service.instance_id(),
+            "graph_id": "default",
+            "source_id": "stream-alpha",
+            "source_epoch": "ep-7",
+            "source_position": "pos-new",
+            "feeder_session_id": session_id,
+            "feeder_epoch": 1,
+            "nodes": ["10", "20"],
+            "edges": [{"source": "10", "target": "20"}]
+        });
+        let raw_bytes = Bytes::from(serde_json::to_vec(&import_payload).unwrap());
+
+        let permit = service
+            .acquire_import_permit()
+            .expect("acquire import permit");
+        let result = service.import(permit, raw_bytes, Some(matching_etag)).await;
+
+        // Must reject with GenerationExhausted
+        assert!(
+            matches!(result, Err(FeederError::GenerationExhausted)),
+            "actual result: {:?}",
+            result
+        );
+
+        // Topology preserved: 1 and 2 connected, 10 and 20 NOT published
+        let state = service.graph.lock();
+        assert_eq!(state.graph.connected(1, 2), Ok(true));
+        assert_eq!(state.graph.node_count(), 2);
+        assert_eq!(state.graph.edge_count(), 1);
+        assert_eq!(state.generation, u64::MAX);
+        let current_version: String = state
+            .version
+            .iter()
+            .rev()
+            .map(|d| char::from(b'0' + d))
+            .collect();
+        assert_eq!(current_version, "42");
+        assert_eq!(state.source_id.as_deref(), Some("stream-alpha"));
+        assert_eq!(state.source_epoch.as_deref(), Some("ep-7"));
+        assert_eq!(state.source_position.as_deref(), Some("pos-initial"));
+        assert_eq!(service.sync_status(), SyncStatus::CatchingUp);
+    }
+
+    #[tokio::test]
+    async fn arbitrary_precision_revision_beyond_u64_max_with_multi_digit_carry() {
+        use crate::ServerConfig;
+        use knotrel_core::EngineConfig;
+
+        let lifecycle = Lifecycle::ready();
+        let config =
+            ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
+                .unwrap()
+                .with_mode(ServerMode::Standalone);
+        let graph = ConnectivityGraph::default();
+        let service = Service::with_config(graph, 32, lifecycle, &config);
+
+        // Seed revision to a 22-digit number beyond u64::MAX ending in 599
+        let seed_version = "1844674407370955161599";
+        {
+            let mut state = service.graph.lock();
+            state.version = seed_version.bytes().rev().map(|b| b - b'0').collect();
+        }
+
+        // 1. Effective mutation triggers multi-digit carry (599 -> 600)
+        let res = service
+            .execute(vec![link(1, 2)])
+            .await
+            .expect("execute link");
+        assert_eq!(res.outcomes.len(), 1);
+        assert!(matches!(
+            res.outcomes[0],
+            Outcome::Changed { changed: true }
+        ));
+        assert_eq!(res.metadata.state_version, "1844674407370955161600");
+        assert_eq!(res.metadata.etag(), "\"0.1844674407370955161600.\"");
+
+        // 2. Duplicate link is a no-op; revision must remain unchanged
+        let res_noop = service
+            .execute(vec![link(1, 2)])
+            .await
+            .expect("execute duplicate link");
+        assert_eq!(res_noop.outcomes.len(), 1);
+        assert!(matches!(
+            res_noop.outcomes[0],
+            Outcome::Changed { changed: false }
+        ));
+        assert_eq!(res_noop.metadata.state_version, "1844674407370955161600");
+        assert_eq!(res_noop.metadata.etag(), "\"0.1844674407370955161600.\"");
+
+        // 3. Rejected mutation (self-loop); error outcome; revision must remain unchanged
+        let res_rejected = service
+            .execute(vec![link(1, 1)])
+            .await
+            .expect("execute self-loop link");
+        assert_eq!(res_rejected.outcomes.len(), 1);
+        assert!(matches!(
+            res_rejected.outcomes[0],
+            Outcome::Error {
+                code: "self_loop",
+                ..
+            }
+        ));
+        assert_eq!(
+            res_rejected.metadata.state_version,
+            "1844674407370955161600"
+        );
+        assert_eq!(
+            res_rejected.metadata.etag(),
+            "\"0.1844674407370955161600.\""
+        );
+
+        // 4. Verify snapshot reflects the exact arbitrary-precision version
+        let stats = service.stats().await.expect("stats");
+        assert_eq!(stats.snapshot.state_version, "1844674407370955161600");
+        assert_eq!(stats.metadata.state_version, "1844674407370955161600");
+        assert_eq!(stats.metadata.etag(), "\"0.1844674407370955161600.\"");
     }
 }

@@ -956,6 +956,17 @@ To enable immediate, unambiguous implementation of Feature 0.2.2 without prematu
    - If an existing generation was already serving queries, active queries continue executing against the old graph until the lock acquisition.
    - The swap is instantaneous. Readers subsequent to the swap observe the new generation and `CatchingUp` status.
 
+### 13.2 Implementation Status: Feature 0.2.3 (Identity, Generation, Revision & Source Position)
+Feature 0.2.3 is implemented in `knotrel-server`:
+1. **Coherent Response Metadata:** Query responses (`POST /v1/operations`), batch responses (`POST /v1/batch`), live snapshots (`GET /v1/stats`), and import publications (`POST /v1/feeder/import`) capture results and identity/version headers (`ETag`, `X-Knotrel-Instance-Id`, `X-Knotrel-Graph-Id`, `X-Knotrel-Generation`, `X-Knotrel-State-Version`, `X-Knotrel-Source-Position`, `X-Knotrel-Sync-Status`) under the **same** graph mutex serialization boundary.
+2. **Replacement Preconditions:** The composite token `ETag: "<generation>.<state_version>.<percent_encoded_source_position>"` is directly reusable as the mandatory `If-Match` header on replacement imports. Preconditions become stale upon replacement ($g \to g + 1$) or restart even when numeric revisions and graph topology coincide.
+3. **Cursor Representation & Safety:** Opaque source cursors are safely RFC 3986 percent-encoded in HTTP headers, preventing header injection and delimiter collisions. Cursors are never interpreted as numbers or compared lexicographically.
+4. **Generation Exhaustion:** If generation counter reaches `u64::MAX`, subsequent replacements are rejected with HTTP 409 `generation_exhausted` without arithmetic overflow or wrapping, preserving live state, topology, revision, and source lineage. Verified via dedicated service-level test on the real import publication path.
+5. **Arbitrary-Precision Decimal Revisions:** Multi-digit carries beyond `u64::MAX` are preserved without numeric overflow. Verified across real mutation execution (599 -> 600), with duplicate no-ops and domain error rejections preserving the revision.
+6. **Response Delivery Coherence:** Verified via deterministic test-support synchronization (`pause_next_worker_after_lock`) that a query capturing outcome and metadata under the graph lock retains its exact original topology result, generation, revision, cursor, and ETag even when response delivery is paused across a completed replacement publication on the live graph.
+7. **Batch Scope:** Batch response headers reflect the final coherent state after all operations in the batch complete under continue-on-error.
+8. **Feature Boundaries:** Non-mutating source progress (`progress` events) and ordered update streaming belong to Feature 0.2.4; synchronization barrier verification and automated readiness gating belong to Feature 0.2.5.
+
 ---
 
 ## 14. Maintainer Decision Checklist

@@ -265,6 +265,26 @@ Limitations: Streaming import body parsing is deferred (bounded buffered payload
 - [ ] **Acceptance:** Identity and version scopes, no-op/error rules, restart behavior and conditional writes are documented and enforced without narrowing the existing arbitrary-precision revision to a machine integer.
 - [ ] **Tests:** Equal numeric revisions in distinct instances/generations, revision carry boundaries, no-op source advancement, errors not falsely advancing progress, coherent concurrent reads and stale preconditions.
 
+Evidence: [Identity, generation, revision, and metadata integration test suite](crates/knotrel-server/tests/identity.rs)
+and [service unit test suite](crates/knotrel-server/src/service.rs) covering 12 deterministic integration scenarios and 3 focused service tests:
+1. Equal numeric revisions in distinct instances and generations (instance ID fencing and stale generation rejection).
+2. Cloned configuration yields fresh isolated identities (fresh UUID generated per incarnation, cross-instance rejection).
+3. Revision carry boundaries and arbitrary precision preservation (multi-digit 9 -> 10 carry; no-ops, queries, and errors do not increment revision).
+4. Metadata coherence when queries race atomic replacement (synchronized interleaving via `WorkerPauseHandle`; queries observe either pre-replacement or post-replacement state under a single lock boundary, never split metadata).
+5. Stale replacement tokens after publication (ETag derived from generation N rejected with 412 `precondition_failed` against generation N+1).
+6. Old instance tokens rejected by a new server (incarnation tokens fail with 409 `stale_instance_id` or 412 `precondition_failed` across restarts).
+7. Failed operations and imports preserve metadata (rejected graph IDs, domain errors, and precondition mismatches leave generation, revision, and source cursor intact).
+8. Cursor encoding and token round trips (RFC 3986 percent-encoding safely escapes delimiters; round-tripping via `If-Match` succeeds).
+9. Standalone compatibility and batch metadata scope (`/v1/info` and `/v1/stats` schemas preserved; batch response headers reflect final state under continue-on-error).
+10. Generation bounds and overflow precondition rejection (`u64::MAX` generation precondition checked and rejected with 412 `precondition_failed`).
+11. Response coherence across replacement with paused response delivery (query outcome and metadata captured under graph lock, worker paused via `pause_next_worker_after_lock` after releasing lock, replacement published on live graph, resumed response preserves original topology, generation, revision, cursor, and replacement token).
+12. Arbitrary-precision revision beyond `u64::MAX` over HTTP (seeded beyond `u64::MAX` with multi-digit carry `599` -> `600`, no-op and rejection preservation, exact decimal header and ETag exposure).
+13. Service-level actual generation exhaustion (`service_level_actual_generation_exhaustion_on_import_publication_path` initializes live generation to `u64::MAX`, executes import publication with matching preconditions, asserts `generation_exhausted`, and proves full preservation of baseline topology, generation, revision, source lineage, source position, and sync status).
+14. Service-level arbitrary-precision mutation path (`arbitrary_precision_revision_beyond_u64_max_with_multi_digit_carry` proves execution through real mutation path beyond `u64::MAX`, multi-digit carry, no-op and rejected mutation preservation).
+15. Post-lock hook panic after caller cancellation (`post_lock_hook_panic_after_caller_cancellation_marks_service_unavailable` proves panic in post-lock hook permanently marks service unavailable and fails future requests even when caller has aborted its future).
+
+Limitations: Incremental source-progress cases without topology change (no-op feeder events advancing applied source cursor) and ordered event streaming belong to Feature 0.2.4; synchronization barrier verification and automated readiness gating belong to Feature 0.2.5. Checklists remain unchecked pending independent review and acceptance.
+
 ### 0.2.4 — Ordered incremental updates (P0, REQUIRED)
 
 - [ ] Add a source-managed update contract separate from legacy mutation/batch semantics. Validate source identity/epoch, generation and feeder ownership before applying an event; use one serialization boundary for graph changes and applied cursor.
