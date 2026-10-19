@@ -15,6 +15,7 @@ TARGET_REPO="${KNOTREL_REPO_DIR:-$REPO_ROOT}"
 cd "$TARGET_REPO"
 
 VERSION="${1:-}"
+VERSION="${VERSION#v}"
 CANDIDATE_SHA="${2:-}"
 ASSETS_DIR="${3:-final-release-assets}"
 

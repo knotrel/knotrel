@@ -840,6 +840,13 @@ class TestMedium7VerifySourcePackages(unittest.TestCase):
         self.assertEqual(res.returncode, 1)
         self.assertIn("Requested version 0.2.0 does not match workspace metadata version 0.1.0", res.stderr)
 
+    def test_version_with_leading_v_runs_successfully(self):
+        script = os.path.join(REPO_ROOT, "scripts/verify-source-packages.sh")
+        res = subprocess.run([script, "v0.1.0"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Failed: {res.stdout}\n{res.stderr}")
+        self.assertIn("Candidate package version: 0.1.0", res.stdout)
+        self.assertIn("Source package verification succeeded!", res.stdout)
+
 
 class TestTagResolutionUnified(unittest.TestCase):
     """
@@ -1016,6 +1023,16 @@ exit 0
         res = subprocess.run([script, "0.1.0", self.c1, self.assets_dir], cwd=self.consumer, env=self.env, capture_output=True, text=True)
         self.assertEqual(res.returncode, 1)
         self.assertIn(f"ERROR: Local tag 'v0.1.0' resolves to {self.c2}, expected candidate SHA {self.c1}!", res.stderr)
+
+    def test_publish_crates_accepts_version_with_leading_v(self):
+        subprocess.check_call(["git", "tag", "v0.1.0", self.c1], cwd=self.work)
+        subprocess.check_call(["git", "push", "origin", "refs/tags/v0.1.0"], cwd=self.work, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        script = os.path.join(REPO_ROOT, "scripts/publish-crates.sh")
+        res = subprocess.run([script, "v0.1.0", self.c1, self.assets_dir], cwd=self.consumer, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Expected clean exit 0 with v0.1.0, got {res.returncode}:\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}")
+        self.assertIn(f"Confirmed: Tag 'v0.1.0' points exactly to candidate commit {self.c1}", res.stdout)
+        self.assertIn("No uploads necessary. Release artifacts already published.", res.stdout)
 
 
 if __name__ == "__main__":

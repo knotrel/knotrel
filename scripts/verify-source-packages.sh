@@ -12,6 +12,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 REQUESTED_VERSION="${1:-}"
+REQUESTED_VERSION="${REQUESTED_VERSION#v}"
 
 echo "=== 1. Resolving candidate package version ==="
 READ_VERSIONS="$(python3 -c "

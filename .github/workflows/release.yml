@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version matching workspace Cargo.toml (e.g. 0.1.0)"
+        description: "Release version or tag matching workspace Cargo.toml (e.g. v0.1.0 or 0.1.0)"
         required: true
-        default: "0.1.0"
+        default: "v0.1.0"
       commit_sha:
         description: "Immutable candidate commit SHA to build and publish (defaults to current workflow SHA)"
         required: false
@@ -45,9 +45,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. Strict anchored regex validation for version (Finding 1)
-          if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: Invalid version format '$INPUT_VERSION'. Must strictly match 'X.Y.Z'." >&2
+          # 1. Normalize and strictly validate version (accepts "vX.Y.Z" or "X.Y.Z")
+          CLEAN_VERSION="${INPUT_VERSION#v}"
+          if [[ ! "$CLEAN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid version format '$INPUT_VERSION'. Must match 'X.Y.Z' or 'vX.Y.Z'." >&2
             exit 1
           fi
 
@@ -62,9 +63,9 @@ jobs:
             exit 1
           fi
 
-          echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=$CLEAN_VERSION" >> "$GITHUB_OUTPUT"
           echo "commit_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
-          echo "Validated inputs: version=$INPUT_VERSION, commit_sha=$CANDIDATE_SHA"
+          echo "Validated inputs: version=$CLEAN_VERSION (from $INPUT_VERSION), commit_sha=$CANDIDATE_SHA"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
