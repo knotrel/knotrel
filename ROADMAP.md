@@ -215,6 +215,14 @@ because it may still be queued or running in the background, racing with later r
 - [ ] **Acceptance:** Publish an implementable contract with request/response examples, state transitions, error precedence and a decision table for lost responses, duplicates, conflicting duplicates, gaps, stale generation, invalid source events and restart. Maintainer approval of unresolved decisions precedes coding.
 - [ ] **Tests specified:** Deterministic traces for coherent image S + catch-up to B, event-before-image races, reordered/duplicate events, timeout after admission, old feeder after replacement and source history expiration. Pin seeds and expected graph/version tuples; no runtime implementation is required for this contract feature.
 
+Evidence: [Normative integration contract](docs/integration-contract.md);
+[ADR 0012](docs/architecture/0012-external-source-of-truth-integration-contract.md).
+Specification defines standalone vs. source-managed modes, feeder synchronization ($S \to \text{catch-up} \to B$),
+delivery sequence and predecessor tokens, the 12 specified edge-case resolutions, bounded duplicate-detection, error precedence,
+readiness/freshness state machine, acceptance test matrix, and D1–D6 decision resolutions.
+Checklists remain unchecked pending independent review and maintainer approval.
+
+
 ### 0.2.2 — Bounded atomic HTTP graph import (P0, REQUIRED)
 
 **Depends on:** 0.2.1, including the version/precondition model. Implement the minimal identity fields needed for safe publication here; 0.2.3 completes their shared exposure and validation. Do not ship unguarded replacement while waiting for 0.2.3.
@@ -226,6 +234,26 @@ because it may still be queued or running in the background, racing with later r
 - [ ] Define cancellation before publication versus an uncertain outcome after admission/publication; do not promise rollback after a successful swap. A process crash loses volatile state and triggers external bootstrap, not local recovery.
 - [ ] **Acceptance:** No reader observes half an imported graph or a graph paired with another generation's cursor. Successful import acknowledges coherent in-memory publication, not readiness or persistence. Reads and metadata obey the selected bootstrap policy.
 - [ ] **Tests:** Every engine; empty/isolate/disconnected/cyclic/dense graphs; full-width IDs; duplicates; malformed/oversized payloads; limits; competing imports/writes; cancellation; crash/restart; differential future mutations against incremental construction.
+
+Evidence: [Import integration test suite](crates/knotrel-server/tests/import.rs)
+covering 15 deterministic scenarios via `WorkerPauseHandle` and `on_drain_loop`:
+1. Admission before body consumption & concurrency ceiling at one (competing import rejected with 503 `import_in_progress` without consuming body).
+2. Fresh server identity generated per incarnation with isolation across cloned configurations and restarts (discovering identity via `GET /v1/info`, rejecting stale instance IDs with 409 `stale_instance_id`).
+3. Exact ownership fencing in both directions (heartbeat and import reject both lower and higher unregistered epochs with 409 `fenced_feeder_session`).
+4. Contract-compliant composite replacement preconditions and percent-encoded cursors (precondition mismatches return 412 `precondition_failed`, re-initialization returns 409 `graph_already_initialized`, mutations return 409 `direct_mutation_disabled`).
+5. Deterministic shutdown with zero HTTP connections and active import worker via `lifecycle.on_drain_loop` observing `draining && tasks_empty && active_jobs == 1` without arbitrary sleeps.
+6. Off-lock candidate construction and read isolation (concurrent `GET /v1/stats`, `POST /v1/operations` queries, and heartbeats complete against baseline graph while worker builds candidate).
+7. Caller cancellation after blocking worker start (permit and job guard retained, publication completes in memory).
+8. Worker panic after cancellation (job guard released, service marked unavailable, liveness probe remains functional).
+9. Session takeover and lease expiry before publication (candidate build discarded, rejecting with 409 `fenced_feeder_session` and `lease_expired`).
+10. Shutdown deadline expiry reporting `ShutdownOutcome::DeadlineExceeded { abandoned }`.
+11. Domain error rollback (self-loop rejected with 422 `self_loop`, preserving baseline graph).
+12. Graph identity validation (only `graph_id == "default"` admitted; unsupported IDs rejected with 400 `invalid_graph_id` without mutating or echoing arbitrary IDs).
+13. HTTP Content-Type validation before body consumption (missing or unsupported media types rejected with 415 `invalid_request` without publication).
+14. Strict replacement precondition negative validation (rejecting unquoted, unmatched, repeated, weak, wildcard, list, and malformed tags with 412 `precondition_failed`).
+15. Error classification preserving contract (distinguishing syntax errors returning 400 `invalid_request` from schema/data rejections like invalid node IDs returning 422 `invalid_request`).
+
+Limitations: Streaming import body parsing is deferred (bounded buffered payload up to `max_import_body_bytes`); ordered event stream processing remains Feature 0.2.4; synchronization state machine and readiness gating remain Feature 0.2.5. Checklists remain unchecked pending independent review and acceptance.
 
 ### 0.2.3 — Identity, generation, revision and source position (P0, REQUIRED)
 
@@ -460,6 +488,8 @@ The recovery principle is mandatory for any selected local persistence strategy:
 The strategic direction (external authority, preserved volatile mode, integration-first v0.2.0 and optional future persistence) is approved. The following implementation decisions remain open; unchecked items are not completed features.
 
 ### Resolve in 0.2.1 before dependent implementation
+
+Proposed resolutions documented in [ADR 0012](docs/architecture/0012-external-source-of-truth-integration-contract.md) and [docs/integration-contract.md](docs/integration-contract.md#12-resolution-of-roadmap-decisions-d1d6); items remain unchecked pending maintainer approval before dependent coding.
 
 - [ ] **D1 — Identity and ownership:** One implicit graph with what stable identity, generation/incarnation tokens and feeder fencing? How are source identity, source epoch and projection version bound to a generation?
 - [ ] **D2 — Modes and acknowledgment:** How is source-managed mode selected while preserving default standalone behavior? How are untracked direct writes rejected, and timeout/unknown outcomes reported? No v0.2.0 local durability implied.

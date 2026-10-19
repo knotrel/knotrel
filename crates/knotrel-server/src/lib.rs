@@ -12,7 +12,7 @@ mod configuration;
 mod lifecycle;
 mod serve;
 mod service;
-pub use configuration::{ConfigError, ServerConfig};
+pub use configuration::{ConfigError, ServerConfig, ServerMode};
 #[cfg(feature = "test-support")]
 pub use lifecycle::{GateDecision, WorkerPauseHandle};
 pub use lifecycle::{Lifecycle, Phase};
@@ -38,12 +38,7 @@ const MAX_BATCH_OPERATIONS: usize = 1024;
 /// callers own their listener. A request that takes longer than the default
 /// request timeout receives HTTP 503. See `docs/http-api.md` for retry semantics.
 pub fn router(graph: knotrel_core::Graph) -> axum::Router {
-    build_router(
-        graph.into(),
-        ServerConfig::default().max_pending_jobs(),
-        ServerConfig::DEFAULT_REQUEST_TIMEOUT,
-        Lifecycle::ready(),
-    )
+    build_router(graph.into(), ServerConfig::default(), Lifecycle::ready())
 }
 
 /// Builds the HTTP API around an empty graph using validated startup settings.
@@ -63,16 +58,14 @@ pub fn router_with_config(config: ServerConfig) -> axum::Router {
 pub fn router_with_lifecycle(config: ServerConfig, lifecycle: Lifecycle) -> axum::Router {
     build_router(
         knotrel_core::ConnectivityGraph::with_limits(config.engine(), config.graph_limits()),
-        config.max_pending_jobs(),
-        config.request_timeout(),
+        config,
         lifecycle,
     )
 }
 
 fn build_router(
     graph: knotrel_core::ConnectivityGraph,
-    max_pending_jobs: usize,
-    request_timeout: std::time::Duration,
+    config: ServerConfig,
     lifecycle: Lifecycle,
 ) -> axum::Router {
     use axum::{
@@ -80,8 +73,10 @@ fn build_router(
         middleware,
         routing::{get, post},
     };
-    let service = service::Service::new(graph, max_pending_jobs, lifecycle.clone());
+    let service =
+        service::Service::with_config(graph, config.max_pending_jobs(), lifecycle.clone(), &config);
     let ready_lifecycle = lifecycle.clone();
+    let request_timeout = config.request_timeout();
     axum::Router::new()
         .route(
             "/health",
@@ -95,9 +90,26 @@ fn build_router(
         )
         .route("/v1/info", get(api::info))
         .route("/v1/stats", get(api::stats))
-        .route("/v1/operations", post(api::single))
-        .route("/v1/batch", post(api::batch))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .route(
+            "/v1/operations",
+            post(api::single).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/v1/batch",
+            post(api::batch).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/v1/feeder/session",
+            post(api::feeder_session).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/v1/feeder/heartbeat",
+            post(api::feeder_heartbeat).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/v1/feeder/import",
+            post(api::feeder_import).layer(DefaultBodyLimit::disable()),
+        )
         .layer(middleware::from_fn_with_state(
             request_timeout,
             lifecycle::request_timeout,
@@ -125,4 +137,8 @@ pub(crate) struct ServerInfo {
     max_batch_operations: usize,
     max_nodes: Option<usize>,
     max_edges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_id: Option<String>,
 }

@@ -5,6 +5,16 @@ use std::{
     collections::BTreeMap, error::Error, ffi::OsString, fmt, net::SocketAddr, time::Duration,
 };
 
+/// Operating mode of the Knotrel server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ServerMode {
+    /// Standalone in-memory mode without external feeder synchronization.
+    #[default]
+    Standalone,
+    /// Integration mode where an authoritative external feeder coordinates synchronization.
+    SourceManaged,
+}
+
 /// Validated standalone server settings.
 ///
 /// The environment is read only by [`Self::from_env`]. Embedded callers can use
@@ -20,6 +30,8 @@ pub struct ServerConfig {
     header_read_timeout: Duration,
     request_timeout: Duration,
     shutdown_timeout: Duration,
+    mode: ServerMode,
+    max_import_body_bytes: usize,
 }
 
 /// A malformed or unsupported startup setting.
@@ -45,6 +57,8 @@ impl Default for ServerConfig {
             header_read_timeout: Self::DEFAULT_HEADER_READ_TIMEOUT,
             request_timeout: Self::DEFAULT_REQUEST_TIMEOUT,
             shutdown_timeout: Self::DEFAULT_SHUTDOWN_TIMEOUT,
+            mode: ServerMode::default(),
+            max_import_body_bytes: Self::DEFAULT_MAX_IMPORT_BODY_BYTES,
         }
     }
 }
@@ -58,6 +72,10 @@ impl ServerConfig {
     pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
     /// Largest accepted connection ceiling.
     pub const MAX_CONNECTIONS_LIMIT: usize = 1_000_000;
+    /// Default maximum payload size for graph import (64 MiB).
+    pub const DEFAULT_MAX_IMPORT_BODY_BYTES: usize = 64 * 1024 * 1024;
+    /// Largest accepted import payload ceiling (512 MiB).
+    pub const MAX_IMPORT_BODY_LIMIT: usize = 512 * 1024 * 1024;
     /// Default time a client may take to send request headers or stay idle between requests.
     pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
     /// Default time allowed to receive a request body and produce its response.
@@ -132,7 +150,31 @@ impl ServerConfig {
             header_read_timeout: Self::DEFAULT_HEADER_READ_TIMEOUT,
             request_timeout: Self::DEFAULT_REQUEST_TIMEOUT,
             shutdown_timeout: Self::DEFAULT_SHUTDOWN_TIMEOUT,
+            mode: ServerMode::default(),
+            max_import_body_bytes: Self::DEFAULT_MAX_IMPORT_BODY_BYTES,
         })
+    }
+
+    /// Sets the operational mode (standalone or source-managed).
+    pub fn with_mode(mut self, mode: ServerMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Sets the maximum payload size accepted for graph import.
+    pub fn with_max_import_body_bytes(mut self, bytes: usize) -> Result<Self, ConfigError> {
+        self.max_import_body_bytes = check_import_body_bytes(bytes)?;
+        Ok(self)
+    }
+
+    /// Returns the operating mode of the server.
+    pub fn mode(&self) -> ServerMode {
+        self.mode
+    }
+
+    /// Returns the maximum allowed size in bytes for a graph import payload.
+    pub fn max_import_body_bytes(&self) -> usize {
+        self.max_import_body_bytes
     }
 
     /// Replaces the open-connection ceiling.
@@ -259,6 +301,8 @@ impl ServerConfig {
                     | "KNOTREL_HEADER_READ_TIMEOUT_MS"
                     | "KNOTREL_REQUEST_TIMEOUT_MS"
                     | "KNOTREL_SHUTDOWN_TIMEOUT_MS"
+                    | "KNOTREL_MODE"
+                    | "KNOTREL_MAX_IMPORT_BODY_BYTES"
             ) {
                 return Err(ConfigError(format!("unknown setting: {name}")));
             }
@@ -297,6 +341,19 @@ impl ServerConfig {
                     "KNOTREL_ENGINE must be compact-bfs, ett or hdt".into(),
                 ));
             }
+        };
+        let mode = match settings.get("KNOTREL_MODE").map(String::as_str) {
+            None | Some("standalone") => ServerMode::Standalone,
+            Some("source_managed") | Some("source-managed") => ServerMode::SourceManaged,
+            Some(_) => {
+                return Err(ConfigError(
+                    "KNOTREL_MODE must be standalone or source_managed".into(),
+                ));
+            }
+        };
+        let max_import_body_bytes = match settings.get("KNOTREL_MAX_IMPORT_BODY_BYTES") {
+            Some(value) => parse_decimal("KNOTREL_MAX_IMPORT_BODY_BYTES", value)?,
+            None => defaults.max_import_body_bytes,
         };
         let max_pending_jobs = match settings.get("KNOTREL_MAX_PENDING_JOBS") {
             Some(value) => {
@@ -347,6 +404,8 @@ impl ServerConfig {
             }
         };
         Self::build(address, allow_non_loopback, engine, max_pending_jobs)?
+            .with_mode(mode)
+            .with_max_import_body_bytes(max_import_body_bytes)?
             .with_graph_limits(limits)
             .with_max_connections(max_connections)?
             .with_header_read_timeout(timeout(
@@ -384,6 +443,16 @@ fn check_connections(limit: usize) -> Result<usize, ConfigError> {
         )));
     }
     Ok(limit)
+}
+
+fn check_import_body_bytes(bytes: usize) -> Result<usize, ConfigError> {
+    if bytes == 0 || bytes > ServerConfig::MAX_IMPORT_BODY_LIMIT {
+        return Err(ConfigError(format!(
+            "KNOTREL_MAX_IMPORT_BODY_BYTES must be between 1 and {}",
+            ServerConfig::MAX_IMPORT_BODY_LIMIT
+        )));
+    }
+    Ok(bytes)
 }
 
 fn check_timeout(key: &str, timeout: Duration) -> Result<Duration, ConfigError> {

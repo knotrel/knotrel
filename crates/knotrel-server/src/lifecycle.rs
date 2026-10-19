@@ -342,10 +342,36 @@ pub(crate) fn readiness(lifecycle: &Lifecycle, service: &Service) -> Response {
     let (status, label) = match lifecycle.phase() {
         Phase::Draining => (StatusCode::SERVICE_UNAVAILABLE, "draining"),
         Phase::Starting => (StatusCode::SERVICE_UNAVAILABLE, "starting"),
-        Phase::Ready if service.is_unavailable() => {
-            (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+        Phase::Ready => {
+            if service.is_unavailable() {
+                (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+            } else if service.mode() == crate::ServerMode::Standalone {
+                (StatusCode::OK, "ready")
+            } else {
+                match service.sync_status() {
+                    crate::service::SyncStatus::Uninitialized => {
+                        (StatusCode::SERVICE_UNAVAILABLE, "uninitialized")
+                    }
+                    crate::service::SyncStatus::Loading => {
+                        (StatusCode::SERVICE_UNAVAILABLE, "loading")
+                    }
+                    crate::service::SyncStatus::CatchingUp => {
+                        (StatusCode::SERVICE_UNAVAILABLE, "catching_up")
+                    }
+                    crate::service::SyncStatus::Desynchronized => {
+                        (StatusCode::SERVICE_UNAVAILABLE, "desynchronized")
+                    }
+                    crate::service::SyncStatus::Stale => (StatusCode::SERVICE_UNAVAILABLE, "stale"),
+                    crate::service::SyncStatus::Ready => {
+                        if service.is_lease_expired() {
+                            (StatusCode::SERVICE_UNAVAILABLE, "stale")
+                        } else {
+                            (StatusCode::OK, "ready")
+                        }
+                    }
+                }
+            }
         }
-        Phase::Ready => (StatusCode::OK, "ready"),
     };
     let mut response = (status, Json(Status { status: label })).into_response();
     response
