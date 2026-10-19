@@ -17,17 +17,11 @@
 //!
 //! # Quick Start
 //!
-//! Because `knotrel-core` is currently unpublished (`publish = false`), integrate it
-//! into your `Cargo.toml` as a path or git dependency:
+//! Add `knotrel-core` to your `Cargo.toml`:
 //!
 //! ```toml
 //! [dependencies]
-//! # Local path dependency:
-//! knotrel-core = { path = "path/to/knotrel/crates/knotrel-core" }
-//! # Or via git repository:
-//! # knotrel-core = { git = "https://github.com/knotrel/knotrel.git" }
-//! # Future registry dependency (once published):
-//! # knotrel-core = "0.1.0"
+//! knotrel-core = "0.1.0"
 //! ```
 //!
 //! Basic usage with [`ConnectivityGraph`]:

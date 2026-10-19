@@ -183,6 +183,11 @@ jobs:
       - name: Run example (engine_selection)
         run: cargo run -p knotrel-core --example engine_selection
 
+      - name: Run release publishing test suites
+        run: |
+          python3 tests/test_release_publishing.py
+          python3 tests/test_e2e_recovery_scenarios.py
+
   build-binaries:
     name: build-binary (${{ matrix.target }})
     needs: [validate-inputs-and-metadata, candidate-quality-gates]
@@ -292,6 +297,9 @@ jobs:
 
       - name: Verify and package source archives
         run: ./scripts/verify-source-packages.sh
+
+      - name: Dry-run crates.io package verification
+        run: ./scripts/verify-dry-run-publish.sh "$RELEASE_VERSION"
 
       - name: Prepare source distribution checksums
         shell: bash
@@ -408,23 +416,72 @@ jobs:
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
         with:
           name: knotrel-release-bundle-v${{ env.RELEASE_VERSION }}
-          path: final-release-assets
+          path: ${{ runner.temp }}/final-release-assets
 
-      - name: Publish GitHub Release (authorized non-dry-run with verified tag)
+      - name: Create or verify draft GitHub Release (authorized non-dry-run with verified tag)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
         run: |
-          set -euo pipefail
-          TAG_NAME="v${RELEASE_VERSION}"
-          echo "Publishing GitHub Release for verified tag '$TAG_NAME' at commit $CANDIDATE_SHA..."
+          ./scripts/create-or-verify-draft-release.sh "$RELEASE_VERSION" "$CANDIDATE_SHA" "${{ runner.temp }}/final-release-assets"
 
-          # --verify-tag ensures the release only succeeds if the tag already exists remotely
-          gh release create "$TAG_NAME" \
-            --verify-tag \
-            --title "Knotrel $TAG_NAME Preview" \
-            --notes-file docs/releases/v0.1.0-release-notes.md \
-            --draft \
-            final-release-assets/*
+  publish-crates:
+    name: publish-crates
+    needs: [validate-inputs-and-metadata, candidate-quality-gates, build-source, assemble-release-bundle, publish-release]
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/knotrel-core
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.validate-inputs-and-metadata.outputs.version }}
+      CANDIDATE_SHA: ${{ needs.validate-inputs-and-metadata.outputs.commit_sha }}
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
 
-          echo "GitHub Release $TAG_NAME published successfully as draft."
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Download assembled release bundle
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          name: knotrel-release-bundle-v${{ env.RELEASE_VERSION }}
+          path: ${{ runner.temp }}/final-release-assets
+
+      - name: Pre-fetch candidate dependencies
+        run: cargo fetch --locked
+
+      - name: Publish crates to crates.io (knotrel-core then knotrel-server)
+        run: |
+          ./scripts/publish-crates.sh "$RELEASE_VERSION" "$CANDIDATE_SHA" "${{ runner.temp }}/final-release-assets"
+
+  finalize-release:
+    name: finalize-release
+    needs: [validate-inputs-and-metadata, candidate-quality-gates, assemble-release-bundle, publish-release, publish-crates]
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.validate-inputs-and-metadata.outputs.version }}
+      CANDIDATE_SHA: ${{ needs.validate-inputs-and-metadata.outputs.commit_sha }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Download assembled release bundle
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          name: knotrel-release-bundle-v${{ env.RELEASE_VERSION }}
+          path: ${{ runner.temp }}/final-release-assets
+
+      - name: Finalize GitHub Release (publish draft after crates verification)
+        run: |
+          ./scripts/finalize-release.sh "$RELEASE_VERSION" "$CANDIDATE_SHA" "${{ runner.temp }}/final-release-assets"

@@ -27,7 +27,7 @@ explicitly; no production scalability claim has been established.
 
 Rust **1.98.1**, edition **2024**, and Cargo resolver **3** are pinned. The
 toolchain file installs Clippy and rustfmt when using rustup. Cargo.lock records
-the resolved dependency versions. Packages are currently unpublished.
+the resolved dependency versions. Both crates are configured for crates.io publishing upon release.
 
 ## Installation and Running
 
@@ -192,17 +192,11 @@ remains the default. See [HDT design and limits](docs/architecture/0008-experime
 
 `knotrel-core` provides synchronous, exact dynamic connectivity without HTTP or async dependencies.
 
-Because packages in this repository are currently in preview development (`publish = false`),
-integrate `knotrel-core` via path or git:
+Add `knotrel-core` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-# Local path dependency:
-knotrel-core = { path = "path/to/knotrel/crates/knotrel-core" }
-# Or via git repository:
-# knotrel-core = { git = "https://github.com/knotrel/knotrel.git" }
-# Future registry dependency (once published):
-# knotrel-core = "0.1.0"
+knotrel-core = "0.1.0"
 ```
 
 ### Quick start

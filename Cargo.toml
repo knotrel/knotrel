@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.98.1"
 repository = "https://github.com/knotrel/knotrel"
 license = "Elastic-2.0"
-publish = false
+publish = true
 
 [workspace.dependencies]
 knotrel-core = { path = "crates/knotrel-core", version = "0.1.0" }
