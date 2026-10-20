@@ -295,6 +295,9 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_ADDR` | IP socket address, such as `127.0.0.1:8080` or `[::1]:8080`; non-loopback requires `KNOTREL_ALLOW_NON_LOOPBACK=true` | `127.0.0.1:8080` |
 | `KNOTREL_ALLOW_NON_LOOPBACK` | Exactly `true` or `false` | `false` |
 | `KNOTREL_ENGINE` | Exactly `compact-bfs`, `ett` or `hdt` | `compact-bfs` |
+| `KNOTREL_MODE` | Exactly `standalone` or `source_managed` | `standalone` |
+| `KNOTREL_MAX_IMPORT_BODY_BYTES` | ASCII decimal integer from 1 through 1073741824 | `67108864` (64 MiB) |
+| `KNOTREL_DEDUP_WINDOW_SIZE` | ASCII decimal integer from 1 through 1000000 | `10000` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
 | `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
 | `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |
@@ -533,3 +536,92 @@ The token guarantees that:
 - If any mutation or replacement occurred concurrently, or if the server restarted
   with a new `instance_id`, the token becomes stale and replacement is rejected with
   HTTP 412 `precondition_failed` or HTTP 409 `stale_instance_id`.
+
+## Ordered incremental event stream and gap declaration
+
+In source-managed mode (`KNOTREL_MODE=source_managed`), graph state advances solely
+through authoritative feeder events. Direct mutations (`POST /v1/operations` with `link`/`cut`/`add_node`
+and mutating batches) are rejected with HTTP 409 `direct_mutation_disabled`.
+
+### Incremental update batches (`POST /v1/feeder/events`)
+
+The feeder streams ordered incremental updates and progress events in batches of 1 to 1024 events.
+Requests must include `Content-Type: application/json` and the mandatory `X-Knotrel-Instance-Id` header.
+
+#### Envelope schema
+
+```json
+{
+  "instance_id": "srv-12345678-1234-1234-1234-123456789abc",
+  "graph_id": "default",
+  "generation": 1,
+  "feeder_session_id": "feeder-session-1",
+  "feeder_epoch": 1,
+  "source_id": "pg-cluster-prod-01",
+  "source_epoch": "ep-1",
+  "events": [
+    {
+      "event_id": "evt-001",
+      "delivery_sequence": 1,
+      "prev_delivery_sequence": 0,
+      "source_position": "pos-01",
+      "op": "link",
+      "source": "1",
+      "target": "2"
+    },
+    {
+      "event_id": "evt-002",
+      "delivery_sequence": 2,
+      "prev_delivery_sequence": 1,
+      "source_position": "pos-02",
+      "op": "progress"
+    }
+  ]
+}
+```
+
+#### Event operations
+
+Each event specifies exactly one graph operation or progress marker:
+- `add_node`: registers an isolated vertex (`{"op": "add_node", "node": "1"}`).
+- `link`: inserts an undirected edge between `source` and `target`.
+- `cut`: removes an undirected edge between `source` and `target`.
+- `progress`: non-mutating source progress checkpoint (`{"op": "progress"}`).
+
+#### Invariants and validation
+
+1. **Standalone rejection:** Standalone servers reject feeder endpoints with HTTP 409 `mode_conflict`.
+2. **Instance & session fencing:** Validates `instance_id` (409 `stale_instance_id`), `graph_id == "default"` (400 `invalid_graph_id`), `generation` (409 `stale_generation`), active feeder lease (`feeder_session_id` and `feeder_epoch`, 409 `fenced_feeder_session`), and unexpired lease (409 `lease_expired`).
+3. **Source lineage binding:** `source_id` and `source_epoch` must match the baseline established at import. Any mismatch returns 409 `source_mismatch` or `source_epoch_mismatch` and transitions the service to `desynchronized`.
+4. **Sequence continuity and gaps:** Batch events must be contiguously ordered ($D_i = D_{prev} + 1$). The first event must satisfy $D_{prev} == D_{applied}$. Gaps or out-of-order delivery return HTTP 409 `gap_detected`.
+5. **Bounded deduplication:** A dual-index ring buffer (default 10,000 entries, configurable via `KNOTREL_DEDUP_WINDOW_SIZE` from 1 to 1,000,000) provides deterministic retry protection:
+   - **Exact duplicate retry:** Resending a retained sequence with identical `event_id` and canonical payload returns HTTP 200 `already_applied` (`result: "duplicate"`). Local revision and topology are untouched.
+   - **Conflicting duplicate:** Resending a retained sequence with different payload or `event_id`, or reusing an active `event_id` at a new sequence, returns HTTP 409 `conflicting_duplicate` and permanently transitions sync status to `desynchronized`.
+   - **Evicted duplicate:** Retrying an event evicted from the window ($D \le D_{applied} - W$) returns HTTP 409 `unverifiable_duplicate`. State is preserved without desynchronization.
+   - **Evicted event ID reuse:** An event ID evicted from the window can be reused fresh at $D_{applied} + 1$.
+6. **Fail-fast batch semantics:** Processing stops at the first domain error (e.g. self-loop 422, unknown node 404, capacity limits 422). The already committed prefix remains applied in memory; partial failure reports `failed_batch_index`, `failed_delivery_sequence`, `failed_event_id`, and current applied frontier. Uncommitted events are not recorded in the deduplication window and may be retried at $D_{applied} + 1$ with corrected payload.
+7. **Sequence boundary behavior and checked arithmetic:** Delivery sequences are represented as unsigned 64-bit integers (`u64`). When $D_{applied} = \text{u64::MAX}$, checked arithmetic (`checked_add(1)`) prevents integer overflow panics. Because the wire protocol bounds delivery sequence to `u64`, no wire event can supply a sequence strictly greater than `u64::MAX` ($2^{64}$ is unrepresentable). Consequently, valid retained retries of sequence `u64::MAX` within the deduplication window return HTTP 200 `already_applied` (`result: "duplicate"`), while wrapped sequences ($D = 0$) or older evicted sequences are rejected with HTTP 409 `unverifiable_duplicate` without state mutation. The internal `SequenceExhausted` error variant acts as a defensive guard for checked sequence increments and is unreachable over the wire without protocol extensions beyond `u64`.
+8. **No-op & progress tracking:** No-op mutations (e.g. linking existing edges) and `progress` events advance `applied_source_position` and delivery sequence without incrementing `state_version`.
+9. **Desynchronized state event rejection:** If the graph transitions to `desynchronized` (due to declared gap, conflicting duplicate, predecessor mismatch, or source epoch mismatch), subsequent event submissions are rejected under lock with HTTP 409 `graph_desynchronized` without mutating topology, revision, delivery sequence, source position, or deduplication state. Diagnostic `/stats` remains available. Recovery requires an atomic rebuild via `POST /v1/feeder/import` (mode `replace`).
+
+### Declared unrepairable gap (`POST /v1/feeder/gap`)
+
+When the feeder experiences unrecoverable source data loss (e.g. truncated WAL or expired event retention), it declares an explicit gap:
+
+```json
+{
+  "instance_id": "srv-12345678-1234-1234-1234-123456789abc",
+  "graph_id": "default",
+  "generation": 1,
+  "feeder_session_id": "feeder-session-1",
+  "feeder_epoch": 1,
+  "failed_delivery_sequence": 1500,
+  "reason": "PostgreSQL replication slot WAL removed"
+}
+```
+
+- Returns HTTP 200 `{"result": "gap_acknowledged", "status": "desynchronized"}`.
+- Transitions sync status to `desynchronized`.
+- Subsequent queries return HTTP 503 `desynchronized`.
+- Feeder heartbeats renew session lease but probe reports `desynchronized`.
+- Live graph state remains intact in memory for diagnostics; recovery requires an atomic graph replacement via `POST /v1/feeder/import`.

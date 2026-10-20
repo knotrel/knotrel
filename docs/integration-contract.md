@@ -967,6 +967,24 @@ Feature 0.2.3 is implemented in `knotrel-server`:
 7. **Batch Scope:** Batch response headers reflect the final coherent state after all operations in the batch complete under continue-on-error.
 8. **Feature Boundaries:** Non-mutating source progress (`progress` events) and ordered update streaming belong to Feature 0.2.4; synchronization barrier verification and automated readiness gating belong to Feature 0.2.5.
 
+### 13.3 Implementation Status: Feature 0.2.4 (Ordered Incremental Updates, Deduplication & Gap Declaration)
+Feature 0.2.4 is implemented in `knotrel-server`:
+1. **Endpoints:** Implemented `POST /v1/feeder/events` (ordered update streaming & progress events with bounded deduplication and fail-fast batch execution) and `POST /v1/feeder/gap` (declared unrepairable gap transitioning to `Desynchronized`).
+2. **Deterministic Dual-Index Deduplication:** Implemented `DedupWindow` ring buffer indexed modulo $N$ with an `event_ids` hash index.
+   - Retained sequence matching `event_id` and canonical payload returns HTTP 200 `already_applied` (`result: "duplicate"`).
+   - Retained sequence with altered content or differing `event_id` returns HTTP 409 `conflicting_duplicate` and transitions to `Desynchronized`.
+   - Retained `event_id` reused at a new sequence returns HTTP 409 `conflicting_duplicate` and transitions to `Desynchronized`.
+   - Evicted sequence ($D \le D_{applied} - W$) returns HTTP 409 `unverifiable_duplicate` preserving `CatchingUp`.
+   - Evicted `event_id` reused at new sequence is admitted fresh at $D_{applied} + 1$ (TR-34).
+   - Configured via `KNOTREL_DEDUP_WINDOW_SIZE` (default: 10,000, bounds: 1 to 1,000,000).
+3. **Regression Invariant:** Applying `link(A, B)`, followed by `cut(A, B)`, then retrying the old `link(A, B)` event at $D=1$ yields HTTP 200 `already_applied` without modifying graph topology; edge $(A, B)$ strictly remains absent.
+4. **Sequence Continuity and Gaps:** Contiguous delivery sequence verified ($D_i = D_{prev} + 1$) with initial $D_{prev} == D_{applied}$. Gaps or out-of-order delivery return HTTP 409 `gap_detected`.
+5. **Fail-Fast Batch Semantics:** Events are processed sequentially under a single graph mutex acquisition. On first domain error (e.g. self-loop 422, unknown node 404, capacity limit 422), execution stops immediately; already committed prefix remains applied in memory; partial failure reports `failed_batch_index`, `failed_delivery_sequence`, `failed_event_id`, and current applied frontier. Uncommitted events are not recorded in the deduplication window and can be retried at $D_{applied} + 1$ with corrected payload.
+6. **No-Op & Progress Events:** No-op mutations and `progress` events advance `applied_source_position` and delivery sequence without incrementing `state_version`.
+7. **Sequence Boundary Semantics and Checked Arithmetic:** Delivery sequence is bounded to `u64`. When $D_{applied} = \text{u64::MAX}$, checked arithmetic (`checked_add(1)`) prevents integer overflow panics. Because no `u64` wire payload can represent a value beyond `u64::MAX`, any incoming wire sequence satisfies $\text{seq} \le D_{applied}$. Retained duplicate retries at `u64::MAX` return HTTP 200 `already_applied`; wrapped sequence zero or evicted sequences return HTTP 409 `unverifiable_duplicate` without mutating topology, revision, sequence, or position. The internal `SequenceExhausted` error variant serves as a defensive guard for checked arithmetic and is unreachable through the `u64` wire interface.
+8. **Declared Gap & Desynchronized State Event Rejection:** `POST /v1/feeder/gap` transitions sync status to `Desynchronized`. Once desynchronized (via declared gap, conflicting duplicate, predecessor mismatch, or source epoch mismatch), subsequent event submissions are rejected under lock with HTTP 409 `graph_desynchronized` without mutating topology, revision, delivery sequence, source position, or deduplication state. Subsequent queries return HTTP 503 `desynchronized`. Feeder heartbeats renew session lease but probe reports `desynchronized`. Live graph remains intact for diagnostics; recovery requires atomic graph replacement via `POST /v1/feeder/import`.
+9. **Feature Boundaries:** Synchronization barrier verification (`POST /v1/feeder/barrier`), barrier timeout, and automated readiness promotion belong to Feature 0.2.5.
+
 ---
 
 ## 14. Maintainer Decision Checklist

@@ -116,6 +116,118 @@ pub(crate) struct HeartbeatResponse {
     pub(crate) status: crate::service::SyncStatus,
 }
 
+/// A feeder event operation descriptor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FeederEvent {
+    pub(crate) event_id: String,
+    pub(crate) delivery_sequence: u64,
+    pub(crate) prev_delivery_sequence: u64,
+    pub(crate) source_position: String,
+    pub(crate) prev_source_position: String,
+    pub(crate) op: String,
+    #[serde(default)]
+    pub(crate) source: Option<WireNode>,
+    #[serde(default)]
+    pub(crate) target: Option<WireNode>,
+    #[serde(default)]
+    pub(crate) node: Option<WireNode>,
+}
+
+/// Request payload for ordered feeder incremental events.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FeederEventsRequest {
+    pub(crate) instance_id: String,
+    pub(crate) graph_id: String,
+    pub(crate) generation: u64,
+    pub(crate) feeder_session_id: String,
+    pub(crate) feeder_epoch: u64,
+    pub(crate) source_id: String,
+    pub(crate) source_epoch: String,
+    pub(crate) events: Vec<FeederEvent>,
+}
+
+/// Response payload for successfully applied feeder incremental events.
+#[derive(Debug, Serialize)]
+pub(crate) struct FeederEventsResponse {
+    pub(crate) result: &'static str,
+    pub(crate) instance_id: String,
+    pub(crate) generation: u64,
+    pub(crate) applied_delivery_sequence: u64,
+    pub(crate) applied_source_position: String,
+    pub(crate) state_version: String,
+    pub(crate) events_applied: usize,
+}
+
+/// Response payload for an exact duplicate retry.
+#[derive(Debug, Serialize)]
+pub(crate) struct FeederDuplicateResponse {
+    pub(crate) result: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) instance_id: String,
+    pub(crate) generation: u64,
+    pub(crate) event_id: String,
+    pub(crate) delivery_sequence: u64,
+    pub(crate) historical_outcome: HistoricalOutcome,
+    pub(crate) current_applied_delivery_sequence: u64,
+    pub(crate) current_applied_source_position: String,
+    pub(crate) current_state_version: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct HistoricalOutcome {
+    pub(crate) changed: bool,
+}
+
+/// Error detail inside a partial batch failure.
+#[derive(Debug, Serialize)]
+pub(crate) struct BatchItemError {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+}
+
+/// Response payload for a feeder batch stopped on error.
+#[derive(Debug, Serialize)]
+pub(crate) struct PartialBatchFailure {
+    pub(crate) result: &'static str,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    pub(crate) instance_id: String,
+    pub(crate) generation: u64,
+    pub(crate) applied_delivery_sequence: u64,
+    pub(crate) applied_source_position: String,
+    pub(crate) state_version: String,
+    pub(crate) failed_batch_index: usize,
+    pub(crate) failed_delivery_sequence: u64,
+    pub(crate) failed_event_id: String,
+    pub(crate) error: BatchItemError,
+}
+
+/// Request payload for declaring an unrecoverable source gap.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GapRequest {
+    pub(crate) instance_id: String,
+    pub(crate) graph_id: String,
+    pub(crate) generation: u64,
+    pub(crate) feeder_session_id: String,
+    pub(crate) feeder_epoch: u64,
+    pub(crate) failed_delivery_sequence: u64,
+    #[serde(default)]
+    pub(crate) reason: Option<String>,
+}
+
+/// Response payload for acknowledging a declared source gap.
+#[derive(Debug, Serialize)]
+pub(crate) struct GapResponse {
+    pub(crate) result: &'static str,
+    pub(crate) instance_id: String,
+    pub(crate) generation: u64,
+    pub(crate) status: crate::service::SyncStatus,
+    pub(crate) action_required: &'static str,
+}
+
 /// One operation, deserialized completely before graph execution.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
@@ -154,9 +266,18 @@ impl Operation {
 #[derive(Debug, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub(crate) enum Outcome {
-    Changed { changed: bool },
-    Connected { connected: bool },
-    Error { code: &'static str, message: String },
+    Changed {
+        changed: bool,
+    },
+    Connected {
+        connected: bool,
+    },
+    Error {
+        code: &'static str,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_sequence: Option<u64>,
+    },
 }
 
 impl From<GraphError> for Outcome {
@@ -170,6 +291,7 @@ impl From<GraphError> for Outcome {
         Self::Error {
             code,
             message: error.to_string(),
+            expected_sequence: None,
         }
     }
 }
@@ -181,6 +303,10 @@ impl IntoResponse for Outcome {
                 code: "unknown_node",
                 ..
             } => StatusCode::NOT_FOUND,
+            Self::Error {
+                code: "desynchronized",
+                ..
+            } => StatusCode::SERVICE_UNAVAILABLE,
             Self::Error { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             _ => StatusCode::OK,
         };
@@ -570,6 +696,156 @@ pub(crate) async fn feeder_import(
     }
 }
 
+/// Applies an ordered stream of feeder events under the graph mutex.
+pub(crate) async fn feeder_events(
+    headers: HeaderMap,
+    State(service): State<Service>,
+    request: Result<SimdJson<FeederEventsRequest>, Response>,
+) -> Response {
+    if service.mode() != crate::ServerMode::SourceManaged {
+        return error_response(
+            StatusCode::CONFLICT,
+            "mode_conflict",
+            "feeder endpoints are only available in source_managed mode".into(),
+        );
+    }
+    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
+        return feeder_error(crate::service::FeederError::InvalidInstanceId(
+            "missing header X-Knotrel-Instance-Id".into(),
+        ));
+    };
+    let Ok(header_val) = instance_id_header.to_str() else {
+        return feeder_error(crate::service::FeederError::InvalidInstanceId(
+            "invalid header X-Knotrel-Instance-Id".into(),
+        ));
+    };
+    if header_val != service.instance_id() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "stale_instance_id",
+            "header X-Knotrel-Instance-Id must match server instance ID".into(),
+        );
+    }
+    let SimdJson(events_req) = match request {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+    if events_req.instance_id != service.instance_id() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "stale_instance_id",
+            "body instance_id must match server instance ID".into(),
+        );
+    }
+    if events_req.graph_id != "default" {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_graph_id",
+            format!(
+                "unsupported graph ID '{}'; only 'default' is supported",
+                events_req.graph_id
+            ),
+        );
+    }
+    if service.is_unavailable() {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "graph worker unavailable".into(),
+        );
+    }
+    match service.apply_events(events_req).await {
+        Ok(crate::service::FeederEventsResult::Applied { response, metadata }) => {
+            let mut res = (StatusCode::OK, Json(response)).into_response();
+            inject_metadata_headers(res.headers_mut(), &metadata);
+            res
+        }
+        Ok(crate::service::FeederEventsResult::Duplicate { response, metadata }) => {
+            let mut res = (StatusCode::OK, Json(response)).into_response();
+            inject_metadata_headers(res.headers_mut(), &metadata);
+            res
+        }
+        Ok(crate::service::FeederEventsResult::PartialFailure {
+            failure,
+            metadata,
+            status,
+        }) => {
+            let mut res = (status, Json(failure)).into_response();
+            inject_metadata_headers(res.headers_mut(), &metadata);
+            res
+        }
+        Err(err) => feeder_error(err),
+    }
+}
+
+/// Acknowledges a feeder declared unrecoverable source gap, moving server to Desynchronized.
+pub(crate) async fn feeder_gap(
+    headers: HeaderMap,
+    State(service): State<Service>,
+    request: Result<SimdJson<GapRequest>, Response>,
+) -> Response {
+    if service.mode() != crate::ServerMode::SourceManaged {
+        return error_response(
+            StatusCode::CONFLICT,
+            "mode_conflict",
+            "feeder endpoints are only available in source_managed mode".into(),
+        );
+    }
+    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
+        return feeder_error(crate::service::FeederError::InvalidInstanceId(
+            "missing header X-Knotrel-Instance-Id".into(),
+        ));
+    };
+    let Ok(header_val) = instance_id_header.to_str() else {
+        return feeder_error(crate::service::FeederError::InvalidInstanceId(
+            "invalid header X-Knotrel-Instance-Id".into(),
+        ));
+    };
+    if header_val != service.instance_id() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "stale_instance_id",
+            "header X-Knotrel-Instance-Id must match server instance ID".into(),
+        );
+    }
+    let SimdJson(gap_req) = match request {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+    if gap_req.instance_id != service.instance_id() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "stale_instance_id",
+            "body instance_id must match server instance ID".into(),
+        );
+    }
+    if gap_req.graph_id != "default" {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_graph_id",
+            format!(
+                "unsupported graph ID '{}'; only 'default' is supported",
+                gap_req.graph_id
+            ),
+        );
+    }
+    if service.is_unavailable() {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "graph worker unavailable".into(),
+        );
+    }
+    match service.declare_gap(gap_req).await {
+        Ok((res, metadata)) => {
+            let mut response = (StatusCode::OK, Json(res)).into_response();
+            inject_metadata_headers(response.headers_mut(), &metadata);
+            response
+        }
+        Err(err) => feeder_error(err),
+    }
+}
+
 fn feeder_error(err: crate::service::FeederError) -> Response {
     use crate::service::FeederError;
     match err {
@@ -617,10 +893,55 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
             "graph_already_initialized",
             "create_only requires uninitialized graph (generation 0)".into(),
         ),
+        FeederError::GraphUninitialized => error_response(
+            StatusCode::CONFLICT,
+            "graph_uninitialized",
+            "graph is uninitialized; baseline import required".into(),
+        ),
+        FeederError::GraphDesynchronized => error_response(
+            StatusCode::CONFLICT,
+            "graph_desynchronized",
+            "graph is desynchronized; full rebuild required".into(),
+        ),
         FeederError::GenerationExhausted => error_response(
             StatusCode::CONFLICT,
             "generation_exhausted",
             "generation counter exhausted; server restart required".into(),
+        ),
+        FeederError::StaleGeneration(msg) => {
+            error_response(StatusCode::CONFLICT, "stale_generation", msg)
+        }
+        FeederError::SourceMismatch(msg) => {
+            error_response(StatusCode::CONFLICT, "source_mismatch", msg)
+        }
+        FeederError::SourceEpochMismatch(msg) => {
+            error_response(StatusCode::CONFLICT, "source_epoch_mismatch", msg)
+        }
+        FeederError::OutOfOrderSequence { expected, received } => (
+            StatusCode::CONFLICT,
+            Json(Outcome::Error {
+                code: "out_of_order_sequence",
+                message: format!(
+                    "expected delivery sequence {}, received {}",
+                    expected, received
+                ),
+                expected_sequence: Some(expected),
+            }),
+        )
+            .into_response(),
+        FeederError::SourcePredecessorMismatch(msg) => {
+            error_response(StatusCode::CONFLICT, "source_predecessor_mismatch", msg)
+        }
+        FeederError::ConflictingDuplicate(msg) => {
+            error_response(StatusCode::CONFLICT, "conflicting_duplicate", msg)
+        }
+        FeederError::UnverifiableDuplicate(msg) => {
+            error_response(StatusCode::CONFLICT, "unverifiable_duplicate", msg)
+        }
+        FeederError::SequenceExhausted => error_response(
+            StatusCode::CONFLICT,
+            "sequence_exhausted",
+            "delivery sequence counter exhausted; server restart required".into(),
         ),
         FeederError::PreconditionFailed(msg) => {
             error_response(StatusCode::PRECONDITION_FAILED, "precondition_failed", msg)
@@ -646,6 +967,9 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
         FeederError::Domain(code, msg) => {
             error_response(StatusCode::UNPROCESSABLE_ENTITY, code, msg)
         }
+        FeederError::InvalidRequest(msg) => {
+            error_response(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request", msg)
+        }
     }
 }
 
@@ -661,7 +985,15 @@ fn service_error(error: ServiceError) -> Response {
 }
 
 pub(crate) fn error_response(status: StatusCode, code: &'static str, message: String) -> Response {
-    (status, Json(Outcome::Error { code, message })).into_response()
+    (
+        status,
+        Json(Outcome::Error {
+            code,
+            message,
+            expected_sequence: None,
+        }),
+    )
+        .into_response()
 }
 
 /// Returns startup metadata without taking the graph lock or a worker permit.
@@ -731,5 +1063,335 @@ pub(crate) fn inject_metadata_headers(
             axum::http::HeaderName::from_static("x-knotrel-sync-status"),
             axum::http::HeaderValue::from_static(status.as_str()),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Lifecycle, ServerConfig, ServerMode};
+    use axum::http::HeaderValue;
+
+    fn make_service(mode: ServerMode) -> Service {
+        let config = ServerConfig::default().with_mode(mode);
+        Service::with_config(ConnectivityGraph::default(), 2, Lifecycle::new(), &config)
+    }
+
+    #[test]
+    fn test_wire_node_parsing() {
+        assert_eq!(WireNode::try_from("123".to_string()).unwrap().0, 123);
+        assert_eq!(WireNode::try_from("0".to_string()).unwrap().0, 0);
+        assert!(WireNode::try_from("".to_string()).is_err());
+        assert!(WireNode::try_from("abc".to_string()).is_err());
+        assert!(WireNode::try_from("-1".to_string()).is_err());
+        assert!(WireNode::try_from("18446744073709551616".to_string()).is_err());
+    }
+
+    #[test]
+    fn test_inject_metadata_headers() {
+        let mut headers = HeaderMap::new();
+        let metadata = crate::service::ResponseMetadata {
+            instance_id: "srv-test-1".into(),
+            graph_id: "default",
+            generation: 2,
+            state_version: "42".into(),
+            source_position: Some("pos/1".into()),
+            sync_status: Some(crate::service::SyncStatus::CatchingUp),
+        };
+        inject_metadata_headers(&mut headers, &metadata);
+        assert_eq!(headers.get("etag").unwrap(), "\"2.42.pos%2F1\"");
+        assert_eq!(headers.get("x-knotrel-instance-id").unwrap(), "srv-test-1");
+        assert_eq!(headers.get("x-knotrel-graph-id").unwrap(), "default");
+        assert_eq!(headers.get("x-knotrel-generation").unwrap(), "2");
+        assert_eq!(headers.get("x-knotrel-state-version").unwrap(), "42");
+        assert_eq!(headers.get("x-knotrel-source-position").unwrap(), "pos%2F1");
+        assert_eq!(headers.get("x-knotrel-sync-status").unwrap(), "catching_up");
+    }
+
+    #[tokio::test]
+    async fn test_feeder_session_validation() {
+        let standalone = make_service(ServerMode::Standalone);
+        let resp = feeder_session(
+            HeaderMap::new(),
+            State(standalone),
+            Err(StatusCode::BAD_REQUEST.into_response()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let sm = make_service(ServerMode::SourceManaged);
+        let instance_id = sm.instance_id().to_string();
+
+        // Missing header
+        let resp = feeder_session(
+            HeaderMap::new(),
+            State(sm.clone()),
+            Err(StatusCode::BAD_REQUEST.into_response()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Header mismatch
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_static("srv-wrong"),
+        );
+        let resp = feeder_session(
+            headers.clone(),
+            State(sm.clone()),
+            Err(StatusCode::BAD_REQUEST.into_response()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // Body mismatch
+        let mut valid_headers = HeaderMap::new();
+        valid_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(&instance_id).unwrap(),
+        );
+        let body_mismatch = SessionRequest {
+            instance_id: "srv-wrong".into(),
+            feeder_session_id: "f-1".into(),
+            feeder_epoch: 1,
+            lease_duration_ms: 1000,
+        };
+        let resp = feeder_session(
+            valid_headers.clone(),
+            State(sm.clone()),
+            Ok(SimdJson(body_mismatch)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_feeder_heartbeat_validation() {
+        let standalone = make_service(ServerMode::Standalone);
+        let resp = feeder_heartbeat(
+            HeaderMap::new(),
+            State(standalone),
+            Err(StatusCode::BAD_REQUEST.into_response()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let sm = make_service(ServerMode::SourceManaged);
+        let instance_id = sm.instance_id().to_string();
+
+        let resp = feeder_heartbeat(
+            HeaderMap::new(),
+            State(sm.clone()),
+            Err(StatusCode::BAD_REQUEST.into_response()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let mut valid_headers = HeaderMap::new();
+        valid_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(&instance_id).unwrap(),
+        );
+        let body_mismatch = HeartbeatRequest {
+            instance_id: "srv-wrong".into(),
+            feeder_session_id: "f-1".into(),
+            feeder_epoch: 1,
+        };
+        let resp = feeder_heartbeat(
+            valid_headers,
+            State(sm.clone()),
+            Ok(SimdJson(body_mismatch)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_feeder_events_validation() {
+        let standalone = make_service(ServerMode::Standalone);
+        let resp = feeder_events(
+            HeaderMap::new(),
+            State(standalone),
+            Err(StatusCode::BAD_REQUEST.into_response()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let sm = make_service(ServerMode::SourceManaged);
+        let instance_id = sm.instance_id().to_string();
+
+        let resp = feeder_events(
+            HeaderMap::new(),
+            State(sm.clone()),
+            Err(StatusCode::BAD_REQUEST.into_response()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let mut valid_headers = HeaderMap::new();
+        valid_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(&instance_id).unwrap(),
+        );
+        let body_mismatch = FeederEventsRequest {
+            instance_id: "srv-wrong".into(),
+            graph_id: "default".into(),
+            generation: 1,
+            feeder_session_id: "f-1".into(),
+            feeder_epoch: 1,
+            source_id: "pg-1".into(),
+            source_epoch: "ep-1".into(),
+            events: vec![],
+        };
+        let resp = feeder_events(
+            valid_headers,
+            State(sm.clone()),
+            Ok(SimdJson(body_mismatch)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_feeder_gap_validation() {
+        let standalone = make_service(ServerMode::Standalone);
+        let resp = feeder_gap(
+            HeaderMap::new(),
+            State(standalone),
+            Err(StatusCode::BAD_REQUEST.into_response()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let sm = make_service(ServerMode::SourceManaged);
+        let instance_id = sm.instance_id().to_string();
+
+        let resp = feeder_gap(
+            HeaderMap::new(),
+            State(sm.clone()),
+            Err(StatusCode::BAD_REQUEST.into_response()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let mut valid_headers = HeaderMap::new();
+        valid_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(&instance_id).unwrap(),
+        );
+        let body_mismatch = GapRequest {
+            instance_id: "srv-wrong".into(),
+            graph_id: "default".into(),
+            generation: 1,
+            feeder_session_id: "f-1".into(),
+            feeder_epoch: 1,
+            failed_delivery_sequence: 1,
+            reason: Some("test".into()),
+        };
+        let resp = feeder_gap(
+            valid_headers,
+            State(sm.clone()),
+            Ok(SimdJson(body_mismatch)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_source_managed_mutation_rejection() {
+        let sm = make_service(ServerMode::SourceManaged);
+        let op_link1 = Operation::Link {
+            source: WireNode(1),
+            target: WireNode(2),
+        };
+        let op_link2 = Operation::Link {
+            source: WireNode(1),
+            target: WireNode(2),
+        };
+        let resp = single(State(sm.clone()), Ok(SimdJson(op_link1))).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let batch_req = Batch {
+            operations: vec![op_link2],
+        };
+        let resp_b = batch(State(sm.clone()), Ok(SimdJson(batch_req))).await;
+        assert_eq!(resp_b.status(), StatusCode::CONFLICT);
+
+        let empty_batch = Batch { operations: vec![] };
+        let resp_empty = batch(State(sm.clone()), Ok(SimdJson(empty_batch))).await;
+        assert_eq!(resp_empty.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn test_feeder_error_status_mapping() {
+        use crate::service::FeederError;
+        let cases = [
+            (
+                FeederError::InvalidInstanceId("test".into()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                FeederError::StaleInstanceId("test".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                FeederError::InvalidGraphId("test".into()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                FeederError::StaleGeneration("test".into()),
+                StatusCode::CONFLICT,
+            ),
+            (FeederError::FencedSession, StatusCode::CONFLICT),
+            (FeederError::LeaseExpired, StatusCode::CONFLICT),
+            (FeederError::GraphAlreadyInitialized, StatusCode::CONFLICT),
+            (FeederError::GraphUninitialized, StatusCode::CONFLICT),
+            (FeederError::GraphDesynchronized, StatusCode::CONFLICT),
+            (
+                FeederError::PreconditionFailed("test".into()),
+                StatusCode::PRECONDITION_FAILED,
+            ),
+            (
+                FeederError::SourceMismatch("test".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                FeederError::SourceEpochMismatch("test".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                FeederError::OutOfOrderSequence {
+                    expected: 1,
+                    received: 2,
+                },
+                StatusCode::CONFLICT,
+            ),
+            (
+                FeederError::ConflictingDuplicate("test".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                FeederError::UnverifiableDuplicate("test".into()),
+                StatusCode::CONFLICT,
+            ),
+            (FeederError::SequenceExhausted, StatusCode::CONFLICT),
+            (FeederError::GenerationExhausted, StatusCode::CONFLICT),
+            (
+                FeederError::InvalidRequest("test".into()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (FeederError::Unavailable, StatusCode::SERVICE_UNAVAILABLE),
+            (
+                FeederError::ImportInProgress,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (FeederError::SessionRequired, StatusCode::CONFLICT),
+            (FeederError::ModeMismatch, StatusCode::CONFLICT),
+        ];
+        for (err, expected_status) in cases {
+            let resp = feeder_error(err);
+            assert_eq!(resp.status(), expected_status);
+        }
     }
 }

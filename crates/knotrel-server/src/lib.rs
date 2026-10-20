@@ -92,6 +92,29 @@ pub fn router_with_seeded_version(
     build_router_from_service(service, config, lifecycle)
 }
 
+/// Builds an application router with seeded version and/or delivery sequence.
+///
+/// Only available when the `test-support` feature is enabled.
+#[cfg(feature = "test-support")]
+pub fn router_with_seeded_state(
+    config: ServerConfig,
+    lifecycle: Lifecycle,
+    version_str: Option<&str>,
+    delivery_sequence: Option<u64>,
+) -> axum::Router {
+    let graph =
+        knotrel_core::ConnectivityGraph::with_limits(config.engine(), config.graph_limits());
+    let service =
+        service::Service::with_config(graph, config.max_pending_jobs(), lifecycle.clone(), &config);
+    if let Some(v) = version_str {
+        service.seed_version_for_test(v);
+    }
+    if let Some(seq) = delivery_sequence {
+        service.seed_sequence_for_test(seq);
+    }
+    build_router_from_service(service, config, lifecycle)
+}
+
 fn build_router_from_service(
     service: service::Service,
     config: ServerConfig,
@@ -136,6 +159,14 @@ fn build_router_from_service(
         .route(
             "/v1/feeder/import",
             post(api::feeder_import).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/feeder/events",
+            post(api::feeder_events).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/v1/feeder/gap",
+            post(api::feeder_gap).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
         )
         .layer(middleware::from_fn_with_state(
             request_timeout,

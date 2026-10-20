@@ -14,7 +14,7 @@ An external feeder reads the authoritative database or event stream and supplies
 
 **Scope labels:** **REQUIRED** means a release acceptance gate. **OPTIONAL** means a separately enabled capability whose absence does not invalidate the basic product contract. **DEFERRED** means no implementation commitment in that release. A future capability can be optional for operators while its safety criteria are required before shipping it.
 
-> **Execution rule:** Follow dependencies within each release, retain independent review gates, and mark tasks complete only against verified evidence. v0.1.0 is the released baseline. Its historical checklist and evidence below are preserved, including unresolved bookkeeping; this planning update does not certify previously pending platform or publication checks. The 0.1.5 dashboard/detail mismatch remains historical bookkeeping, not a missing library capability. Release numbers beyond v0.1.0 are planning targets.
+> **Execution rule:** Follow dependencies within each release, retain independent review gates, and mark tasks complete only against verified evidence. v0.1.0 is the released baseline. Its historical checklist and evidence below are preserved, including unresolved bookkeeping; this planning update does not certify previously pending platform or publication checks. Release numbers beyond v0.1.0 are planning targets.
 
 ## Release overview and scope
 
@@ -30,22 +30,22 @@ An external feeder reads the authoritative database or event stream and supplies
 
 ## Feature Progress Dashboard
 
-Existing checks describe historical evidence. Every proposed feature below remains unchecked.
+Checks reflect verified implementation and acceptance gates. Features 0.2.5+ remain unchecked pending implementation and acceptance.
 
 ### v0.1.0 — Public Preview
 - [x] **Feature 0.1.1:** Inventory and freeze minimum release scope (P0)
 - [x] **Feature 0.1.2:** Document v0.1.0 service contract (M0-min, P0)
 - [x] **Feature 0.1.3:** Establish a safe deployment boundary (M8-min, P0)
 - [x] **Feature 0.1.4:** Minimal health, readiness and lifecycle (M4-min, P0)
-- [ ] **Feature 0.1.5:** Rust library adoption, API and examples (P0)
+- [x] **Feature 0.1.5:** Rust library adoption, API and examples (P0)
 - [ ] **Feature 0.1.6:** CI, packaging and release candidate validation (M9-min, P0)
 
 ### v0.2.0 — Integration & Graph Loading
 
-- [ ] **Feature 0.2.1:** External source-of-truth integration contract (REQUIRED)
-- [ ] **Feature 0.2.2:** Bounded atomic HTTP graph import (REQUIRED)
-- [ ] **Feature 0.2.3:** Graph identity, generation, local revision and source position (REQUIRED)
-- [ ] **Feature 0.2.4:** Ordered incremental updates, duplicate and gap detection (REQUIRED)
+- [x] **Feature 0.2.1:** External source-of-truth integration contract (REQUIRED)
+- [x] **Feature 0.2.2:** Bounded atomic HTTP graph import (REQUIRED)
+- [x] **Feature 0.2.3:** Graph identity, generation, local revision and source position (REQUIRED)
+- [x] **Feature 0.2.4:** Ordered incremental updates, duplicate and gap detection (REQUIRED)
 - [ ] **Feature 0.2.5:** Synchronization-aware bootstrap and readiness (REQUIRED)
 - [ ] **Feature 0.2.6:** External feeder example, restart/rebuild tests and reproducible measurements (REQUIRED)
 
@@ -206,34 +206,36 @@ because it may still be queued or running in the background, racing with later r
 
 ### 0.2.1 — External source-of-truth integration contract (P0, REQUIRED)
 
-- [ ] Define standalone volatile versus opt-in source-managed mode, startup selection, request admission and mode-specific readiness. Existing callers must not acquire an external-source dependency.
-- [ ] Define feeder/source responsibilities: obtain a coherent graph image associated with source position S; retain/consume all relevant changes after S; deliver one logical ordered stream; explicitly complete bootstrap at a declared barrier B. An opaque cursor alone cannot prove continuity: specify a predecessor token, contiguous delivery sequence or another verifiable continuity protocol. Partition merging and database snapshot/event coordination remain feeder responsibilities.
-- [ ] Define acknowledgment, visibility, timeout/disconnect and retry semantics. An accepted update means applied to memory with its cursor; the authoritative source must already contain it. No exactly-once network delivery or disk durability is implied.
-- [ ] Specify version tokens and event failure rules needed by 0.2.2–0.2.5 before implementation. Decide feeder ownership/fencing, stale-session rejection, duplicate retention and behavior when source history is unavailable.
-- [ ] Prevent untracked writes from invalidating the source cursor: select and document a policy for legacy mutating requests in source-managed mode (recommended: reject them); retain legacy behavior in standalone mode. Queries remain compatible. Feeder events do not silently inherit legacy batch error continuation.
-- [ ] Define synchronization/freshness policy after bootstrap: barrier completion is not proof of perpetual freshness. Decide behavior on feeder disconnection, lag, source epoch changes and known gaps, without inventing SLOs.
-- [ ] **Acceptance:** Publish an implementable contract with request/response examples, state transitions, error precedence and a decision table for lost responses, duplicates, conflicting duplicates, gaps, stale generation, invalid source events and restart. Maintainer approval of unresolved decisions precedes coding.
-- [ ] **Tests specified:** Deterministic traces for coherent image S + catch-up to B, event-before-image races, reordered/duplicate events, timeout after admission, old feeder after replacement and source history expiration. Pin seeds and expected graph/version tuples; no runtime implementation is required for this contract feature.
+- [x] **Feature Complete: 0.2.1 — External source-of-truth integration contract**
+- [x] Define standalone volatile versus opt-in source-managed mode, startup selection, request admission and mode-specific readiness. Existing callers must not acquire an external-source dependency.
+- [x] Define feeder/source responsibilities: obtain a coherent graph image associated with source position S; retain/consume all relevant changes after S; deliver one logical ordered stream; explicitly complete bootstrap at a declared barrier B. An opaque cursor alone cannot prove continuity: specify a predecessor token, contiguous delivery sequence or another verifiable continuity protocol. Partition merging and database snapshot/event coordination remain feeder responsibilities.
+- [x] Define acknowledgment, visibility, timeout/disconnect and retry semantics. An accepted update means applied to memory with its cursor; the authoritative source must already contain it. No exactly-once network delivery or disk durability is implied.
+- [x] Specify version tokens and event failure rules needed by 0.2.2–0.2.5 before implementation. Decide feeder ownership/fencing, stale-session rejection, duplicate retention and behavior when source history is unavailable.
+- [x] Prevent untracked writes from invalidating the source cursor: select and document a policy for legacy mutating requests in source-managed mode (recommended: reject them); retain legacy behavior in standalone mode. Queries remain compatible. Feeder events do not silently inherit legacy batch error continuation.
+- [x] Define synchronization/freshness policy after bootstrap: barrier completion is not proof of perpetual freshness. Decide behavior on feeder disconnection, lag, source epoch changes and known gaps, without inventing SLOs.
+- [x] **Acceptance:** Publish an implementable contract with request/response examples, state transitions, error precedence and a decision table for lost responses, duplicates, conflicting duplicates, gaps, stale generation, invalid source events and restart. Maintainer approval of unresolved decisions precedes coding.
+- [x] **Tests specified:** Deterministic traces for coherent image S + catch-up to B, event-before-image races, reordered/duplicate events, timeout after admission, old feeder after replacement and source history expiration. Pin seeds and expected graph/version tuples; no runtime implementation is required for this contract feature.
 
 Evidence: [Normative integration contract](docs/integration-contract.md);
 [ADR 0012](docs/architecture/0012-external-source-of-truth-integration-contract.md).
 Specification defines standalone vs. source-managed modes, feeder synchronization ($S \to \text{catch-up} \to B$),
 delivery sequence and predecessor tokens, the 12 specified edge-case resolutions, bounded duplicate-detection, error precedence,
 readiness/freshness state machine, acceptance test matrix, and D1–D6 decision resolutions.
-Checklists remain unchecked pending independent review and maintainer approval.
+Accepted and closed after independent review and maintainer approval.
 
 
 ### 0.2.2 — Bounded atomic HTTP graph import (P0, REQUIRED)
 
 **Depends on:** 0.2.1, including the version/precondition model. Implement the minimal identity fields needed for safe publication here; 0.2.3 completes their shared exposure and validation. Do not ship unguarded replacement while waiting for 0.2.3.
 
-- [ ] Define create-only versus replace, required preconditions, explicit vertices/edges, source identity/epoch and snapshot position, payload schema, node-ID encoding and error precedence. Preserve `try_from_edges` semantics: nodes before edges, isolates retained, duplicate/reversed edges are no-ops, implicit endpoints allowed, self-loops rejected, configured limits enforced.
-- [ ] Bound body bytes, raw item counts (including duplicates), concurrent imports and candidate resources. A fully buffered bounded format is acceptable; streaming is DEFERRED. Document that graph cardinality limits need not imply the entire graph fits one import body.
-- [ ] Build a candidate away from live state, then recheck generation/revision preconditions under the mutation boundary. Publish topology and all associated metadata together. Failed parse/build/conflict leaves the live graph, generation, revision and cursor unchanged.
-- [ ] Define read behavior during construction and catch-up: old-state reads, if supported, must carry the old generation and obey freshness policy; initial bootstrap must not present an empty or partially synchronized graph as ready. Prevent queued old-generation events from applying to the new graph.
-- [ ] Define cancellation before publication versus an uncertain outcome after admission/publication; do not promise rollback after a successful swap. A process crash loses volatile state and triggers external bootstrap, not local recovery.
-- [ ] **Acceptance:** No reader observes half an imported graph or a graph paired with another generation's cursor. Successful import acknowledges coherent in-memory publication, not readiness or persistence. Reads and metadata obey the selected bootstrap policy.
-- [ ] **Tests:** Every engine; empty/isolate/disconnected/cyclic/dense graphs; full-width IDs; duplicates; malformed/oversized payloads; limits; competing imports/writes; cancellation; crash/restart; differential future mutations against incremental construction.
+- [x] **Feature Complete: 0.2.2 — Bounded atomic HTTP graph import**
+- [x] Define create-only versus replace, required preconditions, explicit vertices/edges, source identity/epoch and snapshot position, payload schema, node-ID encoding and error precedence. Preserve `try_from_edges` semantics: nodes before edges, isolates retained, duplicate/reversed edges are no-ops, implicit endpoints allowed, self-loops rejected, configured limits enforced.
+- [x] Bound body bytes, raw item counts (including duplicates), concurrent imports and candidate resources. A fully buffered bounded format is acceptable; streaming is DEFERRED. Document that graph cardinality limits need not imply the entire graph fits one import body.
+- [x] Build a candidate away from live state, then recheck generation/revision preconditions under the mutation boundary. Publish topology and all associated metadata together. Failed parse/build/conflict leaves the live graph, generation, revision and cursor unchanged.
+- [x] Define read behavior during construction and catch-up: old-state reads, if supported, must carry the old generation and obey freshness policy; initial bootstrap must not present an empty or partially synchronized graph as ready. Prevent queued old-generation events from applying to the new graph.
+- [x] Define cancellation before publication versus an uncertain outcome after admission/publication; do not promise rollback after a successful swap. A process crash loses volatile state and triggers external bootstrap, not local recovery.
+- [x] **Acceptance:** No reader observes half an imported graph or a graph paired with another generation's cursor. Successful import acknowledges coherent in-memory publication, not readiness or persistence. Reads and metadata obey the selected bootstrap policy.
+- [x] **Tests:** Every engine; empty/isolate/disconnected/cyclic/dense graphs; full-width IDs; duplicates; malformed/oversized payloads; limits; competing imports/writes; cancellation; crash/restart; differential future mutations against incremental construction.
 
 Evidence: [Import integration test suite](crates/knotrel-server/tests/import.rs)
 covering 15 deterministic scenarios via `WorkerPauseHandle` and `on_drain_loop`:
@@ -253,17 +255,18 @@ covering 15 deterministic scenarios via `WorkerPauseHandle` and `on_drain_loop`:
 14. Strict replacement precondition negative validation (rejecting unquoted, unmatched, repeated, weak, wildcard, list, and malformed tags with 412 `precondition_failed`).
 15. Error classification preserving contract (distinguishing syntax errors returning 400 `invalid_request` from schema/data rejections like invalid node IDs returning 422 `invalid_request`).
 
-Limitations: Streaming import body parsing is deferred (bounded buffered payload up to `max_import_body_bytes`); ordered event stream processing remains Feature 0.2.4; synchronization state machine and readiness gating remain Feature 0.2.5. Checklists remain unchecked pending independent review and acceptance.
+Limitations: Streaming import body parsing is deferred (bounded buffered payload up to `max_import_body_bytes`); ordered event stream processing remains Feature 0.2.4; synchronization state machine and readiness gating remain Feature 0.2.5. Accepted and closed after independent review and acceptance.
 
 ### 0.2.3 — Identity, generation, revision and source position (P0, REQUIRED)
 
-- [ ] Expose coherent metadata for one implicit graph; identity is not multi-graph routing. Separate graph identity (logical projection) from instance identity (process/service incarnation).
-- [ ] A generation identifies a published baseline/rebuild lineage; revision counts effective local changes within its documented scope. Preserve existing decimal revision behavior for standalone mode; define import/reset behavior explicitly. Prevent stale tokens from becoming valid after restart/replacement, even if topology and numeric revision match.
-- [ ] Source position identifies the applied prefix of a specific source stream/epoch. It is not the graph revision: an accepted no-op event can advance source progress without changing topology or local revision. Do not compare opaque provider cursors lexicographically or assume they are contiguous integers.
-- [ ] Reserve a distinct concept for a future local persistence checkpoint: the graph/version/source tuple actually recoverable from local storage, which may lag live state. v0.2.0 has no such durability guarantee.
-- [ ] Add backward-compatible metadata/precondition exposure and error mapping; keep the existing `/v1/info` immutable-settings versus `/v1/stats` coherent-live-state distinction. Do not advertise a token from one snapshot with a query result from another.
-- [ ] **Acceptance:** Identity and version scopes, no-op/error rules, restart behavior and conditional writes are documented and enforced without narrowing the existing arbitrary-precision revision to a machine integer.
-- [ ] **Tests:** Equal numeric revisions in distinct instances/generations, revision carry boundaries, no-op source advancement, errors not falsely advancing progress, coherent concurrent reads and stale preconditions.
+- [x] **Feature Complete: 0.2.3 — Identity, generation, revision and source position**
+- [x] Expose coherent metadata for one implicit graph; identity is not multi-graph routing. Separate graph identity (logical projection) from instance identity (process/service incarnation).
+- [x] A generation identifies a published baseline/rebuild lineage; revision counts effective local changes within its documented scope. Preserve existing decimal revision behavior for standalone mode; define import/reset behavior explicitly. Prevent stale tokens from becoming valid after restart/replacement, even if topology and numeric revision match.
+- [x] Source position identifies the applied prefix of a specific source stream/epoch. It is not the graph revision: an accepted no-op event can advance source progress without changing topology or local revision. Do not compare opaque provider cursors lexicographically or assume they are contiguous integers.
+- [x] Reserve a distinct concept for a future local persistence checkpoint: the graph/version/source tuple actually recoverable from local storage, which may lag live state. v0.2.0 has no such durability guarantee.
+- [x] Add backward-compatible metadata/precondition exposure and error mapping; keep the existing `/v1/info` immutable-settings versus `/v1/stats` coherent-live-state distinction. Do not advertise a token from one snapshot with a query result from another.
+- [x] **Acceptance:** Identity and version scopes, no-op/error rules, restart behavior and conditional writes are documented and enforced without narrowing the existing arbitrary-precision revision to a machine integer.
+- [x] **Tests:** Equal numeric revisions in distinct instances/generations, revision carry boundaries, no-op source advancement, errors not falsely advancing progress, coherent concurrent reads and stale preconditions.
 
 Evidence: [Identity, generation, revision, and metadata integration test suite](crates/knotrel-server/tests/identity.rs)
 and [service unit test suite](crates/knotrel-server/src/service.rs) covering 12 deterministic integration scenarios and 3 focused service tests:
@@ -283,17 +286,45 @@ and [service unit test suite](crates/knotrel-server/src/service.rs) covering 12 
 14. Service-level arbitrary-precision mutation path (`arbitrary_precision_revision_beyond_u64_max_with_multi_digit_carry` proves execution through real mutation path beyond `u64::MAX`, multi-digit carry, no-op and rejected mutation preservation).
 15. Post-lock hook panic after caller cancellation (`post_lock_hook_panic_after_caller_cancellation_marks_service_unavailable` proves panic in post-lock hook permanently marks service unavailable and fails future requests even when caller has aborted its future).
 
-Limitations: Incremental source-progress cases without topology change (no-op feeder events advancing applied source cursor) and ordered event streaming belong to Feature 0.2.4; synchronization barrier verification and automated readiness gating belong to Feature 0.2.5. Checklists remain unchecked pending independent review and acceptance.
+Limitations: Incremental source-progress cases without topology change (no-op feeder events advancing applied source cursor) and ordered event streaming belong to Feature 0.2.4; synchronization barrier verification and automated readiness gating belong to Feature 0.2.5. Accepted and closed after independent review and acceptance.
 
 ### 0.2.4 — Ordered incremental updates (P0, REQUIRED)
 
-- [ ] Add a source-managed update contract separate from legacy mutation/batch semantics. Validate source identity/epoch, generation and feeder ownership before applying an event; use one serialization boundary for graph changes and applied cursor.
-- [ ] Define ordering and bounded duplicate detection: same identity with conflicting content is rejected; exact retries do not repeat effects; events outside the retained verification window receive an explicit stale/unverifiable outcome rather than an unearned claim of successful deduplication.
-- [ ] Detect missing predecessors/out-of-order delivery. Do not advance the applied source position past a gap or failed event. A known gap makes synchronized serving unavailable until repaired or rebuilt; arrival of a later event is not evidence that earlier events can be skipped.
-- [ ] For invalid source events, stop progress and report the failing position; require explicit remediation/rebuild. Decide event atomicity before supporting multi-operation source transactions. A safe initial restriction is one graph operation per event; do not invent transaction rollback.
-- [ ] Ensure worker-owned admission, generation checks and result accounting survive HTTP cancellation. Retries after restart must establish the new instance/generation; no durable request ledger is promised.
-- [ ] **Acceptance:** Applied state corresponds to a verified ordered source prefix. Duplicate link/cut idempotence alone is insufficient: an old link retried after a newer cut must not recreate the edge. Capacity rejection cannot be reported as source progress.
-- [ ] **Tests:** Lost acknowledgment, exact/conflicting/expired duplicates, gaps, reordering, source epoch reset, no-op events, limit/error cases, concurrent feeders, queued events racing import, worker panic and restart/rebuild.
+- [x] **Feature Complete: 0.2.4 — Ordered incremental updates**
+- [x] Add a source-managed update contract separate from legacy mutation/batch semantics. Validate source identity/epoch, generation and feeder ownership before applying an event; use one serialization boundary for graph changes and applied cursor.
+- [x] Define ordering and bounded duplicate detection: same identity with conflicting content is rejected; exact retries do not repeat effects; events outside the retained verification window receive an explicit stale/unverifiable outcome rather than an unearned claim of successful deduplication.
+- [x] Detect missing predecessors/out-of-order delivery. Do not advance the applied source position past a gap or failed event. A known gap makes synchronized serving unavailable until repaired or rebuilt; arrival of a later event is not evidence that earlier events can be skipped.
+- [x] For invalid source events, stop progress and report the failing position; require explicit remediation/rebuild. Decide event atomicity before supporting multi-operation source transactions. A safe initial restriction is one graph operation per event; do not invent transaction rollback.
+- [x] Ensure worker-owned admission, generation checks and result accounting survive HTTP cancellation. Retries after restart must establish the new instance/generation; no durable request ledger is promised.
+- [x] **Acceptance:** Applied state corresponds to a verified ordered source prefix. Duplicate link/cut idempotence alone is insufficient: an old link retried after a newer cut must not recreate the edge. Capacity rejection cannot be reported as source progress.
+- [x] **Tests:** Lost acknowledgment, exact/conflicting/expired duplicates, gaps, reordering, source epoch reset, no-op events, limit/error cases, concurrent feeders, queued events racing import, worker panic and restart/rebuild.
+
+Evidence: [Ordered incremental updates integration test suite](crates/knotrel-server/tests/events.rs)
+and [service unit test suite](crates/knotrel-server/src/service.rs) covering 19 deterministic integration scenarios and unit tests:
+1. Lost acknowledgment and duplicate retry (retained sequence matching `event_id` and canonical payload returns 200 `already_applied` without repeating side effects).
+2. Regression invariant: old link retry after newer cut (link A-B, cut A-B, retrying old link at D=1 returns 200 `already_applied` without modifying graph topology; edge A-B remains strictly absent).
+3. Conflicting duplicate event content (retained sequence with modified payload rejected with 409 `conflicting_duplicate` and transitions to `Desynchronized`).
+4. Retained committed sequence with different event ID (seq D committed with `evt-A`, retried with `evt-B` rejected with 409 `conflicting_duplicate` and transitions to `Desynchronized`).
+5. Retained event ID reused at new sequence (`evt-A` committed at seq 1, reused at seq 2 rejected with 409 `conflicting_duplicate` and transitions to `Desynchronized`).
+6. Evicted duplicate outside bounded window ($D \le D_{applied} - W$ rejected with 409 `unverifiable_duplicate`; `CatchingUp` preserved).
+7. Evicted event ID reused at new sequence (event ID evicted from ring buffer can be safely reused at $D_{applied} + 1$).
+8. Missing predecessors and gap detection ($D > D_{applied} + 1$ or mismatched $D_{prev}$ rejected with 409 `gap_detected`).
+9. Source lineage and epoch failover rejection (mismatched `source_id` or `source_epoch` rejected with 409 `source_mismatch` / `source_epoch_mismatch` and transitions to `Desynchronized`).
+10. No-op mutations and progress events (no-op link and `progress` event advance `applied_source_position` and delivery sequence without incrementing `state_version`).
+11. Fail-fast batch execution and partial error reporting (first domain error stops processing; committed prefix retained; partial failure reports failing index, seq, event ID, and current applied frontier; uncommitted event retried at $D_{applied} + 1$).
+12. Queued events racing baseline replacement (events targeting generation N rejected with 409 `stale_generation` once generation N+1 is published).
+13. Session takeover and lease expiry before execution (fenced epoch rejected with 409 `fenced_feeder_session`; expired lease rejected with 409 `lease_expired`).
+14. Worker panic after caller cancellation (panic in event worker permanently marks service `unavailable`; subsequent requests rejected with 503 `unavailable`).
+15. Stale instance ID rejected across restarts (previous server incarnation ID rejected with 409 `stale_instance_id`).
+16. Standalone and direct mutation compatibility (standalone rejects feeder endpoints with 409 `mode_conflict`; source-managed rejects direct mutations with 409 `direct_mutation_disabled`).
+17. Declared gap and desynchronized state (`POST /v1/feeder/gap` acknowledges gap, transitions to `Desynchronized`; subsequent queries return 503 `desynchronized`; heartbeat renews lease but probe reports `desynchronized`).
+18. Payload schema and bounds validation (validates event limits 1..1024, node IDs, required fields; returns 422 `invalid_request`).
+19. Stop event application after desynchronization and rebuild recovery (once `Desynchronized`, subsequent mutation and progress events rejected with 409 `graph_desynchronized` under lock; entire state strictly preserved; `/stats` remains available for diagnosis; atomic replacement rebuild via `POST /v1/feeder/import` publishes generation 2 in `CatchingUp` where ordered ingestion resumes).
+20. Production boundary sequence semantics and checked arithmetic (`feeder_events_sequence_exhaustion_and_arbitrary_precision_carry` unit test verifies that for the `u64` wire protocol, retries at `u64::MAX` succeed as `duplicate`, wrapped sequence zero is rejected as `unverifiable_duplicate` without mutation, and `SequenceExhausted` serves as a defensive guard for checked arithmetic that is unreachable over the wire).
+21. Under-lock desynchronization rejection (`feeder_events_rejected_after_desynchronization` unit test verifies that declared gaps and protocol mismatches immediately halt subsequent event ingestion without mutating topology, revision, sequence, or position).
+
+Limitations: Synchronization barrier verification (`POST /v1/feeder/barrier`), barrier timeout, and automated readiness promotion belong to Feature 0.2.5. Accepted and closed after independent review and acceptance.
+
 
 ### 0.2.5 — Synchronization-aware bootstrap and readiness (P0, REQUIRED)
 

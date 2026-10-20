@@ -32,6 +32,7 @@ pub struct ServerConfig {
     shutdown_timeout: Duration,
     mode: ServerMode,
     max_import_body_bytes: usize,
+    dedup_window_size: usize,
 }
 
 /// A malformed or unsupported startup setting.
@@ -59,6 +60,7 @@ impl Default for ServerConfig {
             shutdown_timeout: Self::DEFAULT_SHUTDOWN_TIMEOUT,
             mode: ServerMode::default(),
             max_import_body_bytes: Self::DEFAULT_MAX_IMPORT_BODY_BYTES,
+            dedup_window_size: Self::DEFAULT_DEDUP_WINDOW_SIZE,
         }
     }
 }
@@ -76,6 +78,10 @@ impl ServerConfig {
     pub const DEFAULT_MAX_IMPORT_BODY_BYTES: usize = 64 * 1024 * 1024;
     /// Largest accepted import payload ceiling (512 MiB).
     pub const MAX_IMPORT_BODY_LIMIT: usize = 512 * 1024 * 1024;
+    /// Default capacity of bounded deduplication window.
+    pub const DEFAULT_DEDUP_WINDOW_SIZE: usize = 10_000;
+    /// Largest accepted deduplication window capacity.
+    pub const MAX_DEDUP_WINDOW_SIZE: usize = 1_000_000;
     /// Default time a client may take to send request headers or stay idle between requests.
     pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
     /// Default time allowed to receive a request body and produce its response.
@@ -152,6 +158,7 @@ impl ServerConfig {
             shutdown_timeout: Self::DEFAULT_SHUTDOWN_TIMEOUT,
             mode: ServerMode::default(),
             max_import_body_bytes: Self::DEFAULT_MAX_IMPORT_BODY_BYTES,
+            dedup_window_size: Self::DEFAULT_DEDUP_WINDOW_SIZE,
         })
     }
 
@@ -167,6 +174,12 @@ impl ServerConfig {
         Ok(self)
     }
 
+    /// Sets the bounded deduplication window size.
+    pub fn with_dedup_window_size(mut self, size: usize) -> Result<Self, ConfigError> {
+        self.dedup_window_size = check_dedup_window_size(size)?;
+        Ok(self)
+    }
+
     /// Returns the operating mode of the server.
     pub fn mode(&self) -> ServerMode {
         self.mode
@@ -175,6 +188,11 @@ impl ServerConfig {
     /// Returns the maximum allowed size in bytes for a graph import payload.
     pub fn max_import_body_bytes(&self) -> usize {
         self.max_import_body_bytes
+    }
+
+    /// Returns the capacity of the bounded deduplication window.
+    pub fn dedup_window_size(&self) -> usize {
+        self.dedup_window_size
     }
 
     /// Replaces the open-connection ceiling.
@@ -303,6 +321,7 @@ impl ServerConfig {
                     | "KNOTREL_SHUTDOWN_TIMEOUT_MS"
                     | "KNOTREL_MODE"
                     | "KNOTREL_MAX_IMPORT_BODY_BYTES"
+                    | "KNOTREL_DEDUP_WINDOW_SIZE"
             ) {
                 return Err(ConfigError(format!("unknown setting: {name}")));
             }
@@ -355,6 +374,10 @@ impl ServerConfig {
             Some(value) => parse_decimal("KNOTREL_MAX_IMPORT_BODY_BYTES", value)?,
             None => defaults.max_import_body_bytes,
         };
+        let dedup_window_size = match settings.get("KNOTREL_DEDUP_WINDOW_SIZE") {
+            Some(value) => parse_decimal("KNOTREL_DEDUP_WINDOW_SIZE", value)?,
+            None => defaults.dedup_window_size,
+        };
         let max_pending_jobs = match settings.get("KNOTREL_MAX_PENDING_JOBS") {
             Some(value) => {
                 if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
@@ -406,6 +429,7 @@ impl ServerConfig {
         Self::build(address, allow_non_loopback, engine, max_pending_jobs)?
             .with_mode(mode)
             .with_max_import_body_bytes(max_import_body_bytes)?
+            .with_dedup_window_size(dedup_window_size)?
             .with_graph_limits(limits)
             .with_max_connections(max_connections)?
             .with_header_read_timeout(timeout(
@@ -453,6 +477,16 @@ fn check_import_body_bytes(bytes: usize) -> Result<usize, ConfigError> {
         )));
     }
     Ok(bytes)
+}
+
+fn check_dedup_window_size(size: usize) -> Result<usize, ConfigError> {
+    if size == 0 || size > ServerConfig::MAX_DEDUP_WINDOW_SIZE {
+        return Err(ConfigError(format!(
+            "KNOTREL_DEDUP_WINDOW_SIZE must be between 1 and {}",
+            ServerConfig::MAX_DEDUP_WINDOW_SIZE
+        )));
+    }
+    Ok(size)
 }
 
 fn check_timeout(key: &str, timeout: Duration) -> Result<Duration, ConfigError> {
@@ -628,6 +662,23 @@ mod tests {
                 .with_shutdown_timeout(Duration::from_secs(3601))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn dedup_window_size_configuration_and_limits() {
+        let defaults = ServerConfig::from_variables([]).unwrap();
+        assert_eq!(
+            defaults.dedup_window_size(),
+            ServerConfig::DEFAULT_DEDUP_WINDOW_SIZE
+        );
+        let custom =
+            ServerConfig::from_variables([("KNOTREL_DEDUP_WINDOW_SIZE".into(), "5000".into())])
+                .unwrap();
+        assert_eq!(custom.dedup_window_size(), 5000);
+
+        assert!(defaults.clone().with_dedup_window_size(0).is_err());
+        assert!(defaults.clone().with_dedup_window_size(1_000_001).is_err());
+        assert!(defaults.with_dedup_window_size(10).is_ok());
     }
 
     #[cfg(unix)]
