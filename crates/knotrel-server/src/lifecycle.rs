@@ -119,6 +119,43 @@ impl std::fmt::Debug for GateHook {
     }
 }
 
+#[cfg(feature = "test-support")]
+struct ReadyProbeHook {
+    started_tx: tokio::sync::oneshot::Sender<()>,
+    release_rx: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(feature = "test-support")]
+impl std::fmt::Debug for ReadyProbeHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadyProbeHook").finish_non_exhaustive()
+    }
+}
+
+/// Handle allowing test callers to pause the next `/ready` probe after lease expiry observation.
+///
+/// Only available when the `test-support` feature is enabled. Not supported for production use.
+#[cfg(feature = "test-support")]
+pub struct ProbePauseHandle {
+    started_rx: tokio::sync::oneshot::Receiver<()>,
+    release_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[cfg(feature = "test-support")]
+impl ProbePauseHandle {
+    /// Awaits until the readiness probe has reached the controlled pause point.
+    pub async fn wait_started(&mut self) {
+        let _ = (&mut self.started_rx).await;
+    }
+
+    /// Releases the readiness probe so it proceeds with publishing.
+    pub fn release(mut self) {
+        if let Some(tx) = self.release_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
 #[derive(Debug)]
 struct LifecycleInner {
     phase: AtomicU8,
@@ -132,6 +169,8 @@ struct LifecycleInner {
     drain_loop_hook: parking_lot::Mutex<Option<DrainLoopHook>>,
     #[cfg(feature = "test-support")]
     gate_hook: parking_lot::Mutex<Option<GateHook>>,
+    #[cfg(feature = "test-support")]
+    ready_probe_hook: parking_lot::Mutex<Option<ReadyProbeHook>>,
 }
 
 /// Token tracking an active graph worker job.
@@ -170,6 +209,7 @@ impl Lifecycle {
             worker_post_lock_hook: parking_lot::Mutex::new(None),
             drain_loop_hook: parking_lot::Mutex::new(None),
             gate_hook: parking_lot::Mutex::new(None),
+            ready_probe_hook: parking_lot::Mutex::new(None),
         };
         #[cfg(not(feature = "test-support"))]
         let inner = LifecycleInner {
@@ -192,6 +232,7 @@ impl Lifecycle {
             worker_post_lock_hook: parking_lot::Mutex::new(None),
             drain_loop_hook: parking_lot::Mutex::new(None),
             gate_hook: parking_lot::Mutex::new(None),
+            ready_probe_hook: parking_lot::Mutex::new(None),
         };
         #[cfg(not(feature = "test-support"))]
         let inner = LifecycleInner {
@@ -361,6 +402,40 @@ impl Lifecycle {
             (hook.0)(path, decision);
         }
     }
+
+    /// Installs a pause point for the next readiness probe after observing lease expiry.
+    ///
+    /// Only available when the `test-support` feature is enabled.
+    #[cfg(feature = "test-support")]
+    pub fn pause_next_ready_probe(&self) -> ProbePauseHandle {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let mut hook = self.0.ready_probe_hook.lock();
+        *hook = Some(ReadyProbeHook {
+            started_tx,
+            release_rx,
+        });
+        ProbePauseHandle {
+            started_rx,
+            release_tx: Some(release_tx),
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) async fn check_ready_probe_hook(&self) {
+        let hook = {
+            let mut guard = self.0.ready_probe_hook.lock();
+            guard.take()
+        };
+        if let Some(hook) = hook {
+            let _ = hook.started_tx.send(());
+            let _ = hook.release_rx.await;
+        }
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    #[inline(always)]
+    pub(crate) async fn check_ready_probe_hook(&self) {}
 }
 
 impl Default for Lifecycle {
@@ -376,37 +451,69 @@ struct Status {
 
 /// Reports whether the server can currently accept graph work.
 ///
-/// Draining wins over every other state, then starting, then a failed graph
-/// worker. It never takes the graph lock or a worker permit.
-pub(crate) fn readiness(lifecycle: &Lifecycle, service: &Service) -> Response {
-    let (status, label) = match lifecycle.phase() {
-        Phase::Draining => (StatusCode::SERVICE_UNAVAILABLE, "draining"),
-        Phase::Starting => (StatusCode::SERVICE_UNAVAILABLE, "starting"),
-        Phase::Ready => {
-            if service.is_unavailable() {
-                (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
-            } else if service.mode() == crate::ServerMode::Standalone {
-                (StatusCode::OK, "ready")
-            } else {
-                match service.sync_status() {
-                    crate::service::SyncStatus::Uninitialized => {
-                        (StatusCode::SERVICE_UNAVAILABLE, "uninitialized")
-                    }
-                    crate::service::SyncStatus::Loading => {
-                        (StatusCode::SERVICE_UNAVAILABLE, "loading")
-                    }
-                    crate::service::SyncStatus::CatchingUp => {
-                        (StatusCode::SERVICE_UNAVAILABLE, "catching_up")
-                    }
-                    crate::service::SyncStatus::Desynchronized => {
-                        (StatusCode::SERVICE_UNAVAILABLE, "desynchronized")
-                    }
-                    crate::service::SyncStatus::Stale => (StatusCode::SERVICE_UNAVAILABLE, "stale"),
-                    crate::service::SyncStatus::Ready => {
-                        if service.is_lease_expired() {
+/// A failed graph worker wins over every other state, then draining, then
+/// starting. It never takes the graph lock or a worker permit.
+pub(crate) async fn readiness(lifecycle: &Lifecycle, service: &Service) -> Response {
+    let (status, label) = if service.is_unavailable() {
+        (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+    } else {
+        match lifecycle.phase() {
+            Phase::Draining => (StatusCode::SERVICE_UNAVAILABLE, "draining"),
+            Phase::Starting => (StatusCode::SERVICE_UNAVAILABLE, "starting"),
+            Phase::Ready => {
+                if service.mode() == crate::ServerMode::Standalone {
+                    (StatusCode::OK, "ready")
+                } else {
+                    let word = service.published_readiness_word();
+                    let published = crate::service::PublishedReadiness::unpack(word);
+                    let is_expired = published.deadline_millis != 0
+                        && crate::service::now_to_millis() > published.deadline_millis;
+
+                    match published.status {
+                        crate::service::SyncStatus::Uninitialized => {
+                            (StatusCode::SERVICE_UNAVAILABLE, "uninitialized")
+                        }
+                        crate::service::SyncStatus::Loading => {
+                            (StatusCode::SERVICE_UNAVAILABLE, "loading")
+                        }
+                        crate::service::SyncStatus::Desynchronized => {
+                            (StatusCode::SERVICE_UNAVAILABLE, "desynchronized")
+                        }
+                        crate::service::SyncStatus::Stale => {
                             (StatusCode::SERVICE_UNAVAILABLE, "stale")
-                        } else {
-                            (StatusCode::OK, "ready")
+                        }
+                        crate::service::SyncStatus::CatchingUp => {
+                            if is_expired {
+                                (StatusCode::SERVICE_UNAVAILABLE, "stale")
+                            } else {
+                                (StatusCode::SERVICE_UNAVAILABLE, "catching_up")
+                            }
+                        }
+                        crate::service::SyncStatus::Ready => {
+                            if is_expired {
+                                lifecycle.check_ready_probe_hook().await;
+
+                                if service.try_mark_stale_from_expired_lease(word) {
+                                    (StatusCode::SERVICE_UNAVAILABLE, "stale")
+                                } else {
+                                    let fresh = service.published_readiness();
+                                    let fresh_expired = fresh.deadline_millis != 0
+                                        && crate::service::now_to_millis() > fresh.deadline_millis;
+                                    if fresh.status == crate::service::SyncStatus::Ready
+                                        && !fresh_expired
+                                    {
+                                        (StatusCode::OK, "ready")
+                                    } else if fresh.status == crate::service::SyncStatus::Ready
+                                        && fresh_expired
+                                    {
+                                        (StatusCode::SERVICE_UNAVAILABLE, "stale")
+                                    } else {
+                                        (StatusCode::SERVICE_UNAVAILABLE, fresh.status.as_str())
+                                    }
+                                }
+                            } else {
+                                (StatusCode::OK, "ready")
+                            }
                         }
                     }
                 }

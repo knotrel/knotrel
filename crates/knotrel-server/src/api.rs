@@ -304,7 +304,7 @@ impl IntoResponse for Outcome {
                 ..
             } => StatusCode::NOT_FOUND,
             Self::Error {
-                code: "desynchronized",
+                code: "desynchronized" | "uninitialized" | "loading",
                 ..
             } => StatusCode::SERVICE_UNAVAILABLE,
             Self::Error { .. } => StatusCode::UNPROCESSABLE_ENTITY,
@@ -846,6 +846,74 @@ pub(crate) async fn feeder_gap(
     }
 }
 
+/// Verifies a synchronization barrier and promotes the published graph to Ready.
+pub(crate) async fn feeder_barrier(
+    headers: HeaderMap,
+    State(service): State<Service>,
+    request: Result<SimdJson<crate::service::BarrierRequest>, Response>,
+) -> Response {
+    if service.mode() != crate::ServerMode::SourceManaged {
+        return error_response(
+            StatusCode::CONFLICT,
+            "mode_conflict",
+            "feeder endpoints are only available in source_managed mode".into(),
+        );
+    }
+    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
+        return feeder_error(crate::service::FeederError::InvalidInstanceId(
+            "missing header X-Knotrel-Instance-Id".into(),
+        ));
+    };
+    let Ok(header_val) = instance_id_header.to_str() else {
+        return feeder_error(crate::service::FeederError::InvalidInstanceId(
+            "invalid header X-Knotrel-Instance-Id".into(),
+        ));
+    };
+    if header_val != service.instance_id() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "stale_instance_id",
+            "header X-Knotrel-Instance-Id must match server instance ID".into(),
+        );
+    }
+    let SimdJson(barrier_req) = match request {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+    if barrier_req.instance_id != service.instance_id() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "stale_instance_id",
+            "body instance_id must match server instance ID".into(),
+        );
+    }
+    if barrier_req.graph_id != "default" {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_graph_id",
+            format!(
+                "unsupported graph ID '{}'; only 'default' is supported",
+                barrier_req.graph_id
+            ),
+        );
+    }
+    if service.is_unavailable() {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "graph worker unavailable".into(),
+        );
+    }
+    match service.declare_barrier(barrier_req).await {
+        Ok((res, metadata)) => {
+            let mut response = (StatusCode::OK, Json(res)).into_response();
+            inject_metadata_headers(response.headers_mut(), &metadata);
+            response
+        }
+        Err(err) => feeder_error(err),
+    }
+}
+
 fn feeder_error(err: crate::service::FeederError) -> Response {
     use crate::service::FeederError;
     match err {
@@ -946,6 +1014,30 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
         FeederError::PreconditionFailed(msg) => {
             error_response(StatusCode::PRECONDITION_FAILED, "precondition_failed", msg)
         }
+        FeederError::BarrierPositionMismatch { expected, received } => error_response(
+            StatusCode::CONFLICT,
+            "barrier_position_mismatch",
+            format!(
+                "barrier source position '{}' does not match applied position '{}'",
+                received, expected
+            ),
+        ),
+        FeederError::BarrierNotReached { expected, received } => error_response(
+            StatusCode::CONFLICT,
+            "barrier_not_reached",
+            format!(
+                "barrier delivery sequence {} has not been reached; currently at {}",
+                received, expected
+            ),
+        ),
+        FeederError::SupersededBarrier { expected, received } => error_response(
+            StatusCode::CONFLICT,
+            "superseded_barrier",
+            format!(
+                "barrier delivery sequence {} is superseded by applied delivery sequence {}",
+                received, expected
+            ),
+        ),
         FeederError::InvalidLeaseDuration => error_response(
             StatusCode::BAD_REQUEST,
             "invalid_lease_duration",

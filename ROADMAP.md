@@ -336,6 +336,35 @@ Limitations: Synchronization barrier verification (`POST /v1/feeder/barrier`), b
 - [ ] **Acceptance:** Source-managed mode is not ready until bootstrap is verified; a gap invalidates readiness. Standalone mode retains its existing startup semantics. Drain/timeout behavior does not falsely acknowledge canceled or unfinished synchronization.
 - [ ] **Tests:** Barrier before/after catch-up, obsolete completion signals, wrong generation/epoch, feeder disconnect/reconnect, source unavailable, restart, panic, timeout and draining with active import/update workers. Use deterministic synchronization points.
 
+Evidence: [Synchronization-aware bootstrap and readiness test suite](crates/knotrel-server/tests/bootstrap.rs)
+and [service unit test suite](crates/knotrel-server/src/service.rs) covering 21 deterministic integration scenarios and unit tests:
+1. Happy path: initial import S -> catch-up -> barrier B -> Ready (TR-01).
+2. Equal barrier sequence with mismatched position (TR-15, Case B7 -> 409 `barrier_position_mismatch`).
+3. Heartbeat after lease expiry while updates remain unapplied (TR-17; heartbeat extends deadline but probe remains 503 `stale` until barrier verifies catch-up under fresh epoch).
+4. Heartbeat during desynchronized and catching-up (TR-18; probe remains 503 `desynchronized` or `catching_up`).
+5. Older barrier with different position (TR-24, Case B9 -> 409 `superseded_barrier`).
+6. Rejected barriers preserving Ready, Stale, and Desynchronized states (TR-25).
+7. Import precondition failure vs ownership fencing (TR-28).
+8. Exact barrier match while Uninitialized (TR-29, Case B3 -> 409 `graph_uninitialized`).
+9. Barrier during initial baseline Loading (TR-30, Case B4 -> 409 `graph_uninitialized`).
+10. Barrier during replacement Loading (TR-31; live graph generation 1 evaluated against live frontier while generation 2 candidate is built off-lock).
+11. Barrier with omitted source position (matches delivery sequence only).
+12. Fenced feeder session and epoch validation in barrier (409 `fenced_feeder_session`).
+13. Stale instance ID and invalid graph ID rejection in barrier (409 `stale_instance_id`, 400 `invalid_graph_id`).
+14. Standalone mode barrier rejection (409 `mode_conflict`).
+15. Worker panic marks ready unavailable (503 `unavailable`).
+16. Draining probe gate and graceful shutdown (503 `draining`).
+17. Query rejection in source-managed mode across uninitialized, loading, catching_up, stale, and desynchronized states.
+18. Lock-free lease expiration detection in /ready without holding graph lock.
+19. Delayed barrier race resolution across takeover and sequence advancement.
+20. Defect 1 regression: delayed pre-expiry barrier fenced across lease expiry and heartbeat renewal (`test_20_delayed_barrier_fenced_across_lease_expiry`). Requires `feeder_epoch > last_expired_epoch` to restore readiness.
+21. Defect 2 regression: paused `/ready` probe at expiry does not overwrite newer publication (`test_21_probe_paused_at_expiry_does_not_overwrite_newer_publication`), verified via atomic `PublishedReadiness` CAS.
+22. Unit test `test_barrier_decision_table_b1_through_b9` verifying cases B1 through B9.
+23. Unit test `test_published_readiness_packing_roundtrip` verifying packed atomic bitfields.
+24. Unit test `test_clock_advance_and_lease_expiry_staleness` verifying controllable monotonic clock, staleness transitions, and epoch recovery.
+
+Limitations: External feeder reference implementation and end-to-end reproducible measurements belong to Feature 0.2.6. Feature 0.2.5 remains unchecked pending maintainer acceptance.
+
 ### 0.2.6 — External feeder and reproducible integration evidence (P0, REQUIRED)
 
 - [ ] Provide a minimal feeder outside the server, backed by a deterministic external fixture/event source. Demonstrate coherent image S, ordered updates, barrier B, duplicate retry, gap detection and rebuild when history is missing. A provider-specific production connector is not required.

@@ -18,7 +18,7 @@ pub use lifecycle::{GateDecision, WorkerPauseHandle};
 pub use lifecycle::{Lifecycle, Phase};
 pub use serve::{ShutdownOutcome, serve};
 #[cfg(feature = "test-support")]
-pub use service::{percent_decode_position, percent_encode_position};
+pub use service::{advance_clock, percent_decode_position, percent_encode_position, reset_clock};
 
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_BATCH_OPERATIONS: usize = 1024;
@@ -135,7 +135,7 @@ fn build_router_from_service(
         .route(
             "/ready",
             get(move |State(service): State<service::Service>| async move {
-                lifecycle::readiness(&ready_lifecycle, &service)
+                lifecycle::readiness(&ready_lifecycle, &service).await
             }),
         )
         .route("/v1/info", get(api::info))
@@ -167,6 +167,10 @@ fn build_router_from_service(
         .route(
             "/v1/feeder/gap",
             post(api::feeder_gap).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/v1/feeder/barrier",
+            post(api::feeder_barrier).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
         )
         .layer(middleware::from_fn_with_state(
             request_timeout,

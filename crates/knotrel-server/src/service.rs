@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -22,12 +22,42 @@ use tokio::sync::Semaphore;
 
 static START_INSTANT: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
 
+#[cfg(feature = "test-support")]
+static CLOCK_OFFSET_MILLIS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn monotonic_now() -> Instant {
+    #[cfg(feature = "test-support")]
+    {
+        Instant::now() + Duration::from_millis(CLOCK_OFFSET_MILLIS.load(Ordering::Acquire))
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        Instant::now()
+    }
+}
+
 fn instant_to_millis(instant: Instant) -> u64 {
     instant.duration_since(*START_INSTANT).as_millis() as u64
 }
 
-fn now_to_millis() -> u64 {
-    instant_to_millis(Instant::now())
+pub(crate) fn now_to_millis() -> u64 {
+    instant_to_millis(monotonic_now())
+}
+
+/// Advances the mock monotonic clock by the specified duration for deterministic testing.
+///
+/// Only available when the `test-support` feature is enabled.
+#[cfg(feature = "test-support")]
+pub fn advance_clock(duration: Duration) {
+    CLOCK_OFFSET_MILLIS.fetch_add(duration.as_millis() as u64, Ordering::Release);
+}
+
+/// Resets the mock monotonic clock offset back to zero.
+///
+/// Only available when the `test-support` feature is enabled.
+#[cfg(feature = "test-support")]
+pub fn reset_clock() {
+    CLOCK_OFFSET_MILLIS.store(0, Ordering::Release);
 }
 
 /// Feeder synchronization status for integration mode.
@@ -54,7 +84,7 @@ impl SyncStatus {
         }
     }
 
-    fn to_code(self) -> u8 {
+    pub(crate) const fn to_code(self) -> u8 {
         match self {
             Self::Uninitialized => 0,
             Self::Loading => 1,
@@ -65,7 +95,7 @@ impl SyncStatus {
         }
     }
 
-    fn from_code(code: u8) -> Self {
+    pub(crate) const fn from_code(code: u8) -> Self {
         match code {
             1 => Self::Loading,
             2 => Self::CatchingUp,
@@ -73,6 +103,35 @@ impl SyncStatus {
             4 => Self::Stale,
             5 => Self::Desynchronized,
             _ => Self::Uninitialized,
+        }
+    }
+}
+
+/// Packed atomic readiness publication holding status (4 bits), publication sequence (16 bits),
+/// and lease deadline in monotonic milliseconds (44 bits, up to 557 years).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PublishedReadiness {
+    pub(crate) status: SyncStatus,
+    pub(crate) seq: u16,
+    pub(crate) deadline_millis: u64,
+}
+
+impl PublishedReadiness {
+    pub(crate) const fn pack(status: SyncStatus, seq: u16, deadline_millis: u64) -> u64 {
+        let status_bits = (status.to_code() as u64) & 0x0F;
+        let seq_bits = ((seq as u64) & 0xFFFF) << 4;
+        let deadline_bits = (deadline_millis & 0x0FFF_FFFF_FFFF) << 20;
+        status_bits | seq_bits | deadline_bits
+    }
+
+    pub(crate) const fn unpack(word: u64) -> Self {
+        let status_code = (word & 0x0F) as u8;
+        let seq = ((word >> 4) & 0xFFFF) as u16;
+        let deadline_millis = (word >> 20) & 0x0FFF_FFFF_FFFF;
+        Self {
+            status: SyncStatus::from_code(status_code),
+            seq,
+            deadline_millis,
         }
     }
 }
@@ -396,6 +455,35 @@ pub(crate) enum FeederError {
     PayloadTooLarge,
     Domain(&'static str, String),
     InvalidRequest(String),
+    BarrierPositionMismatch { expected: String, received: String },
+    BarrierNotReached { expected: u64, received: u64 },
+    SupersededBarrier { expected: u64, received: u64 },
+}
+
+/// Feeder barrier declaration request payload.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BarrierRequest {
+    pub(crate) instance_id: String,
+    pub(crate) graph_id: String,
+    pub(crate) generation: u64,
+    pub(crate) feeder_session_id: String,
+    pub(crate) feeder_epoch: u64,
+    pub(crate) barrier_delivery_sequence: u64,
+    #[serde(default)]
+    pub(crate) barrier_source_position: Option<String>,
+}
+
+/// Feeder barrier declaration success response payload.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct BarrierResponse {
+    pub(crate) result: &'static str,
+    pub(crate) instance_id: String,
+    pub(crate) graph_id: &'static str,
+    pub(crate) generation: u64,
+    pub(crate) state_version: String,
+    pub(crate) applied_source_position: String,
+    pub(crate) status: &'static str,
 }
 
 #[derive(Debug)]
@@ -432,8 +520,7 @@ pub(crate) struct Service {
     import_permits: Arc<Semaphore>,
     // Lock-free mirror of GraphState::failed so readiness never waits for graph work.
     unavailable: Arc<AtomicBool>,
-    sync_status: Arc<AtomicU8>,
-    lease_deadline_millis: Arc<AtomicU64>,
+    published_readiness: Arc<AtomicU64>,
     lifecycle: Lifecycle,
     info: crate::ServerInfo,
     mode: ServerMode,
@@ -464,6 +551,8 @@ struct GraphState {
     lease_duration: Duration,
     lease_deadline: Option<Instant>,
     sync_status: SyncStatus,
+    publication_seq: u16,
+    last_expired_epoch: Option<u64>,
     dedup_window: DedupWindow,
 }
 
@@ -483,8 +572,16 @@ impl GraphState {
             lease_duration: Duration::from_secs(10),
             lease_deadline: None,
             sync_status: SyncStatus::Uninitialized,
+            publication_seq: 0,
+            last_expired_epoch: None,
             dedup_window: DedupWindow::new(dedup_capacity),
         }
+    }
+
+    fn current_readiness_word(&mut self) -> u64 {
+        let deadline_ms = self.lease_deadline.map(instant_to_millis).unwrap_or(0);
+        self.publication_seq = self.publication_seq.wrapping_add(1);
+        PublishedReadiness::pack(self.sync_status, self.publication_seq, deadline_ms)
     }
 
     fn apply(&mut self, operation: Operation) -> Outcome {
@@ -514,6 +611,36 @@ impl GraphState {
             .collect()
     }
 
+    fn is_lease_expired_internal(&self) -> bool {
+        if let Some(deadline) = self.lease_deadline {
+            monotonic_now() > deadline
+        } else {
+            true
+        }
+    }
+
+    fn effective_sync_status(&self) -> SyncStatus {
+        if (self.sync_status == SyncStatus::Ready || self.sync_status == SyncStatus::CatchingUp)
+            && self.is_lease_expired_internal()
+        {
+            SyncStatus::Stale
+        } else {
+            self.sync_status
+        }
+    }
+
+    fn check_lease_expiry(&mut self) -> bool {
+        if self.is_lease_expired_internal() {
+            if self.sync_status == SyncStatus::Ready || self.sync_status == SyncStatus::CatchingUp {
+                self.sync_status = SyncStatus::Stale;
+            }
+            self.last_expired_epoch = Some(self.feeder_epoch);
+            true
+        } else {
+            false
+        }
+    }
+
     fn snapshot(&self, mode: ServerMode, instance_id: &str) -> GraphSnapshot {
         let node_count = self.graph.node_count();
         let edge_count = self.graph.edge_count();
@@ -525,7 +652,7 @@ impl GraphState {
                 Some(instance_id.to_string()),
                 Some(self.generation),
                 self.source_position.clone(),
-                Some(self.sync_status),
+                Some(self.effective_sync_status()),
             ),
         };
         GraphSnapshot {
@@ -550,7 +677,7 @@ impl GraphState {
             ServerMode::SourceManaged => (
                 self.generation,
                 self.source_position.clone(),
-                Some(self.sync_status),
+                Some(self.effective_sync_status()),
             ),
         };
         ResponseMetadata {
@@ -569,12 +696,20 @@ impl GraphState {
         instance_id: String,
     ) -> Result<SessionResponse, FeederError> {
         let lease_duration = Duration::from_millis(req.lease_duration_ms);
-        let now = Instant::now();
+        let now = monotonic_now();
+        let was_expired = self.check_lease_expiry();
 
         if let Some(ref active_session) = self.feeder_session_id {
             if active_session == &req.feeder_session_id {
                 if req.feeder_epoch < self.feeder_epoch {
                     return Err(FeederError::FencedSession);
+                }
+                if req.feeder_epoch > self.feeder_epoch {
+                    if self.sync_status == SyncStatus::Ready {
+                        self.sync_status = SyncStatus::Stale;
+                    }
+                } else if was_expired && self.sync_status == SyncStatus::Ready {
+                    self.sync_status = SyncStatus::Stale;
                 }
                 self.feeder_epoch = req.feeder_epoch;
                 self.lease_duration = lease_duration;
@@ -582,6 +717,9 @@ impl GraphState {
             } else {
                 if req.feeder_epoch <= self.feeder_epoch {
                     return Err(FeederError::FencedSession);
+                }
+                if self.sync_status == SyncStatus::Ready {
+                    self.sync_status = SyncStatus::Stale;
                 }
                 self.feeder_session_id = Some(req.feeder_session_id.clone());
                 self.feeder_epoch = req.feeder_epoch;
@@ -620,7 +758,9 @@ impl GraphState {
             return Err(FeederError::FencedSession);
         }
 
-        let now = Instant::now();
+        let _ = self.check_lease_expiry();
+
+        let now = monotonic_now();
         self.lease_deadline = Some(now + self.lease_duration);
 
         Ok(HeartbeatResponse {
@@ -631,6 +771,117 @@ impl GraphState {
             lease_expires_in_ms: self.lease_duration.as_millis() as u64,
             status: self.sync_status,
         })
+    }
+
+    fn declare_barrier(
+        &mut self,
+        req: BarrierRequest,
+        mode: ServerMode,
+        instance_id: &str,
+    ) -> Result<(BarrierResponse, ResponseMetadata), FeederError> {
+        if self.failed {
+            return Err(FeederError::Unavailable);
+        }
+
+        let Some(ref active_session) = self.feeder_session_id else {
+            return Err(FeederError::SessionRequired);
+        };
+        if active_session != &req.feeder_session_id || req.feeder_epoch != self.feeder_epoch {
+            return Err(FeederError::FencedSession);
+        }
+
+        let now = monotonic_now();
+        if let Some(deadline) = self.lease_deadline {
+            if now > deadline {
+                if self.sync_status == SyncStatus::Ready
+                    || self.sync_status == SyncStatus::CatchingUp
+                {
+                    self.sync_status = SyncStatus::Stale;
+                }
+                self.last_expired_epoch = Some(self.feeder_epoch);
+                return Err(FeederError::LeaseExpired);
+            }
+        } else {
+            return Err(FeederError::LeaseExpired);
+        }
+
+        if req.generation != self.generation {
+            return Err(FeederError::StaleGeneration(format!(
+                "request generation {} does not match current generation {}",
+                req.generation, self.generation
+            )));
+        }
+
+        // Decision table: B3, B4
+        if self.generation == 0
+            || self.sync_status == SyncStatus::Uninitialized
+            || self.sync_status == SyncStatus::Loading
+        {
+            return Err(FeederError::GraphUninitialized);
+        }
+
+        // Decision table: B5
+        if self.sync_status == SyncStatus::Desynchronized {
+            return Err(FeederError::GraphDesynchronized);
+        }
+
+        // Decision table: B8 (Premature sequence)
+        if req.barrier_delivery_sequence > self.applied_delivery_sequence {
+            return Err(FeederError::BarrierNotReached {
+                expected: self.applied_delivery_sequence,
+                received: req.barrier_delivery_sequence,
+            });
+        }
+
+        // Decision table: B9 (Older sequence)
+        if req.barrier_delivery_sequence < self.applied_delivery_sequence {
+            return Err(FeederError::SupersededBarrier {
+                expected: self.applied_delivery_sequence,
+                received: req.barrier_delivery_sequence,
+            });
+        }
+
+        // Decision table: B7 (Position mismatch at equal sequence)
+        let current_pos = self.source_position.as_deref();
+        let req_pos = req.barrier_source_position.as_deref();
+        if req_pos != current_pos {
+            return Err(FeederError::BarrierPositionMismatch {
+                expected: current_pos.unwrap_or_default().to_string(),
+                received: req_pos.unwrap_or_default().to_string(),
+            });
+        }
+
+        // Recovery fencing: synchronization proof after lease expiry requires
+        // registering a strictly newer epoch (> last_expired_epoch).
+        if self
+            .last_expired_epoch
+            .is_some_and(|expired| req.feeder_epoch <= expired)
+        {
+            return Err(FeederError::FencedSession);
+        }
+
+        // Exact match: B1 and B2
+        let result_str = match self.sync_status {
+            SyncStatus::Ready => "already_synchronized",
+            SyncStatus::CatchingUp | SyncStatus::Stale => {
+                self.sync_status = SyncStatus::Ready;
+                "synchronized"
+            }
+            _ => unreachable!(),
+        };
+        self.last_expired_epoch = None;
+
+        let metadata = self.response_metadata(mode, instance_id);
+        let res = BarrierResponse {
+            result: result_str,
+            instance_id: req.instance_id,
+            graph_id: "default",
+            generation: self.generation,
+            state_version: self.version_string(),
+            applied_source_position: self.source_position.clone().unwrap_or_default(),
+            status: "ready",
+        };
+        Ok((res, metadata))
     }
 
     fn apply_events(
@@ -658,9 +909,15 @@ impl GraphState {
             return Err(FeederError::FencedSession);
         }
 
-        let now = Instant::now();
+        let now = monotonic_now();
         if let Some(deadline) = self.lease_deadline {
             if now > deadline {
+                if self.sync_status == SyncStatus::Ready
+                    || self.sync_status == SyncStatus::CatchingUp
+                {
+                    self.sync_status = SyncStatus::Stale;
+                }
+                self.last_expired_epoch = Some(self.feeder_epoch);
                 return Err(FeederError::LeaseExpired);
             }
         } else {
@@ -1158,9 +1415,15 @@ impl GraphState {
             return Err(FeederError::FencedSession);
         }
 
-        let now = Instant::now();
+        let now = monotonic_now();
         if let Some(deadline) = self.lease_deadline {
             if now > deadline {
+                if self.sync_status == SyncStatus::Ready
+                    || self.sync_status == SyncStatus::CatchingUp
+                {
+                    self.sync_status = SyncStatus::Stale;
+                }
+                self.last_expired_epoch = Some(self.feeder_epoch);
                 return Err(FeederError::LeaseExpired);
             }
         } else {
@@ -1336,8 +1599,11 @@ impl Service {
             permits: Arc::new(Semaphore::new(capacity)),
             import_permits: Arc::new(Semaphore::new(1)),
             unavailable: Arc::new(AtomicBool::new(false)),
-            sync_status: Arc::new(AtomicU8::new(SyncStatus::Uninitialized.to_code())),
-            lease_deadline_millis: Arc::new(AtomicU64::new(0)),
+            published_readiness: Arc::new(AtomicU64::new(PublishedReadiness::pack(
+                SyncStatus::Uninitialized,
+                0,
+                0,
+            ))),
             lifecycle,
             mode,
             instance_id,
@@ -1381,6 +1647,16 @@ impl Service {
         self.graph.lock().applied_delivery_sequence
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
+    pub(crate) fn set_sync_status_for_test(&self, status: SyncStatus) {
+        let current = self.published_readiness();
+        self.published_readiness.store(
+            PublishedReadiness::pack(status, current.seq.wrapping_add(1), current.deadline_millis),
+            Ordering::Release,
+        );
+    }
+
     /// Reports whether a worker failure permanently disabled graph work.
     pub(crate) fn is_unavailable(&self) -> bool {
         self.unavailable.load(Ordering::Acquire)
@@ -1396,18 +1672,29 @@ impl Service {
         &self.instance_id
     }
 
+    /// Reads the packed readiness word lock-free.
+    pub(crate) fn published_readiness_word(&self) -> u64 {
+        self.published_readiness.load(Ordering::Acquire)
+    }
+
+    /// Reads the current published readiness state lock-free.
+    pub(crate) fn published_readiness(&self) -> PublishedReadiness {
+        PublishedReadiness::unpack(self.published_readiness_word())
+    }
+
     /// Reads the current synchronization status lock-free.
     pub(crate) fn sync_status(&self) -> SyncStatus {
-        SyncStatus::from_code(self.sync_status.load(Ordering::Acquire))
+        self.published_readiness().status
     }
 
     /// Reports whether the feeder lease has expired without taking the graph lock.
+    #[allow(dead_code)]
     pub(crate) fn is_lease_expired(&self) -> bool {
-        let deadline = self.lease_deadline_millis.load(Ordering::Acquire);
-        if deadline == 0 {
+        let published = self.published_readiness();
+        if published.deadline_millis == 0 {
             return true;
         }
-        now_to_millis() > deadline
+        now_to_millis() > published.deadline_millis
     }
 
     /// Reads effective immutable settings without waiting for graph work.
@@ -1432,15 +1719,12 @@ impl Service {
         if req.lease_duration_ms < 1000 || req.lease_duration_ms > 60000 {
             return Err(FeederError::InvalidLeaseDuration);
         }
-        let sync_status_atomic = self.sync_status.clone();
-        let deadline_atomic = self.lease_deadline_millis.clone();
+        let published_atomic = self.published_readiness.clone();
         let instance_id = self.instance_id.clone();
         self.run(move |state| {
             let res = state.register_session(req, instance_id)?;
-            sync_status_atomic.store(res.status.to_code(), Ordering::Release);
-            if let Some(dl) = state.lease_deadline {
-                deadline_atomic.store(instant_to_millis(dl), Ordering::Release);
-            }
+            let word = state.current_readiness_word();
+            published_atomic.store(word, Ordering::Release);
             Ok(res)
         })
         .await
@@ -1461,15 +1745,12 @@ impl Service {
                 req.instance_id, self.instance_id
             )));
         }
-        let sync_status_atomic = self.sync_status.clone();
-        let deadline_atomic = self.lease_deadline_millis.clone();
+        let published_atomic = self.published_readiness.clone();
         let instance_id = self.instance_id.clone();
         self.run(move |state| {
             let res = state.heartbeat(req, instance_id)?;
-            sync_status_atomic.store(res.status.to_code(), Ordering::Release);
-            if let Some(dl) = state.lease_deadline {
-                deadline_atomic.store(instant_to_millis(dl), Ordering::Release);
-            }
+            let word = state.current_readiness_word();
+            published_atomic.store(word, Ordering::Release);
             Ok(res)
         })
         .await
@@ -1488,7 +1769,7 @@ impl Service {
         let graph = self.graph.clone();
         let unavailable = self.unavailable.clone();
         let failure_flag = self.unavailable.clone();
-        let sync_status_atomic = self.sync_status.clone();
+        let published_atomic = self.published_readiness.clone();
         let engine = self.info.engine;
         let limits = knotrel_core::GraphLimits {
             max_nodes: self.info.max_nodes,
@@ -1496,11 +1777,58 @@ impl Service {
         };
         let instance_id = self.instance_id.clone();
 
+        let is_initial = {
+            let state = self.graph.lock();
+            state.generation == 0
+        };
+        if is_initial {
+            let current = PublishedReadiness::unpack(published_atomic.load(Ordering::Acquire));
+            let loading_word = PublishedReadiness::pack(
+                SyncStatus::Loading,
+                current.seq.wrapping_add(1),
+                current.deadline_millis,
+            );
+            published_atomic.store(loading_word, Ordering::Release);
+        }
+
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let _job_guard = job_guard;
             let mut panic_guard = WorkerPanicGuard {
                 unavailable: unavailable.clone(),
+                success: false,
+            };
+
+            struct InitialLoadingGuard {
+                published: Arc<AtomicU64>,
+                is_initial: bool,
+                success: bool,
+            }
+            impl Drop for InitialLoadingGuard {
+                fn drop(&mut self) {
+                    if self.is_initial && !self.success {
+                        let current_word = self.published.load(Ordering::Acquire);
+                        let current = PublishedReadiness::unpack(current_word);
+                        if current.status == SyncStatus::Loading {
+                            let uninit_word = PublishedReadiness::pack(
+                                SyncStatus::Uninitialized,
+                                current.seq.wrapping_add(1),
+                                current.deadline_millis,
+                            );
+                            let _ = self.published.compare_exchange(
+                                current_word,
+                                uninit_word,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            );
+                        }
+                    }
+                }
+            }
+
+            let mut initial_guard = InitialLoadingGuard {
+                published: published_atomic.clone(),
+                is_initial,
                 success: false,
             };
 
@@ -1584,9 +1912,15 @@ impl Service {
                 return Err(FeederError::FencedSession);
             }
 
-            let now = Instant::now();
+            let now = monotonic_now();
             if let Some(deadline) = state.lease_deadline {
                 if now > deadline {
+                    if state.sync_status == SyncStatus::Ready
+                        || state.sync_status == SyncStatus::CatchingUp
+                    {
+                        state.sync_status = SyncStatus::Stale;
+                    }
+                    state.last_expired_epoch = Some(state.feeder_epoch);
                     return Err(FeederError::LeaseExpired);
                 }
             } else {
@@ -1631,9 +1965,12 @@ impl Service {
             state.sync_status = SyncStatus::CatchingUp;
             state.dedup_window.reset();
             state.failed = false;
+            state.last_expired_epoch = None;
 
+            initial_guard.success = true;
             panic_guard.success = true;
-            sync_status_atomic.store(SyncStatus::CatchingUp.to_code(), Ordering::Release);
+            let word = state.current_readiness_word();
+            published_atomic.store(word, Ordering::Release);
 
             let node_count = state.graph.node_count();
             let edge_count = state.graph.edge_count();
@@ -1675,18 +2012,43 @@ impl Service {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
         self.run(move |state| {
-            if mode == ServerMode::SourceManaged && state.sync_status == SyncStatus::Desynchronized
-            {
-                let outcomes = operations
-                    .into_iter()
-                    .map(|_| Outcome::Error {
-                        code: "desynchronized",
-                        message: "graph is desynchronized; full rebuild required".into(),
-                        expected_sequence: None,
-                    })
-                    .collect();
-                let metadata = state.response_metadata(mode, &instance_id);
-                return ExecutionResult { outcomes, metadata };
+            if mode == ServerMode::SourceManaged {
+                if state.generation == 0 || state.sync_status == SyncStatus::Uninitialized {
+                    let outcomes = operations
+                        .into_iter()
+                        .map(|_| Outcome::Error {
+                            code: "uninitialized",
+                            message: "graph is uninitialized; baseline import required".into(),
+                            expected_sequence: None,
+                        })
+                        .collect();
+                    let metadata = state.response_metadata(mode, &instance_id);
+                    return ExecutionResult { outcomes, metadata };
+                }
+                if state.sync_status == SyncStatus::Loading {
+                    let outcomes = operations
+                        .into_iter()
+                        .map(|_| Outcome::Error {
+                            code: "loading",
+                            message: "graph baseline import is in progress".into(),
+                            expected_sequence: None,
+                        })
+                        .collect();
+                    let metadata = state.response_metadata(mode, &instance_id);
+                    return ExecutionResult { outcomes, metadata };
+                }
+                if state.sync_status == SyncStatus::Desynchronized {
+                    let outcomes = operations
+                        .into_iter()
+                        .map(|_| Outcome::Error {
+                            code: "desynchronized",
+                            message: "graph is desynchronized; full rebuild required".into(),
+                            expected_sequence: None,
+                        })
+                        .collect();
+                    let metadata = state.response_metadata(mode, &instance_id);
+                    return ExecutionResult { outcomes, metadata };
+                }
             }
             let outcomes = operations
                 .into_iter()
@@ -1702,9 +2064,16 @@ impl Service {
     pub(crate) async fn stats(&self) -> Result<StatsResult, ServiceError> {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
+        let current_sync_status = self.sync_status();
         self.run(move |state| {
-            let snapshot = state.snapshot(mode, &instance_id);
-            let metadata = state.response_metadata(mode, &instance_id);
+            let mut snapshot = state.snapshot(mode, &instance_id);
+            if current_sync_status == SyncStatus::Loading && state.generation == 0 {
+                snapshot.sync_status = Some(SyncStatus::Loading);
+            }
+            let mut metadata = state.response_metadata(mode, &instance_id);
+            if current_sync_status == SyncStatus::Loading && state.generation == 0 {
+                metadata.sync_status = Some(SyncStatus::Loading);
+            }
             StatsResult { snapshot, metadata }
         })
         .await
@@ -1717,7 +2086,7 @@ impl Service {
     ) -> Result<FeederEventsResult, FeederError> {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
-        let sync_status_atomic = self.sync_status.clone();
+        let published_atomic = self.published_readiness.clone();
         let failure_flag = self.unavailable.clone();
 
         if self.is_unavailable() {
@@ -1751,7 +2120,8 @@ impl Service {
             }
             state.failed = true;
             let result = state.apply_events(req, mode, &instance_id);
-            sync_status_atomic.store(state.sync_status.to_code(), Ordering::Release);
+            let word = state.current_readiness_word();
+            published_atomic.store(word, Ordering::Release);
             state.failed = false;
             drop(state);
             lifecycle.check_worker_post_lock_hook();
@@ -1773,7 +2143,7 @@ impl Service {
     ) -> Result<(GapResponse, ResponseMetadata), FeederError> {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
-        let sync_status_atomic = self.sync_status.clone();
+        let published_atomic = self.published_readiness.clone();
         let failure_flag = self.unavailable.clone();
 
         if self.is_unavailable() {
@@ -1807,7 +2177,8 @@ impl Service {
             }
             state.failed = true;
             let result = state.declare_gap(req, mode, &instance_id);
-            sync_status_atomic.store(state.sync_status.to_code(), Ordering::Release);
+            let word = state.current_readiness_word();
+            published_atomic.store(word, Ordering::Release);
             state.failed = false;
             drop(state);
             lifecycle.check_worker_post_lock_hook();
@@ -1820,6 +2191,80 @@ impl Service {
             failure_flag.store(true, Ordering::Release);
             FeederError::Unavailable
         })?
+    }
+
+    /// Verifies a synchronization barrier under the graph mutex.
+    pub(crate) async fn declare_barrier(
+        &self,
+        req: BarrierRequest,
+    ) -> Result<(BarrierResponse, ResponseMetadata), FeederError> {
+        let mode = self.mode;
+        let instance_id = self.instance_id.clone();
+        let published_atomic = self.published_readiness.clone();
+        let failure_flag = self.unavailable.clone();
+
+        if self.is_unavailable() {
+            return Err(FeederError::Unavailable);
+        }
+
+        let permit = self.permits.clone().try_acquire_owned().map_err(|_| {
+            tracing::warn!(
+                capacity = self.info.max_pending_jobs,
+                "request capacity exhausted; rejecting with 503 busy"
+            );
+            FeederError::from(ServiceError::Busy)
+        })?;
+        let job_guard = self.lifecycle.track_job();
+        let lifecycle = self.lifecycle.clone();
+        let graph = self.graph.clone();
+        let unavailable = self.unavailable.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let _job_guard = job_guard;
+            let _permit = permit;
+            let mut panic_guard = WorkerPanicGuard {
+                unavailable: unavailable.clone(),
+                success: false,
+            };
+            lifecycle.check_worker_hook();
+            let mut state = graph.lock();
+            if state.failed || unavailable.load(Ordering::Acquire) {
+                panic_guard.unavailable.store(true, Ordering::Release);
+                return Err(FeederError::Unavailable);
+            }
+            let result = state.declare_barrier(req, mode, &instance_id);
+            let word = state.current_readiness_word();
+            published_atomic.store(word, Ordering::Release);
+            drop(state);
+            lifecycle.check_worker_post_lock_hook();
+            panic_guard.success = true;
+            result
+        })
+        .await
+        .map_err(|error| {
+            tracing::error!(panicked = error.is_panic(), "barrier worker thread failed");
+            failure_flag.store(true, Ordering::Release);
+            FeederError::Unavailable
+        })?
+    }
+
+    /// Transitions sync_status from Ready to Stale if and only if the exact observed
+    /// publication has not been superseded by a newer publication.
+    pub(crate) fn try_mark_stale_from_expired_lease(&self, observed_word: u64) -> bool {
+        let observed = PublishedReadiness::unpack(observed_word);
+        if observed.status != SyncStatus::Ready {
+            return false;
+        }
+        let stale_word =
+            PublishedReadiness::pack(SyncStatus::Stale, observed.seq, observed.deadline_millis);
+        self.published_readiness
+            .compare_exchange(
+                observed_word,
+                stale_word,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
     }
 
     // One admission/cancellation/poisoning policy for reads and writes. The
@@ -2081,7 +2526,9 @@ mod tests {
         ));
         assert!(service.is_unavailable());
         assert_eq!(
-            crate::lifecycle::readiness(&crate::Lifecycle::ready(), &service).status(),
+            crate::lifecycle::readiness(&crate::Lifecycle::ready(), &service)
+                .await
+                .status(),
             axum::http::StatusCode::SERVICE_UNAVAILABLE
         );
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -2128,7 +2575,7 @@ mod tests {
         .unwrap();
         // Without submitting any further graph jobs, /ready must become 503 unavailable!
         assert!(service.is_unavailable());
-        let response = crate::lifecycle::readiness(&lifecycle, &service);
+        let response = crate::lifecycle::readiness(&lifecycle, &service).await;
         assert_eq!(
             response.status(),
             axum::http::StatusCode::SERVICE_UNAVAILABLE
@@ -2168,7 +2615,7 @@ mod tests {
 
         // Service must be permanently marked unavailable even though caller was cancelled
         assert!(service.is_unavailable());
-        let response = crate::lifecycle::readiness(&lifecycle, &service);
+        let response = crate::lifecycle::readiness(&lifecycle, &service).await;
         assert_eq!(
             response.status(),
             axum::http::StatusCode::SERVICE_UNAVAILABLE
@@ -2388,11 +2835,9 @@ mod tests {
             state.source_position = Some(source_position.clone());
             state.feeder_session_id = Some(session_id.clone());
             state.feeder_epoch = 1;
-            state.lease_deadline = Some(Instant::now() + Duration::from_secs(60));
+            state.lease_deadline = Some(monotonic_now() + Duration::from_secs(60));
         }
-        service
-            .sync_status
-            .store(SyncStatus::CatchingUp.to_code(), Ordering::Release);
+        service.set_sync_status_for_test(SyncStatus::CatchingUp);
 
         let matching_etag = format!(
             "\"{}.42.{}\"",
@@ -2817,5 +3262,363 @@ mod tests {
         assert_eq!(stats.source_position.as_deref(), Some("pos-1"));
         assert_eq!(stats.state_version, "1");
         assert_eq!(stats.sync_status, Some(SyncStatus::Desynchronized));
+    }
+
+    #[test]
+    fn test_barrier_decision_table_b1_through_b9() {
+        let limits = knotrel_core::GraphLimits {
+            max_nodes: Some(100),
+            max_edges: Some(100),
+        };
+        let mut state = GraphState::new(
+            ConnectivityGraph::with_limits(EngineConfig::CompactBfs, limits),
+            64,
+        );
+        let instance_id = "srv-inst-1";
+        let session_id = "feed-1";
+
+        // Setup session
+        state
+            .register_session(
+                SessionRequest {
+                    instance_id: instance_id.into(),
+                    feeder_session_id: session_id.into(),
+                    feeder_epoch: 1,
+                    lease_duration_ms: 60_000,
+                },
+                instance_id.into(),
+            )
+            .unwrap();
+
+        // Case B3: Uninitialized (g = 0)
+        let b3_res = state.declare_barrier(
+            BarrierRequest {
+                instance_id: instance_id.into(),
+                graph_id: "default".into(),
+                generation: 0,
+                feeder_session_id: session_id.into(),
+                feeder_epoch: 1,
+                barrier_delivery_sequence: 0,
+                barrier_source_position: None,
+            },
+            ServerMode::SourceManaged,
+            instance_id,
+        );
+        assert!(matches!(b3_res, Err(FeederError::GraphUninitialized)));
+
+        // Case B4: Loading (g = 0, status Loading)
+        state.sync_status = SyncStatus::Loading;
+        let b4_res = state.declare_barrier(
+            BarrierRequest {
+                instance_id: instance_id.into(),
+                graph_id: "default".into(),
+                generation: 0,
+                feeder_session_id: session_id.into(),
+                feeder_epoch: 1,
+                barrier_delivery_sequence: 0,
+                barrier_source_position: None,
+            },
+            ServerMode::SourceManaged,
+            instance_id,
+        );
+        assert!(matches!(b4_res, Err(FeederError::GraphUninitialized)));
+
+        // Publish generation 1
+        state.generation = 1;
+        state.sync_status = SyncStatus::CatchingUp;
+        state.applied_delivery_sequence = 5;
+        state.source_position = Some("pos-5".into());
+
+        // Case B8: Premature sequence (D_B = 6 > 5)
+        let b8_res = state.declare_barrier(
+            BarrierRequest {
+                instance_id: instance_id.into(),
+                graph_id: "default".into(),
+                generation: 1,
+                feeder_session_id: session_id.into(),
+                feeder_epoch: 1,
+                barrier_delivery_sequence: 6,
+                barrier_source_position: Some("pos-5".into()),
+            },
+            ServerMode::SourceManaged,
+            instance_id,
+        );
+        assert_eq!(
+            b8_res.unwrap_err(),
+            FeederError::BarrierNotReached {
+                expected: 5,
+                received: 6
+            }
+        );
+        assert_eq!(state.sync_status, SyncStatus::CatchingUp);
+
+        // Case B9: Older sequence (D_B = 4 < 5)
+        let b9_res = state.declare_barrier(
+            BarrierRequest {
+                instance_id: instance_id.into(),
+                graph_id: "default".into(),
+                generation: 1,
+                feeder_session_id: session_id.into(),
+                feeder_epoch: 1,
+                barrier_delivery_sequence: 4,
+                barrier_source_position: Some("pos-5".into()),
+            },
+            ServerMode::SourceManaged,
+            instance_id,
+        );
+        assert_eq!(
+            b9_res.unwrap_err(),
+            FeederError::SupersededBarrier {
+                expected: 5,
+                received: 4
+            }
+        );
+        assert_eq!(state.sync_status, SyncStatus::CatchingUp);
+
+        // Case B7: Equal sequence with position mismatch (D_B = 5, P_B = "pos-wrong")
+        let b7_res = state.declare_barrier(
+            BarrierRequest {
+                instance_id: instance_id.into(),
+                graph_id: "default".into(),
+                generation: 1,
+                feeder_session_id: session_id.into(),
+                feeder_epoch: 1,
+                barrier_delivery_sequence: 5,
+                barrier_source_position: Some("pos-wrong".into()),
+            },
+            ServerMode::SourceManaged,
+            instance_id,
+        );
+        assert_eq!(
+            b7_res.unwrap_err(),
+            FeederError::BarrierPositionMismatch {
+                expected: "pos-5".into(),
+                received: "pos-wrong".into()
+            }
+        );
+        assert_eq!(state.sync_status, SyncStatus::CatchingUp);
+
+        // Case B1: Exact match from CatchingUp (D_B = 5, P_B = "pos-5")
+        let (b1_res, _) = state
+            .declare_barrier(
+                BarrierRequest {
+                    instance_id: instance_id.into(),
+                    graph_id: "default".into(),
+                    generation: 1,
+                    feeder_session_id: session_id.into(),
+                    feeder_epoch: 1,
+                    barrier_delivery_sequence: 5,
+                    barrier_source_position: Some("pos-5".into()),
+                },
+                ServerMode::SourceManaged,
+                instance_id,
+            )
+            .unwrap();
+        assert_eq!(b1_res.result, "synchronized");
+        assert_eq!(b1_res.status, "ready");
+        assert_eq!(state.sync_status, SyncStatus::Ready);
+
+        // Case B2: Exact match from Ready (idempotent)
+        let (b2_res, _) = state
+            .declare_barrier(
+                BarrierRequest {
+                    instance_id: instance_id.into(),
+                    graph_id: "default".into(),
+                    generation: 1,
+                    feeder_session_id: session_id.into(),
+                    feeder_epoch: 1,
+                    barrier_delivery_sequence: 5,
+                    barrier_source_position: Some("pos-5".into()),
+                },
+                ServerMode::SourceManaged,
+                instance_id,
+            )
+            .unwrap();
+        assert_eq!(b2_res.result, "already_synchronized");
+        assert_eq!(b2_res.status, "ready");
+        assert_eq!(state.sync_status, SyncStatus::Ready);
+
+        // Case B5: Desynchronized
+        state.sync_status = SyncStatus::Desynchronized;
+        let b5_res = state.declare_barrier(
+            BarrierRequest {
+                instance_id: instance_id.into(),
+                graph_id: "default".into(),
+                generation: 1,
+                feeder_session_id: session_id.into(),
+                feeder_epoch: 1,
+                barrier_delivery_sequence: 5,
+                barrier_source_position: Some("pos-5".into()),
+            },
+            ServerMode::SourceManaged,
+            instance_id,
+        );
+        assert_eq!(b5_res.unwrap_err(), FeederError::GraphDesynchronized);
+        assert_eq!(state.sync_status, SyncStatus::Desynchronized);
+
+        // Case B6: Failed
+        state.failed = true;
+        let b6_res = state.declare_barrier(
+            BarrierRequest {
+                instance_id: instance_id.into(),
+                graph_id: "default".into(),
+                generation: 1,
+                feeder_session_id: session_id.into(),
+                feeder_epoch: 1,
+                barrier_delivery_sequence: 5,
+                barrier_source_position: Some("pos-5".into()),
+            },
+            ServerMode::SourceManaged,
+            instance_id,
+        );
+        assert_eq!(b6_res.unwrap_err(), FeederError::Unavailable);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn test_clock_advance_and_lease_expiry_staleness() {
+        reset_clock();
+        let limits = knotrel_core::GraphLimits {
+            max_nodes: Some(100),
+            max_edges: Some(100),
+        };
+        let lifecycle = Lifecycle::ready();
+        let config = crate::ServerConfig::default();
+        let service = Service::with_config(
+            ConnectivityGraph::with_limits(EngineConfig::CompactBfs, limits),
+            32,
+            lifecycle.clone(),
+            &config,
+        );
+        // Force source-managed mode for this test service
+        let service = Service {
+            info: crate::ServerInfo {
+                engine: "compact-bfs",
+                experimental: false,
+                max_pending_jobs: 32,
+                max_body_bytes: crate::MAX_BODY_BYTES,
+                max_batch_operations: crate::MAX_BATCH_OPERATIONS,
+                max_nodes: Some(100),
+                max_edges: Some(100),
+                mode: Some("source_managed"),
+                instance_id: Some(service.instance_id.clone()),
+            },
+            mode: ServerMode::SourceManaged,
+            ..service
+        };
+
+        let inst_id = service.instance_id().to_string();
+        service
+            .register_session(SessionRequest {
+                instance_id: inst_id.clone(),
+                feeder_session_id: "sess-1".into(),
+                feeder_epoch: 1,
+                lease_duration_ms: 10_000,
+            })
+            .await
+            .unwrap();
+
+        // Seed generation 1 in Ready
+        {
+            let mut state = service.graph.lock();
+            state.generation = 1;
+            state.sync_status = SyncStatus::Ready;
+            state.applied_delivery_sequence = 10;
+            state.source_position = Some("pos-10".into());
+        }
+        service.set_sync_status_for_test(SyncStatus::Ready);
+
+        assert!(!service.is_lease_expired());
+        assert_eq!(service.sync_status(), SyncStatus::Ready);
+
+        // Advance mock monotonic clock past the 10s lease
+        advance_clock(Duration::from_millis(10_001));
+
+        assert!(service.is_lease_expired());
+        // Lock-free mark stale using observed publication
+        let word = service.published_readiness_word();
+        assert!(service.try_mark_stale_from_expired_lease(word));
+        assert_eq!(service.sync_status(), SyncStatus::Stale);
+
+        // Heartbeat renewal: extends deadline but returns and preserves Stale
+        let hb_res = service
+            .heartbeat(HeartbeatRequest {
+                instance_id: inst_id.clone(),
+                feeder_session_id: "sess-1".into(),
+                feeder_epoch: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(hb_res.status, SyncStatus::Stale);
+        assert_eq!(service.sync_status(), SyncStatus::Stale);
+        assert!(!service.is_lease_expired());
+
+        // Barrier with expired epoch 1 is fenced
+        let barrier_err = service
+            .declare_barrier(BarrierRequest {
+                instance_id: inst_id.clone(),
+                graph_id: "default".into(),
+                generation: 1,
+                feeder_session_id: "sess-1".into(),
+                feeder_epoch: 1,
+                barrier_delivery_sequence: 10,
+                barrier_source_position: Some("pos-10".into()),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(barrier_err, FeederError::FencedSession);
+
+        // Feeder registers new epoch 2 to recover synchronization
+        let sess2 = service
+            .register_session(SessionRequest {
+                instance_id: inst_id.clone(),
+                feeder_session_id: "sess-1".into(),
+                feeder_epoch: 2,
+                lease_duration_ms: 10_000,
+            })
+            .await
+            .unwrap();
+        assert_eq!(sess2.feeder_epoch, 2);
+
+        // Exact barrier under newly registered epoch 2 restores Ready
+        let (barrier_res, _) = service
+            .declare_barrier(BarrierRequest {
+                instance_id: inst_id.clone(),
+                graph_id: "default".into(),
+                generation: 1,
+                feeder_session_id: "sess-1".into(),
+                feeder_epoch: 2,
+                barrier_delivery_sequence: 10,
+                barrier_source_position: Some("pos-10".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(barrier_res.result, "synchronized");
+        assert_eq!(barrier_res.status, "ready");
+        assert_eq!(service.sync_status(), SyncStatus::Ready);
+
+        reset_clock();
+    }
+
+    #[test]
+    fn test_published_readiness_packing_roundtrip() {
+        for status in [
+            SyncStatus::Uninitialized,
+            SyncStatus::Loading,
+            SyncStatus::CatchingUp,
+            SyncStatus::Ready,
+            SyncStatus::Stale,
+            SyncStatus::Desynchronized,
+        ] {
+            for seq in [0u16, 1, 42, 65535] {
+                for deadline_ms in [0u64, 1, 1000, 10_000_000, 0x0FFF_FFFF_FFFF] {
+                    let word = PublishedReadiness::pack(status, seq, deadline_ms);
+                    let unpacked = PublishedReadiness::unpack(word);
+                    assert_eq!(unpacked.status, status);
+                    assert_eq!(unpacked.seq, seq);
+                    assert_eq!(unpacked.deadline_millis, deadline_ms);
+                }
+            }
+        }
     }
 }

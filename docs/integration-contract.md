@@ -174,26 +174,29 @@ To become the active writer, a feeder registers a session:
 | Active `(session_A, epoch_1)` | Same session, higher epoch: `(session_A, epoch_2)` | Accept: update epoch to 2, extend monotonic deadline. Return `200 session_acquired`. | Active `(session_A, epoch_2)` |
 | Active `(session_A, epoch_1)` | Another session, higher epoch: `(session_B, epoch_2)` | **Takeover Accepted:** preempt session A, set active session to B, reset monotonic deadline. Return `200 session_acquired`. | Active `(session_B, epoch_2)` |
 | Active `(session_A, epoch_1)` | Another session, lower/equal epoch: `(session_B, epoch_1)` | Reject: `409 Conflict` (`fenced_feeder_session`). | Active `(session_A, epoch_1)` |
-| Active `(session_A, epoch_1)` | Monotonic deadline elapses without heartbeat | **Lease Expired:** ownership remains assigned to session A, but lease is expired. State transitions to `Disconnected`/`Stale`. | Expired `(session_A, epoch_1)` |
-| Expired `(session_A, epoch_1)` | Heartbeat from `(session_A, epoch_1)` | **Lease Renewed:** extends deadline. **Readiness remains `Stale`** until synchronization proof (§4.3). Return `200 heartbeat_acknowledged`. | Active `(session_A, epoch_1)` |
+| Active `(session_A, epoch_1)` | Monotonic deadline elapses without heartbeat | **Lease Expired:** ownership remains assigned to session A, but lease is expired. State transitions to `Disconnected`/`Stale`, recording `last_expired_epoch = 1`. | Expired `(session_A, epoch_1)` |
+| Expired `(session_A, epoch_1)` | Heartbeat from `(session_A, epoch_1)` | **Lease Renewed:** extends deadline. **Readiness remains `Stale`** until synchronization recovery proof under a newly registered epoch (§4.3). Return `200 heartbeat_acknowledged`. | Active `(session_A, epoch_1)` |
 | Any active lease | Requests queued in worker pool across takeover | Under mutex, queued request observes `live.feeder_epoch > req.feeder_epoch`. **Fenced:** rejected with `409 fenced_feeder_session`. | Unchanged |
 
 ### 4.2 Independent Observation of Lease Expiry
 Lease expiration is checked independently of slow graph worker jobs:
-- The server maintains a lock-free atomic monotonic timestamp `lease_deadline_ns`.
-- Probes (`GET /ready`), stats (`GET /v1/stats`), and request admission gates read this atomic timestamp without acquiring the graph lock.
-- If the current monotonic clock exceeds `lease_deadline_ns`:
-  - If server phase was `Ready`, it is immediately observed as **503 `status: "stale"`**.
+- The server maintains a lock-free atomic word (`PublishedReadiness`) encoding status, publication sequence, and monotonic deadline millis.
+- Probes (`GET /ready`), stats (`GET /v1/stats`), and request admission gates read this atomic word without acquiring the graph lock.
+- If the current monotonic clock exceeds the published deadline:
+  - If server phase was `Ready`, it is immediately observed as **503 `status: "stale"`**, and `/ready` attempts a lock-free CAS to update the published status word to `Stale` without overwriting newer publications.
   - A long-running graph worker traversal cannot block or delay detection of feeder abandonment.
 
-### 4.3 Lease Renewal vs. Synchronization Proof
+### 4.3 Lease Renewal vs. Synchronization Proof & Recovery Fencing
 > [!IMPORTANT]
 > **A heartbeat proves feeder liveness, NOT graph catch-up.**
-- When a lease expires, Knotrel transitions to `Disconnected`/`Stale`.
+- When a lease expires, Knotrel transitions to `Disconnected`/`Stale` and records the expired epoch (`last_expired_epoch`).
 - A subsequent valid heartbeat (`POST /v1/feeder/heartbeat`) successfully renews the lease deadline, but **DOES NOT restore readiness to `Ready`**.
-- To restore `Ready` after a period of staleness, the feeder **must** supply verification proof that Knotrel is synchronized with the source:
-  1. If source updates were produced during the disconnect, the feeder streams them followed by barrier $B$.
-  2. If zero source updates were produced, the feeder issues an exact verification barrier (`POST /v1/feeder/barrier`) matching current $D_{applied}$ and $P_{applied}$, affirming no changes occurred.
+- **Explicit Recovery-Fencing Across Expiry:** To prevent delayed, obsolete in-flight barriers created before expiry from executing after a heartbeat and resurrecting `Ready` without fresh proof, Knotrel explicitly fences synchronization recovery:
+  - Any barrier submitted under `feeder_epoch <= last_expired_epoch` is rejected with `409 Conflict` (`code: "fenced_feeder_session"`).
+  - To restore `Ready` after lease expiry, the feeder **must** register a strictly newer epoch (`POST /v1/feeder/session` with `feeder_epoch > last_expired_epoch`).
+  - Under the new epoch, the feeder supplies fresh verification proof that Knotrel is synchronized with the source:
+    1. If source updates were produced during the disconnect, the feeder streams them followed by barrier $B$.
+    2. If zero source updates were produced, the feeder issues an exact verification barrier (`POST /v1/feeder/barrier`) matching current $D_{applied}$ and $P_{applied}$, affirming no changes occurred.
 - Heartbeats **must never** clear `Failed`, `Desynchronized`, `Uninitialized`, `Loading`, or `CatchingUp` states.
 
 ---
@@ -984,6 +987,25 @@ Feature 0.2.4 is implemented in `knotrel-server`:
 7. **Sequence Boundary Semantics and Checked Arithmetic:** Delivery sequence is bounded to `u64`. When $D_{applied} = \text{u64::MAX}$, checked arithmetic (`checked_add(1)`) prevents integer overflow panics. Because no `u64` wire payload can represent a value beyond `u64::MAX`, any incoming wire sequence satisfies $\text{seq} \le D_{applied}$. Retained duplicate retries at `u64::MAX` return HTTP 200 `already_applied`; wrapped sequence zero or evicted sequences return HTTP 409 `unverifiable_duplicate` without mutating topology, revision, sequence, or position. The internal `SequenceExhausted` error variant serves as a defensive guard for checked arithmetic and is unreachable through the `u64` wire interface.
 8. **Declared Gap & Desynchronized State Event Rejection:** `POST /v1/feeder/gap` transitions sync status to `Desynchronized`. Once desynchronized (via declared gap, conflicting duplicate, predecessor mismatch, or source epoch mismatch), subsequent event submissions are rejected under lock with HTTP 409 `graph_desynchronized` without mutating topology, revision, delivery sequence, source position, or deduplication state. Subsequent queries return HTTP 503 `desynchronized`. Feeder heartbeats renew session lease but probe reports `desynchronized`. Live graph remains intact for diagnostics; recovery requires atomic graph replacement via `POST /v1/feeder/import`.
 9. **Feature Boundaries:** Synchronization barrier verification (`POST /v1/feeder/barrier`), barrier timeout, and automated readiness promotion belong to Feature 0.2.5.
+
+### 13.4 Implementation Status: Feature 0.2.5 (Synchronization-Aware Bootstrap and Readiness)
+Feature 0.2.5 is implemented in `knotrel-server`:
+1. **Verification-Only Barrier Endpoint:** Implemented `POST /v1/feeder/barrier` validating mode, headers (`X-Knotrel-Instance-Id`), JSON body schema, graph identity (`"default"`), generation, feeder lease, and worker health under the graph mutex. It strictly executes Decision Table B1 through B9:
+   - Case B1: Exact match ($D_B == D_{applied} \land P_B == P_{applied}$) in `CatchingUp` or `Stale` transitions to `Ready` (`200 synchronized`).
+   - Case B2: Exact match in `Ready` affirms `Ready` (`200 already_synchronized`).
+   - Case B3/B4: Barrier while `Uninitialized` or initial baseline `Loading` ($g == 0$) is rejected with HTTP 409 `graph_uninitialized` (no barrier can make an unpublished graph `Ready`).
+   - Case B5: Barrier while `Desynchronized` is rejected with HTTP 409 `graph_desynchronized` (barriers cannot bypass unrepairable gaps or desynchronization).
+   - Case B6: Barrier while `Failed` is rejected with HTTP 503 `unavailable`.
+   - Case B7: Position mismatch at equal sequence ($D_B == D_{applied} \land P_B \ne P_{applied}$) is rejected with HTTP 409 `barrier_position_mismatch`.
+   - Case B8: Premature sequence ($D_B > D_{applied}$) is rejected with HTTP 409 `barrier_not_reached`.
+   - Case B9: Older sequence ($D_B < D_{applied}$) is conservatively rejected with HTTP 409 `superseded_barrier`.
+2. **Strict Readiness Precedence:** Implemented 7-level strict evaluation precedence in `readiness()`:
+   `Permanent Worker Failure` (`unavailable`) > `Draining` (`draining`) > `Starting` (`starting`) > `Uninitialized / Loading` (`uninitialized` / `loading`) > `Desynchronized` (`desynchronized`) > `Expired Lease / Stale` (`stale`) > `CatchingUp` (`catching_up`) > `Ready` (`ready`).
+3. **Lock-Free Monotonic Lease Expiry & Coherent Atomic Publication:** `GET /ready` evaluates lease expiry against host monotonic time without acquiring the graph mutex, reading a single atomic 64-bit word (`PublishedReadiness`) encoding status (4 bits), publication sequence (16 bits), and lease deadline (44 bits). On observing lease expiry in `Ready`, `/ready` attempts a lock-free CAS to transition the word to `Stale`. If a concurrent publication (such as a fresh barrier or new epoch) modified the publication sequence or deadline, the CAS safely fails without overwriting newer state.
+4. **Heartbeat Non-Regression:** Heartbeats (`POST /v1/feeder/heartbeat`) extend lease deadline and renew ownership, but if the graph was stale, `GET /ready` remains HTTP 503 `stale` until a barrier verification proves synchronization. Heartbeats never clear `desynchronized`, `uninitialized`, `loading`, `catching_up`, or worker panic.
+5. **Explicit Recovery-Fencing Across Lease Expiry:** To prevent delayed pre-expiry barriers from executing after a heartbeat renewal on the same session/epoch and restoring readiness without fresh proof, Knotrel implements explicit recovery fencing: when lease expiry occurs, `last_expired_epoch` records the expired epoch. Any barrier request submitted under `feeder_epoch <= last_expired_epoch` is rejected with HTTP 409 `fenced_feeder_session`. Restoration of `Ready` from `Stale` strictly requires the feeder to register a newly incremented `feeder_epoch > last_expired_epoch` and supply fresh barrier proof.
+6. **Drain Gate and Shutdown Integration:** The existing shutdown gate in `serve()` admits requests once and answers with 503 `draining`. In-flight barrier and event workers complete cleanly within the drain timeout.
+7. **Verification Evidence:** 21 deterministic integration tests in `crates/knotrel-server/tests/bootstrap.rs` (including `test_20_delayed_barrier_fenced_across_lease_expiry` and `test_21_probe_paused_at_expiry_does_not_overwrite_newer_publication`) and unit tests in `crates/knotrel-server/src/service.rs` verify all contract scenarios TR-01 through TR-31 and concurrency interleavings with zero failures.
 
 ---
 

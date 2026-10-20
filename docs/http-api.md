@@ -216,21 +216,37 @@ exactly-once delivery guarantee.
 | Route | Status | Body | Meaning |
 | --- | --- | --- | --- |
 | `GET /health` | 200 | `{"status":"ok"}` | Process liveness. Never takes the graph lock; stays 200 while draining. |
-| `GET /ready` | 200 | `{"status":"ready"}` | Initialized and accepting graph work. |
+| `GET /ready` | 200 | `{"status":"ready"}` | Initialized and accepting graph work. In source-managed mode, requires verified synchronization barrier and active feeder lease. |
 | `GET /ready` | 503 | `{"status":"starting"}` | Router built, listener not yet serving. |
 | `GET /ready` | 503 | `{"status":"draining"}` | Shutdown has begun. |
 | `GET /ready` | 503 | `{"status":"unavailable"}` | The graph worker failed (panic or lost task). Work is rejected with `unavailable`; restart the process. |
+| `GET /ready` | 503 | `{"status":"uninitialized"}` | Source-managed mode: server started, awaiting initial baseline import. |
+| `GET /ready` | 503 | `{"status":"loading"}` | Source-managed mode: initial baseline candidate is being parsed/constructed off-lock. |
+| `GET /ready` | 503 | `{"status":"catching_up"}` | Source-managed mode: baseline or replacement image published; streaming updates toward barrier. |
+| `GET /ready` | 503 | `{"status":"stale"}` | Source-managed mode: feeder lease expired against host monotonic clock without heartbeat. |
+| `GET /ready` | 503 | `{"status":"desynchronized"}` | Source-managed mode: unrepairable source gap, conflicting duplicate, predecessor mismatch, or source epoch reset. |
 
-Precedence is `draining`, then `starting`, then `unavailable`. `/ready` carries
-`Cache-Control: no-store`, does not take the graph lock or an admission permit,
-and is not a capacity check (a full job queue still reports ready; clients see
-`busy`). In the standalone executable `starting` lasts only until the listener
-is serving, so external probes normally see connection refused rather than
-`starting` before readiness. Embedded routers created with `router(...)` or
-`router_with_config(...)` are initially ready (they do not undergo starting or
-draining phases); however, they can transition to 503 `unavailable` if a graph worker
-fails or panics. `router_with_lifecycle(config, lifecycle)` exposes all lifecycle
-phases, and `serve(...)` drives them.
+#### Readiness evaluation precedence
+
+Readiness enforces a strict 7-level evaluation precedence:
+1. **Permanent worker failure:** `503 unavailable` (worker panic or aborted task).
+2. **Draining:** `503 draining` (SIGINT/SIGTERM received, shutdown in progress).
+3. **Starting:** `503 starting` (router constructed, listener not yet serving).
+4. **Uninitialized / Loading:** `503 uninitialized` or `503 loading` (no published graph image).
+5. **Desynchronized:** `503 desynchronized` (irrecoverable stream divergence; requires full rebuild).
+6. **Expired lease / Stale:** `503 stale` (feeder lease expired; evaluated lock-free against monotonic clock).
+7. **Catching up:** `503 catching_up` (graph image published; awaiting verification barrier $B$).
+8. **Ready:** `200 ready` (feeder lease active, barrier verified, no gaps or worker failures).
+
+`/ready` carries `Cache-Control: no-store`, does not take the graph lock or an admission permit,
+and is not a capacity check (a full job queue still reports ready; clients see `busy`). In source-managed
+mode, `/ready` inspects the monotonic lease deadline lock-free; if the deadline has elapsed, it lazily
+records `Stale` and reports 503 without blocking on slow graph workers. In the standalone executable
+`starting` lasts only until the listener is serving, so external probes normally see connection refused
+rather than `starting` before readiness. Embedded routers created with `router(...)` or
+`router_with_config(...)` in standalone mode are initially ready; however, they can transition to 503
+`unavailable` if a graph worker fails or panics. `router_with_lifecycle(config, lifecycle)` exposes all
+lifecycle phases, and `serve(...)` drives them.
 
 ### Graceful shutdown
 
@@ -625,3 +641,69 @@ When the feeder experiences unrecoverable source data loss (e.g. truncated WAL o
 - Subsequent queries return HTTP 503 `desynchronized`.
 - Feeder heartbeats renew session lease but probe reports `desynchronized`.
 - Live graph state remains intact in memory for diagnostics; recovery requires an atomic graph replacement via `POST /v1/feeder/import`.
+
+### Synchronization barrier verification (`POST /v1/feeder/barrier`)
+
+In source-managed mode, the feeder declares synchronization completion at barrier position $B$ ($D_{barrier}, P_{barrier}$) via `POST /v1/feeder/barrier`. The barrier is strictly verification-only:
+- It **never** mutates graph topology.
+- It **never** advances `applied_source_position` or `delivery_sequence`.
+- It asserts under the graph lock that Knotrel has ingested and applied all events up to sequence $D_B$ and cursor $P_B$.
+
+#### Request envelope schema
+
+```json
+{
+  "instance_id": "srv-12345678-1234-1234-1234-123456789abc",
+  "graph_id": "default",
+  "generation": 1,
+  "feeder_session_id": "feeder-session-1",
+  "feeder_epoch": 1,
+  "barrier_delivery_sequence": 102,
+  "barrier_source_position": "0/16B3800"
+}
+```
+
+- **Headers:** `Content-Type: application/json` and mandatory `X-Knotrel-Instance-Id: <instance_id>`.
+- `barrier_delivery_sequence`: required unsigned 64-bit integer ($D_B$).
+- `barrier_source_position`: optional string cursor ($P_B$). If omitted, only delivery sequence $D_B$ is validated.
+
+#### Precondition checks (Evaluated under graph lock)
+
+1. **Operating mode:** Standalone servers reject the request with HTTP 409 `mode_conflict`.
+2. **Instance identity:** Request `instance_id` must match live server incarnation; mismatch returns HTTP 409 `stale_instance_id`.
+3. **Graph identity:** `graph_id` must equal `"default"`; any other ID returns HTTP 400 `invalid_graph_id`.
+4. **Feeder ownership & fencing:** `feeder_session_id` and `feeder_epoch` must match the active registered lease. Mismatches return HTTP 409 `fenced_feeder_session`.
+5. **Monotonic lease expiry:** Current monotonic time must not exceed `lease_deadline`. Expired lease returns HTTP 409 `lease_expired`.
+6. **Generation check:** Request `generation` must match live published generation; mismatch returns HTTP 409 `stale_generation`.
+7. **Worker health:** Permanent worker failure returns HTTP 503 `unavailable`.
+
+#### Barrier Decision Table (B1 through B9)
+
+Under the graph mutex, $(D_B, P_B)$ is matched against live frontier $(D_{applied}, P_{applied})$:
+
+| Case | Sequence Condition | Position Condition | Current Sync State | Outcome & HTTP Response | Resulting Sync State |
+|---|---|---|---|---|---|
+| **B1: Exact Match (Restores Ready)** | $D_B == D_{applied}$ | $P_B == P_{applied}$ | `CatchingUp` or `Stale` (published $g > 0$) | **`200 OK`** (`result: "synchronized"`, `status: "ready"`) | Transitions to **`Ready`** |
+| **B2: Exact Match (Affirms Ready)** | $D_B == D_{applied}$ | $P_B == P_{applied}$ | `Ready` (published $g > 0$) | **`200 OK`** (`result: "already_synchronized"`, `status: "ready"`) | Remains **`Ready`** |
+| **B3: Exact Match While Uninitialized** | $D_B == D_{applied}$ | $P_B == P_{applied}$ | `Uninitialized` ($g == 0$) | **`409 Conflict`** (`code: "graph_uninitialized"`) | Remains **`Uninitialized`** |
+| **B4: Exact Match While Initial Loading** | $D_B == D_{applied}$ | $P_B == P_{applied}$ | `Loading` (initial baseline, $g == 0$) | **`409 Conflict`** (`code: "graph_uninitialized"`) | Remains **`Loading`** |
+| **B5: Exact Match While Desynchronized** | $D_B == D_{applied}$ | $P_B == P_{applied}$ | `Desynchronized` | **`409 Conflict`** (`code: "graph_desynchronized"`) | Remains **`Desynchronized`** |
+| **B6: Exact Match While Failed** | $D_B == D_{applied}$ | $P_B == P_{applied}$ | `Failed` | **`503 Service Unavailable`** (`code: "unavailable"`) | Remains **`Failed`** |
+| **B7: Position Mismatch at Equal Sequence** | $D_B == D_{applied}$ | $P_B \ne P_{applied}$ | Any | **`409 Conflict`** (`code: "barrier_position_mismatch"`) | **Unchanged** |
+| **B8: Premature Sequence** | $D_B > D_{applied}$ | Any | Any | **`409 Conflict`** (`code: "barrier_not_reached"`) | **Unchanged** |
+| **B9: Older Sequence (Conservative Rejection)** | $D_B < D_{applied}$ | Any | Any | **`409 Conflict`** (`code: "superseded_barrier"`) | **Unchanged** |
+
+#### Heartbeat lease renewal versus synchronization proof
+
+- When a feeder lease expires, Knotrel transitions to `Stale`.
+- A subsequent heartbeat (`POST /v1/feeder/heartbeat`) extends the monotonic lease deadline and returns HTTP 200, but **does not restore `Ready`**. The server remains in `Stale`.
+- Readiness returns to `Ready` **only** upon a successful barrier declaration (Case B1).
+- Heartbeats **never** clear `Desynchronized`, `Uninitialized`, `Loading`, `CatchingUp`, or `Failed` states.
+
+#### Recovery fencing across lease expiry and session takeover
+
+In-flight barriers from a superseded, disconnected, or expired feeder session cannot corrupt live synchronization state:
+- **Recovery fencing across lease expiry:** If a lease expired, Knotrel records the expired epoch (`last_expired_epoch`). Even if the same feeder re-extends the lease via heartbeat, any barrier submitted under `feeder_epoch <= last_expired_epoch` is rejected with HTTP 409 `fenced_feeder_session`. Readiness recovery from `Stale` strictly requires registering a newly incremented epoch (`POST /v1/feeder/session` with `feeder_epoch > last_expired_epoch`) and submitting fresh barrier verification proof.
+- **Session takeover fencing:** If a session takeover occurred, incoming barrier requests bearing an older `feeder_epoch` fail precondition checks with HTTP 409 `fenced_feeder_session`.
+- **Superseded sequence:** If new events were ingested by the active session, the applied delivery sequence has advanced ($D_{applied} > D_B$), causing older barriers to be conservatively rejected under Case B9 with HTTP 409 `superseded_barrier`.
+- In all cases, live graph topology, sequence, cursor, and synchronization status remain strictly untouched.
