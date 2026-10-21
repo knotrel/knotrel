@@ -60,6 +60,18 @@ pub fn reset_clock() {
     CLOCK_OFFSET_MILLIS.store(0, Ordering::Release);
 }
 
+/// Locks the mock monotonic clock mutex during tests to prevent concurrent clock mutations.
+///
+/// Only available when the `test-support` feature is enabled.
+#[cfg(any(test, feature = "test-support"))]
+static CLOCK_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Acquires the lock on the test clock for deterministic testing.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn lock_clock_for_test() -> tokio::sync::MutexGuard<'static, ()> {
+    CLOCK_TEST_MUTEX.lock().await
+}
+
 /// Feeder synchronization status for integration mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -3243,6 +3255,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clock_advance_and_lease_expiry_staleness() {
+        let _clock_guard = lock_clock_for_test().await;
         reset_clock();
         let limits = knotrel_core::GraphLimits {
             max_nodes: Some(100),

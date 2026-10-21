@@ -673,6 +673,8 @@ mod tests {
         use crate::service::{Service, SyncStatus};
         use knotrel_core::ConnectivityGraph;
 
+        let _clock_guard = crate::service::lock_clock_for_test().await;
+
         let lifecycle = Lifecycle::ready();
         let config = crate::ServerConfig::default().with_mode(crate::ServerMode::SourceManaged);
         let service =
@@ -736,6 +738,9 @@ mod tests {
         use crate::service::{Service, SyncStatus};
         use knotrel_core::ConnectivityGraph;
 
+        let _clock_guard = crate::service::lock_clock_for_test().await;
+        crate::service::advance_clock(std::time::Duration::from_secs(10));
+
         let lifecycle = Lifecycle::ready();
         let config = crate::ServerConfig::default().with_mode(crate::ServerMode::SourceManaged);
         let service =
@@ -747,7 +752,9 @@ mod tests {
         let l_clone = lifecycle.clone();
         let s_clone = service.clone();
         let task = tokio::spawn(async move { readiness(&l_clone, &s_clone).await });
-        handle.wait_started().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait_started())
+            .await
+            .expect("probe pause wait_started timed out");
         let far_future = crate::service::now_to_millis() + 60_000;
         service.set_published_readiness_for_test(SyncStatus::Ready, far_future);
         handle.release();
@@ -760,7 +767,9 @@ mod tests {
         let l_clone = lifecycle.clone();
         let s_clone = service.clone();
         let task = tokio::spawn(async move { readiness(&l_clone, &s_clone).await });
-        handle.wait_started().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait_started())
+            .await
+            .expect("probe pause wait_started timed out");
         service.set_published_readiness_for_test(SyncStatus::Desynchronized, 0);
         handle.release();
         let resp = task.await.unwrap();
@@ -772,10 +781,14 @@ mod tests {
         let l_clone = lifecycle.clone();
         let s_clone = service.clone();
         let task = tokio::spawn(async move { readiness(&l_clone, &s_clone).await });
-        handle.wait_started().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait_started())
+            .await
+            .expect("probe pause wait_started timed out");
         service.set_published_readiness_for_test(SyncStatus::Ready, 1);
         handle.release();
         let resp = task.await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        crate::service::reset_clock();
     }
 }

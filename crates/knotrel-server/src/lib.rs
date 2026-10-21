@@ -18,7 +18,10 @@ pub use lifecycle::{GateDecision, WorkerPauseHandle};
 pub use lifecycle::{Lifecycle, Phase};
 pub use serve::{ShutdownOutcome, serve};
 #[cfg(feature = "test-support")]
-pub use service::{advance_clock, percent_decode_position, percent_encode_position, reset_clock};
+pub use service::{
+    advance_clock, lock_clock_for_test, percent_decode_position, percent_encode_position,
+    reset_clock,
+};
 
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_BATCH_OPERATIONS: usize = 1024;
