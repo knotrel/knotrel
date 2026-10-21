@@ -204,3 +204,28 @@ pub(crate) struct ServerInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     instance_id: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn router_constructors_build_valid_routers() {
+        let _ = router(knotrel_core::Graph::new());
+        let _ = router_with_config(ServerConfig::default());
+        let _ = router_with_lifecycle(ServerConfig::default(), Lifecycle::ready());
+
+        #[cfg(feature = "test-support")]
+        {
+            let _ = router_with_seeded_version(ServerConfig::default(), Lifecycle::ready(), "42");
+            let _ = router_with_seeded_state(
+                ServerConfig::default(),
+                Lifecycle::ready(),
+                Some("100"),
+                Some(50),
+            );
+            let _ =
+                router_with_seeded_state(ServerConfig::default(), Lifecycle::ready(), None, None);
+        }
+    }
+}

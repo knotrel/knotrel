@@ -640,4 +640,12 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn empty_graph_storage_stats() {
+        let graph = HdtGraph::new();
+        let stats = graph.storage_stats();
+        assert_eq!(stats.vertex_count, 0);
+        assert_eq!(stats.available_levels, 0);
+    }
 }

@@ -73,7 +73,7 @@ pub(crate) struct ImportResponse {
 }
 
 /// Request payload for feeder session registration.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionRequest {
     pub(crate) instance_id: String,
@@ -97,7 +97,7 @@ pub(crate) struct SessionResponse {
 }
 
 /// Request payload for feeder heartbeat.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HeartbeatRequest {
     pub(crate) instance_id: String,
@@ -135,7 +135,7 @@ pub(crate) struct FeederEvent {
 }
 
 /// Request payload for ordered feeder incremental events.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FeederEventsRequest {
     pub(crate) instance_id: String,
@@ -205,7 +205,7 @@ pub(crate) struct PartialBatchFailure {
 }
 
 /// Request payload for declaring an unrecoverable source gap.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GapRequest {
     pub(crate) instance_id: String,
@@ -1359,10 +1359,283 @@ mod tests {
             ),
             (FeederError::SessionRequired, StatusCode::CONFLICT),
             (FeederError::ModeMismatch, StatusCode::CONFLICT),
+            (FeederError::InvalidLeaseDuration, StatusCode::BAD_REQUEST),
+            (FeederError::MalformedJson, StatusCode::BAD_REQUEST),
+            (
+                FeederError::UnprocessableJson("err".into()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (FeederError::PayloadTooLarge, StatusCode::PAYLOAD_TOO_LARGE),
+            (
+                FeederError::Domain("err_code", "err_msg".into()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                FeederError::SupersededBarrier {
+                    expected: 1,
+                    received: 0,
+                },
+                StatusCode::CONFLICT,
+            ),
+            (
+                FeederError::SourcePredecessorMismatch("err".into()),
+                StatusCode::CONFLICT,
+            ),
         ];
         for (err, expected_status) in cases {
             let resp = feeder_error(err);
             assert_eq!(resp.status(), expected_status);
         }
+    }
+
+    #[tokio::test]
+    async fn test_feeder_checks_and_batch_handling() {
+        use axum::extract::State;
+        let service = make_service(ServerMode::SourceManaged);
+
+        // 1. Invalid UTF-8 in X-Knotrel-Instance-Id header
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        let resp = check_feeder_headers(&service, &headers).unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // 2. Non-default graph_id
+        let resp = check_default_graph_id("custom_graph").unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(check_default_graph_id("default").is_none());
+
+        // 3. check_service_available
+        assert!(check_service_available(&service).is_none());
+        service.mark_unavailable_for_test();
+        let resp = check_service_available(&service).unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 4. Batch size bounds: empty and oversized
+        let standalone_service = make_service(ServerMode::Standalone);
+        let empty_batch = Batch { operations: vec![] };
+        let resp = batch(State(standalone_service.clone()), Ok(SimdJson(empty_batch))).await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let mut ops = Vec::new();
+        for _ in 0..crate::MAX_BATCH_OPERATIONS + 1 {
+            ops.push(Operation::Connected {
+                source: WireNode(1),
+                target: WireNode(2),
+            });
+        }
+        let oversized_batch = Batch { operations: ops };
+        let resp = batch(State(standalone_service), Ok(SimdJson(oversized_batch))).await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let err_resp = error_response(StatusCode::BAD_REQUEST, "bad", "bad".into());
+        let resp = batch(State(make_service(ServerMode::Standalone)), Err(err_resp)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // 5. service_error mappings
+        assert_eq!(
+            service_error(ServiceError::Busy).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            service_error(ServiceError::Unavailable).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        // 6. Batch error path when service is unavailable
+        let unavailable_service = make_service(ServerMode::Standalone);
+        unavailable_service.mark_unavailable_for_test();
+        let valid_batch = Batch {
+            operations: vec![Operation::Connected {
+                source: WireNode(1),
+                target: WireNode(2),
+            }],
+        };
+        let resp = batch(State(unavailable_service), Ok(SimdJson(valid_batch))).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 7. SimdJson error propagation in feeder handlers
+        let make_err = || {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "syntax error".into(),
+            )
+        };
+        let headers = HeaderMap::new();
+
+        let resp = feeder_session(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_heartbeat(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_events(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_gap(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_barrier(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // 8. Graph ID and instance ID validation in feeder handlers
+        let mut valid_headers = HeaderMap::new();
+        valid_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(service.instance_id()).unwrap(),
+        );
+
+        let make_events = |graph: &str| FeederEventsRequest {
+            instance_id: service.instance_id().to_string(),
+            graph_id: graph.into(),
+            generation: 1,
+            source_id: "s".into(),
+            source_epoch: "1".into(),
+            feeder_session_id: "s1".into(),
+            feeder_epoch: 1,
+            events: vec![],
+        };
+        let resp = feeder_events(
+            valid_headers.clone(),
+            State(service.clone()),
+            Ok(SimdJson(make_events("invalid"))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let make_gap = |graph: &str| GapRequest {
+            instance_id: service.instance_id().to_string(),
+            graph_id: graph.into(),
+            generation: 1,
+            feeder_session_id: "s1".into(),
+            feeder_epoch: 1,
+            failed_delivery_sequence: 1,
+            reason: None,
+        };
+        let resp = feeder_gap(
+            valid_headers.clone(),
+            State(service.clone()),
+            Ok(SimdJson(make_gap("invalid"))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let make_barrier = |graph: &str, inst: &str| crate::service::BarrierRequest {
+            instance_id: inst.into(),
+            graph_id: graph.into(),
+            generation: 1,
+            feeder_session_id: "s1".into(),
+            feeder_epoch: 1,
+            barrier_delivery_sequence: 1,
+            barrier_source_position: Some("0".into()),
+        };
+        let resp = feeder_barrier(
+            valid_headers.clone(),
+            State(service.clone()),
+            Ok(SimdJson(make_barrier("invalid", service.instance_id()))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_barrier(
+            valid_headers.clone(),
+            State(service.clone()),
+            Ok(SimdJson(make_barrier("default", "wrong_inst"))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // 9. Unavailable service check in feeder handlers
+        let unavail = make_service(ServerMode::SourceManaged);
+        unavail.mark_unavailable_for_test();
+
+        let mut unavail_headers = HeaderMap::new();
+        unavail_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(unavail.instance_id()).unwrap(),
+        );
+
+        let mut unavail_import_hdrs = unavail_headers.clone();
+        unavail_import_hdrs.insert(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        let resp = feeder_import(
+            State(unavail.clone()),
+            unavail_import_hdrs,
+            axum::body::Body::from("{}"),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let mut unavail_events = make_events("default");
+        unavail_events.instance_id = unavail.instance_id().to_string();
+        let resp = feeder_events(
+            unavail_headers.clone(),
+            State(unavail.clone()),
+            Ok(SimdJson(unavail_events)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let mut unavail_gap = make_gap("default");
+        unavail_gap.instance_id = unavail.instance_id().to_string();
+        let resp = feeder_gap(
+            unavail_headers.clone(),
+            State(unavail.clone()),
+            Ok(SimdJson(unavail_gap)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let resp = feeder_barrier(
+            unavail_headers,
+            State(unavail.clone()),
+            Ok(SimdJson(make_barrier("default", unavail.instance_id()))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 10. feeder_gap error propagation
+        let gap_service = make_service(ServerMode::SourceManaged);
+        let mut gap_headers = HeaderMap::new();
+        gap_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(gap_service.instance_id()).unwrap(),
+        );
+        let mut gap_req = make_gap("default");
+        gap_req.instance_id = gap_service.instance_id().to_string();
+        let resp = feeder_gap(gap_headers, State(gap_service), Ok(SimdJson(gap_req))).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // 11. feeder_import payload too large
+        let small_limit_service = Service::with_config(
+            knotrel_core::ConnectivityGraph::default(),
+            2,
+            Lifecycle::ready(),
+            &crate::ServerConfig::default()
+                .with_mode(ServerMode::SourceManaged)
+                .with_max_import_body_bytes(10)
+                .unwrap(),
+        );
+        let mut hdrs2 = HeaderMap::new();
+        hdrs2.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(small_limit_service.instance_id()).unwrap(),
+        );
+        hdrs2.insert(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        let resp = feeder_import(
+            State(small_limit_service),
+            hdrs2,
+            axum::body::Body::from(vec![b'x'; 20]),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }
