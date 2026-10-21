@@ -824,27 +824,39 @@ checksum = "expected-sha256"
 
 
 class TestMedium7VerifySourcePackages(unittest.TestCase):
-    """MEDIUM 7: Remove hardcoded version 0.1.0 from source verification"""
+    """MEDIUM 7: Remove hardcoded version from source verification"""
+
+    @classmethod
+    def setUpClass(cls):
+        import re
+
+        with open(os.path.join(REPO_ROOT, "Cargo.toml")) as f:
+            m = re.search(r'version\s*=\s*"([^"]+)"', f.read())
+            cls.current_version = m.group(1) if m else "0.2.0"
 
     def test_dynamic_metadata_version_runs_successfully(self):
         script = os.path.join(REPO_ROOT, "scripts/verify-source-packages.sh")
-        res = subprocess.run([script, "0.1.0"], capture_output=True, text=True)
+        res = subprocess.run([script, self.current_version], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"Failed: {res.stdout}\n{res.stderr}")
-        self.assertIn("Candidate package version: 0.1.0", res.stdout)
+        self.assertIn(f"Candidate package version: {self.current_version}", res.stdout)
         self.assertIn("Cleaning stale package directory", res.stdout)
         self.assertIn("Source package verification succeeded!", res.stdout)
 
     def test_mismatched_requested_version_fails(self):
         script = os.path.join(REPO_ROOT, "scripts/verify-source-packages.sh")
-        res = subprocess.run([script, "0.2.0"], capture_output=True, text=True)
+        mismatched_version = "99.99.99"
+        res = subprocess.run([script, mismatched_version], capture_output=True, text=True)
         self.assertEqual(res.returncode, 1)
-        self.assertIn("Requested version 0.2.0 does not match workspace metadata version 0.1.0", res.stderr)
+        self.assertIn(
+            f"Requested version {mismatched_version} does not match workspace metadata version {self.current_version}",
+            res.stderr,
+        )
 
     def test_version_with_leading_v_runs_successfully(self):
         script = os.path.join(REPO_ROOT, "scripts/verify-source-packages.sh")
-        res = subprocess.run([script, "v0.1.0"], capture_output=True, text=True)
+        res = subprocess.run([script, f"v{self.current_version}"], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"Failed: {res.stdout}\n{res.stderr}")
-        self.assertIn("Candidate package version: 0.1.0", res.stdout)
+        self.assertIn(f"Candidate package version: {self.current_version}", res.stdout)
         self.assertIn("Source package verification succeeded!", res.stdout)
 
 

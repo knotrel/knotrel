@@ -46,8 +46,8 @@ Checks reflect verified implementation and acceptance gates. Features 0.2.5+ rem
 - [x] **Feature 0.2.2:** Bounded atomic HTTP graph import (REQUIRED)
 - [x] **Feature 0.2.3:** Graph identity, generation, local revision and source position (REQUIRED)
 - [x] **Feature 0.2.4:** Ordered incremental updates, duplicate and gap detection (REQUIRED)
-- [ ] **Feature 0.2.5:** Synchronization-aware bootstrap and readiness (REQUIRED)
-- [ ] **Feature 0.2.6:** External feeder example, restart/rebuild tests and reproducible measurements (REQUIRED)
+- [x] **Feature 0.2.5:** Synchronization-aware bootstrap and readiness (REQUIRED)
+- [x] **Feature 0.2.6:** External feeder example, restart/rebuild tests and reproducible measurements (REQUIRED)
 
 ### v0.3.0 — Operational Service
 
