@@ -773,20 +773,15 @@ impl GraphState {
         })
     }
 
-    fn declare_barrier(
+    fn validate_session_and_lease(
         &mut self,
-        req: BarrierRequest,
-        mode: ServerMode,
-        instance_id: &str,
-    ) -> Result<(BarrierResponse, ResponseMetadata), FeederError> {
-        if self.failed {
-            return Err(FeederError::Unavailable);
-        }
-
+        session_id: &str,
+        epoch: u64,
+    ) -> Result<(), FeederError> {
         let Some(ref active_session) = self.feeder_session_id else {
             return Err(FeederError::SessionRequired);
         };
-        if active_session != &req.feeder_session_id || req.feeder_epoch != self.feeder_epoch {
+        if active_session != session_id || epoch != self.feeder_epoch {
             return Err(FeederError::FencedSession);
         }
 
@@ -804,6 +799,67 @@ impl GraphState {
         } else {
             return Err(FeederError::LeaseExpired);
         }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fail_batch_or_error(
+        &self,
+        is_batch: bool,
+        mode: ServerMode,
+        instance_id: &str,
+        req_instance_id: &str,
+        idx: usize,
+        seq: u64,
+        event_id: &str,
+        code: &'static str,
+        reason: &str,
+        err_code: &'static str,
+        err_msg: String,
+        status: axum::http::StatusCode,
+        single_err: FeederError,
+    ) -> Result<FeederEventsResult, FeederError> {
+        if is_batch {
+            Ok(FeederEventsResult::PartialFailure {
+                failure: PartialBatchFailure {
+                    result: "partial_failure",
+                    code,
+                    message: format!(
+                        "batch stopped at batch index {idx} (global sequence {seq}) due to {reason}"
+                    ),
+                    instance_id: req_instance_id.to_string(),
+                    generation: self.generation,
+                    applied_delivery_sequence: self.applied_delivery_sequence,
+                    applied_source_position: self.source_position.clone().unwrap_or_default(),
+                    state_version: self.version_string(),
+                    failed_batch_index: idx,
+                    failed_delivery_sequence: seq,
+                    failed_event_id: event_id.to_string(),
+                    error: BatchItemError {
+                        code: err_code,
+                        message: err_msg,
+                    },
+                },
+                metadata: self.response_metadata(mode, instance_id),
+                status,
+            })
+        } else {
+            Err(single_err)
+        }
+    }
+
+    fn declare_barrier(
+        &mut self,
+        req: BarrierRequest,
+        mode: ServerMode,
+        instance_id: &str,
+    ) -> Result<(BarrierResponse, ResponseMetadata), FeederError> {
+        if self.failed {
+            return Err(FeederError::Unavailable);
+        }
+
+        self.validate_session_and_lease(&req.feeder_session_id, req.feeder_epoch)?;
 
         if req.generation != self.generation {
             return Err(FeederError::StaleGeneration(format!(
@@ -902,27 +958,7 @@ impl GraphState {
             )));
         }
 
-        let Some(ref live_session_id) = self.feeder_session_id else {
-            return Err(FeederError::SessionRequired);
-        };
-        if live_session_id != &req.feeder_session_id || req.feeder_epoch != self.feeder_epoch {
-            return Err(FeederError::FencedSession);
-        }
-
-        let now = monotonic_now();
-        if let Some(deadline) = self.lease_deadline {
-            if now > deadline {
-                if self.sync_status == SyncStatus::Ready
-                    || self.sync_status == SyncStatus::CatchingUp
-                {
-                    self.sync_status = SyncStatus::Stale;
-                }
-                self.last_expired_epoch = Some(self.feeder_epoch);
-                return Err(FeederError::LeaseExpired);
-            }
-        } else {
-            return Err(FeederError::LeaseExpired);
-        }
+        self.validate_session_and_lease(&req.feeder_session_id, req.feeder_epoch)?;
 
         if self.generation == 0 {
             return Err(FeederError::GraphUninitialized);
@@ -980,6 +1016,7 @@ impl GraphState {
         let mut last_duplicate_entry: Option<DedupEntry> = None;
 
         for (idx, event) in req.events.into_iter().enumerate() {
+            let is_batch = newly_applied_count > 0 || total_events > 1;
             let canonical_op = CanonicalOp::from_feeder_event(&event)?;
             let seq = event.delivery_sequence;
 
@@ -992,36 +1029,21 @@ impl GraphState {
                         let err_msg = format!(
                             "delivery sequence {seq} was evicted from deduplication window"
                         );
-                        if newly_applied_count > 0 || total_events > 1 {
-                            return Ok(FeederEventsResult::PartialFailure {
-                                failure: PartialBatchFailure {
-                                    result: "partial_failure",
-                                    code: "unverifiable_duplicate",
-                                    message: format!(
-                                        "batch stopped at batch index {idx} (global sequence {seq}) due to evicted duplicate"
-                                    ),
-                                    instance_id: req.instance_id.clone(),
-                                    generation: self.generation,
-                                    applied_delivery_sequence: self.applied_delivery_sequence,
-                                    applied_source_position: self
-                                        .source_position
-                                        .clone()
-                                        .unwrap_or_default(),
-                                    state_version: self.version_string(),
-                                    failed_batch_index: idx,
-                                    failed_delivery_sequence: seq,
-                                    failed_event_id: event.event_id.clone(),
-                                    error: BatchItemError {
-                                        code: "unverifiable_duplicate",
-                                        message: err_msg,
-                                    },
-                                },
-                                metadata: self.response_metadata(mode, instance_id),
-                                status: axum::http::StatusCode::CONFLICT,
-                            });
-                        } else {
-                            return Err(FeederError::UnverifiableDuplicate(err_msg));
-                        }
+                        return self.fail_batch_or_error(
+                            is_batch,
+                            mode,
+                            instance_id,
+                            &req.instance_id,
+                            idx,
+                            seq,
+                            &event.event_id,
+                            "unverifiable_duplicate",
+                            "evicted duplicate",
+                            "unverifiable_duplicate",
+                            err_msg.clone(),
+                            axum::http::StatusCode::CONFLICT,
+                            FeederError::UnverifiableDuplicate(err_msg),
+                        );
                     }
                     DedupLookup::InWindow(retained) => {
                         if retained.event_id != event.event_id {
@@ -1030,36 +1052,21 @@ impl GraphState {
                                 "retained sequence {seq} has event_id '{}', received '{}'",
                                 retained.event_id, event.event_id
                             );
-                            if newly_applied_count > 0 || total_events > 1 {
-                                return Ok(FeederEventsResult::PartialFailure {
-                                    failure: PartialBatchFailure {
-                                        result: "partial_failure",
-                                        code: "conflicting_duplicate",
-                                        message: format!(
-                                            "batch stopped at batch index {idx} (global sequence {seq}) due to conflicting event ID"
-                                        ),
-                                        instance_id: req.instance_id.clone(),
-                                        generation: self.generation,
-                                        applied_delivery_sequence: self.applied_delivery_sequence,
-                                        applied_source_position: self
-                                            .source_position
-                                            .clone()
-                                            .unwrap_or_default(),
-                                        state_version: self.version_string(),
-                                        failed_batch_index: idx,
-                                        failed_delivery_sequence: seq,
-                                        failed_event_id: event.event_id.clone(),
-                                        error: BatchItemError {
-                                            code: "conflicting_duplicate",
-                                            message: err_msg,
-                                        },
-                                    },
-                                    metadata: self.response_metadata(mode, instance_id),
-                                    status: axum::http::StatusCode::CONFLICT,
-                                });
-                            } else {
-                                return Err(FeederError::ConflictingDuplicate(err_msg));
-                            }
+                            return self.fail_batch_or_error(
+                                is_batch,
+                                mode,
+                                instance_id,
+                                &req.instance_id,
+                                idx,
+                                seq,
+                                &event.event_id,
+                                "conflicting_duplicate",
+                                "conflicting event ID",
+                                "conflicting_duplicate",
+                                err_msg.clone(),
+                                axum::http::StatusCode::CONFLICT,
+                                FeederError::ConflictingDuplicate(err_msg),
+                            );
                         }
 
                         let is_canonical_match = retained.source_position == event.source_position
@@ -1069,36 +1076,21 @@ impl GraphState {
                             let err_msg = format!(
                                 "conflicting duplicate at sequence {seq}: canonical content or source position altered"
                             );
-                            if newly_applied_count > 0 || total_events > 1 {
-                                return Ok(FeederEventsResult::PartialFailure {
-                                    failure: PartialBatchFailure {
-                                        result: "partial_failure",
-                                        code: "conflicting_duplicate",
-                                        message: format!(
-                                            "batch stopped at batch index {idx} (global sequence {seq}) due to canonical conflict"
-                                        ),
-                                        instance_id: req.instance_id.clone(),
-                                        generation: self.generation,
-                                        applied_delivery_sequence: self.applied_delivery_sequence,
-                                        applied_source_position: self
-                                            .source_position
-                                            .clone()
-                                            .unwrap_or_default(),
-                                        state_version: self.version_string(),
-                                        failed_batch_index: idx,
-                                        failed_delivery_sequence: seq,
-                                        failed_event_id: event.event_id.clone(),
-                                        error: BatchItemError {
-                                            code: "conflicting_duplicate",
-                                            message: err_msg,
-                                        },
-                                    },
-                                    metadata: self.response_metadata(mode, instance_id),
-                                    status: axum::http::StatusCode::CONFLICT,
-                                });
-                            } else {
-                                return Err(FeederError::ConflictingDuplicate(err_msg));
-                            }
+                            return self.fail_batch_or_error(
+                                is_batch,
+                                mode,
+                                instance_id,
+                                &req.instance_id,
+                                idx,
+                                seq,
+                                &event.event_id,
+                                "conflicting_duplicate",
+                                "canonical conflict",
+                                "conflicting_duplicate",
+                                err_msg.clone(),
+                                axum::http::StatusCode::CONFLICT,
+                                FeederError::ConflictingDuplicate(err_msg),
+                            );
                         }
 
                         last_duplicate_entry = Some(retained.clone());
@@ -1109,41 +1101,24 @@ impl GraphState {
             } else if let Some(expected_seq) = self.applied_delivery_sequence.checked_add(1) {
                 if seq != expected_seq {
                     let expected = expected_seq;
-                    if newly_applied_count > 0 || total_events > 1 {
-                        return Ok(FeederEventsResult::PartialFailure {
-                            failure: PartialBatchFailure {
-                                result: "partial_failure",
-                                code: "out_of_order_sequence",
-                                message: format!(
-                                    "batch stopped at batch index {idx} (global sequence {seq}) due to out-of-order sequence"
-                                ),
-                                instance_id: req.instance_id.clone(),
-                                generation: self.generation,
-                                applied_delivery_sequence: self.applied_delivery_sequence,
-                                applied_source_position: self
-                                    .source_position
-                                    .clone()
-                                    .unwrap_or_default(),
-                                state_version: self.version_string(),
-                                failed_batch_index: idx,
-                                failed_delivery_sequence: seq,
-                                failed_event_id: event.event_id.clone(),
-                                error: BatchItemError {
-                                    code: "out_of_order_sequence",
-                                    message: format!(
-                                        "expected delivery sequence {expected}, received {seq}"
-                                    ),
-                                },
-                            },
-                            metadata: self.response_metadata(mode, instance_id),
-                            status: axum::http::StatusCode::CONFLICT,
-                        });
-                    } else {
-                        return Err(FeederError::OutOfOrderSequence {
+                    return self.fail_batch_or_error(
+                        is_batch,
+                        mode,
+                        instance_id,
+                        &req.instance_id,
+                        idx,
+                        seq,
+                        &event.event_id,
+                        "out_of_order_sequence",
+                        "out-of-order sequence",
+                        "out_of_order_sequence",
+                        format!("expected delivery sequence {expected}, received {seq}"),
+                        axum::http::StatusCode::CONFLICT,
+                        FeederError::OutOfOrderSequence {
                             expected,
                             received: seq,
-                        });
-                    }
+                        },
+                    );
                 }
 
                 if event.prev_delivery_sequence != self.applied_delivery_sequence {
@@ -1152,36 +1127,21 @@ impl GraphState {
                         "prev_delivery_sequence {} does not match applied sequence {}",
                         event.prev_delivery_sequence, self.applied_delivery_sequence
                     );
-                    if newly_applied_count > 0 || total_events > 1 {
-                        return Ok(FeederEventsResult::PartialFailure {
-                            failure: PartialBatchFailure {
-                                result: "partial_failure",
-                                code: "source_predecessor_mismatch",
-                                message: format!(
-                                    "batch stopped at batch index {idx} (global sequence {seq}) due to predecessor sequence mismatch"
-                                ),
-                                instance_id: req.instance_id.clone(),
-                                generation: self.generation,
-                                applied_delivery_sequence: self.applied_delivery_sequence,
-                                applied_source_position: self
-                                    .source_position
-                                    .clone()
-                                    .unwrap_or_default(),
-                                state_version: self.version_string(),
-                                failed_batch_index: idx,
-                                failed_delivery_sequence: seq,
-                                failed_event_id: event.event_id.clone(),
-                                error: BatchItemError {
-                                    code: "source_predecessor_mismatch",
-                                    message: err_msg,
-                                },
-                            },
-                            metadata: self.response_metadata(mode, instance_id),
-                            status: axum::http::StatusCode::CONFLICT,
-                        });
-                    } else {
-                        return Err(FeederError::SourcePredecessorMismatch(err_msg));
-                    }
+                    return self.fail_batch_or_error(
+                        is_batch,
+                        mode,
+                        instance_id,
+                        &req.instance_id,
+                        idx,
+                        seq,
+                        &event.event_id,
+                        "source_predecessor_mismatch",
+                        "predecessor sequence mismatch",
+                        "source_predecessor_mismatch",
+                        err_msg.clone(),
+                        axum::http::StatusCode::CONFLICT,
+                        FeederError::SourcePredecessorMismatch(err_msg),
+                    );
                 }
 
                 let live_pos = self.source_position.as_deref().unwrap_or("");
@@ -1191,36 +1151,21 @@ impl GraphState {
                         "prev_source_position '{}' does not match applied source position '{}'",
                         event.prev_source_position, live_pos
                     );
-                    if newly_applied_count > 0 || total_events > 1 {
-                        return Ok(FeederEventsResult::PartialFailure {
-                            failure: PartialBatchFailure {
-                                result: "partial_failure",
-                                code: "source_predecessor_mismatch",
-                                message: format!(
-                                    "batch stopped at batch index {idx} (global sequence {seq}) due to source predecessor mismatch"
-                                ),
-                                instance_id: req.instance_id.clone(),
-                                generation: self.generation,
-                                applied_delivery_sequence: self.applied_delivery_sequence,
-                                applied_source_position: self
-                                    .source_position
-                                    .clone()
-                                    .unwrap_or_default(),
-                                state_version: self.version_string(),
-                                failed_batch_index: idx,
-                                failed_delivery_sequence: seq,
-                                failed_event_id: event.event_id.clone(),
-                                error: BatchItemError {
-                                    code: "source_predecessor_mismatch",
-                                    message: err_msg,
-                                },
-                            },
-                            metadata: self.response_metadata(mode, instance_id),
-                            status: axum::http::StatusCode::CONFLICT,
-                        });
-                    } else {
-                        return Err(FeederError::SourcePredecessorMismatch(err_msg));
-                    }
+                    return self.fail_batch_or_error(
+                        is_batch,
+                        mode,
+                        instance_id,
+                        &req.instance_id,
+                        idx,
+                        seq,
+                        &event.event_id,
+                        "source_predecessor_mismatch",
+                        "source predecessor mismatch",
+                        "source_predecessor_mismatch",
+                        err_msg.clone(),
+                        axum::http::StatusCode::CONFLICT,
+                        FeederError::SourcePredecessorMismatch(err_msg),
+                    );
                 }
 
                 if self.dedup_window.contains_event_id(&event.event_id) {
@@ -1229,36 +1174,21 @@ impl GraphState {
                         "event_id '{}' is already present in retained deduplication window",
                         event.event_id
                     );
-                    if newly_applied_count > 0 || total_events > 1 {
-                        return Ok(FeederEventsResult::PartialFailure {
-                            failure: PartialBatchFailure {
-                                result: "partial_failure",
-                                code: "conflicting_duplicate",
-                                message: format!(
-                                    "batch stopped at batch index {idx} (global sequence {seq}) due to duplicate event ID"
-                                ),
-                                instance_id: req.instance_id.clone(),
-                                generation: self.generation,
-                                applied_delivery_sequence: self.applied_delivery_sequence,
-                                applied_source_position: self
-                                    .source_position
-                                    .clone()
-                                    .unwrap_or_default(),
-                                state_version: self.version_string(),
-                                failed_batch_index: idx,
-                                failed_delivery_sequence: seq,
-                                failed_event_id: event.event_id.clone(),
-                                error: BatchItemError {
-                                    code: "conflicting_duplicate",
-                                    message: err_msg,
-                                },
-                            },
-                            metadata: self.response_metadata(mode, instance_id),
-                            status: axum::http::StatusCode::CONFLICT,
-                        });
-                    } else {
-                        return Err(FeederError::ConflictingDuplicate(err_msg));
-                    }
+                    return self.fail_batch_or_error(
+                        is_batch,
+                        mode,
+                        instance_id,
+                        &req.instance_id,
+                        idx,
+                        seq,
+                        &event.event_id,
+                        "conflicting_duplicate",
+                        "duplicate event ID",
+                        "conflicting_duplicate",
+                        err_msg.clone(),
+                        axum::http::StatusCode::CONFLICT,
+                        FeederError::ConflictingDuplicate(err_msg),
+                    );
                 }
 
                 let next_seq = expected_seq;
@@ -1311,36 +1241,21 @@ impl GraphState {
                 let changed = match changed_result {
                     Ok(ch) => ch,
                     Err((err_code, err_msg)) => {
-                        if newly_applied_count > 0 || total_events > 1 {
-                            return Ok(FeederEventsResult::PartialFailure {
-                                failure: PartialBatchFailure {
-                                    result: "partial_failure",
-                                    code: "event_failed",
-                                    message: format!(
-                                        "batch stopped at batch index {idx} (global sequence {seq}) due to domain error"
-                                    ),
-                                    instance_id: req.instance_id.clone(),
-                                    generation: self.generation,
-                                    applied_delivery_sequence: self.applied_delivery_sequence,
-                                    applied_source_position: self
-                                        .source_position
-                                        .clone()
-                                        .unwrap_or_default(),
-                                    state_version: self.version_string(),
-                                    failed_batch_index: idx,
-                                    failed_delivery_sequence: seq,
-                                    failed_event_id: event.event_id.clone(),
-                                    error: BatchItemError {
-                                        code: err_code,
-                                        message: err_msg,
-                                    },
-                                },
-                                metadata: self.response_metadata(mode, instance_id),
-                                status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-                            });
-                        } else {
-                            return Err(FeederError::Domain(err_code, err_msg));
-                        }
+                        return self.fail_batch_or_error(
+                            is_batch,
+                            mode,
+                            instance_id,
+                            &req.instance_id,
+                            idx,
+                            seq,
+                            &event.event_id,
+                            "event_failed",
+                            "domain error",
+                            err_code,
+                            err_msg.clone(),
+                            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                            FeederError::Domain(err_code, err_msg),
+                        );
                     }
                 };
 
@@ -1408,27 +1323,7 @@ impl GraphState {
         mode: ServerMode,
         instance_id: &str,
     ) -> Result<(GapResponse, ResponseMetadata), FeederError> {
-        let Some(ref live_session_id) = self.feeder_session_id else {
-            return Err(FeederError::SessionRequired);
-        };
-        if live_session_id != &req.feeder_session_id || req.feeder_epoch != self.feeder_epoch {
-            return Err(FeederError::FencedSession);
-        }
-
-        let now = monotonic_now();
-        if let Some(deadline) = self.lease_deadline {
-            if now > deadline {
-                if self.sync_status == SyncStatus::Ready
-                    || self.sync_status == SyncStatus::CatchingUp
-                {
-                    self.sync_status = SyncStatus::Stale;
-                }
-                self.last_expired_epoch = Some(self.feeder_epoch);
-                return Err(FeederError::LeaseExpired);
-            }
-        } else {
-            return Err(FeederError::LeaseExpired);
-        }
+        self.validate_session_and_lease(&req.feeder_session_id, req.feeder_epoch)?;
 
         if self.generation == 0 {
             return Err(FeederError::GraphUninitialized);
@@ -1905,27 +1800,7 @@ impl Service {
                 return Err(FeederError::Unavailable);
             }
 
-            let Some(ref live_session_id) = state.feeder_session_id else {
-                return Err(FeederError::SessionRequired);
-            };
-            if live_session_id != &req.feeder_session_id || req.feeder_epoch != state.feeder_epoch {
-                return Err(FeederError::FencedSession);
-            }
-
-            let now = monotonic_now();
-            if let Some(deadline) = state.lease_deadline {
-                if now > deadline {
-                    if state.sync_status == SyncStatus::Ready
-                        || state.sync_status == SyncStatus::CatchingUp
-                    {
-                        state.sync_status = SyncStatus::Stale;
-                    }
-                    state.last_expired_epoch = Some(state.feeder_epoch);
-                    return Err(FeederError::LeaseExpired);
-                }
-            } else {
-                return Err(FeederError::LeaseExpired);
-            }
+            state.validate_session_and_lease(&req.feeder_session_id, req.feeder_epoch)?;
 
             match req.mode {
                 ImportMode::CreateOnly => {
@@ -2079,11 +1954,16 @@ impl Service {
         .await
     }
 
-    /// Applies an ordered stream of feeder events under the graph mutex.
-    pub(crate) async fn apply_events(
+    async fn execute_feeder_worker<T, F>(
         &self,
-        req: FeederEventsRequest,
-    ) -> Result<FeederEventsResult, FeederError> {
+        worker_name: &'static str,
+        mutate: bool,
+        op: F,
+    ) -> Result<T, FeederError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut GraphState, ServerMode, &str) -> Result<T, FeederError> + Send + 'static,
+    {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
         let published_atomic = self.published_readiness.clone();
@@ -2118,11 +1998,15 @@ impl Service {
                 panic_guard.unavailable.store(true, Ordering::Release);
                 return Err(FeederError::Unavailable);
             }
-            state.failed = true;
-            let result = state.apply_events(req, mode, &instance_id);
+            if mutate {
+                state.failed = true;
+            }
+            let result = op(&mut state, mode, &instance_id);
             let word = state.current_readiness_word();
             published_atomic.store(word, Ordering::Release);
-            state.failed = false;
+            if mutate {
+                state.failed = false;
+            }
             drop(state);
             lifecycle.check_worker_post_lock_hook();
             panic_guard.success = true;
@@ -2130,10 +2014,24 @@ impl Service {
         })
         .await
         .map_err(|error| {
-            tracing::error!(panicked = error.is_panic(), "events worker thread failed");
+            tracing::error!(
+                panicked = error.is_panic(),
+                "{worker_name} worker thread failed"
+            );
             failure_flag.store(true, Ordering::Release);
             FeederError::Unavailable
         })?
+    }
+
+    /// Applies an ordered stream of feeder events under the graph mutex.
+    pub(crate) async fn apply_events(
+        &self,
+        req: FeederEventsRequest,
+    ) -> Result<FeederEventsResult, FeederError> {
+        self.execute_feeder_worker("events", true, move |state, mode, inst| {
+            state.apply_events(req, mode, inst)
+        })
+        .await
     }
 
     /// Acknowledges an unrecoverable source gap, moving server to Desynchronized under mutex.
@@ -2141,56 +2039,10 @@ impl Service {
         &self,
         req: GapRequest,
     ) -> Result<(GapResponse, ResponseMetadata), FeederError> {
-        let mode = self.mode;
-        let instance_id = self.instance_id.clone();
-        let published_atomic = self.published_readiness.clone();
-        let failure_flag = self.unavailable.clone();
-
-        if self.is_unavailable() {
-            return Err(FeederError::Unavailable);
-        }
-
-        let permit = self.permits.clone().try_acquire_owned().map_err(|_| {
-            tracing::warn!(
-                capacity = self.info.max_pending_jobs,
-                "request capacity exhausted; rejecting with 503 busy"
-            );
-            FeederError::from(ServiceError::Busy)
-        })?;
-        let job_guard = self.lifecycle.track_job();
-        let lifecycle = self.lifecycle.clone();
-        let graph = self.graph.clone();
-        let unavailable = self.unavailable.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let _job_guard = job_guard;
-            let _permit = permit;
-            let mut panic_guard = WorkerPanicGuard {
-                unavailable: unavailable.clone(),
-                success: false,
-            };
-            lifecycle.check_worker_hook();
-            let mut state = graph.lock();
-            if state.failed || unavailable.load(Ordering::Acquire) {
-                panic_guard.unavailable.store(true, Ordering::Release);
-                return Err(FeederError::Unavailable);
-            }
-            state.failed = true;
-            let result = state.declare_gap(req, mode, &instance_id);
-            let word = state.current_readiness_word();
-            published_atomic.store(word, Ordering::Release);
-            state.failed = false;
-            drop(state);
-            lifecycle.check_worker_post_lock_hook();
-            panic_guard.success = true;
-            result
+        self.execute_feeder_worker("gap", true, move |state, mode, inst| {
+            state.declare_gap(req, mode, inst)
         })
         .await
-        .map_err(|error| {
-            tracing::error!(panicked = error.is_panic(), "gap worker thread failed");
-            failure_flag.store(true, Ordering::Release);
-            FeederError::Unavailable
-        })?
     }
 
     /// Verifies a synchronization barrier under the graph mutex.
@@ -2198,54 +2050,10 @@ impl Service {
         &self,
         req: BarrierRequest,
     ) -> Result<(BarrierResponse, ResponseMetadata), FeederError> {
-        let mode = self.mode;
-        let instance_id = self.instance_id.clone();
-        let published_atomic = self.published_readiness.clone();
-        let failure_flag = self.unavailable.clone();
-
-        if self.is_unavailable() {
-            return Err(FeederError::Unavailable);
-        }
-
-        let permit = self.permits.clone().try_acquire_owned().map_err(|_| {
-            tracing::warn!(
-                capacity = self.info.max_pending_jobs,
-                "request capacity exhausted; rejecting with 503 busy"
-            );
-            FeederError::from(ServiceError::Busy)
-        })?;
-        let job_guard = self.lifecycle.track_job();
-        let lifecycle = self.lifecycle.clone();
-        let graph = self.graph.clone();
-        let unavailable = self.unavailable.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let _job_guard = job_guard;
-            let _permit = permit;
-            let mut panic_guard = WorkerPanicGuard {
-                unavailable: unavailable.clone(),
-                success: false,
-            };
-            lifecycle.check_worker_hook();
-            let mut state = graph.lock();
-            if state.failed || unavailable.load(Ordering::Acquire) {
-                panic_guard.unavailable.store(true, Ordering::Release);
-                return Err(FeederError::Unavailable);
-            }
-            let result = state.declare_barrier(req, mode, &instance_id);
-            let word = state.current_readiness_word();
-            published_atomic.store(word, Ordering::Release);
-            drop(state);
-            lifecycle.check_worker_post_lock_hook();
-            panic_guard.success = true;
-            result
+        self.execute_feeder_worker("barrier", false, move |state, mode, inst| {
+            state.declare_barrier(req, mode, inst)
         })
         .await
-        .map_err(|error| {
-            tracing::error!(panicked = error.is_panic(), "barrier worker thread failed");
-            failure_flag.store(true, Ordering::Release);
-            FeederError::Unavailable
-        })?
     }
 
     /// Transitions sync_status from Ready to Stale if and only if the exact observed
@@ -3290,37 +3098,25 @@ mod tests {
             )
             .unwrap();
 
+        let make_req = |generation: u64, seq: u64, pos: Option<&str>| BarrierRequest {
+            instance_id: instance_id.into(),
+            graph_id: "default".into(),
+            generation,
+            feeder_session_id: session_id.into(),
+            feeder_epoch: 1,
+            barrier_delivery_sequence: seq,
+            barrier_source_position: pos.map(Into::into),
+        };
+
         // Case B3: Uninitialized (g = 0)
-        let b3_res = state.declare_barrier(
-            BarrierRequest {
-                instance_id: instance_id.into(),
-                graph_id: "default".into(),
-                generation: 0,
-                feeder_session_id: session_id.into(),
-                feeder_epoch: 1,
-                barrier_delivery_sequence: 0,
-                barrier_source_position: None,
-            },
-            ServerMode::SourceManaged,
-            instance_id,
-        );
+        let b3_res =
+            state.declare_barrier(make_req(0, 0, None), ServerMode::SourceManaged, instance_id);
         assert!(matches!(b3_res, Err(FeederError::GraphUninitialized)));
 
         // Case B4: Loading (g = 0, status Loading)
         state.sync_status = SyncStatus::Loading;
-        let b4_res = state.declare_barrier(
-            BarrierRequest {
-                instance_id: instance_id.into(),
-                graph_id: "default".into(),
-                generation: 0,
-                feeder_session_id: session_id.into(),
-                feeder_epoch: 1,
-                barrier_delivery_sequence: 0,
-                barrier_source_position: None,
-            },
-            ServerMode::SourceManaged,
-            instance_id,
-        );
+        let b4_res =
+            state.declare_barrier(make_req(0, 0, None), ServerMode::SourceManaged, instance_id);
         assert!(matches!(b4_res, Err(FeederError::GraphUninitialized)));
 
         // Publish generation 1
@@ -3331,15 +3127,7 @@ mod tests {
 
         // Case B8: Premature sequence (D_B = 6 > 5)
         let b8_res = state.declare_barrier(
-            BarrierRequest {
-                instance_id: instance_id.into(),
-                graph_id: "default".into(),
-                generation: 1,
-                feeder_session_id: session_id.into(),
-                feeder_epoch: 1,
-                barrier_delivery_sequence: 6,
-                barrier_source_position: Some("pos-5".into()),
-            },
+            make_req(1, 6, Some("pos-5")),
             ServerMode::SourceManaged,
             instance_id,
         );
@@ -3354,15 +3142,7 @@ mod tests {
 
         // Case B9: Older sequence (D_B = 4 < 5)
         let b9_res = state.declare_barrier(
-            BarrierRequest {
-                instance_id: instance_id.into(),
-                graph_id: "default".into(),
-                generation: 1,
-                feeder_session_id: session_id.into(),
-                feeder_epoch: 1,
-                barrier_delivery_sequence: 4,
-                barrier_source_position: Some("pos-5".into()),
-            },
+            make_req(1, 4, Some("pos-5")),
             ServerMode::SourceManaged,
             instance_id,
         );
@@ -3377,15 +3157,7 @@ mod tests {
 
         // Case B7: Equal sequence with position mismatch (D_B = 5, P_B = "pos-wrong")
         let b7_res = state.declare_barrier(
-            BarrierRequest {
-                instance_id: instance_id.into(),
-                graph_id: "default".into(),
-                generation: 1,
-                feeder_session_id: session_id.into(),
-                feeder_epoch: 1,
-                barrier_delivery_sequence: 5,
-                barrier_source_position: Some("pos-wrong".into()),
-            },
+            make_req(1, 5, Some("pos-wrong")),
             ServerMode::SourceManaged,
             instance_id,
         );
@@ -3401,15 +3173,7 @@ mod tests {
         // Case B1: Exact match from CatchingUp (D_B = 5, P_B = "pos-5")
         let (b1_res, _) = state
             .declare_barrier(
-                BarrierRequest {
-                    instance_id: instance_id.into(),
-                    graph_id: "default".into(),
-                    generation: 1,
-                    feeder_session_id: session_id.into(),
-                    feeder_epoch: 1,
-                    barrier_delivery_sequence: 5,
-                    barrier_source_position: Some("pos-5".into()),
-                },
+                make_req(1, 5, Some("pos-5")),
                 ServerMode::SourceManaged,
                 instance_id,
             )
@@ -3421,15 +3185,7 @@ mod tests {
         // Case B2: Exact match from Ready (idempotent)
         let (b2_res, _) = state
             .declare_barrier(
-                BarrierRequest {
-                    instance_id: instance_id.into(),
-                    graph_id: "default".into(),
-                    generation: 1,
-                    feeder_session_id: session_id.into(),
-                    feeder_epoch: 1,
-                    barrier_delivery_sequence: 5,
-                    barrier_source_position: Some("pos-5".into()),
-                },
+                make_req(1, 5, Some("pos-5")),
                 ServerMode::SourceManaged,
                 instance_id,
             )
@@ -3441,15 +3197,7 @@ mod tests {
         // Case B5: Desynchronized
         state.sync_status = SyncStatus::Desynchronized;
         let b5_res = state.declare_barrier(
-            BarrierRequest {
-                instance_id: instance_id.into(),
-                graph_id: "default".into(),
-                generation: 1,
-                feeder_session_id: session_id.into(),
-                feeder_epoch: 1,
-                barrier_delivery_sequence: 5,
-                barrier_source_position: Some("pos-5".into()),
-            },
+            make_req(1, 5, Some("pos-5")),
             ServerMode::SourceManaged,
             instance_id,
         );
@@ -3459,15 +3207,7 @@ mod tests {
         // Case B6: Failed
         state.failed = true;
         let b6_res = state.declare_barrier(
-            BarrierRequest {
-                instance_id: instance_id.into(),
-                graph_id: "default".into(),
-                generation: 1,
-                feeder_session_id: session_id.into(),
-                feeder_epoch: 1,
-                barrier_delivery_sequence: 5,
-                barrier_source_position: Some("pos-5".into()),
-            },
+            make_req(1, 5, Some("pos-5")),
             ServerMode::SourceManaged,
             instance_id,
         );

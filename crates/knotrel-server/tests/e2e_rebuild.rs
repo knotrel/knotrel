@@ -45,8 +45,14 @@ impl ChildServerGuard {
     fn spawn_with_window_size(address: SocketAddr, window_size: Option<usize>) -> Self {
         let binary = env!("CARGO_BIN_EXE_knotrel-server");
         let mut cmd = Command::new(binary);
-        cmd.env_clear()
-            .env("KNOTREL_ADDR", address.to_string())
+        // Remove Knotrel-specific environment variables to prevent host contamination,
+        // while preserving essential OS variables (SystemRoot, PATH, etc. required on Windows).
+        for (key, _) in std::env::vars() {
+            if key.starts_with("KNOTREL_") {
+                cmd.env_remove(key);
+            }
+        }
+        cmd.env("KNOTREL_ADDR", address.to_string())
             .env("KNOTREL_MODE", "source-managed");
         if let Some(w) = window_size {
             cmd.env("KNOTREL_DEDUP_WINDOW_SIZE", w.to_string());
@@ -86,7 +92,8 @@ impl ChildServerGuard {
         false
     }
 
-    fn signal(&self, signame: &str) {
+    fn signal(&mut self, signame: &str) {
+        #[cfg(unix)]
         if let Some(child) = &self.child {
             let status = Command::new("kill")
                 .arg(format!("-{signame}"))
@@ -94,6 +101,11 @@ impl ChildServerGuard {
                 .status()
                 .expect("signal child process");
             assert!(status.success());
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = signame;
+            self.kill_abruptly();
         }
     }
 
