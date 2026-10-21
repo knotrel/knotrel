@@ -270,7 +270,7 @@ jobs:
           ./scripts/package-release-binary.sh "$RELEASE_VERSION" "${{ matrix.target }}" "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$CANDIDATE_SHA" "target/${{ matrix.target }}/release/build-provenance.json"
 
       - name: Upload binary artifacts
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: knotrel-server-pkg-${{ matrix.target }}
           path: dist/*
@@ -314,7 +314,7 @@ jobs:
           sha256sum "knotrel-server-${RELEASE_VERSION}.crate" > "knotrel-server-${RELEASE_VERSION}.crate.sha256"
 
       - name: Upload source artifacts
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: knotrel-source-pkg
           path: dist-source/*
@@ -392,7 +392,7 @@ jobs:
           echo "Confirmed: Exact inventory of $EXPECTED_COUNT release assets verified successfully."
 
       - name: Upload complete release bundle (available in dry-run and release)
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: knotrel-release-bundle-v${{ env.RELEASE_VERSION }}
           path: release-bundle/*
