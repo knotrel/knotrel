@@ -1007,6 +1007,50 @@ Feature 0.2.5 is implemented in `knotrel-server`:
 6. **Drain Gate and Shutdown Integration:** The existing shutdown gate in `serve()` admits requests once and answers with 503 `draining`. In-flight barrier and event workers complete cleanly within the drain timeout.
 7. **Verification Evidence:** 21 deterministic integration tests in `crates/knotrel-server/tests/bootstrap.rs` (including `test_20_delayed_barrier_fenced_across_lease_expiry` and `test_21_probe_paused_at_expiry_does_not_overwrite_newer_publication`) and unit tests in `crates/knotrel-server/src/service.rs` verify all contract scenarios TR-01 through TR-31 and concurrency interleavings with zero failures.
 
+### 13.5 Implementation Status: Feature 0.2.6 (External Feeder Example, Restart/Rebuild Tests, and Reproducible Measurements)
+Feature 0.2.6 is implemented, providing executable integration tools, comprehensive recovery tests, and reproducible benchmarks:
+1. **Runnable External Feeder Reference Example:** Implemented in [`crates/knotrel-server/examples/external_feeder.rs`](crates/knotrel-server/examples/external_feeder.rs) separate from server internals and graph core. Driven by a deterministic source fixture ([`crates/knotrel-server/tests/common/feeder.rs`](crates/knotrel-server/tests/common/feeder.rs)), it executes the full lifecycle over the wire:
+   - Server discovery (`GET /v1/info`) and operating mode verification (`source-managed`).
+   - Session registration (`POST /v1/feeder/session`) with observable background heartbeat loop (`POST /v1/feeder/heartbeat`), validating responses with bounded timeouts and stopping stale ownership on fencing.
+   - Atomic baseline snapshot import ($S$) with isolated vertices (`[99, 100]`), verifying published generation 1 and HTTP 201 Created.
+   - Ordered catch-up stream ($D=1..7$) exercising vertex creation, links, cuts, no-op duplicate mutations, and non-mutating `progress` checkpoints.
+   - Synchronization barrier $B$ (`POST /v1/feeder/barrier`) at high-water mark, restoring `Ready` (HTTP 200).
+   - Independent Oracle comparison: Queries against `/v1/operations` verified against pure standard library BFS/adjacency oracle ([`ExternalSourceOracle`](crates/knotrel-server/tests/common/feeder.rs)) with reported agreement percentage.
+   - Controlled fault injection: Deterministic response loss simulated via loopback TCP proxy ([`ControlledFaultProxy`](crates/knotrel-server/tests/common/feeder.rs)); feeder automatically reconciles via `/v1/stats` and recovers without data loss or false progress.
+   - Volatile state demonstration: Simulates abrupt crash (`SIGKILL`), verifies newly spawned instance begins uninitialized (HTTP 503) with a fresh instance ID, and rebuilds authoritatively to `Ready`.
+   - Clean shutdown: Heartbeat background task termination is cleanly awaited during shutdown.
+   - Build command: `cargo build --bin knotrel-server --example external_feeder` builds both server and example.
+2. **Automated End-to-End Restart, Rebuild, and Recovery Tests:** Implemented in [`crates/knotrel-server/tests/e2e_rebuild.rs`](crates/knotrel-server/tests/e2e_rebuild.rs) executing 21 automated scenarios against real `knotrel-server` child processes:
+   - `test_01_initial_bootstrap_oracle_verification`: Initial build to `Ready` verified against independent oracle; uninitialized server rejects queries (503 `uninitialized`); stale instance header rejection (409 `stale_instance_id`).
+   - `test_02_noop_and_progress_records_preserve_revision`: No-op links and progress records advance source frontier without incrementing `state_version`.
+   - `test_03_committed_event_with_lost_acknowledgment_and_feeder_recovery`: Committed event with response dropped by `ControlledFaultProxy` is retried using exact immutable identity, letting server deduplication logic idempotently return HTTP 200 `already_applied` without synthesizing success from sequence frontiers.
+   - `test_04_old_link_retry_after_newer_cut_preserves_cut`: Critical regression test: retrying an old `link(A, B)` event after a newer `cut(A, B)` returns `already_applied` and preserves the cut (edge strictly remains absent).
+   - `test_05_graceful_restart_and_abrupt_termination_require_rebuild`: Graceful restart (SIGTERM) and abrupt process crash (SIGKILL) cause newly started server to start uninitialized (HTTP 503), reject old instance identity (HTTP 409 `stale_instance_id`), and require rediscovery and authoritative rebuild.
+   - `test_06_declared_gap_followed_by_authoritative_rebuild`: Feeder gap declaration (`POST /v1/feeder/gap`) rejects subsequent updates with 409 `graph_desynchronized`; authoritative rebuild via replacement import (`mode: "replace"` with composite `If-Match`) and fresh barrier restores `Ready` serving.
+   - `test_07_lease_expiry_cannot_be_repaired_by_heartbeat_alone`: Expired lease causes 503 `stale`; subsequent heartbeat renews deadline but returns `status: "stale"`; barrier with expired epoch returns 409 `fenced_feeder_session`; recovery requires registering a bumped feeder epoch (`feeder_epoch > last_expired_epoch`) and submitting barrier proof.
+   - `test_08_failed_domain_mutation_stops_batch_without_false_progress`: Domain failure (self-loop 422) stops batch execution cleanly; committed prefix advances applied frontier while uncommitted items are not recorded; structured partial failure diagnostics inspected; corrected retry succeeds.
+   - `test_09_import_with_lost_acknowledgment_and_reconciliation`: Snapshot import with lost HTTP response returns explicit `UncertainOutcome` without synthesizing publication from counts/cursor; feeder safely executes documented conditional rebuild (`conditional_rebuild_snapshot` with mandatory composite `If-Match` precondition) before declaring barrier and serving.
+   - `test_10_authoritative_changes_during_snapshot_loading_catch_up_to_barrier_b`: Controlled test where external authoritative mutations occur strictly after snapshot S and before import completion via upload proxy synchronization; server remains in `catching_up` until stream catches up to high-water mark B and reaches `Ready`, verified against independent oracle.
+   - `test_11_unverifiable_duplicate_requiring_safe_recovery`: Events evicted from bounded deduplication window return HTTP 409 `unverifiable_duplicate`; server remains healthy and feeder safely initiates authoritative rebuild (`mode: "replace"`).
+   - `test_12_heartbeat_observability_fencing_and_clean_shutdown`: Competing session fences primary feeder; background heartbeat detects 409 fencing, stops stale ownership, updates observable status to `HeartbeatStatus::Fenced`, and awaits clean shutdown.
+   - `test_13_lost_ack_combined_with_replacement_before_retry`: Lost event ACK followed by replacement before retry returns explicit `RecoveryRequired` / `Fenced` without fabricating success.
+   - `test_14_lost_ack_combined_with_restart`: Lost event ACK followed by server crash and restart returns explicit `StaleInstance` without fabricating deduplication.
+   - `test_15_lost_ack_combined_with_competing_ownership_takeover`: Lost event ACK followed by competing feeder takeover returns explicit `Fenced` without fabricating deduplication.
+   - `test_16_import_reconciliation_existing_graph_same_cursor_different_topology`: Import reconciliation on existing graph with matching cursor but different topology safely rejects false publication success.
+   - `test_17_import_reconciliation_import_never_committed`: Import dropped before server commit returns explicit `UncertainOutcome` ("publication not observed on server") without synthesizing publication.
+   - `test_18_import_reconciliation_replaced_by_another_feeder_before_reconciliation`: Replacement by competing feeder before import reconciliation returns explicit `UncertainOutcome` / `Fenced` without unconditional replacement.
+   - `test_19_import_reconciliation_restart_during_uncertain_outcome`: Restart during uncertain import outcome returns explicit `RecoveryRequired` / `StaleInstance`.
+   - `test_20_heartbeat_failure_halts_feeder_control_flow`: Background heartbeat fencing halts all feeder operations (`import`, `apply_events`, `apply_events_with_recovery`, `declare_barrier`) immediately, ensuring retries and recovery do not continue under lost ownership.
+   - `test_21_import_reconciliation_same_count_same_cursor_different_topology`: Deterministic regression reproducing same-count, same-cursor, different-topology competing publication; verifies that when original import was not forwarded and heartbeat detection cannot mask the reconciliation defect, the feeder returns explicit `UncertainOutcome` rather than synthesizing false publication success.
+3. **Reproducible Measurement Tooling:** Implemented in [`crates/knotrel-server/examples/measure_e2e.rs`](crates/knotrel-server/examples/measure_e2e.rs) and [`scripts/measure-e2e.sh`](scripts/measure-e2e.sh):
+   - Supports deterministic synthetic workloads across tiers (`small`, `medium`, `large`).
+   - Pure query latency and throughput timing strictly separated from out-of-band BFS oracle verification.
+   - Non-zero process exit on unexpected HTTP response, malformed payload, or oracle disagreement.
+   - Continuous 25ms sampling reports sampled maximum process RSS (documenting that brief transient allocations between sampling intervals may not be captured) alongside final sampled process RSS.
+   - Supports repeated runs (`--runs <N>`) with statistical aggregation (mean, p50, p95).
+   - Explicitly documents build profile (debug smoke vs release benchmark), connection reuse model (`Connection: close` sequential loopback), warmup phase (50 queries), and timer boundaries.
+   - Retains timestamped Markdown evidence in `target/measurements/` without overwriting prior evidence files.
+
 ---
 
 ## 14. Maintainer Decision Checklist

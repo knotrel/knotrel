@@ -707,3 +707,59 @@ In-flight barriers from a superseded, disconnected, or expired feeder session ca
 - **Session takeover fencing:** If a session takeover occurred, incoming barrier requests bearing an older `feeder_epoch` fail precondition checks with HTTP 409 `fenced_feeder_session`.
 - **Superseded sequence:** If new events were ingested by the active session, the applied delivery sequence has advanced ($D_{applied} > D_B$), causing older barriers to be conservatively rejected under Case B9 with HTTP 409 `superseded_barrier`.
 - In all cases, live graph topology, sequence, cursor, and synchronization status remain strictly untouched.
+
+## External feeder operational lifecycle and recovery
+
+### Operational monitoring
+
+Operators and feeder processes monitor Knotrel instances through four primary HTTP endpoints:
+1. **Liveness (`GET /health`):** Returns HTTP 200 `OK` as long as the HTTP listener and background worker threads are running. Liveness probes should not restart instances merely because synchronization is in progress.
+2. **Readiness (`GET /ready`):** Returns HTTP 200 when `status == "ready"` (or standalone server is initialized). Returns HTTP 503 during `uninitialized`, `loading`, `catching_up`, `stale`, `desynchronized`, `draining`, or `unavailable`. Load balancers and service meshes must direct query traffic only to ready instances.
+3. **Instance Discovery (`GET /v1/info`):** Returns `instance_id`, `mode`, and server version. Feeders poll `/v1/info` to discover ephemeral server instance IDs and detect process restarts.
+4. **Live Statistics (`GET /v1/stats`):** Returns live topology cardinality (`node_count`, `edge_count`), graph limits, and current synchronization metadata (`generation`, `state_version`, `source_position`, `sync_status`). The `ETag` header exposes the exact `<generation>.<state_version>.<percent_encoded_source_position>` token required for optimistic concurrency on replacement imports (`mode: "replace"`).
+
+### Standard synchronization lifecycle
+
+A protocol-compliant feeder coordinates synchronization using the following sequence:
+```
+1. Discover:    GET /v1/info                     -> Read ephemeral instance_id
+2. Lease:       POST /v1/feeder/session          -> Acquire session lease (epoch 1)
+3. Keepalive:   POST /v1/feeder/heartbeat        -> Background worker ticks at lease_duration / 3
+4. Baseline:    POST /v1/feeder/import           -> Upload snapshot S (mode "create_only")
+5. Stream:      POST /v1/feeder/events           -> Stream ordered updates (D = 1..N)
+6. Promote:     POST /v1/feeder/barrier          -> Assert high-water mark B (status -> "ready")
+7. Incremental: POST /v1/feeder/events           -> Continuous steady-state updates
+```
+
+### Recovery procedures
+
+Because Knotrel maintains volatile, in-memory graph state without local persistent storage:
+1. **Server restart or process crash:**
+   - The newly started Knotrel instance generates a fresh `instance_id` and starts with `sync_status: "uninitialized"`.
+   - Existing feeder connections receive HTTP 409 `stale_instance_id`.
+   - The feeder must rediscover the new `instance_id` via `GET /v1/info` and perform a clean initial rebuild (`mode: "create_only"`).
+2. **Feeder lease expiry:**
+   - When a network partition or feeder pause causes the lease deadline to pass, Knotrel transitions to `stale` (and `/ready` returns HTTP 503).
+   - Feeder heartbeats renew the lease deadline but keep status `stale`.
+   - To restore `ready`, the feeder must register a bumped `feeder_epoch > last_expired_epoch` and declare barrier proof matching the current source position.
+3. **Declared gap or unrecoverable desynchronization:**
+   - When source history is lost (or after declaring `POST /v1/feeder/gap`), Knotrel enters `desynchronized`.
+   - To recover, the feeder reads the current `ETag` via `GET /v1/stats` and submits an atomic replacement import via `POST /v1/feeder/import` (`mode: "replace"`, `If-Match: "<etag>"`).
+   - Once the replacement snapshot is published, the feeder replays contiguous events and declares a fresh barrier to restore `ready`.
+
+### Executable examples and tooling
+
+- **Reference Feeder:** Build and execute the full integration lifecycle against a real child server process:
+  ```bash
+  cargo build --bin knotrel-server --example external_feeder
+  cargo run --example external_feeder -- --spawn-server
+  ```
+  Exercises server discovery, observable heartbeat lease renewals, baseline snapshot import, post-snapshot catch-up event streaming, barrier promotion, independent oracle verification, local fault proxy response drop recovery, and crash/rebuild recovery.
+- **Reproducible Measurements:** Run automated end-to-end benchmarks with separated pure query timing, independent BFS ground-truth verification, sampled maximum process RSS (polled every 25ms; brief transient allocations between sampling intervals may not be captured) alongside final sampled process RSS, and statistical aggregation across repeated runs:
+  ```bash
+  cargo build --bin knotrel-server --example measure_e2e
+  ./scripts/measure-e2e.sh small
+  # For release performance benchmarks with repeated runs:
+  ./scripts/measure-e2e.sh --release --runs 3 medium
+  ```
+  Individual measurement reports are retained with timestamps in `target/measurements/` without overwriting prior evidence.
