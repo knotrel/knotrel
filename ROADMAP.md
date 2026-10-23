@@ -392,6 +392,8 @@ Limitations: External feeder reference implementation and end-to-end reproducibl
 ### M3 — Compatible batch processing and update efficiency (P1)
 
 - [ ] **M3.1 Contract:** Inventory the existing `/v1/batch` behavior and extend result/version reporting compatibly. Preserve ordered execution, per-item domain errors, continuation and lack of rollback.
+
+Evidence: [ADR 0013](docs/architecture/0013-compatible-batch-contract.md); [HTTP API specification](docs/http-api.md#batches); [batch integration test suite](crates/knotrel-server/tests/batch.rs) covering 1-to-1 outcome reporting, continue-on-error without rollback, revision progression arithmetic ($\Delta V = \sum [\text{changed} == \text{true}]$), decimal carry, intra-batch query visibility, concurrency isolation, mode segregation, and timeout uncertainty under background worker execution. Feature M3.1 remains unchecked pending independent review.
 - [ ] **M3.2 Failure model:** Specify feeder batch boundaries separately if introduced. A stop-on-error applied-prefix protocol requires explicit new semantics, not a replacement of the legacy endpoint. "Applied" does not mean locally durable.
 - [ ] **M3.3 Retry:** Define source-prefix resume, deduplication limits and uncertain outcomes after timeout; retain generation/session fencing from 0.2.x. Do not assume exactly-once delivery or persist a cursor ahead of applied state.
 - [ ] **M3.4 Execution:** Reuse the common graph mutation path across single, legacy batch and feeder execution while preserving their distinct validation/failure policies.

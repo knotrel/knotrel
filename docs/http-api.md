@@ -185,6 +185,25 @@ have completed. Earlier operations in the batch are not labeled individually wit
 intermediate revisions: continue-on-error applies each mutation in order, and only
 effective mutations (`changed: true`) advance the revision.
 
+### Revision progression arithmetic
+
+Clients observing final revision $V_{\text{final}}$ in `X-Knotrel-State-Version`
+can compute the exact revision progression directly from the `results` array:
+- Total revision advance: $\Delta V = \sum_{i=0}^{N-1} [\text{results}[i].\text{result} == \text{"changed"} \land \text{results}[i].\text{changed} == \text{true}]$
+- Pre-batch baseline revision: $V_{\text{start}} = V_{\text{final}} - \Delta V$
+- Intermediate revision after operation $k$: $V_k = V_{\text{start}} + \sum_{i=0}^{k} [\text{results}[i].\text{result} == \text{"changed"} \land \text{results}[i].\text{changed} == \text{true}]$
+
+Operations resulting in `changed: false` (idempotent duplicates or missing cuts),
+connectivity queries (`connected`), and domain errors never advance the revision.
+
+### Mode rules
+
+In standalone mode (`KNOTREL_MODE=standalone`), `/v1/batch` accepts arbitrary
+combinations of mutations and queries. In source-managed mode
+(`KNOTREL_MODE=source_managed`), direct client mutations are rejected with HTTP 409
+`direct_mutation_disabled`; `/v1/batch` is permitted only if every operation is a
+query (`connected`).
+
 ## Concurrency and order
 
 Every graph operation, including queries and `GET /v1/stats`, takes the same
