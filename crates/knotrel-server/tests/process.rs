@@ -58,6 +58,9 @@ impl Server {
             .env("KNOTREL_ADDR", address.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if let Ok(profile) = std::env::var("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
         for (key, value) in extra {
             command.env(key, value);
         }
@@ -466,4 +469,15 @@ fn second_signal_during_drain_forces_immediate_exit() {
     server.signal("INT");
     let status = server.wait_exit(STEP);
     assert_eq!(status.code(), Some(130), "{status}");
+}
+
+#[test]
+fn json_logging_startup() {
+    let mut server = Server::start(&[("LOG_FORMAT", "json")]);
+    assert_eq!(
+        call(&server, "GET", "/health", ""),
+        (200, r#"{"status":"ok"}"#.into())
+    );
+    server.signal("TERM");
+    assert_eq!(server.wait_exit(STEP).code(), Some(0));
 }

@@ -626,4 +626,169 @@ mod tests {
         early.mark_ready();
         assert_eq!(early.phase(), Phase::Draining);
     }
+
+    #[test]
+    fn test_lifecycle_default_and_debug_impls() {
+        let lifecycle = Lifecycle::default();
+        assert_eq!(lifecycle.phase(), Phase::Starting);
+        assert!(!is_probe("/v1/stats"));
+        assert!(is_probe("/health"));
+        assert!(is_probe("/ready"));
+
+        #[cfg(feature = "test-support")]
+        {
+            let (started_tx, _) = tokio::sync::oneshot::channel();
+            let (_release_tx, release_rx) = std::sync::mpsc::channel();
+            let worker_hook = WorkerHook {
+                started_tx,
+                release_rx,
+            };
+            assert!(format!("{worker_hook:?}").contains("WorkerHook"));
+
+            let drain_hook = DrainLoopHook(Box::new(|_, _, _| {}));
+            assert!(format!("{drain_hook:?}").contains("DrainLoopHook"));
+
+            let gate_hook = GateHook(Box::new(|_, _| {}));
+            assert!(format!("{gate_hook:?}").contains("GateHook"));
+
+            let (p_tx, _) = tokio::sync::oneshot::channel();
+            let (_, p_rx) = tokio::sync::oneshot::channel();
+            let probe_hook = ReadyProbeHook {
+                started_tx: p_tx,
+                release_rx: p_rx,
+            };
+            assert!(format!("{probe_hook:?}").contains("ReadyProbeHook"));
+
+            assert_eq!(format!("{:?}", GateDecision::Admitted), "Admitted");
+            assert_eq!(
+                format!("{:?}", GateDecision::RejectedShuttingDown),
+                "RejectedShuttingDown"
+            );
+            assert_eq!(format!("{:?}", GateDecision::Probe), "Probe");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_readiness_branches() {
+        use crate::service::{Service, SyncStatus};
+        use knotrel_core::ConnectivityGraph;
+
+        let _clock_guard = crate::service::lock_clock_for_test().await;
+
+        let lifecycle = Lifecycle::ready();
+        let config = crate::ServerConfig::default().with_mode(crate::ServerMode::SourceManaged);
+        let service =
+            Service::with_config(ConnectivityGraph::default(), 2, lifecycle.clone(), &config);
+
+        // 1. Uninitialized
+        let resp = readiness(&lifecycle, &service).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 2. Loading
+        service.set_sync_status_for_test(SyncStatus::Loading);
+        let resp = readiness(&lifecycle, &service).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 3. Desynchronized
+        service.set_sync_status_for_test(SyncStatus::Desynchronized);
+        let resp = readiness(&lifecycle, &service).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 4. Stale
+        service.set_sync_status_for_test(SyncStatus::Stale);
+        let resp = readiness(&lifecycle, &service).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 5. CatchingUp (non-expired deadline)
+        let far_future = crate::service::now_to_millis() + 60_000;
+        service.set_published_readiness_for_test(SyncStatus::CatchingUp, far_future);
+        let resp = readiness(&lifecycle, &service).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // Advance clock to ensure expiration
+        crate::service::advance_clock(std::time::Duration::from_secs(10));
+
+        // 6. CatchingUp (expired deadline -> stale)
+        service.set_published_readiness_for_test(SyncStatus::CatchingUp, 1);
+        let resp = readiness(&lifecycle, &service).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 7. Ready (non-expired deadline -> OK 200)
+        let far_future2 = crate::service::now_to_millis() + 60_000;
+        service.set_published_readiness_for_test(SyncStatus::Ready, far_future2);
+        let resp = readiness(&lifecycle, &service).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // 8. Ready (expired deadline -> try_mark_stale succeeds -> 503 stale)
+        service.set_published_readiness_for_test(SyncStatus::Ready, 1);
+        let resp = readiness(&lifecycle, &service).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        crate::service::reset_clock();
+
+        // 9. When service is unavailable
+        service.mark_unavailable_for_test();
+        let resp = readiness(&lifecycle, &service).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn test_readiness_probe_race_branches() {
+        use crate::service::{Service, SyncStatus};
+        use knotrel_core::ConnectivityGraph;
+
+        let _clock_guard = crate::service::lock_clock_for_test().await;
+        crate::service::advance_clock(std::time::Duration::from_secs(10));
+
+        let lifecycle = Lifecycle::ready();
+        let config = crate::ServerConfig::default().with_mode(crate::ServerMode::SourceManaged);
+        let service =
+            Service::with_config(ConnectivityGraph::default(), 2, lifecycle.clone(), &config);
+
+        // Branch 1: Probe pauses after observing expired lease; concurrent update sets Ready with fresh future deadline
+        service.set_published_readiness_for_test(SyncStatus::Ready, 1);
+        let mut handle = lifecycle.pause_next_ready_probe();
+        let l_clone = lifecycle.clone();
+        let s_clone = service.clone();
+        let task = tokio::spawn(async move { readiness(&l_clone, &s_clone).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait_started())
+            .await
+            .expect("probe pause wait_started timed out");
+        let far_future = crate::service::now_to_millis() + 60_000;
+        service.set_published_readiness_for_test(SyncStatus::Ready, far_future);
+        handle.release();
+        let resp = task.await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Branch 2: Probe pauses after observing expired lease; concurrent update changes status to Desynchronized
+        service.set_published_readiness_for_test(SyncStatus::Ready, 1);
+        let mut handle = lifecycle.pause_next_ready_probe();
+        let l_clone = lifecycle.clone();
+        let s_clone = service.clone();
+        let task = tokio::spawn(async move { readiness(&l_clone, &s_clone).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait_started())
+            .await
+            .expect("probe pause wait_started timed out");
+        service.set_published_readiness_for_test(SyncStatus::Desynchronized, 0);
+        handle.release();
+        let resp = task.await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // Branch 3: Probe pauses after observing expired lease; concurrent update sets Ready with still expired deadline
+        service.set_published_readiness_for_test(SyncStatus::Ready, 1);
+        let mut handle = lifecycle.pause_next_ready_probe();
+        let l_clone = lifecycle.clone();
+        let s_clone = service.clone();
+        let task = tokio::spawn(async move { readiness(&l_clone, &s_clone).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait_started())
+            .await
+            .expect("probe pause wait_started timed out");
+        service.set_published_readiness_for_test(SyncStatus::Ready, 1);
+        handle.release();
+        let resp = task.await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        crate::service::reset_clock();
+    }
 }

@@ -707,4 +707,97 @@ mod tests {
             .is_ok()
         );
     }
+
+    #[test]
+    fn additional_configuration_validation_and_getters() {
+        // Unknown KNOTREL_ setting
+        let err =
+            ServerConfig::from_variables([("KNOTREL_FOOBAR".into(), "1".into())]).unwrap_err();
+        assert!(err.to_string().contains("unknown setting: KNOTREL_FOOBAR"));
+
+        // Malformed KNOTREL_ADDR
+        let err = ServerConfig::from_variables([("KNOTREL_ADDR".into(), "not_an_ip".into())])
+            .unwrap_err();
+        assert!(err.to_string().contains("must be an IP socket address"));
+
+        // KNOTREL_ENGINE=hdt and invalid
+        let cfg = ServerConfig::from_variables([("KNOTREL_ENGINE".into(), "hdt".into())]).unwrap();
+        assert_eq!(cfg.engine(), EngineConfig::Hdt);
+        let err =
+            ServerConfig::from_variables([("KNOTREL_ENGINE".into(), "unknown_engine".into())])
+                .unwrap_err();
+        assert!(err.to_string().contains("KNOTREL_ENGINE must be"));
+
+        // KNOTREL_MODE
+        let cfg = ServerConfig::from_variables([("KNOTREL_MODE".into(), "source_managed".into())])
+            .unwrap();
+        assert_eq!(cfg.mode(), ServerMode::SourceManaged);
+        let cfg2 = ServerConfig::from_variables([("KNOTREL_MODE".into(), "source-managed".into())])
+            .unwrap();
+        assert_eq!(cfg2.mode(), ServerMode::SourceManaged);
+        let err = ServerConfig::from_variables([("KNOTREL_MODE".into(), "invalid_mode".into())])
+            .unwrap_err();
+        assert!(err.to_string().contains("KNOTREL_MODE must be"));
+
+        // KNOTREL_MAX_PENDING_JOBS non-numeric
+        let err = ServerConfig::from_variables([("KNOTREL_MAX_PENDING_JOBS".into(), "abc".into())])
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must be a positive decimal integer")
+        );
+        let err = ServerConfig::from_variables([("KNOTREL_MAX_PENDING_JOBS".into(), "".into())])
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must be a positive decimal integer")
+        );
+
+        // KNOTREL_MAX_IMPORT_BODY_BYTES
+        let cfg =
+            ServerConfig::from_variables([("KNOTREL_MAX_IMPORT_BODY_BYTES".into(), "1024".into())])
+                .unwrap();
+        assert_eq!(cfg.max_import_body_bytes(), 1024);
+
+        // with_max_import_body_bytes bounds
+        let defaults = ServerConfig::default();
+        assert!(defaults.clone().with_max_import_body_bytes(0).is_err());
+        assert!(
+            defaults
+                .clone()
+                .with_max_import_body_bytes(ServerConfig::MAX_IMPORT_BODY_LIMIT + 1)
+                .is_err()
+        );
+        assert!(defaults.clone().with_max_import_body_bytes(1024).is_ok());
+
+        // with_dedup_window_size bounds
+        assert!(defaults.clone().with_dedup_window_size(0).is_err());
+        assert!(
+            defaults
+                .clone()
+                .with_dedup_window_size(ServerConfig::MAX_DEDUP_WINDOW_SIZE + 1)
+                .is_err()
+        );
+        assert!(defaults.clone().with_dedup_window_size(100).is_ok());
+
+        // KNOTREL_DEDUP_WINDOW_SIZE env
+        let cfg = ServerConfig::from_variables([("KNOTREL_DEDUP_WINDOW_SIZE".into(), "50".into())])
+            .unwrap();
+        assert_eq!(cfg.dedup_window_size(), 50);
+
+        // with_graph_limits and graph_limits
+        let limits = knotrel_core::GraphLimits {
+            max_nodes: Some(10),
+            max_edges: Some(20),
+        };
+        let cfg = defaults.clone().with_graph_limits(limits);
+        assert_eq!(cfg.graph_limits(), limits);
+
+        // Getters
+        assert_eq!(
+            defaults.header_read_timeout(),
+            ServerConfig::DEFAULT_HEADER_READ_TIMEOUT
+        );
+        assert_eq!(defaults.mode(), ServerMode::Standalone);
+    }
 }

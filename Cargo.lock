@@ -293,7 +293,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "knotrel-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fixedbitset",
  "nohash-hasher",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "knotrel-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "hyper",
@@ -729,9 +729,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.2"
+version = "1.54.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
+checksum = "a0c168a474b95bfecfe908a65d4bdffc523144b649a74c09c286afb35d53e0bc"
 dependencies = [
  "bytes",
  "libc",

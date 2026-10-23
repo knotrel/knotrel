@@ -73,7 +73,7 @@ pub(crate) struct ImportResponse {
 }
 
 /// Request payload for feeder session registration.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionRequest {
     pub(crate) instance_id: String,
@@ -97,7 +97,7 @@ pub(crate) struct SessionResponse {
 }
 
 /// Request payload for feeder heartbeat.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HeartbeatRequest {
     pub(crate) instance_id: String,
@@ -135,7 +135,7 @@ pub(crate) struct FeederEvent {
 }
 
 /// Request payload for ordered feeder incremental events.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FeederEventsRequest {
     pub(crate) instance_id: String,
@@ -205,7 +205,7 @@ pub(crate) struct PartialBatchFailure {
 }
 
 /// Request payload for declaring an unrecoverable source gap.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GapRequest {
     pub(crate) instance_id: String,
@@ -520,46 +520,86 @@ pub(crate) async fn batch(
     }
 }
 
+fn check_feeder_headers(service: &Service, headers: &HeaderMap) -> Option<Response> {
+    if service.mode() != crate::ServerMode::SourceManaged {
+        return Some(error_response(
+            StatusCode::CONFLICT,
+            "mode_conflict",
+            "feeder endpoints are only available in source_managed mode".into(),
+        ));
+    }
+    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
+        return Some(feeder_error(
+            crate::service::FeederError::InvalidInstanceId(
+                "missing header X-Knotrel-Instance-Id".into(),
+            ),
+        ));
+    };
+    let Ok(header_val) = instance_id_header.to_str() else {
+        return Some(feeder_error(
+            crate::service::FeederError::InvalidInstanceId(
+                "invalid header X-Knotrel-Instance-Id".into(),
+            ),
+        ));
+    };
+    if header_val != service.instance_id() {
+        return Some(error_response(
+            StatusCode::CONFLICT,
+            "stale_instance_id",
+            "header X-Knotrel-Instance-Id must match server instance ID".into(),
+        ));
+    }
+    None
+}
+
+fn check_body_instance_id(service: &Service, body_instance_id: &str) -> Option<Response> {
+    if body_instance_id != service.instance_id() {
+        return Some(error_response(
+            StatusCode::CONFLICT,
+            "stale_instance_id",
+            "body instance_id must match server instance ID".into(),
+        ));
+    }
+    None
+}
+
+fn check_default_graph_id(graph_id: &str) -> Option<Response> {
+    if graph_id != "default" {
+        return Some(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_graph_id",
+            format!("unsupported graph ID '{graph_id}'; only 'default' is supported"),
+        ));
+    }
+    None
+}
+
+fn check_service_available(service: &Service) -> Option<Response> {
+    if service.is_unavailable() {
+        return Some(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "graph worker unavailable".into(),
+        ));
+    }
+    None
+}
+
 /// Registers an active feeder session.
 pub(crate) async fn feeder_session(
     headers: HeaderMap,
     State(service): State<Service>,
     request: Result<SimdJson<SessionRequest>, Response>,
 ) -> Response {
-    if service.mode() != crate::ServerMode::SourceManaged {
-        return error_response(
-            StatusCode::CONFLICT,
-            "mode_conflict",
-            "feeder endpoints are only available in source_managed mode".into(),
-        );
-    }
-    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "missing header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    let Ok(header_val) = instance_id_header.to_str() else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "invalid header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    if header_val != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "header X-Knotrel-Instance-Id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_feeder_headers(&service, &headers) {
+        return rejection;
     }
     let SimdJson(session_req) = match request {
         Ok(req) => req,
         Err(response) => return response,
     };
-    if session_req.instance_id != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "body instance_id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_body_instance_id(&service, &session_req.instance_id) {
+        return rejection;
     }
     match service.register_session(session_req).await {
         Ok(res) => (StatusCode::OK, Json(res)).into_response(),
@@ -573,40 +613,15 @@ pub(crate) async fn feeder_heartbeat(
     State(service): State<Service>,
     request: Result<SimdJson<HeartbeatRequest>, Response>,
 ) -> Response {
-    if service.mode() != crate::ServerMode::SourceManaged {
-        return error_response(
-            StatusCode::CONFLICT,
-            "mode_conflict",
-            "feeder endpoints are only available in source_managed mode".into(),
-        );
-    }
-    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "missing header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    let Ok(header_val) = instance_id_header.to_str() else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "invalid header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    if header_val != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "header X-Knotrel-Instance-Id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_feeder_headers(&service, &headers) {
+        return rejection;
     }
     let SimdJson(heartbeat_req) = match request {
         Ok(req) => req,
         Err(response) => return response,
     };
-    if heartbeat_req.instance_id != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "body instance_id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_body_instance_id(&service, &heartbeat_req.instance_id) {
+        return rejection;
     }
     match service.heartbeat(heartbeat_req).await {
         Ok(res) => (StatusCode::OK, Json(res)).into_response(),
@@ -622,42 +637,14 @@ pub(crate) async fn feeder_import(
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> Response {
-    if service.mode() != crate::ServerMode::SourceManaged {
-        return error_response(
-            StatusCode::CONFLICT,
-            "mode_conflict",
-            "feeder endpoints are only available in source_managed mode".into(),
-        );
-    }
-    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "missing header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    let Ok(instance_id_str) = instance_id_header.to_str() else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "invalid header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    if instance_id_str != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            format!(
-                "header X-Knotrel-Instance-Id '{instance_id_str}' does not match server instance ID '{}'",
-                service.instance_id()
-            ),
-        );
+    if let Some(rejection) = check_feeder_headers(&service, &headers) {
+        return rejection;
     }
     if let Some(rejection) = check_json_content_type(&headers) {
         return rejection;
     }
-    if service.is_unavailable() {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "graph worker unavailable".into(),
-        );
+    if let Some(rejection) = check_service_available(&service) {
+        return rejection;
     }
     let if_match = headers
         .get(axum::http::header::IF_MATCH)
@@ -702,57 +689,21 @@ pub(crate) async fn feeder_events(
     State(service): State<Service>,
     request: Result<SimdJson<FeederEventsRequest>, Response>,
 ) -> Response {
-    if service.mode() != crate::ServerMode::SourceManaged {
-        return error_response(
-            StatusCode::CONFLICT,
-            "mode_conflict",
-            "feeder endpoints are only available in source_managed mode".into(),
-        );
-    }
-    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "missing header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    let Ok(header_val) = instance_id_header.to_str() else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "invalid header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    if header_val != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "header X-Knotrel-Instance-Id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_feeder_headers(&service, &headers) {
+        return rejection;
     }
     let SimdJson(events_req) = match request {
         Ok(req) => req,
         Err(response) => return response,
     };
-    if events_req.instance_id != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "body instance_id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_body_instance_id(&service, &events_req.instance_id) {
+        return rejection;
     }
-    if events_req.graph_id != "default" {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_graph_id",
-            format!(
-                "unsupported graph ID '{}'; only 'default' is supported",
-                events_req.graph_id
-            ),
-        );
+    if let Some(rejection) = check_default_graph_id(&events_req.graph_id) {
+        return rejection;
     }
-    if service.is_unavailable() {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "graph worker unavailable".into(),
-        );
+    if let Some(rejection) = check_service_available(&service) {
+        return rejection;
     }
     match service.apply_events(events_req).await {
         Ok(crate::service::FeederEventsResult::Applied { response, metadata }) => {
@@ -784,57 +735,21 @@ pub(crate) async fn feeder_gap(
     State(service): State<Service>,
     request: Result<SimdJson<GapRequest>, Response>,
 ) -> Response {
-    if service.mode() != crate::ServerMode::SourceManaged {
-        return error_response(
-            StatusCode::CONFLICT,
-            "mode_conflict",
-            "feeder endpoints are only available in source_managed mode".into(),
-        );
-    }
-    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "missing header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    let Ok(header_val) = instance_id_header.to_str() else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "invalid header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    if header_val != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "header X-Knotrel-Instance-Id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_feeder_headers(&service, &headers) {
+        return rejection;
     }
     let SimdJson(gap_req) = match request {
         Ok(req) => req,
         Err(response) => return response,
     };
-    if gap_req.instance_id != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "body instance_id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_body_instance_id(&service, &gap_req.instance_id) {
+        return rejection;
     }
-    if gap_req.graph_id != "default" {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_graph_id",
-            format!(
-                "unsupported graph ID '{}'; only 'default' is supported",
-                gap_req.graph_id
-            ),
-        );
+    if let Some(rejection) = check_default_graph_id(&gap_req.graph_id) {
+        return rejection;
     }
-    if service.is_unavailable() {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "graph worker unavailable".into(),
-        );
+    if let Some(rejection) = check_service_available(&service) {
+        return rejection;
     }
     match service.declare_gap(gap_req).await {
         Ok((res, metadata)) => {
@@ -852,57 +767,21 @@ pub(crate) async fn feeder_barrier(
     State(service): State<Service>,
     request: Result<SimdJson<crate::service::BarrierRequest>, Response>,
 ) -> Response {
-    if service.mode() != crate::ServerMode::SourceManaged {
-        return error_response(
-            StatusCode::CONFLICT,
-            "mode_conflict",
-            "feeder endpoints are only available in source_managed mode".into(),
-        );
-    }
-    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "missing header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    let Ok(header_val) = instance_id_header.to_str() else {
-        return feeder_error(crate::service::FeederError::InvalidInstanceId(
-            "invalid header X-Knotrel-Instance-Id".into(),
-        ));
-    };
-    if header_val != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "header X-Knotrel-Instance-Id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_feeder_headers(&service, &headers) {
+        return rejection;
     }
     let SimdJson(barrier_req) = match request {
         Ok(req) => req,
         Err(response) => return response,
     };
-    if barrier_req.instance_id != service.instance_id() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stale_instance_id",
-            "body instance_id must match server instance ID".into(),
-        );
+    if let Some(rejection) = check_body_instance_id(&service, &barrier_req.instance_id) {
+        return rejection;
     }
-    if barrier_req.graph_id != "default" {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_graph_id",
-            format!(
-                "unsupported graph ID '{}'; only 'default' is supported",
-                barrier_req.graph_id
-            ),
-        );
+    if let Some(rejection) = check_default_graph_id(&barrier_req.graph_id) {
+        return rejection;
     }
-    if service.is_unavailable() {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "graph worker unavailable".into(),
-        );
+    if let Some(rejection) = check_service_available(&service) {
+        return rejection;
     }
     match service.declare_barrier(barrier_req).await {
         Ok((res, metadata)) => {
@@ -1480,10 +1359,283 @@ mod tests {
             ),
             (FeederError::SessionRequired, StatusCode::CONFLICT),
             (FeederError::ModeMismatch, StatusCode::CONFLICT),
+            (FeederError::InvalidLeaseDuration, StatusCode::BAD_REQUEST),
+            (FeederError::MalformedJson, StatusCode::BAD_REQUEST),
+            (
+                FeederError::UnprocessableJson("err".into()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (FeederError::PayloadTooLarge, StatusCode::PAYLOAD_TOO_LARGE),
+            (
+                FeederError::Domain("err_code", "err_msg".into()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                FeederError::SupersededBarrier {
+                    expected: 1,
+                    received: 0,
+                },
+                StatusCode::CONFLICT,
+            ),
+            (
+                FeederError::SourcePredecessorMismatch("err".into()),
+                StatusCode::CONFLICT,
+            ),
         ];
         for (err, expected_status) in cases {
             let resp = feeder_error(err);
             assert_eq!(resp.status(), expected_status);
         }
+    }
+
+    #[tokio::test]
+    async fn test_feeder_checks_and_batch_handling() {
+        use axum::extract::State;
+        let service = make_service(ServerMode::SourceManaged);
+
+        // 1. Invalid UTF-8 in X-Knotrel-Instance-Id header
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        let resp = check_feeder_headers(&service, &headers).unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // 2. Non-default graph_id
+        let resp = check_default_graph_id("custom_graph").unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(check_default_graph_id("default").is_none());
+
+        // 3. check_service_available
+        assert!(check_service_available(&service).is_none());
+        service.mark_unavailable_for_test();
+        let resp = check_service_available(&service).unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 4. Batch size bounds: empty and oversized
+        let standalone_service = make_service(ServerMode::Standalone);
+        let empty_batch = Batch { operations: vec![] };
+        let resp = batch(State(standalone_service.clone()), Ok(SimdJson(empty_batch))).await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let mut ops = Vec::new();
+        for _ in 0..crate::MAX_BATCH_OPERATIONS + 1 {
+            ops.push(Operation::Connected {
+                source: WireNode(1),
+                target: WireNode(2),
+            });
+        }
+        let oversized_batch = Batch { operations: ops };
+        let resp = batch(State(standalone_service), Ok(SimdJson(oversized_batch))).await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let err_resp = error_response(StatusCode::BAD_REQUEST, "bad", "bad".into());
+        let resp = batch(State(make_service(ServerMode::Standalone)), Err(err_resp)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // 5. service_error mappings
+        assert_eq!(
+            service_error(ServiceError::Busy).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            service_error(ServiceError::Unavailable).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        // 6. Batch error path when service is unavailable
+        let unavailable_service = make_service(ServerMode::Standalone);
+        unavailable_service.mark_unavailable_for_test();
+        let valid_batch = Batch {
+            operations: vec![Operation::Connected {
+                source: WireNode(1),
+                target: WireNode(2),
+            }],
+        };
+        let resp = batch(State(unavailable_service), Ok(SimdJson(valid_batch))).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 7. SimdJson error propagation in feeder handlers
+        let make_err = || {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "syntax error".into(),
+            )
+        };
+        let headers = HeaderMap::new();
+
+        let resp = feeder_session(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_heartbeat(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_events(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_gap(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_barrier(headers.clone(), State(service.clone()), Err(make_err())).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // 8. Graph ID and instance ID validation in feeder handlers
+        let mut valid_headers = HeaderMap::new();
+        valid_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(service.instance_id()).unwrap(),
+        );
+
+        let make_events = |graph: &str| FeederEventsRequest {
+            instance_id: service.instance_id().to_string(),
+            graph_id: graph.into(),
+            generation: 1,
+            source_id: "s".into(),
+            source_epoch: "1".into(),
+            feeder_session_id: "s1".into(),
+            feeder_epoch: 1,
+            events: vec![],
+        };
+        let resp = feeder_events(
+            valid_headers.clone(),
+            State(service.clone()),
+            Ok(SimdJson(make_events("invalid"))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let make_gap = |graph: &str| GapRequest {
+            instance_id: service.instance_id().to_string(),
+            graph_id: graph.into(),
+            generation: 1,
+            feeder_session_id: "s1".into(),
+            feeder_epoch: 1,
+            failed_delivery_sequence: 1,
+            reason: None,
+        };
+        let resp = feeder_gap(
+            valid_headers.clone(),
+            State(service.clone()),
+            Ok(SimdJson(make_gap("invalid"))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let make_barrier = |graph: &str, inst: &str| crate::service::BarrierRequest {
+            instance_id: inst.into(),
+            graph_id: graph.into(),
+            generation: 1,
+            feeder_session_id: "s1".into(),
+            feeder_epoch: 1,
+            barrier_delivery_sequence: 1,
+            barrier_source_position: Some("0".into()),
+        };
+        let resp = feeder_barrier(
+            valid_headers.clone(),
+            State(service.clone()),
+            Ok(SimdJson(make_barrier("invalid", service.instance_id()))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = feeder_barrier(
+            valid_headers.clone(),
+            State(service.clone()),
+            Ok(SimdJson(make_barrier("default", "wrong_inst"))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // 9. Unavailable service check in feeder handlers
+        let unavail = make_service(ServerMode::SourceManaged);
+        unavail.mark_unavailable_for_test();
+
+        let mut unavail_headers = HeaderMap::new();
+        unavail_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(unavail.instance_id()).unwrap(),
+        );
+
+        let mut unavail_import_hdrs = unavail_headers.clone();
+        unavail_import_hdrs.insert(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        let resp = feeder_import(
+            State(unavail.clone()),
+            unavail_import_hdrs,
+            axum::body::Body::from("{}"),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let mut unavail_events = make_events("default");
+        unavail_events.instance_id = unavail.instance_id().to_string();
+        let resp = feeder_events(
+            unavail_headers.clone(),
+            State(unavail.clone()),
+            Ok(SimdJson(unavail_events)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let mut unavail_gap = make_gap("default");
+        unavail_gap.instance_id = unavail.instance_id().to_string();
+        let resp = feeder_gap(
+            unavail_headers.clone(),
+            State(unavail.clone()),
+            Ok(SimdJson(unavail_gap)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let resp = feeder_barrier(
+            unavail_headers,
+            State(unavail.clone()),
+            Ok(SimdJson(make_barrier("default", unavail.instance_id()))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 10. feeder_gap error propagation
+        let gap_service = make_service(ServerMode::SourceManaged);
+        let mut gap_headers = HeaderMap::new();
+        gap_headers.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(gap_service.instance_id()).unwrap(),
+        );
+        let mut gap_req = make_gap("default");
+        gap_req.instance_id = gap_service.instance_id().to_string();
+        let resp = feeder_gap(gap_headers, State(gap_service), Ok(SimdJson(gap_req))).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // 11. feeder_import payload too large
+        let small_limit_service = Service::with_config(
+            knotrel_core::ConnectivityGraph::default(),
+            2,
+            Lifecycle::ready(),
+            &crate::ServerConfig::default()
+                .with_mode(ServerMode::SourceManaged)
+                .with_max_import_body_bytes(10)
+                .unwrap(),
+        );
+        let mut hdrs2 = HeaderMap::new();
+        hdrs2.insert(
+            "x-knotrel-instance-id",
+            HeaderValue::from_str(small_limit_service.instance_id()).unwrap(),
+        );
+        hdrs2.insert(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        let resp = feeder_import(
+            State(small_limit_service),
+            hdrs2,
+            axum::body::Body::from(vec![b'x'; 20]),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }

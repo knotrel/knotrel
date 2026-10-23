@@ -18,7 +18,10 @@ pub use lifecycle::{GateDecision, WorkerPauseHandle};
 pub use lifecycle::{Lifecycle, Phase};
 pub use serve::{ShutdownOutcome, serve};
 #[cfg(feature = "test-support")]
-pub use service::{advance_clock, percent_decode_position, percent_encode_position, reset_clock};
+pub use service::{
+    advance_clock, lock_clock_for_test, percent_decode_position, percent_encode_position,
+    reset_clock,
+};
 
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_BATCH_OPERATIONS: usize = 1024;
@@ -203,4 +206,29 @@ pub(crate) struct ServerInfo {
     mode: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     instance_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn router_constructors_build_valid_routers() {
+        let _ = router(knotrel_core::Graph::new());
+        let _ = router_with_config(ServerConfig::default());
+        let _ = router_with_lifecycle(ServerConfig::default(), Lifecycle::ready());
+
+        #[cfg(feature = "test-support")]
+        {
+            let _ = router_with_seeded_version(ServerConfig::default(), Lifecycle::ready(), "42");
+            let _ = router_with_seeded_state(
+                ServerConfig::default(),
+                Lifecycle::ready(),
+                Some("100"),
+                Some(50),
+            );
+            let _ =
+                router_with_seeded_state(ServerConfig::default(), Lifecycle::ready(), None, None);
+        }
+    }
 }

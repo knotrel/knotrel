@@ -113,4 +113,19 @@ mod tests {
         );
         assert_eq!(workspace.generation, 1);
     }
+
+    #[test]
+    fn unknown_nodes_return_error() {
+        let mut graph = Graph::new();
+        graph.link(1, 2).unwrap();
+        let mut workspace = BfsWorkspace::default();
+        assert!(matches!(
+            graph.connected_with_workspace(10, 20, &mut workspace),
+            Err(GraphError::UnknownNode { node: 10 })
+        ));
+        assert!(matches!(
+            graph.connected_with_workspace(1, 20, &mut workspace),
+            Err(GraphError::UnknownNode { node: 20 })
+        ));
+    }
 }

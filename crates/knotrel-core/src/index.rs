@@ -496,4 +496,11 @@ mod tests {
         }
         assert_eq!(f.tokens.len(), 100 + 198);
     }
+
+    #[test]
+    fn concat_none_left_branch() {
+        let mut f = GenericForest::<bool>::default();
+        let res = f.concat(None, Some(0));
+        assert_eq!(res, Some(0));
+    }
 }
