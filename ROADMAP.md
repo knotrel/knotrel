@@ -389,6 +389,17 @@ Limitations: External feeder reference implementation and end-to-end reproducibl
 
 **REQUIRED scope:** Build on v0.2.0 integration and v0.1.0 lifecycle. Batch improvements, deployment and observability remain priorities. Concurrency redesign is conditional on measured contention. Local persistence is not a dependency.
 
+### Release-wide performance checkpoints (required)
+
+The [v0.3.0 performance evaluation plan](docs/performance-v0.3.0.md) defines separate core and HTTP evidence, immutable source identity, workload matrices, timing boundaries and regression review. Historical algorithm rankings are not measurements of the released v0.2.0 HTTP server. The plan is proposed for independent review; no numerical regression budgets are approved.
+
+- [ ] **P0 — Released baseline:** Pin v0.2.0 to its resolved commit, verify isolated sibling core dependency resolution, qualify collectors and record core/server baselines before execution changes. Preserve historical evidence.
+- [ ] **P1 — M3/M4 regressions:** Compare batch/update execution, mixed traffic, admission, lifecycle and external rebuild against P0 using identical workloads and explicit candidate SHAs.
+- [ ] **P2 — M6/M5 evaluation:** Measure instrumentation overhead before relying on telemetry; establish coarse-mutex contention, fairness and query tails before choosing any concurrency alternative.
+- [ ] **P3 — Release qualification:** Repeat the complete approved matrix against v0.2.0 and the release candidate on comparable controlled hosts. Archive raw evidence, correctness checks, per-workload gains/losses and reviewed regression decisions.
+
+**Performance exit gate:** Correctness and source/binary identity failures block release qualification. Missing or underpowered evidence is explicitly inconclusive, never a claimed pass. Reproducible regressions require investigation and an explicit disposition; noisy shared CI is restricted to correctness and bounded benchmark smoke. Required coverage exceptions and resource budgets need owner approval. Retain the coarse mutex when evidence does not justify replacement. M3.1 remains pending independent acceptance; these checkpoints do not mark any feature complete.
+
 ### M3 — Compatible batch processing and update efficiency (P1)
 
 - [ ] **M3.1 Contract:** Inventory the existing `/v1/batch` behavior and extend result/version reporting compatibly. Preserve ordered execution, per-item domain errors, continuation and lack of rollback.
