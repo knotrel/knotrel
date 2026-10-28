@@ -23,7 +23,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 rustc-hash = "2.1"
 mimalloc = { version = "0.1", default-features = false }
-parking_lot = "0.12"
+parking_lot = "0.13"
 simd-json = "0.18"
 mime = "0.3.17"
 tinyvec = { version = "1.8", features = ["alloc"] }
