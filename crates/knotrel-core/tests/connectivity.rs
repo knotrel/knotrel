@@ -1,6 +1,124 @@
 //! Behavioral and differential tests for exact dynamic connectivity.
 
+use fixedbitset::FixedBitSet;
 use knotrel_core::{Graph, GraphError};
+
+#[test]
+fn visited_put_preserves_prior_state_and_enqueue_at_word_boundaries() {
+    const WORD_BITS: usize = usize::BITS as usize;
+    const BIT_COUNT: usize = WORD_BITS * 2 + 1;
+    let indices = [
+        0,
+        WORD_BITS - 1,
+        WORD_BITS,
+        WORD_BITS + 1,
+        WORD_BITS * 2 - 1,
+        BIT_COUNT - 1,
+    ];
+    let mut original = FixedBitSet::with_capacity(BIT_COUNT);
+    let mut candidate = FixedBitSet::with_capacity(BIT_COUNT);
+    let mut original_queue = Vec::new();
+    let mut candidate_queue = Vec::new();
+    for pass in 0..2 {
+        for index in indices {
+            let enqueue_original = !original.contains(index);
+            if enqueue_original {
+                original.insert(index);
+                original_queue.push(index);
+            }
+            let previous = candidate.put(index);
+            assert_eq!(previous, pass != 0);
+            if !previous {
+                candidate_queue.push(index);
+            }
+            assert_eq!(original_queue, candidate_queue);
+            assert_eq!(original, candidate);
+        }
+    }
+    assert_eq!(candidate_queue, indices);
+}
+
+#[test]
+fn visited_put_and_original_pair_reject_out_of_bounds() {
+    const BIT_COUNT: usize = usize::BITS as usize + 1;
+    for (length, index) in [(0, 0), (BIT_COUNT, BIT_COUNT), (BIT_COUNT, usize::MAX)] {
+        let mut original = FixedBitSet::with_capacity(length);
+        let mut candidate = FixedBitSet::with_capacity(length);
+        assert!(!original.contains(index));
+        let original_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !original.contains(index) {
+                original.insert(index);
+            }
+        }));
+        let candidate_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| candidate.put(index)));
+        assert!(original_result.is_err());
+        assert!(candidate_result.is_err());
+        assert_eq!(original, candidate);
+    }
+}
+
+#[test]
+fn visited_query_representative_topologies_match_reference() {
+    const IDS: [u64; 7] = [0, 1, 64, 128, u64::MAX, u64::MAX - 1, 1 << 63];
+    const TOPOLOGIES: [&[(usize, usize)]; 4] = [
+        &[(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+        &[(0, 1), (1, 2), (2, 3), (3, 0)],
+        &[(3, 0), (3, 1), (3, 2), (3, 4), (3, 5)],
+        &[(0, 1), (1, 2), (3, 4)],
+    ];
+    const UNKNOWN_SOURCE: u64 = u64::MAX - 2;
+    const UNKNOWN_TARGET: u64 = u64::MAX - 3;
+    let verify = |graph: &Graph, reference: &knotrel_core::ReferenceGraph| {
+        for source in IDS {
+            for target in IDS {
+                assert_eq!(
+                    graph.connected(source, target),
+                    reference.connected(source, target)
+                );
+            }
+        }
+        for (source, target) in [
+            (UNKNOWN_SOURCE, UNKNOWN_TARGET),
+            (UNKNOWN_SOURCE, IDS[0]),
+            (IDS[0], UNKNOWN_TARGET),
+            (UNKNOWN_SOURCE, UNKNOWN_SOURCE),
+        ] {
+            assert_eq!(
+                graph.connected(source, target),
+                reference.connected(source, target)
+            );
+        }
+        assert_eq!(graph.node_count(), reference.node_count());
+        assert_eq!(graph.edge_count(), reference.edge_count());
+    };
+    for edges in TOPOLOGIES {
+        let mut graph = Graph::new();
+        let mut reference = knotrel_core::ReferenceGraph::new();
+        verify(&graph, &reference);
+        for node in IDS {
+            assert_eq!(graph.add_node(node), reference.add_node(node));
+        }
+        verify(&graph, &reference);
+        for &(source_index, target_index) in edges {
+            let source = IDS[source_index];
+            let target = IDS[target_index];
+            assert_eq!(graph.link(source, target), reference.link(source, target));
+            assert_eq!(graph.link(source, target), reference.link(source, target));
+            assert_eq!(graph.link(target, source), reference.link(target, source));
+            verify(&graph, &reference);
+        }
+        for &(source_index, target_index) in edges {
+            let source = IDS[source_index];
+            let target = IDS[target_index];
+            assert_eq!(graph.cut(source, target), reference.cut(source, target));
+            assert_eq!(graph.cut(target, source), reference.cut(target, source));
+            verify(&graph, &reference);
+            assert_eq!(graph.link(target, source), reference.link(target, source));
+            verify(&graph, &reference);
+        }
+    }
+}
 
 #[test]
 fn updates_are_undirected_and_idempotent() {
@@ -171,4 +289,80 @@ fn arbitrary_growing_histories_match_original_reference() {
         assert_eq!(compact.node_count(), reference.node_count());
         assert_eq!(compact.edge_count(), reference.edge_count());
     }
+}
+
+#[test]
+fn link_endpoint_resolution_and_registration_invariants() {
+    let mut graph = Graph::new();
+
+    // 1. Rejected self-loop on empty graph leaves graph empty.
+    assert_eq!(graph.link(42, 42), Err(GraphError::SelfLoop { node: 42 }));
+    assert_eq!((graph.node_count(), graph.edge_count()), (0, 0));
+
+    // 2. Link with zero existing endpoints (both fresh).
+    // Invariant: source is registered first, then target.
+    assert_eq!(graph.link(100, 200), Ok(true));
+    assert_eq!((graph.node_count(), graph.edge_count()), (2, 1));
+    assert_eq!(graph.connected(100, 200), Ok(true));
+
+    // 3. Rejected self-loop on non-empty graph leaves existing state unchanged.
+    assert_eq!(
+        graph.link(100, 100),
+        Err(GraphError::SelfLoop { node: 100 })
+    );
+    assert_eq!(
+        graph.link(999, 999),
+        Err(GraphError::SelfLoop { node: 999 })
+    );
+    assert_eq!((graph.node_count(), graph.edge_count()), (2, 1));
+    assert_eq!(
+        graph.connected(999, 999),
+        Err(GraphError::UnknownNode { node: 999 })
+    );
+
+    // 4. Link with one existing endpoint:
+    // a) source exists (100), target fresh (300).
+    assert_eq!(graph.link(100, 300), Ok(true));
+    assert_eq!((graph.node_count(), graph.edge_count()), (3, 2));
+    assert_eq!(graph.connected(200, 300), Ok(true));
+
+    // b) target exists (200), source fresh (400).
+    assert_eq!(graph.link(400, 200), Ok(true));
+    assert_eq!((graph.node_count(), graph.edge_count()), (4, 3));
+    assert_eq!(graph.connected(400, 300), Ok(true));
+
+    // 5. Link with two existing endpoints (300 and 400).
+    assert_eq!(graph.link(300, 400), Ok(true));
+    assert_eq!((graph.node_count(), graph.edge_count()), (4, 4));
+
+    // 6. Duplicate and reversed links.
+    assert_eq!(graph.link(300, 400), Ok(false));
+    assert_eq!(graph.link(400, 300), Ok(false));
+    assert_eq!((graph.node_count(), graph.edge_count()), (4, 4));
+
+    // 7. Arbitrary u64 IDs, including boundary values (0, 1, u64::MAX, u64::MAX - 1).
+    let boundary_edges = [
+        (0, u64::MAX),
+        (u64::MAX, u64::MAX - 1),
+        (1, 1 << 63),
+        (u64::MAX - 1, 0),
+    ];
+    for &(u, v) in &boundary_edges {
+        assert_eq!(graph.link(u, v), Ok(true));
+        assert_eq!(graph.connected(u, v), Ok(true));
+        assert_eq!(graph.link(v, u), Ok(false));
+    }
+    assert_eq!(graph.connected(0, u64::MAX - 1), Ok(true));
+
+    // 8. Subsequent cuts and reachability queries.
+    assert_eq!(graph.cut(0, u64::MAX), Ok(true));
+    assert_eq!(graph.cut(0, u64::MAX), Ok(false));
+    assert_eq!(graph.connected(0, u64::MAX), Ok(true)); // Still connected via u64::MAX - 1
+
+    assert_eq!(graph.cut(u64::MAX - 1, 0), Ok(true));
+    assert_eq!(graph.connected(0, u64::MAX), Ok(false)); // Broken path to 0
+
+    // Endpoints remain registered after cut.
+    assert_eq!(graph.connected(0, 0), Ok(true));
+    assert_eq!(graph.connected(u64::MAX, u64::MAX), Ok(true));
 }

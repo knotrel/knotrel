@@ -270,6 +270,22 @@ impl Graph {
         Self::default()
     }
 
+    /// Returns the stable internal index for `node`, registering it if absent.
+    ///
+    /// Preserves append-only indexing and O(1) amortized time.
+    #[inline]
+    fn get_or_insert_index(&mut self, node: NodeId) -> usize {
+        match self.ids.entry(node) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let index = self.adjacency.len();
+                self.adjacency.push(Vec::new());
+                entry.insert(index);
+                index
+            }
+        }
+    }
+
     /// Adds an isolated vertex, returning true only if it was absent.
     ///
     /// Existing edges are unchanged. O(1) amortized time; growing the outer
@@ -295,10 +311,8 @@ impl Graph {
     /// Returns [`GraphError::SelfLoop`] without creating vertices for equal IDs.
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
         GraphError::check_distinct(source, target)?;
-        self.add_node(source);
-        self.add_node(target);
-        let a = self.ids[&source];
-        let b = self.ids[&target];
+        let a = self.get_or_insert_index(source);
+        let b = self.get_or_insert_index(target);
         let Err(position) = self.adjacency[a].binary_search(&b) else {
             return Ok(false);
         };
@@ -385,5 +399,42 @@ impl Graph {
     #[must_use]
     pub fn edge_count(&self) -> usize {
         self.edges
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn link_preserves_internal_source_before_target_index_order() {
+        let mut graph = Graph::new();
+        // Link two fresh nodes: source 42, target 99.
+        assert_eq!(graph.link(42, 99), Ok(true));
+        // Directly verify the internal index mapping:
+        // source (42) must receive internal index 0; target (99) must receive internal index 1.
+        assert_eq!(graph.ids.get(&42), Some(&0));
+        assert_eq!(graph.ids.get(&99), Some(&1));
+        assert_eq!(graph.adjacency[0], vec![1]);
+        assert_eq!(graph.adjacency[1], vec![0]);
+
+        // Link with one existing endpoint: source 42 (existing index 0), target 1000 (fresh).
+        assert_eq!(graph.link(42, 1000), Ok(true));
+        assert_eq!(graph.ids.get(&1000), Some(&2));
+        assert_eq!(graph.adjacency[0], vec![1, 2]);
+        assert_eq!(graph.adjacency[2], vec![0]);
+
+        // Link with one existing endpoint: source 2000 (fresh), target 99 (existing index 1).
+        assert_eq!(graph.link(2000, 99), Ok(true));
+        assert_eq!(graph.ids.get(&2000), Some(&3));
+        assert_eq!(graph.adjacency[1], vec![0, 3]);
+        assert_eq!(graph.adjacency[3], vec![1]);
+
+        // Link with two existing endpoints: 1000 (index 2) and 2000 (index 3).
+        assert_eq!(graph.link(1000, 2000), Ok(true));
+        assert_eq!(graph.ids.get(&1000), Some(&2));
+        assert_eq!(graph.ids.get(&2000), Some(&3));
+        assert_eq!(graph.adjacency[2], vec![0, 3]);
+        assert_eq!(graph.adjacency[3], vec![1, 2]);
     }
 }
