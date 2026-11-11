@@ -22,14 +22,6 @@ use std::{
 
 fn find_example_measure_e2e() -> PathBuf {
     static BUILD_ONCE: std::sync::Once = std::sync::Once::new();
-    BUILD_ONCE.call_once(|| {
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "--example", "measure_e2e"])
-            .status()
-            .expect("cargo build --example measure_e2e");
-        assert!(status.success(), "Failed to build measure_e2e example");
-    });
-
     // Locate the built measure_e2e binary relative to knotrel-server or target dir
     let server_bin = PathBuf::from(env!("CARGO_BIN_EXE_knotrel-server"));
     let target_dir = server_bin
@@ -37,6 +29,18 @@ fn find_example_measure_e2e() -> PathBuf {
         .expect("server binary directory")
         .parent()
         .expect("target directory");
+
+    BUILD_ONCE.call_once(|| {
+        let mut command = Command::new(env!("CARGO"));
+        command
+            .args(["build", "--example", "measure_e2e", "--target-dir"])
+            .arg(target_dir);
+        if server_bin.parent().unwrap().ends_with("release") {
+            command.arg("--release");
+        }
+        let status = command.status().expect("cargo build --example measure_e2e");
+        assert!(status.success(), "Failed to build measure_e2e example");
+    });
 
     let example_bin = target_dir
         .join(server_bin.parent().unwrap().file_name().unwrap())
@@ -3070,4 +3074,32 @@ fn test_batch_warmup_option_rejects_invalid_configuration() {
         assert!(!result.status.success());
         assert!(String::from_utf8_lossy(&result.stderr).contains("--batch-warmup-chunk-size"));
     }
+}
+
+#[test]
+fn test_empty_http_response_identifies_request() {
+    let example = find_example_measure_e2e();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let address = listener.local_addr().expect("local address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept request");
+        let _ = read_http_request_from_stream(&mut stream);
+    });
+    let mut command = Command::new(example);
+    command.args([
+        "--scenario",
+        "standalone-batch",
+        "--addr",
+        &address.to_string(),
+    ]);
+    let result = run_with_watchdog(command, Duration::from_secs(10));
+    server.join().expect("mock server thread");
+    assert!(!result.timed_out);
+    assert!(!result.output.status.success());
+    let stderr = String::from_utf8_lossy(&result.output.stderr);
+    assert!(stderr.contains("GET /v1/info"), "stderr was: {stderr}");
+    assert!(
+        stderr.contains(&address.to_string()),
+        "stderr was: {stderr}"
+    );
 }

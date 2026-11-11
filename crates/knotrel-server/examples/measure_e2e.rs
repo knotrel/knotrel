@@ -1581,7 +1581,10 @@ async fn send_http_request_inner(
     stream.read_to_end(&mut response_bytes).await?;
 
     if response_bytes.is_empty() {
-        return Err("connection closed without HTTP response".into());
+        return Err(format!(
+            "connection closed without HTTP response: {method} {path} to {address}"
+        )
+        .into());
     }
 
     let head_end = response_bytes
