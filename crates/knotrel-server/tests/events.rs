@@ -2087,3 +2087,49 @@ async fn test_26_capacity_rejection_happens_before_execution() {
     let accepted = post_events(&running, &instance_id, "f-1", 1, &events).await;
     assert_eq!(accepted.status, 200, "{}", accepted.body);
 }
+
+// ---------------------------------------------------------------------------
+// M3.3 retry and uncertain-outcome reconciliation (docs/integration-contract.md §9.4)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_27_timed_out_worker_completing_after_exact_retry_and_newer_cut_replays_nothing() {
+    let config = config_source_managed()
+        .with_request_timeout(Duration::from_millis(200))
+        .unwrap();
+    let (running, instance_id) = start_with_baseline(config).await;
+    let events = events_array(&[link_event(1, "1", "2"), link_event(2, "2", "3")]);
+
+    // The original request is admitted, then held before it takes the graph lock.
+    let mut pause = running.lifecycle.pause_next_worker();
+    let timed_out = post_events(&running, &instance_id, "f-1", 1, &events).await;
+    timeout(STEP, pause.wait_started())
+        .await
+        .expect("original worker never reached the pause point");
+    assert_eq!(timed_out.status, 503, "{}", timed_out.body);
+    assert_eq!(timed_out.json()["code"], "request_timeout");
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+
+    // The exact retry overtakes the paused original and applies both events.
+    let retry = post_events(&running, &instance_id, "f-1", 1, &events).await;
+    assert_eq!(retry.status, 200, "{}", retry.body);
+    assert_eq!(retry.json()["events_applied"], 2);
+    assert_eq!(retry.json()["state_version"], "2");
+
+    // A newer cut removes the edge the original request would link.
+    let cut = r#"[{"event_id":"e-3","delivery_sequence":3,"prev_delivery_sequence":2,"source_position":"pos-3","prev_source_position":"pos-2","op":"cut","source":"1","target":"2"}]"#;
+    let cut_reply = post_events(&running, &instance_id, "f-1", 1, cut).await;
+    assert_eq!(cut_reply.status, 200, "{}", cut_reply.body);
+    assert_eq!(cut_reply.json()["state_version"], "3");
+
+    // The late original worker finds retained exact duplicates and must not replay the
+    // obsolete link or advance revision, sequence or position.
+    pause.release();
+    running.wait_for_jobs(0).await;
+    let stats = stats_json(&running).await;
+    assert_eq!(stats["state_version"], "3");
+    assert_eq!(stats["source_position"], "pos-3");
+    assert_eq!(stats["edge_count"], 1);
+    assert!(!connected(&running, "1", "2").await);
+    assert!(connected(&running, "2", "3").await);
+}

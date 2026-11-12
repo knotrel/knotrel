@@ -1542,9 +1542,13 @@ impl ExternalFeederClient {
             .await
     }
 
-    /// Parses a 422 partial batch failure response into structured diagnostics.
+    /// Parses a partial batch failure response into structured diagnostics.
+    ///
+    /// The server reports a committed prefix as `result: "partial_failure"` with 422 for
+    /// domain failures and 409 for in-loop sequence, continuity and duplicate conflicts
+    /// (`docs/integration-contract.md` §9.3).
     pub fn parse_partial_failure(res: &HttpResponse) -> Option<BatchPartialFailure> {
-        if res.status != 422 {
+        if res.status != 422 && res.status != 409 {
             return None;
         }
         let json = res.json();
@@ -1577,9 +1581,15 @@ impl ExternalFeederClient {
     /// - If the graph was replaced, server returns HTTP 409 `stale_generation`.
     /// - If the feeder lease was taken over, server returns HTTP 409 `fenced_feeder_session`.
     /// - If the sequence was evicted from the window, server returns HTTP 409 `unverifiable_duplicate`.
+    /// - If the source stream diverged, server desynchronizes the graph and returns HTTP 409
+    ///   `conflicting_duplicate`, `source_predecessor_mismatch` or `source_epoch_mismatch`.
     ///
-    /// Any divergence, takeover, eviction, or restart returns an explicit `RecoveryRequired` or `Fenced`
-    /// error so the caller can execute safe authoritative rebuild, never fabricating deduplication.
+    /// Restart returns `StaleInstance`, takeover returns `Fenced`, lease expiry returns
+    /// `LeaseExpired`, and replacement, eviction or divergence returns `RecoveryRequired`, so the
+    /// caller can execute safe authoritative recovery, never fabricating deduplication.
+    ///
+    /// Only transport errors (`Io`) are retried, at most `max_retries` times. Every HTTP rejection,
+    /// including 503 `request_timeout` and 422/409 `partial_failure`, is returned to the caller.
     pub async fn apply_events_with_recovery(
         &mut self,
         events: &[SourceEvent],
@@ -1643,6 +1653,14 @@ impl ExternalFeederClient {
                             "graph_desynchronized" => {
                                 return Err(FeederClientError::RecoveryRequired(format!(
                                     "graph is desynchronized: {}",
+                                    res.body
+                                )));
+                            }
+                            "conflicting_duplicate"
+                            | "source_predecessor_mismatch"
+                            | "source_epoch_mismatch" => {
+                                return Err(FeederClientError::RecoveryRequired(format!(
+                                    "source stream diverged and the graph is desynchronized: {}",
                                     res.body
                                 )));
                             }

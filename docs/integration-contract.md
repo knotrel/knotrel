@@ -653,16 +653,84 @@ are evaluated at execution time, not at submission time. Consequently:
   recovery paths: re-establish the session, or re-import a baseline (replacement
   import, or create-only after restart) and continue from its position.
 
-Retry *policy* (backoff, re-reading the frontier, resubmitting the uncommitted
-suffix) belongs to v0.3.0 M3.3 and is not specified here. The inputs it can use
-already exist: the committed frontier in success and partial-failure bodies and
-version headers, point-in-time `GET /v1/stats`, and retained-window
-deduplication for exact retries under unchanged identities.
+Retry and reconciliation decisions are specified in §9.4.
 
 **Compatibility debt.** Feeder endpoints report worker-capacity exhaustion as
 `503 import_in_progress` (via `FeederError::from(ServiceError::Busy)`), whereas
 `/v1/operations` and `/v1/batch` report `503 busy`. M3.2 retains the existing
 code and message; any rename is a separate, unapproved wire change.
+
+### 9.4 Retry and Reconciliation Decision Table (v0.3.0 M3.3)
+
+M3.3 uses the existing protocol only: no new endpoint, response field, persisted
+cursor or exactly-once guarantee. Two different actions must not be confused:
+
+- **Exact retry** resends the identical events (same `event_id`, delivery
+  sequence and predecessor, source position and predecessor, op and operands)
+  under the same `instance_id`, `generation`, `source_id` and `source_epoch`, and
+  a currently valid feeder session/epoch. The retained window makes it
+  idempotent: applied events return as exact duplicates and only missing events
+  are applied. Any change to event identity or payload is not a retry.
+- **Correction** replaces an event the server *explicitly reported* as failed and
+  unapplied (`failed_delivery_sequence` or a single-event rejection) with a
+  different event at the same sequence. Rejected events are not retained (§9.2),
+  so this is accepted. It is never safe after a timeout or lost response: if the
+  original was applied, the corrected event is a `conflicting_duplicate` and
+  desynchronizes the graph.
+
+The server never decides that an event can be skipped. A caller must not skip
+events because `applied_delivery_sequence`, `source_position`, counts or
+`generation` appear to cover them; it resends them exactly and lets
+deduplication decide. The frontier in a response body or its version headers is
+captured under the graph lock *for that request*. A separate `GET /v1/stats`
+read is only a point-in-time snapshot (§9.3, *Uncertain outcomes*).
+
+| Case | Caller knows | Still uncertain | Exact retry? | Must stay unchanged | Next step |
+|---|---|---|---|---|---|
+| Rejection before admission (validation, instance, mode, 503 `import_in_progress` capacity, 503 `unavailable`) | Nothing from this request was applied | Nothing about this request | Yes, after fixing the request if it was malformed | Everything, unless correcting the rejected request itself | Resubmit |
+| 200 `applied` | Every event of the request is applied in memory, frontier = response frontier | External durability (none locally) | Not needed; harmless while retained | — | Continue at `applied_delivery_sequence + 1` |
+| Partial failure, domain error (422 `event_failed`) or sequence gap (409 `out_of_order_sequence`) | Prefix ≤ `applied_delivery_sequence` applied; failed and later events not applied | Nothing for this request | Yes for the whole request: the prefix deduplicates. A domain error recurs unless the state or event changes | Prefix events; instance, generation, source, session | Correct or resend from `failed_delivery_sequence` |
+| Timeout (503 `request_timeout`) or lost response after admission | Request was admitted | Whether and when the worker runs, and how far it gets; whether it applied anything | Yes, only if identities, ownership and window retention still hold | All events and identities | Exact retry; a newer-state retry and the late worker both deduplicate. Never correct or skip |
+| Exact retained duplicate (200 `duplicate`, or skipped inside a 200 `applied`) | An identical event was applied earlier in this generation | Which request applied it | Already resolved | — | Continue after the current frontier |
+| Duplicate outside the window (409 `unverifiable_duplicate`) | An event at that sequence was applied earlier | Whether it was this event | No: identical replay cannot resolve it | — | Rebuild by replacement import |
+| Conflicting duplicate, predecessor mismatch, `source_epoch` mismatch, or already desynchronized | The stream diverged from what the graph applied; graph is `desynchronized` | — | No | — | Rebuild by replacement import |
+| Session takeover (409 `fenced_feeder_session` for the old owner) | Old owner's requests not yet executed will be rejected | Whether the old owner's earlier requests ran before takeover | Old owner: no. New owner: yes, same generation, source and window | Events, instance, generation, source | New owner resumes with exact retries |
+| Lease expired (409 `lease_expired`, status `stale`) | This request applied nothing | Earlier timed-out requests | Only after registering a higher epoch | Events, instance, generation, source | Re-register; exact retry; barrier proof to return to `ready` |
+| Generation change (409 `stale_generation`) | Graph was replaced; old-generation events cannot apply | Whether the old event reached the replaced generation | No | — | Read the new generation and its import position; reconcile against the new baseline |
+| Process restart (409 `stale_instance_id`) | All volatile state is gone | Nothing survives to verify | No | — | Rediscover, register, `create_only` import |
+
+**Production guarantees vs. reference-client policy.** The guarantees above are
+server behavior. The reference client in
+[`tests/common/feeder.rs`](../crates/knotrel-server/tests/common/feeder.rs) adds
+policy, which other feeders may choose differently:
+
+- `apply_events_with_recovery` retries **only transport errors**, at most
+  `max_retries` times with bounded backoff (15–200 ms), always with the identical
+  payload and identities, and checks heartbeat ownership before every attempt.
+- It returns every HTTP rejection, including 503 `request_timeout` and
+  `partial_failure`, to the caller instead of retrying. It maps restart to
+  `StaleInstance`, takeover to `Fenced`, lease expiry to `LeaseExpired`, and
+  replacement, eviction or stream divergence to `RecoveryRequired`.
+- `parse_partial_failure` reads the committed prefix from both 422 and 409
+  `partial_failure` responses.
+- `import_with_reconciliation` never synthesizes a successful import from
+  `GET /v1/stats` counts, cursor or generation. It returns `UncertainOutcome`,
+  `Fenced` or `RecoveryRequired`, and the caller rebuilds conditionally
+  (`e2e_rebuild.rs` `test_09`, `test_16`–`test_19`, `test_21`).
+
+**Coverage.**
+
+| Scenario | Tests |
+|---|---|
+| Committed event with lost acknowledgment | `e2e_rebuild.rs` `test_03` |
+| Timed-out worker completing later | `events.rs` `test_11`, `test_25`, and `test_27` (the exact retry and a newer cut apply first; the late worker replays nothing) |
+| Partial prefix then retry or correction | `events.rs` `test_9`, `test_10`, `test_20`; `e2e_rebuild.rs` `test_08`, and `test_22` (409 prefix diagnostics) |
+| Exact duplicate after newer events | `events.rs` `test_3`, `test_27`; `e2e_rebuild.rs` `test_04` |
+| Deduplication eviction | `events.rs` `test_5`; `e2e_rebuild.rs` `test_11` |
+| Replacement, restart or takeover before retry | `e2e_rebuild.rs` `test_13`, `test_14`, `test_15` (the new owner's exact retry is deduplicated) |
+| Stream divergence requires rebuild | `events.rs` `test_4`, `test_8`, `test_23`; `e2e_rebuild.rs` `test_23` |
+| No-op and progress events | `events.rs` `test_1`, `test_22`; `e2e_rebuild.rs` `test_02` |
+| Conservative import reconciliation | `e2e_rebuild.rs` `test_09`, `test_16`–`test_19`, `test_21` |
 
 ---
 

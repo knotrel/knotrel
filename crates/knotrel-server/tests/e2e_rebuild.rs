@@ -8,6 +8,7 @@
 //! - Import with lost acknowledgment and reconciliation before further publication.
 //! - Old link retry after a newer cut does not recreate the edge (critical regression).
 //! - Partial batch failure with committed-prefix inspection.
+//! - 409 partial-failure prefix diagnostics and rebuild classification of stream divergence (M3.3).
 //! - Unverifiable duplicate requiring safe recovery (bounded deduplication window eviction).
 //! - Observable heartbeat lease management, fencing detection, and clean shutdown.
 //! - Graceful restart (SIGTERM) and abrupt process crash (SIGKILL) require rediscovery and authoritative rebuilding.
@@ -1327,6 +1328,20 @@ async fn test_15_lost_ack_combined_with_competing_ownership_takeover() {
         other => panic!("expected Fenced on takeover, got: {other:?}"),
     }
 
+    // Takeover keeps generation, source lineage and the retained window, so the new owner
+    // resolves the lost acknowledgment by exact retry; the event is not applied twice.
+    client2.generation = client1.generation;
+    client2.source_id = "src-1".to_string();
+    client2.source_epoch = "ep-1".to_string();
+    let takeover_retry = client2
+        .apply_events(std::slice::from_ref(&event))
+        .await
+        .unwrap();
+    assert_eq!(takeover_retry.status, 200, "{}", takeover_retry.body);
+    assert_eq!(takeover_retry.json()["result"], "duplicate");
+    assert_eq!(takeover_retry.json()["status"], "already_applied");
+    assert_eq!(takeover_retry.json()["current_state_version"], "1");
+
     client1.stop_heartbeat().await;
 }
 
@@ -1771,4 +1786,109 @@ async fn test_21_import_reconciliation_same_count_same_cursor_different_topology
         true,
         "edge (2, 3) from published snapshot H must exist"
     );
+}
+
+fn chain_event(seq: u64, prev_position: &str, source: u64, target: u64) -> SourceEvent {
+    SourceEvent {
+        event_id: format!("evt-{seq:02}"),
+        delivery_sequence: seq,
+        prev_delivery_sequence: seq - 1,
+        source_position: format!("pos-{seq:02}"),
+        prev_source_position: prev_position.to_string(),
+        op: "link".to_string(),
+        source: Some(source),
+        target: Some(target),
+        node: None,
+    }
+}
+
+async fn start_feeder_with_baseline(address: SocketAddr, session: &str) -> ExternalFeederClient {
+    let mut client = ExternalFeederClient::new(address, session);
+    client.discover().await.unwrap();
+    client.register_session(10_000).await.unwrap();
+    client.start_heartbeat(Duration::from_millis(1_000));
+    let snap = SourceSnapshot {
+        position: "snap-01".to_string(),
+        nodes: vec![1, 2, 3, 4],
+        edges: vec![],
+    };
+    client
+        .import("create_only", "src-1", "ep-1", &snap, None)
+        .await
+        .unwrap();
+    client
+}
+
+#[tokio::test]
+async fn test_22_partial_failure_diagnostics_include_409_continuity_rejection_after_prefix() {
+    let address = get_free_port();
+    let server = ChildServerGuard::spawn(address);
+    assert!(server.wait_listening(Duration::from_secs(5)).await);
+    let mut client = start_feeder_with_baseline(address, "feeder-test-22").await;
+
+    // The second event names a predecessor position the source never produced.
+    let events = vec![
+        chain_event(1, "snap-01", 1, 2),
+        chain_event(2, "pos-unknown", 2, 3),
+    ];
+    let res = client.apply_events(&events).await.unwrap();
+    assert_eq!(res.status, 409, "{}", res.body);
+
+    let diag = ExternalFeederClient::parse_partial_failure(&res)
+        .expect("409 partial_failure must expose the committed prefix");
+    assert_eq!(diag.failed_batch_index, 1);
+    assert_eq!(diag.failed_delivery_sequence, 2);
+    assert_eq!(diag.failed_event_id, "evt-02");
+    assert_eq!(diag.applied_delivery_sequence, 1);
+    assert_eq!(diag.applied_source_position, "pos-01");
+    assert_eq!(diag.error_code, "source_predecessor_mismatch");
+
+    // Only the prefix was applied; the continuity failure desynchronized the graph.
+    let stats = client.get_stats().await.unwrap();
+    assert_eq!(stats.json()["source_position"], "pos-01");
+    assert_eq!(stats.json()["edge_count"], 1);
+    assert_eq!(stats.json()["sync_status"], "desynchronized");
+
+    client.stop_heartbeat().await;
+}
+
+#[tokio::test]
+async fn test_23_recovery_helper_requires_rebuild_after_desynchronizing_rejection() {
+    let address = get_free_port();
+    let server = ChildServerGuard::spawn(address);
+    assert!(server.wait_listening(Duration::from_secs(5)).await);
+    let mut client = start_feeder_with_baseline(address, "feeder-test-23").await;
+
+    let applied = chain_event(1, "snap-01", 1, 2);
+    let res = client
+        .apply_events_with_recovery(std::slice::from_ref(&applied), 2)
+        .await
+        .unwrap();
+    assert_eq!(res.status, 200);
+
+    // Same identity, altered payload: not an exact retry, so the server desynchronizes.
+    let mut altered = applied.clone();
+    altered.target = Some(3);
+    let res = client
+        .apply_events_with_recovery(std::slice::from_ref(&altered), 2)
+        .await;
+    match res {
+        Err(FeederClientError::RecoveryRequired(msg)) => {
+            assert!(msg.contains("conflicting_duplicate"), "{msg}");
+        }
+        other => panic!("expected RecoveryRequired for conflicting duplicate, got: {other:?}"),
+    }
+
+    let stats = client.get_stats().await.unwrap();
+    assert_eq!(stats.json()["sync_status"], "desynchronized");
+    assert_eq!(stats.json()["edge_count"], 1);
+
+    // The documented recovery path is an authoritative replacement rebuild.
+    client
+        .sync_from_fixture(&ExternalSourceFixture::standard(), true)
+        .await
+        .unwrap();
+    assert_eq!(client.get_ready().await.unwrap().status, 200);
+
+    client.stop_heartbeat().await;
 }
