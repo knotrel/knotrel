@@ -1658,3 +1658,432 @@ async fn test_19_stop_event_application_after_desynchronization_and_rebuild_reco
     assert_eq!(sj_g2["node_count"], 3);
     assert_eq!(sj_g2["sync_status"], "catching_up");
 }
+
+// ---------------------------------------------------------------------------
+// M3.2 feeder batch failure model (docs/integration-contract.md §9.3)
+// ---------------------------------------------------------------------------
+
+fn link_event(seq: u64, source: &str, target: &str) -> String {
+    format!(
+        r#"{{"event_id":"e-{seq}","delivery_sequence":{seq},"prev_delivery_sequence":{prev},"source_position":"pos-{seq}","prev_source_position":"pos-{prev}","op":"link","source":"{source}","target":"{target}"}}"#,
+        prev = seq - 1
+    )
+}
+
+fn progress_event(seq: u64) -> String {
+    format!(
+        r#"{{"event_id":"e-{seq}","delivery_sequence":{seq},"prev_delivery_sequence":{prev},"source_position":"pos-{seq}","prev_source_position":"pos-{prev}","op":"progress"}}"#,
+        prev = seq - 1
+    )
+}
+
+fn events_array(events: &[String]) -> String {
+    format!("[{}]", events.join(","))
+}
+
+async fn post_events_envelope(
+    running: &Running,
+    instance_id: &str,
+    generation: u64,
+    feeder_epoch: u64,
+    source_id: &str,
+    source_epoch: &str,
+    events_json: &str,
+) -> Reply {
+    let body = format!(
+        r#"{{"instance_id":"{instance_id}","graph_id":"default","generation":{generation},"feeder_session_id":"f-1","feeder_epoch":{feeder_epoch},"source_id":"{source_id}","source_epoch":"{source_epoch}","events":{events_json}}}"#
+    );
+    let mut stream = running.connect().await;
+    post(
+        &mut stream,
+        "/v1/feeder/events",
+        &[("x-knotrel-instance-id", instance_id)],
+        &body,
+    )
+    .await
+}
+
+async fn stats_json(running: &Running) -> serde_json::Value {
+    let mut stream = running.connect().await;
+    let reply = get(&mut stream, "/v1/stats").await;
+    assert_eq!(reply.status, 200);
+    reply.json()
+}
+
+async fn connected(running: &Running, u: &str, v: &str) -> bool {
+    let reply = query_connected(running, u, v).await;
+    assert_eq!(reply.status, 200, "query failed: {}", reply.body);
+    reply.json()["connected"].as_bool().unwrap()
+}
+
+/// Starts a source-managed server with session `f-1`/epoch 1 and a generation 1
+/// baseline at `pos-0` containing isolated nodes 1..=4.
+async fn start_with_baseline(config: ServerConfig) -> (Running, String) {
+    let running = Running::start(config).await;
+    let instance_id = running.instance_id().await;
+    assert_eq!(
+        register_session(&running, "f-1", 1, 60_000).await.status,
+        200
+    );
+    assert_eq!(
+        import_baseline(
+            &running,
+            &instance_id,
+            "f-1",
+            1,
+            "pos-0",
+            &["1", "2", "3", "4"],
+            &[]
+        )
+        .await
+        .status,
+        201
+    );
+    (running, instance_id)
+}
+
+const CHAIN: [(&str, &str); 3] = [("1", "2"), ("2", "3"), ("3", "4")];
+
+#[tokio::test]
+async fn test_20_domain_failure_at_first_middle_and_last_index_reports_committed_prefix() {
+    for (failed, &(fixed_source, fixed_target)) in CHAIN.iter().enumerate() {
+        let (running, instance_id) = start_with_baseline(config_source_managed()).await;
+        let events: Vec<String> = CHAIN
+            .iter()
+            .enumerate()
+            .map(|(i, (s, t))| {
+                let seq = i as u64 + 1;
+                if i == failed {
+                    link_event(seq, "1", "1")
+                } else {
+                    link_event(seq, s, t)
+                }
+            })
+            .collect();
+        let reply = post_events(&running, &instance_id, "f-1", 1, &events_array(&events)).await;
+
+        assert_eq!(reply.status, 422, "failed index {failed}: {}", reply.body);
+        let body = reply.json();
+        let prefix = failed as u64;
+        assert_eq!(body["result"], "partial_failure");
+        assert_eq!(body["code"], "event_failed");
+        assert_eq!(body["error"]["code"], "self_loop");
+        assert_eq!(body["failed_batch_index"], failed);
+        assert_eq!(body["failed_delivery_sequence"], prefix + 1);
+        assert_eq!(body["failed_event_id"], format!("e-{}", prefix + 1));
+        assert_eq!(body["applied_delivery_sequence"], prefix);
+        assert_eq!(body["applied_source_position"], format!("pos-{prefix}"));
+        assert_eq!(body["state_version"], prefix.to_string());
+        assert_eq!(body["generation"], 1);
+        assert_eq!(
+            reply.header("x-knotrel-state-version"),
+            Some(prefix.to_string().as_str())
+        );
+        assert_eq!(
+            reply.header("x-knotrel-source-position"),
+            Some(format!("pos-{prefix}").as_str())
+        );
+        assert_eq!(reply.header("x-knotrel-generation"), Some("1"));
+        assert_eq!(reply.header("x-knotrel-sync-status"), Some("catching_up"));
+
+        // Only the prefix is visible; the valid events after the failure were not applied.
+        for (i, (s, t)) in CHAIN.iter().enumerate() {
+            assert_eq!(
+                connected(&running, s, t).await,
+                i < failed,
+                "failed index {failed}, edge {s}-{t}"
+            );
+        }
+        let stats = stats_json(&running).await;
+        assert_eq!(stats["state_version"], prefix.to_string());
+        assert_eq!(stats["source_position"], format!("pos-{prefix}"));
+        assert_eq!(stats["sync_status"], "catching_up");
+
+        // The frontier is exactly the prefix: the failed sequence is free for a corrected event.
+        let corrected = post_events(
+            &running,
+            &instance_id,
+            "f-1",
+            1,
+            &events_array(&[link_event(prefix + 1, fixed_source, fixed_target)]),
+        )
+        .await;
+        assert_eq!(corrected.status, 200, "{}", corrected.body);
+        assert_eq!(corrected.json()["applied_delivery_sequence"], prefix + 1);
+    }
+}
+
+#[tokio::test]
+async fn test_21_invalid_event_late_in_batch_rejects_whole_request_before_application() {
+    let (running, instance_id) = start_with_baseline(config_source_managed()).await;
+    let invalid_last = r#"{"event_id":"e-2","delivery_sequence":2,"prev_delivery_sequence":1,"source_position":"pos-2","prev_source_position":"pos-1","op":"link","source":"2"}"#;
+    let reply = post_events(
+        &running,
+        &instance_id,
+        "f-1",
+        1,
+        &events_array(&[link_event(1, "1", "2"), invalid_last.to_string()]),
+    )
+    .await;
+
+    assert_eq!(reply.status, 422, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["code"], "invalid_request");
+    assert_eq!(body["result"], "error");
+    assert_eq!(reply.header("x-knotrel-state-version"), None);
+
+    assert!(!connected(&running, "1", "2").await);
+    let stats = stats_json(&running).await;
+    assert_eq!(stats["state_version"], "0");
+    assert_eq!(stats["source_position"], "pos-0");
+    let first = post_events(
+        &running,
+        &instance_id,
+        "f-1",
+        1,
+        &events_array(&[link_event(1, "1", "2")]),
+    )
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["applied_delivery_sequence"], 1);
+}
+
+#[tokio::test]
+async fn test_22_duplicate_noop_and_progress_accounting_in_multi_event_batches() {
+    let (running, instance_id) = start_with_baseline(config_source_managed()).await;
+    let first = events_array(&[
+        link_event(1, "1", "2"),
+        link_event(2, "1", "2"),
+        progress_event(3),
+    ]);
+
+    let applied = post_events(&running, &instance_id, "f-1", 1, &first).await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let body = applied.json();
+    assert_eq!(body["result"], "applied");
+    assert_eq!(body["events_applied"], 3);
+    assert_eq!(body["applied_delivery_sequence"], 3);
+    assert_eq!(body["applied_source_position"], "pos-3");
+    assert_eq!(body["state_version"], "1");
+
+    // A multi-event batch made only of retained duplicates is "applied" with zero new events.
+    let replay = post_events(&running, &instance_id, "f-1", 1, &first).await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    let body = replay.json();
+    assert_eq!(body["result"], "applied");
+    assert_eq!(body["events_applied"], 0);
+    assert_eq!(body["applied_delivery_sequence"], 3);
+    assert_eq!(body["state_version"], "1");
+    assert_eq!(replay.header("x-knotrel-state-version"), Some("1"));
+
+    // Retained duplicate prefix followed by a new effective event.
+    let mixed = events_array(&[
+        link_event(2, "1", "2"),
+        progress_event(3),
+        r#"{"event_id":"e-4","delivery_sequence":4,"prev_delivery_sequence":3,"source_position":"pos-4","prev_source_position":"pos-3","op":"cut","source":"1","target":"2"}"#
+            .to_string(),
+    ]);
+    let reply = post_events(&running, &instance_id, "f-1", 1, &mixed).await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["events_applied"], 1);
+    assert_eq!(body["applied_delivery_sequence"], 4);
+    assert_eq!(body["state_version"], "2");
+    assert!(!connected(&running, "1", "2").await);
+}
+
+#[tokio::test]
+async fn test_23_continuity_failures_after_committed_prefix() {
+    // Sequence gap inside the batch: prefix kept, synchronization intact.
+    let (running, instance_id) = start_with_baseline(config_source_managed()).await;
+    let gap = events_array(&[link_event(1, "1", "2"), link_event(3, "3", "4")]);
+    let reply = post_events(&running, &instance_id, "f-1", 1, &gap).await;
+    assert_eq!(reply.status, 409, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["result"], "partial_failure");
+    assert_eq!(body["code"], "out_of_order_sequence");
+    assert_eq!(body["failed_batch_index"], 1);
+    assert_eq!(body["applied_delivery_sequence"], 1);
+    assert_eq!(body["applied_source_position"], "pos-1");
+    assert_eq!(body["state_version"], "1");
+    assert_eq!(reply.header("x-knotrel-sync-status"), Some("catching_up"));
+    assert!(connected(&running, "1", "2").await);
+    assert!(!connected(&running, "3", "4").await);
+    let next = post_events(
+        &running,
+        &instance_id,
+        "f-1",
+        1,
+        &events_array(&[link_event(2, "2", "3")]),
+    )
+    .await;
+    assert_eq!(next.status, 200, "{}", next.body);
+
+    // Predecessor mismatch inside the batch: prefix kept, graph desynchronized.
+    let (running, instance_id) = start_with_baseline(config_source_managed()).await;
+    let wrong_predecessor = r#"{"event_id":"e-2","delivery_sequence":2,"prev_delivery_sequence":1,"source_position":"pos-2","prev_source_position":"pos-WRONG","op":"link","source":"3","target":"4"}"#;
+    let reply = post_events(
+        &running,
+        &instance_id,
+        "f-1",
+        1,
+        &events_array(&[link_event(1, "1", "2"), wrong_predecessor.to_string()]),
+    )
+    .await;
+    assert_eq!(reply.status, 409, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["result"], "partial_failure");
+    assert_eq!(body["code"], "source_predecessor_mismatch");
+    assert_eq!(body["failed_batch_index"], 1);
+    assert_eq!(body["applied_delivery_sequence"], 1);
+    assert_eq!(body["applied_source_position"], "pos-1");
+    assert_eq!(
+        reply.header("x-knotrel-sync-status"),
+        Some("desynchronized")
+    );
+    let stats = stats_json(&running).await;
+    assert_eq!(stats["state_version"], "1");
+    assert_eq!(stats["sync_status"], "desynchronized");
+    let after = post_events(
+        &running,
+        &instance_id,
+        "f-1",
+        1,
+        &events_array(&[link_event(2, "3", "4")]),
+    )
+    .await;
+    assert_eq!(after.status, 409);
+    assert_eq!(after.json()["code"], "graph_desynchronized");
+}
+
+#[tokio::test]
+async fn test_24_whole_request_fencing_rejections_apply_nothing() {
+    let (running, instance_id) = start_with_baseline(config_source_managed()).await;
+    let events = events_array(&[link_event(1, "1", "2"), link_event(2, "2", "3")]);
+
+    let cases = [
+        (2, 1, "pg-1", "stale_generation"),
+        (1, 2, "pg-1", "fenced_feeder_session"),
+        (1, 1, "pg-OTHER", "source_mismatch"),
+    ];
+    for (generation, feeder_epoch, source_id, code) in cases {
+        let reply = post_events_envelope(
+            &running,
+            &instance_id,
+            generation,
+            feeder_epoch,
+            source_id,
+            "ep-1",
+            &events,
+        )
+        .await;
+        assert_eq!(reply.status, 409, "{code}: {}", reply.body);
+        let body = reply.json();
+        assert_eq!(body["code"], code);
+        assert_eq!(body["result"], "error");
+        assert_eq!(reply.header("x-knotrel-state-version"), None);
+
+        let stats = stats_json(&running).await;
+        assert_eq!(stats["state_version"], "0", "{code}");
+        assert_eq!(stats["source_position"], "pos-0", "{code}");
+        assert_eq!(stats["sync_status"], "catching_up", "{code}");
+        assert!(!connected(&running, "1", "2").await, "{code}");
+    }
+
+    let accepted = post_events(&running, &instance_id, "f-1", 1, &events).await;
+    assert_eq!(accepted.status, 200, "{}", accepted.body);
+    assert_eq!(accepted.json()["events_applied"], 2);
+}
+
+#[tokio::test]
+async fn test_25_request_timeout_leaves_admitted_worker_pending_and_exact_retry_deduplicates() {
+    let config = config_source_managed()
+        .with_request_timeout(Duration::from_millis(200))
+        .unwrap();
+    let (running, instance_id) = start_with_baseline(config).await;
+    let events = events_array(&[link_event(1, "1", "2"), link_event(2, "2", "3")]);
+    let body = format!(
+        r#"{{"instance_id":"{instance_id}","graph_id":"default","generation":1,"feeder_session_id":"f-1","feeder_epoch":1,"source_id":"pg-1","source_epoch":"ep-1","events":{events}}}"#
+    );
+
+    let mut pause = running.lifecycle.pause_next_worker();
+    let mut stream = running.connect().await;
+    let reply = post(
+        &mut stream,
+        "/v1/feeder/events",
+        &[("x-knotrel-instance-id", &instance_id)],
+        &body,
+    )
+    .await;
+    timeout(STEP, pause.wait_started())
+        .await
+        .expect("worker never reached the pause point");
+    assert_eq!(reply.status, 503, "{}", reply.body);
+    assert_eq!(reply.json()["code"], "request_timeout");
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+
+    // The admitted worker has not taken the graph lock yet: this unchanged snapshot
+    // does not prove that the timed-out request will not apply later.
+    let stats = stats_json(&running).await;
+    assert_eq!(stats["state_version"], "0");
+    assert_eq!(stats["source_position"], "pos-0");
+
+    pause.release();
+    running.wait_for_jobs(0).await;
+    let stats = stats_json(&running).await;
+    assert_eq!(stats["state_version"], "2");
+    assert_eq!(stats["source_position"], "pos-2");
+    assert!(connected(&running, "1", "3").await);
+
+    // An exact retry under unchanged instance, generation, source and session, with the
+    // events still retained in the window, is deduplicated and applies nothing new.
+    let retry = post_events(&running, &instance_id, "f-1", 1, &events).await;
+    assert_eq!(retry.status, 200, "{}", retry.body);
+    let body = retry.json();
+    assert_eq!(body["events_applied"], 0);
+    assert_eq!(body["applied_delivery_sequence"], 2);
+    assert_eq!(body["state_version"], "2");
+}
+
+#[tokio::test]
+async fn test_26_capacity_rejection_happens_before_execution() {
+    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 1)
+        .unwrap()
+        .with_mode(ServerMode::SourceManaged)
+        .with_shutdown_timeout(Duration::from_secs(5))
+        .unwrap();
+    let (running, instance_id) = start_with_baseline(config).await;
+
+    // Hold the only worker permit with a paused query.
+    let mut pause = running.lifecycle.pause_next_worker();
+    let mut query_stream = running.connect().await;
+    let query = r#"{"op":"connected","source":"1","target":"2"}"#;
+    let request = format!(
+        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{query}",
+        query.len()
+    );
+    query_stream.write_all(request.as_bytes()).await.unwrap();
+    timeout(STEP, pause.wait_started())
+        .await
+        .expect("query worker never reached the pause point");
+
+    let events = events_array(&[link_event(1, "1", "2")]);
+    let rejected = post_events(&running, &instance_id, "f-1", 1, &events).await;
+    assert_eq!(rejected.status, 503, "{}", rejected.body);
+    // Current wire code for feeder capacity exhaustion (integration-contract.md §9.3).
+    // The code is retained for compatibility; no import is running here.
+    assert_eq!(rejected.json()["code"], "import_in_progress");
+    assert_eq!(rejected.header("x-knotrel-state-version"), None);
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+
+    pause.release();
+    let query_reply = read_reply(&mut query_stream).await.expect("query reply");
+    assert_eq!(query_reply.status, 200);
+    running.wait_for_jobs(0).await;
+
+    let stats = stats_json(&running).await;
+    assert_eq!(stats["state_version"], "0");
+    assert_eq!(stats["source_position"], "pos-0");
+    let accepted = post_events(&running, &instance_id, "f-1", 1, &events).await;
+    assert_eq!(accepted.status, 200, "{}", accepted.body);
+}

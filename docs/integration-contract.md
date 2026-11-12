@@ -390,6 +390,20 @@ To eliminate race conditions between deduplication, predecessor checks, and sequ
        +---------------------------------------------------------------------------------+
 ```
 
+**Implementation note (verified for M3.2, 2026-11-12).** The diagram above is the
+logical order. In the 0.2.x/0.3.0 implementation, only the instance header/body
+check, `graph_id`, JSON shape and service availability run before admission
+(`api.rs` `feeder_events`). Steps 8–10 (session, epoch, lease, generation, source
+lineage), the 1..=1024 count check and per-event shape/bounds prevalidation all run
+once **under the graph lock**, before the first event is applied
+(`service.rs` `GraphState::apply_events`). The observable result is the same: they
+reject the whole request with no graph or frontier change, except that a
+`source_epoch` mismatch and an expired lease also change synchronization status
+(see §9.3). When worker capacity is exhausted, `/v1/feeder/events` returns
+`503 import_in_progress`, not `busy`: no event of that request was admitted, and
+the code does not necessarily mean that an import is running. This naming is
+retained for compatibility; see §9.3.
+
 ### 6.2 Source Predecessor Validation and Feeder Obligations
 - **Validation:** For every new event ($D == D_{applied} + 1$), Knotrel verifies under the mutex that `event.prev_source_position == live.applied_source_position`.
 - **Mismatch Result:** If `prev_source_position` does not match, Knotrel responds with **`409 Conflict` (`code: "source_predecessor_mismatch"`)** and transitions state to **`Desynchronized`**.
@@ -564,6 +578,91 @@ Consider a batch starting at global sequence $D = 101$ with 3 events:
   1. Stream progress is halted at the failing sequence.
   2. The operator must either reconfigure Knotrel with increased capacity (`KNOTREL_MAX_NODES`, `KNOTREL_MAX_EDGES`) and initiate an external full rebuild, or
   3. The feeder must declare an unrepairable source gap via `POST /v1/feeder/gap`, transitioning state to `Desynchronized`.
+
+### 9.3 Feeder Batch Failure Matrix (v0.3.0 M3.2)
+
+This section records the verified failure model of `POST /v1/feeder/events`. It
+is distinct from the continue-on-error `POST /v1/batch` contract (ADR 0013).
+Every request runs in one worker under one exclusive graph-lock acquisition, so
+queries and other requests observe the state either before or after the whole
+request, never between events. "Applied" means applied to the volatile in-memory
+graph; Knotrel has no WAL and nothing here implies local durability or
+exactly-once delivery.
+
+**Frontier.** For every applied event, including no-op mutations and `progress`
+events, `applied_delivery_sequence` becomes the event's sequence and
+`applied_source_position` its `source_position`. `state_version` advances by
+exactly 1 only for a mutation that changed the graph. The source position
+therefore never runs ahead of the applied events.
+
+**Response shapes.**
+- *Plain error* (`{"result":"error","code","message"}`, no version headers):
+  whole-request rejection, or an in-loop failure of a **single-event** request.
+- *Partial failure* (`{"result":"partial_failure", ...}`, §9.1, with version
+  headers): an in-loop failure of a **multi-event** request, even at index 0.
+  `applied_delivery_sequence`, `applied_source_position` and `state_version`
+  describe the committed prefix; `failed_batch_index`, `failed_delivery_sequence`
+  and `failed_event_id` identify the failed event; the outer `code` is
+  `event_failed` for a graph domain error (inner `error.code` is the domain code),
+  and otherwise equals the inner code.
+
+| Case | HTTP / body | State change | Progress metadata | What the caller can safely infer | Tests |
+|---|---|---|---|---|---|
+| Rejected before execution: standalone, instance, `graph_id`, JSON shape/size, unavailable | 409/400/413/415/422/503 plain error | None | None | Nothing was applied; fix the request | `events.rs` `test_15`, `test_16`, `test_18` |
+| Worker capacity exhausted (all graph-job slots in use by any request type) | 503 `import_in_progress` plain error | None | None | This request was not admitted and applied nothing; it may be resubmitted unchanged. The code does not by itself mean an import is running | `events.rs` `test_26` |
+| Whole-request check under lock: empty or > 1024 events, any event with an invalid op, field or bound (even the last one) | 422 `invalid_request` plain error | None | None | No event of the request was applied | `events.rs` `test_18`, `test_21` |
+| Session/epoch fencing, stale generation, `source_id` mismatch, uninitialized graph | 409 plain error | None | None | No event applied; re-register, re-read generation, or rebuild | `events.rs` `test_13`, `test_24`; `e2e_rebuild.rs` |
+| Lease expired (checked once at request start) | 409 `lease_expired` | No graph change; status becomes `stale` | None | No event applied; renew/re-register the session | `events.rs` `test_13`; `bootstrap.rs` (status `stale`) |
+| `source_epoch` mismatch | 409 `source_epoch_mismatch` | No graph change; status becomes `desynchronized` | None | No event applied; replacement import required | `events.rs` `test_8` |
+| Already desynchronized | 409 `graph_desynchronized` | None | None | Replacement import required | `events.rs` `test_17`, `test_19`, `test_23` |
+| Domain error at first event (index 0) | Single event: 422 domain code. Batch: 422 `partial_failure`/`event_failed`, index 0 | None | Prefix = previous frontier | Nothing applied; resubmit corrected event at `applied_delivery_sequence + 1` | `events.rs` `test_9`, `test_20` |
+| Domain error at middle or last event | 422 `partial_failure`/`event_failed` | Prefix applied; failed and later events not applied, not recorded in the window | Prefix frontier and version | Events ≤ `applied_delivery_sequence` are applied in memory; resume from `failed_delivery_sequence` | `events.rs` `test_10`, `test_20` |
+| Sequence gap after a prefix | 409 `partial_failure`/`out_of_order_sequence` | Prefix applied; status unchanged | Prefix frontier | Resend from `applied_delivery_sequence + 1` | `events.rs` `test_7`, `test_23` |
+| Predecessor mismatch or conflicting duplicate after a prefix | 409 `partial_failure` (`source_predecessor_mismatch` / `conflicting_duplicate`) | Prefix applied; status becomes `desynchronized` | Prefix frontier | Stream is inconsistent; replacement import required | `events.rs` `test_4`, `test_8`, `test_23` |
+| Evicted duplicate | 409 `unverifiable_duplicate` (`partial_failure` if multi-event) | None beyond any prefix | Current frontier | Outcome of that old event cannot be verified | `events.rs` `test_5` |
+| Exact retained duplicate, single event | 200 `duplicate`/`already_applied` with `historical_outcome` | None | Current frontier | An identical event was applied earlier in this generation; this does not identify which request applied it | `events.rs` `test_2`, `test_11` |
+| Exact retained duplicates in a multi-event request, optionally followed by new events | 200 `applied`; duplicates skipped and not counted in `events_applied` | Only new events applied | New frontier | `events_applied` counts newly applied events only | `events.rs` `test_10`, `test_22`, `test_25` |
+| No-op mutation or `progress` event | 200 `applied`, counted in `events_applied` | Frontier advances; version unchanged | New frontier | Event is applied and recorded in the window | `events.rs` `test_1`, `test_22` |
+| Request timeout or client disconnect after admission | 503 `request_timeout`, or no response | The admitted worker may still execute later; when it does, it applies the request like any other (whole-request rejection, full application, or a prefix up to the first failure) | None for this request | Outcome unknown, including whether the worker has run yet. See *Uncertain outcomes* below | `events.rs` `test_11`, `test_25` |
+| Restart | New `instance_id`; old requests get 409 `stale_instance_id` | Volatile state is lost | — | Re-register and import a new baseline | `events.rs` `test_15` |
+| Replacement import (any generation change) | Old-generation events get 409 `stale_generation` | New generation resets frontier, version and window | Frontier = imported `source_position`, sequence 0 | Continue from the new baseline at sequence 1 | `events.rs` `test_12` (import race), `test_19`, `test_24` (`stale_generation`) |
+
+**Uncertain outcomes (timeout, disconnect, lost response).** Once admitted, a
+worker is not cancelled with its caller; the request is executed whenever the
+worker acquires the graph lock. Worker completion means the request was
+*processed*, not that every event was applied: processing still stops at the first
+failing event, and whole-request checks (fencing, lease, generation, source lineage)
+are evaluated at execution time, not at submission time. Consequently:
+
+- A `GET /v1/stats` result or version headers are a point-in-time snapshot, not a
+  completion barrier for an earlier request.
+- An unchanged frontier does not prove that the timed-out worker cannot still
+  apply events afterwards (`events.rs` `test_25` observes exactly this).
+- A matching or advanced `source_position` / `applied_delivery_sequence` does not
+  prove that *this* request applied those events; another request (a retry, or the
+  same stream from another submission) may have done so.
+- Resubmitting the identical events is safe and resolves the outcome only while
+  the same `instance_id`, `generation`, `source_id`/`source_epoch` and feeder
+  session/epoch remain valid, the lease is held, and the earlier events are still
+  in the retained deduplication window. Retained events then return as exact
+  duplicates and only missing events are applied (`test_11`, `test_22`, `test_25`).
+- If instead the retry is rejected with fencing (`fenced_feeder_session`,
+  `lease_expired`), `stale_generation`, `stale_instance_id` (restart),
+  `graph_desynchronized`/`source_epoch_mismatch`, or `unverifiable_duplicate`,
+  identical replay cannot resolve the outcome. The caller must use the existing
+  recovery paths: re-establish the session, or re-import a baseline (replacement
+  import, or create-only after restart) and continue from its position.
+
+Retry *policy* (backoff, re-reading the frontier, resubmitting the uncommitted
+suffix) belongs to v0.3.0 M3.3 and is not specified here. The inputs it can use
+already exist: the committed frontier in success and partial-failure bodies and
+version headers, point-in-time `GET /v1/stats`, and retained-window
+deduplication for exact retries under unchanged identities.
+
+**Compatibility debt.** Feeder endpoints report worker-capacity exhaustion as
+`503 import_in_progress` (via `FeederError::from(ServiceError::Busy)`), whereas
+`/v1/operations` and `/v1/batch` report `503 busy`. M3.2 retains the existing
+code and message; any rename is a separate, unapproved wire change.
 
 ---
 
