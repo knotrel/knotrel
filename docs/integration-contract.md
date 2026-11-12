@@ -732,6 +732,53 @@ policy, which other feeders may choose differently:
 | No-op and progress events | `events.rs` `test_1`, `test_22`; `e2e_rebuild.rs` `test_02` |
 | Conservative import reconciliation | `e2e_rebuild.rs` `test_09`, `test_16`–`test_19`, `test_21` |
 
+
+### 9.5 Shared Mutation Execution (v0.3.0 M3.4)
+
+M3.4 found that the graph mutation semantics are already shared, and made no
+production change. Every mutation path calls the same `ConnectivityGraph`
+methods in `knotrel-core` (`add_node`, `link`, `cut` in
+[`configuration.rs`](../crates/knotrel-core/src/configuration.rs)). Those methods
+own the node/edge limit checks and their precedence, self-loop rejection,
+no-mutation-on-error, and effective-change detection (the returned `bool`).
+Revision arithmetic is the single `GraphState::increment_version`. What differs
+per endpoint is policy, and stays separate on purpose.
+
+| Stage | `POST /v1/operations` | `POST /v1/batch` | `POST /v1/feeder/events` |
+|---|---|---|---|
+| Parsing and mode | `api.rs` `single`: `Operation`; mutations rejected 409 `direct_mutation_disabled` in source-managed mode | `api.rs` `batch`: mode check, then 1..=`MAX_BATCH_OPERATIONS` size check | `api.rs` `feeder_events`: instance header and body, `graph_id`, availability; source-managed only |
+| Admission and worker | `Service::execute` → `Service::run`: permit, `track_job`, `spawn_blocking`, panic guard | Same as single | `Service::execute_feeder_worker`: same permit, tracking and panic guard, plus readiness publication under the lock |
+| Lock scope | One graph-lock acquisition per request | One acquisition for the whole batch | One acquisition for the whole request |
+| Pre-execution state checks | Source-managed: uninitialized, loading or desynchronized → per-item error | Same as single | Session, epoch, lease, generation, desynchronization, source lineage, whole-request validation (§9.3) |
+| Mutation dispatch | `Operation::apply` (`api.rs`) → core | Same as single, per item | Inline `CanonicalOp` match in `GraphState::apply_events` → core |
+| Graph limits, self-loop, change detection | Core | Core | Core (plus a redundant feeder self-loop pre-check that keeps its message text) |
+| Revision | `GraphState::apply`: `increment_version` iff `changed` | Same, per effective item | `increment_version` iff `changed`, after the event is accepted |
+| Domain error policy | 422 (404 `unknown_node` for queries) | Per-item error; execution continues; no rollback (ADR 0013) | Stop at the first failure; 422 domain code, or `partial_failure` with the applied prefix (§9.3) |
+| Frontier and deduplication | — | — | Sequence and position advance for every applied event, including no-ops and `progress`; window records applied events only |
+| Response metadata | `response_metadata` captured under the lock | Same | Same function, captured under the lock for success, duplicate and partial failure |
+| Error mapping | `Outcome::from(GraphError)`, `service_error` | Same | Feeder `(code, message)` mapping and `feeder_error` |
+
+**Verified equivalence.** `events.rs` `test_28` runs one script through all three
+endpoints under identical limits and checks every outcome and the final revision
+and topology against an independently written expected table. The script covers
+effective and no-op `add_node`/`link`/`cut`, self-loop `link`/`cut`, node and edge
+limits on `link`, the node limit on `add_node`, and `cut` of an absent edge. Single
+operations and the batch report identical results; each feeder event reports the
+same code or revision change, and also advances the frontier on no-ops.
+
+**Recorded maintenance risk (no current defect).** The feeder dispatcher duplicates
+the server-level `GraphError` → code mapping with endpoint-specific message text
+and catch-all fallbacks (`invalid_node`, `invalid_edge`). Today those fallbacks
+are unreachable for every error core can return. The `cut` self-loop case
+reaches them only if the feeder's pre-check is removed. A future core error would
+silently take a different code on each path. `test_28` detects this for every
+scripted case. A small shared `GraphError` → code function, keeping the feeder's
+message text, would remove the risk without an observable change; it is left for
+a separate decision. The same catch-all pattern exists in candidate import
+validation, which is outside M3.4. The two worker wrappers (`run`,
+`execute_feeder_worker`) are also similar but differ in readiness publication and
+failure marking; merging them would change worker ownership and is not proposed.
+
 ---
 
 ## 10. Proposed HTTP Interface Specification

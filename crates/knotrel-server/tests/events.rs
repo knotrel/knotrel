@@ -2133,3 +2133,197 @@ async fn test_27_timed_out_worker_completing_after_exact_retry_and_newer_cut_rep
     assert!(!connected(&running, "1", "2").await);
     assert!(connected(&running, "2", "3").await);
 }
+
+// ---------------------------------------------------------------------------
+// M3.4 shared mutation execution (docs/integration-contract.md §9.5)
+// ---------------------------------------------------------------------------
+
+/// Expected graph effect of one mutation, independent of the endpoint that runs it.
+#[derive(Debug, PartialEq)]
+enum Effect {
+    Changed(bool),
+    Rejected(&'static str),
+}
+
+/// Mutation script under `max_nodes = 3`, `max_edges = 1`, starting from an empty graph.
+const MUTATION_SCRIPT: [(&str, Effect); 13] = [
+    (r#""op":"add_node","node":"1""#, Effect::Changed(true)),
+    (r#""op":"add_node","node":"1""#, Effect::Changed(false)),
+    (
+        r#""op":"link","source":"1","target":"2""#,
+        Effect::Changed(true),
+    ),
+    (
+        r#""op":"link","source":"2","target":"1""#,
+        Effect::Changed(false),
+    ),
+    (
+        r#""op":"link","source":"3","target":"3""#,
+        Effect::Rejected("self_loop"),
+    ),
+    (
+        r#""op":"link","source":"3","target":"4""#,
+        Effect::Rejected("node_limit_exceeded"),
+    ),
+    (
+        r#""op":"link","source":"2","target":"3""#,
+        Effect::Rejected("edge_limit_exceeded"),
+    ),
+    (
+        r#""op":"cut","source":"1","target":"2""#,
+        Effect::Changed(true),
+    ),
+    (
+        r#""op":"cut","source":"1","target":"2""#,
+        Effect::Changed(false),
+    ),
+    (
+        r#""op":"cut","source":"4","target":"4""#,
+        Effect::Rejected("self_loop"),
+    ),
+    (
+        r#""op":"cut","source":"1","target":"9""#,
+        Effect::Changed(false),
+    ),
+    (r#""op":"add_node","node":"3""#, Effect::Changed(true)),
+    (
+        r#""op":"add_node","node":"4""#,
+        Effect::Rejected("node_limit_exceeded"),
+    ),
+];
+const SCRIPT_REVISION: &str = "4";
+const SCRIPT_LIMITS: knotrel_core::GraphLimits = knotrel_core::GraphLimits {
+    max_nodes: Some(3),
+    max_edges: Some(1),
+};
+
+fn limited_config(mode: ServerMode) -> ServerConfig {
+    ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
+        .unwrap()
+        .with_mode(mode)
+        .with_graph_limits(SCRIPT_LIMITS)
+        .with_shutdown_timeout(Duration::from_secs(5))
+        .unwrap()
+}
+
+fn effect_of_operation_result(result: &serde_json::Value) -> Effect {
+    match result["result"].as_str() {
+        Some("changed") => Effect::Changed(result["changed"].as_bool().unwrap()),
+        Some("error") => {
+            let code = result["code"].as_str().unwrap();
+            let known = ["self_loop", "node_limit_exceeded", "edge_limit_exceeded"]
+                .into_iter()
+                .find(|known| *known == code)
+                .unwrap_or_else(|| panic!("unexpected error code {code}"));
+            Effect::Rejected(known)
+        }
+        other => panic!("unexpected result {other:?}"),
+    }
+}
+
+async fn assert_final_state(running: &Running) {
+    let stats = stats_json(running).await;
+    assert_eq!(stats["state_version"], SCRIPT_REVISION);
+    assert_eq!(stats["node_count"], 3);
+    assert_eq!(stats["edge_count"], 0);
+}
+
+#[tokio::test]
+async fn test_28_mutation_effects_and_revisions_match_across_operations_batch_and_feeder_paths() {
+    // Single operations: one /v1/operations request per mutation.
+    let mut single = Running::start(limited_config(ServerMode::Standalone)).await;
+    for (index, (op, expected)) in MUTATION_SCRIPT.iter().enumerate() {
+        let mut stream = single.connect().await;
+        let reply = post(&mut stream, "/v1/operations", &[], &format!("{{{op}}}")).await;
+        let expected_status = if matches!(expected, Effect::Rejected(_)) {
+            422
+        } else {
+            200
+        };
+        assert_eq!(
+            reply.status, expected_status,
+            "single #{index}: {}",
+            reply.body
+        );
+        assert_eq!(
+            &effect_of_operation_result(&reply.json()),
+            expected,
+            "single #{index}"
+        );
+    }
+    assert_final_state(&single).await;
+    single.shutdown();
+    single.finished().await;
+
+    // Legacy batch: the whole script in one continue-on-error /v1/batch request.
+    let mut batch = Running::start(limited_config(ServerMode::Standalone)).await;
+    let operations: Vec<String> = MUTATION_SCRIPT
+        .iter()
+        .map(|(op, _)| format!("{{{op}}}"))
+        .collect();
+    let mut stream = batch.connect().await;
+    let reply = post(
+        &mut stream,
+        "/v1/batch",
+        &[],
+        &format!(r#"{{"operations":[{}]}}"#, operations.join(",")),
+    )
+    .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let results = reply.json()["results"].as_array().unwrap().clone();
+    assert_eq!(results.len(), MUTATION_SCRIPT.len());
+    for (index, ((_, expected), result)) in MUTATION_SCRIPT.iter().zip(&results).enumerate() {
+        assert_eq!(
+            &effect_of_operation_result(result),
+            expected,
+            "batch #{index}"
+        );
+    }
+    assert_final_state(&batch).await;
+    batch.shutdown();
+    batch.finished().await;
+
+    // Feeder: one single-event request per mutation from an empty baseline. Rejected
+    // events are not applied, so the next event reuses the same delivery sequence.
+    let mut feeder = Running::start(limited_config(ServerMode::SourceManaged)).await;
+    let instance_id = feeder.instance_id().await;
+    assert_eq!(
+        register_session(&feeder, "f-1", 1, 60_000).await.status,
+        200
+    );
+    let baseline = import_baseline(&feeder, &instance_id, "f-1", 1, "pos-0", &[], &[]).await;
+    assert_eq!(baseline.status, 201, "{}", baseline.body);
+    let mut applied: u64 = 0;
+    let mut revision: u64 = 0;
+    for (index, (op, expected)) in MUTATION_SCRIPT.iter().enumerate() {
+        let seq = applied + 1;
+        let event = format!(
+            r#"[{{"event_id":"m-{index}","delivery_sequence":{seq},"prev_delivery_sequence":{applied},"source_position":"pos-{seq}","prev_source_position":"pos-{applied}",{op}}}]"#
+        );
+        let reply = post_events(&feeder, &instance_id, "f-1", 1, &event).await;
+        let body = reply.json();
+        match expected {
+            Effect::Changed(changed) => {
+                assert_eq!(reply.status, 200, "feeder #{index}: {}", reply.body);
+                // No-op mutations still advance the source frontier.
+                assert_eq!(body["applied_delivery_sequence"], seq, "feeder #{index}");
+                assert_eq!(body["applied_source_position"], format!("pos-{seq}"));
+                revision += u64::from(*changed);
+                assert_eq!(
+                    body["state_version"],
+                    revision.to_string(),
+                    "feeder #{index}"
+                );
+                applied = seq;
+            }
+            Effect::Rejected(code) => {
+                assert_eq!(reply.status, 422, "feeder #{index}: {}", reply.body);
+                assert_eq!(body["code"], *code, "feeder #{index}");
+            }
+        }
+    }
+    assert_eq!(revision.to_string(), SCRIPT_REVISION);
+    assert_final_state(&feeder).await;
+    feeder.shutdown();
+    feeder.finished().await;
+}
