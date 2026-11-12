@@ -1,6 +1,7 @@
 # Development requirements
 
-- Use Rust 1.98.1, edition 2024, and the existing Cargo workspace.
+- Use Rust 1.100.0, edition 2024, and the existing Cargo workspace. Preserve
+  the `knotrel-core` MSRV of Rust 1.98.1 and verify it separately.
 - Keep graph algorithms synchronous in `knotrel-core`; HTTP belongs in `knotrel-server` and uses Axum.
 - Write code, comments, Rustdoc and project documentation in English.
 - Document every public item, including structs, enums, variants, fields, traits, functions and methods. Explain errors and provide examples where useful.

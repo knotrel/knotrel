@@ -25,9 +25,11 @@ explicitly; no production scalability claim has been established.
 | `knotrel-core` | Synchronous graph operations and exact connectivity |
 | `knotrel-server` | Axum HTTP API, validation and bounded blocking graph work |
 
-Rust **1.98.1**, edition **2024**, and Cargo resolver **3** are pinned. The
-toolchain file installs Clippy and rustfmt when using rustup. Cargo.lock records
-the resolved dependency versions. Both crates are configured for crates.io publishing upon release.
+Rust **1.100.0**, edition **2024**, and Cargo resolver **3** are pinned for the
+workspace and server. The `knotrel-core` minimum supported Rust version (MSRV)
+is **1.98.1**. The toolchain file installs Clippy and rustfmt when using rustup.
+Cargo.lock records the resolved dependency versions. Both crates are configured
+for crates.io publishing upon release.
 
 ## Installation and Running
 

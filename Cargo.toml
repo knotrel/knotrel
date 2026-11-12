@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.100.0"
 repository = "https://github.com/knotrel/knotrel"
 license = "Elastic-2.0"
 publish = true
@@ -43,4 +43,3 @@ broken_intra_doc_links = "deny"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-

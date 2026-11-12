@@ -9,7 +9,8 @@ connectivity algorithm. It establishes semantics and a measurable baseline.
 The `knotrel` Cargo workspace contains `knotrel-core` (synchronous, dependency-free)
 and `knotrel-server` (Axum and Tokio). The independent [`knotrel-benchmarks`](https://github.com/knotrel/knotrel-benchmarks)
 workspace consumes the sibling core by path during local development.
-Both workspaces pin Rust 1.98.1, edition 2024, resolver 3. Packages are unpublished.
+Both workspaces pin Rust 1.100.0, edition 2024, resolver 3. The core MSRV is
+Rust 1.98.1. Packages are unpublished.
 Every exported item needs English Rustdoc; nontrivial private algorithms document
 invariants, correctness and complexity. CI checks formatting, Clippy, tests and docs.
 

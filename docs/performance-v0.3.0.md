@@ -4,6 +4,15 @@ Status: proposed for independent review, 2026-10-24. Planning only: no performan
 
 Status update (2026-11-11): campaigns have run since this plan was written. P0 coverage increment 1 (`p0-coverage-increment-1-campaign-20261107-2158`) qualified 102/102 pairs, but P0 remains open: owner Decisions 1–4 and transition criteria 6 (remaining matrix or approved coverage exception) and 7 (approved P1 analysis plan) in `p0-coverage-plan-and-p1-transition.md` are unapproved. Candidate comparisons (Candidate A, visited `put`, production FIFO) are inconclusive and not promoted. P1 has not started. M3.1's functional contract was accepted on 2026-11-12; that acceptance implies no performance qualification. This plan adds no persistence or algorithm redesign.
 
+Status update (2026-11-12): the maintainer approved a reduced v0.3.0 scope. The full matrix in this plan is deferred; v0.3.0 is gated by the bounded 9-cell baseline/candidate comparison, tolerances, budgets and decision rules approved before execution in [the v0.3.0 release closure plan](release-v0.3.0-closure-plan.md) §5. P0 is closed by the approved coverage exception D3 after offline revalidation of Increment 1 ([Q1 report](../../evidence/v0.3.0-package3-q0-q1-20261112/q1/REPORT.md)); no release qualification has run yet.
+
+Toolchain amendment (approved 2026-11-12): the controlled comparison will use
+Rust 1.100.0 for both the rebuilt v0.2.0 baseline and the final candidate. The
+separate baseline build and provenance are recorded in the
+[closure plan](release-v0.3.0-closure-plan.md#52-comparison-design-and-identities);
+the historical Rust 1.98.1 binaries and evidence remain unchanged. The candidate
+qualification build and campaign have not run.
+
 ## 1. Reviewed baseline and existing assets
 
 Local references inspected: Knotrel HEAD `90e71ae09e5d0c4f1679245c45bc0dea4ba0e750`, released `v0.2.0^{commit}` `7e9becd54040b9d7f05e2b548e5f86ee3f3e0915`, benchmark HEAD `df635a1e872fd9e2d556b166ac23f342ee45d675`. Both working trees were clean before this documentation change. Resolve and record references again before execution; never replace these with an ambiguous branch name. Local tag resolution is not independent verification of a downloaded release artifact.
@@ -78,7 +87,7 @@ Concurrent queries must be checked against the graph state identified by their r
 
 Fresh means a new process/graph without deliberate replay warmup, NOT flushed CPU/page caches. Warmed means a fixed predeclared untimed replay/setup then the measured graph regime; record which state is rebuilt and which buffers are reused. Immediate query repeats are a separate locality workload, not evidence of answer caching. Record query selection and repeat ratio. No undocumented cache flushes.
 
-Use release builds, fixed Rust 1.98.1, fixed dependency context and no test-support in timing binaries. Compile and validate before measurement. Record power source/power mode, thermal constraints, host background load and sleep events. No concurrent builds/profilers. Stop and retain invalidated trials on sleep or identity changes; do not selectively rerun slow samples.
+The original plan specified release builds, fixed Rust 1.98.1, fixed dependency context and no test-support in timing binaries; this historical toolchain specification does not authorize a new measurement. Compile and validate before measurement. Record power source/power mode, thermal constraints, host background load and sleep events. No concurrent builds/profilers. Stop and retain invalidated trials on sleep or identity changes; do not selectively rerun slow samples.
 
 Proposed pilot: 6 independent A/A process pairs per anchor cell, balanced order, fresh and warmed separate. Qualification starting schedule: 10 baseline/candidate process pairs per cell, alternating AB/BA with recorded schedule seed, across at least two sessions. These counts are proposals, not confidence guarantees. Within-process repetitions are correlated observations, not independent trials. Freeze final counts after pilot, before examining candidate wins. For HTTP steady-state cells propose 10 s warmup and 30 s measurement; retain operation counts and extend the predeclared duration if tails are underpowered. Report p99 sample count/tail count; do not extrapolate rare-event precision.
 

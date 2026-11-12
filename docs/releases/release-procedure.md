@@ -10,7 +10,7 @@ This document specifies the reproducible verification, packaging, and publicatio
 ## 1. Distribution Model & Prerequisites
 
 - **Licensing**: All distributed source packages and binaries carry the **Elastic License 2.0 (ELv2)**.
-- **Toolchain**: Build and test with the pinned compiler: **Rust 1.98.1** (`rust-toolchain.toml`).
+- **Toolchain**: Build and test with the pinned compiler: **Rust 1.100.0** (`rust-toolchain.toml`). Verify the core MSRV separately with `cargo +1.98.1 test --locked -p knotrel-core`.
 - **Supported binary targets**:
   - `x86_64-unknown-linux-gnu` (Linux x86_64, ELF 64-bit)
   - `aarch64-apple-darwin` (macOS Apple Silicon, Mach-O 64-bit arm64)

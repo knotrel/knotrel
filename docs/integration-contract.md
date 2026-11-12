@@ -3,7 +3,7 @@
 **Document Status:** Candidate Design Specification for Review — PENDING MAINTAINER APPROVAL  
 **Milestone:** v0.2.0 — Integration & Graph Loading (Feature 0.2.1)  
 **License:** Elastic License 2.0  
-**Target Platform:** Rust 1.98.1, Edition 2024  
+**Target Platform:** Rust 1.100.0, Edition 2024 (core MSRV: Rust 1.98.1)<br>
 **Implementation Notice:** All endpoints, schemas, headers, and protocol messages specified herein that are not part of the v0.1.0 release contract are marked as **`[PROPOSED — NOT IMPLEMENTED]`**. They define the candidate contract to be implemented by Features 0.2.2–0.2.6 upon maintainer approval.
 
 ---

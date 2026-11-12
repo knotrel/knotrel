@@ -12,7 +12,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.98.1
+  RUST_TOOLCHAIN: 1.100.0
+  CORE_MSRV: 1.98.1
 
 jobs:
   test:
@@ -48,6 +49,18 @@ jobs:
       - name: Run release binary smoke test (windows)
         if: runner.os == 'Windows'
         run: powershell -File ./scripts/smoke-test-release-binary.ps1 -BinaryPath target/release/knotrel-server.exe
+
+  core-msrv:
+    name: core MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.CORE_MSRV }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Test core on MSRV
+        run: cargo +${{ env.CORE_MSRV }} test -p knotrel-core --locked
 
   clippy:
     name: clippy

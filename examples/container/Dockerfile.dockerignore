@@ -1,0 +1,7 @@
+# BuildKit applies this file to builds using examples/container/Dockerfile with
+# the repository root as context. Send only what the build needs.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+crates/**/target

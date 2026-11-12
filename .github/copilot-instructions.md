@@ -3,7 +3,7 @@
 When modifying or generating code for Knotrel, strictly adhere to the following principles:
 
 ## 1. Toolchain & Dependencies
-- Pin strictly to Rust `1.98.1` and Rust edition `2024`.
+- Pin the workspace toolchain to Rust `1.100.0` and Rust edition `2024`; preserve and test the `knotrel-core` MSRV of Rust `1.98.1`.
 - Never introduce new external dependencies to `knotrel-core`. It must remain zero-dependency (core/std only).
 - Keep HTTP networking and async runtime concerns strictly within `knotrel-server` (Axum/Tokio).
 
@@ -24,4 +24,3 @@ When modifying or generating code for Knotrel, strictly adhere to the following 
 ## 4. Git & Rulesets Conventions
 - **Branches**: Must match `^(feature|bugfix|fix|hotfix|docs|chore|refactor|test|ci|dependabot)/.+$`
 - **Commits**: Must follow Conventional Commits: `^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_./-]+\))?!?: .+$`
-

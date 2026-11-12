@@ -1,7 +1,9 @@
 # Contributing
 
-Use the pinned Rust 1.98.1 toolchain and edition 2024. Keep the core independent
-of networking and runtimes; implement HTTP concerns in the Axum server.
+Use the pinned Rust 1.100.0 toolchain and edition 2024. Preserve the core MSRV of
+Rust 1.98.1, checked with `cargo +1.98.1 test --locked -p knotrel-core`. Keep
+the core independent of networking and runtimes; implement HTTP concerns in the
+Axum server.
 
 Document every exported item in English. Document errors, mutation semantics and
 examples where they help callers. Explain complex private code with invariants,

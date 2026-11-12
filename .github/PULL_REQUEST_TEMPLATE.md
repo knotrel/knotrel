@@ -32,7 +32,7 @@ Fixes # <!-- Issue number if applicable -->
 
 ## Verification Checklist
 
-- [ ] Pinned toolchain: Built and tested with Rust `1.98.1`
+- [ ] Pinned toolchain: Built and tested with Rust `1.100.0`; core MSRV checked with Rust `1.98.1`
 - [ ] Tests pass: `cargo test --workspace --locked`
 - [ ] Formatted: `cargo fmt --all -- --check`
 - [ ] Clippy clean: `cargo clippy --workspace --all-targets --locked -- -D warnings`

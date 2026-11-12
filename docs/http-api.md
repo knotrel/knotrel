@@ -1,6 +1,7 @@
 # HTTP API v1
 
-This document is the v0.1.0 preview contract. Every statement here is backed by
+This document is the current HTTP API contract (v0.3.0; first published as the
+v0.1.0 preview). Every statement here is backed by
 an automated test (`crates/knotrel-server/tests/`) or is explicitly labeled a
 non-guarantee. A machine-readable standard definition is available in the
 [OpenAPI specification](openapi.yaml). Default address: `127.0.0.1:8080`.
@@ -13,15 +14,17 @@ non-guarantee. A machine-readable standard definition is available in the
 - The standalone executable starts with an empty graph using the engine chosen
   by `KNOTREL_ENGINE`. `router(Graph)` starts from the supplied graph.
 - A successful mutation is visible to every request that acquires the graph
-  after it completes. Graph state changes only through `/v1/operations` and
-  `/v1/batch`.
+  after it completes. In standalone mode graph state changes only through
+  `/v1/operations` and `/v1/batch`. In source-managed mode it changes only
+  through the feeder endpoints (`/v1/feeder/import`, `/v1/feeder/events`);
+  direct client mutations are rejected (see [Mode rules](#mode-rules)).
 - **Restart loses the whole graph.** Nothing is written to disk and nothing is
   recovered. A clean shutdown (SIGINT/SIGTERM) discards the graph too: the next
   process always starts empty.
 
 ## Non-guarantees
 
-The v0.1.0 preview does not provide any of the following:
+The server does not provide any of the following:
 
 - persistence, snapshots, write-ahead logging or recovery after a restart or crash;
 - high availability, replication or failover;
@@ -39,9 +42,9 @@ The v0.1.0 preview does not provide any of the following:
 
 ## Resource bounds
 
-| Resource | Bound in v0.1.0 |
+| Resource | Bound |
 | --- | --- |
-| Request body | 1 MiB, fixed; larger bodies get 413 |
+| Request body | 1 MiB, fixed; larger bodies get 413. `POST /v1/feeder/import` is bounded instead by `KNOTREL_MAX_IMPORT_BODY_BYTES` (default 64 MiB) |
 | Batch length | 1–1024 operations, fixed |
 | Queued plus running graph jobs | `KNOTREL_MAX_PENDING_JOBS`, default 32; excess gets 503 `busy` |
 | Graph nodes / edges | `KNOTREL_MAX_NODES` / `KNOTREL_MAX_EDGES`; default 100 000 nodes and 500 000 edges, `unlimited` is an explicit opt-out |
@@ -62,7 +65,7 @@ defaults above.
 
 ## Trust model
 
-Knotrel v0.1.0 has **no authentication, authorization or TLS**. Anyone who can
+Knotrel has **no authentication, authorization or TLS**. Anyone who can
 open a TCP connection to the listener can read and mutate the graph. The
 supported deployment is a single trusted local client:
 
@@ -74,7 +77,7 @@ supported deployment is a single trusted local client:
   untrusted clients, including the public internet, stays unsupported.
 - If you must expose it to other hosts, put it behind a reverse proxy or
   gateway that provides TLS, authentication, authorization, rate limiting and
-  rate limiting and write timeouts, and restrict the network path. A private network on its own is not
+  write timeouts, and restrict the network path. A private network on its own is not
   sufficient: every host on it is then trusted with full read/write access.
 - Logs contain the method, path, status and latency of each request and the
   startup settings. They never contain request bodies, node IDs or parser

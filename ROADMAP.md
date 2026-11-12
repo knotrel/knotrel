@@ -53,8 +53,8 @@ Checks reflect verified implementation and acceptance gates. Features 0.2.5+ rem
 
 - [ ] **Feature M3:** Compatible batch processing, retry semantics and update efficiency
 - [ ] **Feature M4:** Operational lifecycle, configuration and deployability
-- [ ] **Feature M6:** Integration-aware observability
-- [ ] **Feature M5:** Measured contention, query concurrency and isolation
+- [ ] **Feature M6:** Integration-aware observability — deferred to a later release (reduced v0.3.0 scope, approved 2026-11-12)
+- [ ] **Feature M5:** Measured contention, query concurrency and isolation — deferred to a later release (reduced v0.3.0 scope, approved 2026-11-12)
 
 ### v0.4.0 — Optional Local Persistence & Fast Recovery
 
@@ -74,7 +74,7 @@ Checks reflect verified implementation and acceptance gates. Features 0.2.5+ rem
 
 1. **External authority.** In integration mode, source changes are recorded externally before being delivered to Knotrel. An in-memory acknowledgment does not commit anything in the source or guarantee local durability.
 2. **Correctness before throughput.** Preserve exact graph semantics, limits and error behavior. Synchronization failures cannot silently produce a ready but divergent graph.
-3. **Separate concerns.** Core algorithms remain synchronous and independent of HTTP/storage; the server owns protocol and execution; feeders own provider access. Retain Rust 1.98.1, edition 2024 and Elastic-2.0.
+3. **Separate concerns.** Core algorithms remain synchronous and independent of HTTP/storage; the server owns protocol and execution; feeders own provider access. Use Rust 1.100.0 for the workspace and server, preserve the core MSRV of Rust 1.98.1, and retain edition 2024 and Elastic-2.0.
 4. **Explicit versions and ordering.** Graph identity, instance identity, generation, local revision, source position and persistence checkpoint are different concepts. Publish coherent graph/version tuples.
 5. **Backward compatibility.** Preserve standalone volatile mode, Rust APIs and the existing ordered, continue-after-domain-error batch endpoint. A new feeder protocol may have a separately documented failure model; do not silently change `/v1/batch`.
 6. **Bounded and observable.** Bound admission, import bodies, candidate construction, replay and deduplication state. Cardinality limits alone do not prove a memory or latency bound.
@@ -389,39 +389,58 @@ Limitations: External feeder reference implementation and end-to-end reproducibl
 
 **REQUIRED scope:** Build on v0.2.0 integration and v0.1.0 lifecycle. Batch improvements, deployment and observability remain priorities. Concurrency redesign is conditional on measured contention. Local persistence is not a dependency.
 
+**Reduced scope (approved 2026-11-12):** v0.3.0 ships M3.1–M3.5, M4 and a bounded performance qualification gate. M3.6, M5, M6, P2, the full original P3 matrix and quantitative source-lag reporting are deferred to a later release and are not part of v0.3.0 acceptance. The coarse graph mutex is retained unchanged. Scope, qualification protocol and owner decisions D1–D8: [v0.3.0 release closure plan](docs/release-v0.3.0-closure-plan.md).
+
 ### Release-wide performance checkpoints (required)
 
-The [v0.3.0 performance evaluation plan](docs/performance-v0.3.0.md) defines separate core and HTTP evidence, immutable source identity, workload matrices, timing boundaries and regression review. Historical algorithm rankings are not measurements of the released v0.2.0 HTTP server. The plan is proposed for independent review; no numerical regression budgets are approved.
+The [v0.3.0 performance evaluation plan](docs/performance-v0.3.0.md) defines separate core and HTTP evidence, immutable source identity, workload matrices, timing boundaries and regression review. Historical algorithm rankings are not measurements of the released v0.2.0 HTTP server. The full matrix in that plan is deferred; the reduced v0.3.0 gate, its tolerances, budgets and decision rules were approved on 2026-11-12 in [§5 of the release closure plan](docs/release-v0.3.0-closure-plan.md#5-proposed-measurement-protocol-and-budgets), before any execution.
 
-- [ ] **P0 — Released baseline:** Pin v0.2.0 to its resolved commit, verify isolated sibling core dependency resolution, qualify collectors and record core/server baselines before execution changes. Preserve historical evidence.
-- [ ] **P1 — M3/M4 regressions:** Compare batch/update execution, mixed traffic, admission, lifecycle and external rebuild against P0 using identical workloads and explicit candidate SHAs.
-- [ ] **P2 — M6/M5 evaluation:** Measure instrumentation overhead before relying on telemetry; establish coarse-mutex contention, fairness and query tails before choosing any concurrency alternative.
-- [ ] **P3 — Release qualification:** Repeat the complete approved matrix against v0.2.0 and the release candidate on comparable controlled hosts. Archive raw evidence, correctness checks, per-workload gains/losses and reviewed regression decisions.
+- [x] **P0 — Released baseline:** v0.2.0 (`7e9becd`) frozen binaries and Increment 1 (17 cells, 102 pairs) retained as historical A/A evidence. The remaining original P0 matrix is closed by the owner-approved coverage exception D3 (2026-11-12). Increment 1 was revalidated offline under Q1: [report](../evidence/v0.3.0-package3-q0-q1-20261112/q1/REPORT.md), including 204/204 observations and 17/17 dispersion matches. Reuse is limited to noise calibration and procedure; these historical observations are not a baseline for direct comparison with new runs.
+- [ ] **P1/P3 — Bounded regression and release qualification:** one contemporary, interleaved v0.2.0-versus-final-candidate comparison over 9 cells ([closure plan](docs/release-v0.3.0-closure-plan.md) §5), with criteria approved before execution, run against the final candidate source identity. Not started.
+- **P2 — M6/M5 evaluation:** Deferred to a later release with M5 and M6.
 
-**Performance exit gate:** Correctness and source/binary identity failures block release qualification. Missing or underpowered evidence is explicitly inconclusive, never a claimed pass. Reproducible regressions require investigation and an explicit disposition; noisy shared CI is restricted to correctness and bounded benchmark smoke. Required coverage exceptions and resource budgets need owner approval. Retain the coarse mutex when evidence does not justify replacement. M3.1's functional contract is accepted; these performance checkpoints remain open and do not mark any feature complete.
+**Performance exit gate:** Correctness and source/binary identity failures block release. Every qualification cell has a recorded PASS, owner-dispositioned REGRESSION, or disclosed INCONCLUSIVE outcome under the pre-approved rules. No speedup claim is made without a cell-level PASS showing improvement. Functional acceptances below imply no performance qualification.
 
 ### M3 — Compatible batch processing and update efficiency (P1)
 
 - [x] **M3.1 Contract:** Inventory the existing `/v1/batch` behavior and extend result/version reporting compatibly. Preserve ordered execution, per-item domain errors, continuation and lack of rollback.
 
 Evidence: [ADR 0013](docs/architecture/0013-compatible-batch-contract.md); [HTTP API specification](docs/http-api.md#batches); [batch integration test suite](crates/knotrel-server/tests/batch.rs) covering 1-to-1 outcome reporting, continue-on-error without rollback, revision progression arithmetic ($\Delta V = \sum [\text{changed} == \text{true}]$), decimal carry, intra-batch query visibility, mode segregation and validation order, deterministic request-timeout uncertainty with later worker completion, client disconnect after commit, ready-state replacement coherence, and a scheduling-dependent concurrency stress smoke test. Functional contract accepted 2026-11-12. This does not qualify P0, P1 or M3-wide performance; those gates and v0.3.0 release qualification remain open.
-- [ ] **M3.2 Failure model:** Specify feeder batch boundaries separately if introduced. A stop-on-error applied-prefix protocol requires explicit new semantics, not a replacement of the legacy endpoint. "Applied" does not mean locally durable.
-- [ ] **M3.3 Retry:** Define source-prefix resume, deduplication limits and uncertain outcomes after timeout; retain generation/session fencing from 0.2.x. Do not assume exactly-once delivery or persist a cursor ahead of applied state.
-- [ ] **M3.4 Execution:** Reuse the common graph mutation path across single, legacy batch and feeder execution while preserving their distinct validation/failure policies.
-- [ ] **M3.5 Tests:** Failure at every index, duplicate/no-op events, concurrent queries, disconnect/restart and source rebuild; preserve existing batch isolation and error-continuation tests.
-- [ ] **M3.6 Measurement:** Measure batching benefits and costs in HTTP overhead, throughput, fairness, queue depth and query tails under equivalent semantics.
-- [ ] **Acceptance M3:** Clients can identify which operations were applied and how to resume/reconcile; no breaking batch change or durability claim is introduced.
+- [x] **M3.2 Failure model:** Specify feeder batch boundaries separately if introduced. A stop-on-error applied-prefix protocol requires explicit new semantics, not a replacement of the legacy endpoint. "Applied" does not mean locally durable.
+
+Evidence: commit `0f21b58`; [integration contract §9.3](docs/integration-contract.md) feeder batch failure matrix; [`tests/events.rs`](crates/knotrel-server/tests/events.rs) `test_20`, `test_21`, `test_23`, `test_24`, `test_26`. Functional acceptance recorded 2026-11-12 (closure plan D2).
+- [x] **M3.3 Retry:** Define source-prefix resume, deduplication limits and uncertain outcomes after timeout; retain generation/session fencing from 0.2.x. Do not assume exactly-once delivery or persist a cursor ahead of applied state.
+
+Evidence: commit `f0b79d1`; [integration contract §9.4](docs/integration-contract.md) retry and reconciliation decision table; [`tests/events.rs`](crates/knotrel-server/tests/events.rs) `test_25`, `test_27`; [`tests/e2e_rebuild.rs`](crates/knotrel-server/tests/e2e_rebuild.rs) `test_15`, `test_22`, `test_23`. Functional acceptance recorded 2026-11-12 (closure plan D2).
+- [x] **M3.4 Execution:** Reuse the common graph mutation path across single, legacy batch and feeder execution while preserving their distinct validation/failure policies.
+
+Evidence: commit `cdb0e5b` (existing shared path confirmed; no production change); [integration contract §9.5](docs/integration-contract.md); [`tests/events.rs`](crates/knotrel-server/tests/events.rs) `test_28`. Functional acceptance recorded 2026-11-12 (closure plan D2).
+- [x] **M3.5 Tests:** Failure at every index, duplicate/no-op events, concurrent queries, disconnect/restart and source rebuild; preserve existing batch isolation and error-continuation tests.
+
+Evidence: failure at first/middle/last index (`events.rs` `test_20`); duplicate/no-op/progress (`events.rs` `test_22`); concurrent queries, batch isolation and error continuation ([`tests/batch.rs`](crates/knotrel-server/tests/batch.rs)); disconnect/restart/takeover (`e2e_rebuild.rs` `test_15`); source rebuild (`e2e_rebuild.rs` `test_23`). Functional acceptance recorded 2026-11-12 (closure plan D2); no new tests were required.
+- **M3.6 Measurement:** Deferred to a later release. v0.3.0 qualifies legacy batch sizes 1/8/64/256 for regression only; batching benefit, fairness and queue depth are not evaluated.
+- [x] **Acceptance M3:** Clients can identify which operations were applied and how to resume/reconcile; no breaking batch change or durability claim is introduced. Functional acceptance 2026-11-12 on the M3.1–M3.5 evidence above; regression qualification remains with P1/P3.
 
 ### M4 — Operational lifecycle, configuration and deployability (P1)
 
-- [ ] **M4.1 Liveness:** Retain independent process liveness through loading, catch-up and source failure.
-- [ ] **M4.2 Readiness:** Operationalize 0.2.5 with documented degraded/freshness policies and diagnostics; do not reimplement basic bootstrap.
-- [ ] **M4.3 Shutdown:** Drain imports and updates with existing worker-owned accounting and deadlines; report uncertain outcomes and feeder restart requirements, not an invented disk-flush guarantee.
-- [ ] **M4.4 Configuration:** Validate mode, networking, request/resource limits, timeouts, feeder ownership and freshness settings. Explicitly decide any reloadable subset; startup configuration is the baseline, not arbitrary per-request configuration.
-- [ ] **M4.5 Deployment:** Supply an external-feeder/container example, resource and trust-boundary guidance, source retention requirements, restart/rebuild runbook and health transition tests. Storage-volume requirements apply only if optional persistence later ships.
-- [ ] **Acceptance M4:** Operators can distinguish running, synchronized, lagging, rebuilding and draining states and recover through the authoritative source.
+- [x] **M4.1 Liveness:** Retain independent process liveness through loading, catch-up and source failure.
 
-### M6 — Integration-aware observability (P1)
+Evidence: `/health` is a state-independent handler ([`lib.rs`](crates/knotrel-server/src/lib.rs)); asserted 200 while uninitialized ([`tests/bootstrap.rs`](crates/knotrel-server/tests/bootstrap.rs)), after a worker panic ([`tests/import.rs`](crates/knotrel-server/tests/import.rs)), while draining ([`tests/lifecycle.rs`](crates/knotrel-server/tests/lifecycle.rs)) and in process tests ([`tests/process.rs`](crates/knotrel-server/tests/process.rs)). Functional acceptance recorded 2026-11-12 (closure plan D2).
+- [x] **M4.2 Readiness:** Operationalize 0.2.5 with documented degraded/freshness policies and diagnostics; do not reimplement basic bootstrap.
+
+Evidence: synchronization states `uninitialized`, `loading`, `catching_up`, `ready`, `stale`, `desynchronized` and `/ready` precedence in [HTTP API probes](docs/http-api.md#probes) and [feeder recovery procedures](docs/http-api.md#recovery-procedures). Functional acceptance recorded 2026-11-12 (closure plan D2).
+- [x] **M4.3 Shutdown:** Drain imports and updates with existing worker-owned accounting and deadlines; report uncertain outcomes and feeder restart requirements, not an invented disk-flush guarantee.
+
+Evidence: [graceful shutdown](docs/http-api.md#graceful-shutdown) drain, deadline and exit statuses 0/1/2/130; `tests/lifecycle.rs`, `tests/process.rs`. Functional acceptance recorded 2026-11-12 (closure plan D2).
+- [x] **M4.4 Configuration:** Validate mode, networking, request/resource limits, timeouts, feeder ownership and freshness settings. Explicitly decide any reloadable subset; startup configuration is the baseline, not arbitrary per-request configuration.
+
+Evidence: [startup configuration](docs/http-api.md#startup-configuration-and-engine-selection) validated at startup with no runtime reload (the reloadable subset is empty); feeder lease duration bounded per session request. Functional acceptance recorded 2026-11-12 (closure plan D2).
+- [ ] **M4.5 Deployment:** Supply an external-feeder/container example, resource and trust-boundary guidance, source retention requirements, restart/rebuild runbook and health transition tests. Storage-volume requirements apply only if optional persistence later ships.
+
+Status: [container example](examples/container/Dockerfile) and [deployment runbook](docs/deployment.md) delivered with a recorded startup, feeder, lease-expiry, restart/rebuild and shutdown transcript (2026-11-12, working tree based on `cdb0e5b`). Open until the transcript is repeated at the release-candidate SHA and acceptance is recorded (closure plan Package 2).
+- [ ] **Acceptance M4:** Operators can distinguish process liveness (`/health`), synchronized readiness, `uninitialized`/`loading`/`catching_up`/`stale`/`desynchronized` states, rebuild after restart, and draining, using documented probes and the deployment runbook. Source-relative lag is not reported in v0.3.0: `stale` and `catching_up` indicate synchronization state, not a lag magnitude.
+
+### M6 — Integration-aware observability (P1) — Deferred to a later release (not part of v0.3.0)
 
 - [ ] **M6.1 Vocabulary:** Requests/status, graph counts, pending jobs, active imports, applied source progress, bootstrap duration, duplicate/gap/conflict counters and feeder health. Report lag only when the source protocol supplies a meaningful comparison.
 - [ ] **M6.2 Prometheus metrics:** Bounded-cardinality HTTP/execution/lock-wait/import/catch-up histograms and backlog gauges. Never use raw node IDs, request IDs, generations or source cursors as metric labels. Persistence metrics are conditional on v0.4.0 capabilities.
@@ -430,7 +449,7 @@ Evidence: [ADR 0013](docs/architecture/0013-compatible-batch-contract.md); [HTTP
 - [ ] **M6.5 Budgets:** Verify instrumentation overhead and bounded series counts under churn, rebuilds and repeated source sessions.
 - [ ] **Acceptance M6:** Operators can explain synchronization and performance failures from bounded telemetry, without inferring freshness solely from process health.
 
-### M5 — Measured contention, query concurrency and isolation (P1)
+### M5 — Measured contention, query concurrency and isolation (P1) — Deferred to a later release (not part of v0.3.0)
 
 - [ ] **M5.1 Instrument:** Separate parse/serialize, queue, lock, graph work, candidate build and publication costs. Optional storage I/O is not a prerequisite.
 - [ ] **M5.2 Workloads:** Mixed reads/writes, batch sizes, rebuild/import overlap and feeder catch-up; report tails, fairness and memory with reproducible workloads.

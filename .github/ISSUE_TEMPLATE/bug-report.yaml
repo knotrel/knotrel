@@ -62,7 +62,7 @@ body:
       description: Operating System, Rust version, runner architecture, etc.
       value: |
         - OS: [e.g. macOS 15, Ubuntu 24.04, Windows 11]
-        - Rust toolchain: [e.g. 1.98.1]
+        - Rust toolchain: [e.g. 1.100.0]
         - Knotrel version/commit: [e.g. main / commit hash]
     validations:
       required: false
