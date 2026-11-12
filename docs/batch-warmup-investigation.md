@@ -36,6 +36,13 @@ revision 2000, and measured request counts depend only on `--batch-size`.
 
 ## Next controlled comparison
 
+**Status update (2026-11-11):** this comparison has been run (evidence bundle
+`batch-warmup-investigation-20261108-0737`, 18 qualified pairs). It recommends
+retaining the default warmup chunk size of 50: chunk size 1 added 27x–32x warmup
+latency overhead without a consistent stability benefit or removal of
+within-pair position differences. The default in `measure_e2e` remains 50. The
+protocol below is kept as the historical method description.
+
 Use a separately built candidate driver at a new path, never overwriting the
 accepted release driver or frozen server/harness. Compare chunk size 50 versus
 1 **using the same new driver binary** and the same frozen baseline server at
@@ -58,7 +65,8 @@ repeatable reduction in position-associated variation would support adopting
 the method for future comparisons, not an algorithm speedup.
 
 No new release performance measurements have been collected for this change.
-P0, M3.1 and v0.3.0 remain open.
+P0 and v0.3.0 remain open. M3.1's functional contract was accepted on 2026-11-12
+without implying performance qualification.
 
 ## Implementation verification
 

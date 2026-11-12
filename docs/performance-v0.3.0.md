@@ -1,6 +1,8 @@
 # v0.3.0 performance evaluation plan
 
-Status: proposed for independent review, 2026-10-24. Planning only: no campaign has been run and no performance acceptance is implied. M3.1 remains pending independent acceptance. This plan adds no persistence or algorithm redesign.
+Status: proposed for independent review, 2026-10-24. Planning only: no performance acceptance is implied.
+
+Status update (2026-11-11): campaigns have run since this plan was written. P0 coverage increment 1 (`p0-coverage-increment-1-campaign-20261107-2158`) qualified 102/102 pairs, but P0 remains open: owner Decisions 1–4 and transition criteria 6 (remaining matrix or approved coverage exception) and 7 (approved P1 analysis plan) in `p0-coverage-plan-and-p1-transition.md` are unapproved. Candidate comparisons (Candidate A, visited `put`, production FIFO) are inconclusive and not promoted. P1 has not started. M3.1's functional contract was accepted on 2026-11-12; that acceptance implies no performance qualification. This plan adds no persistence or algorithm redesign.
 
 ## 1. Reviewed baseline and existing assets
 

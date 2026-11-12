@@ -1,16 +1,26 @@
-//! Deterministic integration tests for Feature M3.1:
+//! Integration tests for Feature M3.1:
 //! Compatible Batch Contract and Result/Version Reporting.
 //!
-//! Validates:
-//! 1. One-to-one positional outcome mapping and ordered execution.
-//! 2. Continue-on-error semantics preserving earlier and later mutations without rollback.
-//! 3. Revision progression arithmetic where Delta V = count(changed: true).
-//! 4. Multi-digit decimal string revision carry across batches.
-//! 5. Intra-batch sequential visibility of prior mutations to subsequent queries.
-//! 6. Concurrency isolation between batches and live statistics snapshots.
-//! 7. Source-managed mode rejection of mutating batches and allowance of query-only batches.
-//! 8. Batch boundary validation (empty, 1024 max, 1025 oversized, malformed).
-//! 9. Timeout and cancellation uncertainty where admitted workers complete in the background.
+//! - `test_01`: one-to-one positional outcomes and ordered execution.
+//! - `test_02`: revision advances once per effective mutation; no-ops and
+//!   rejected operations do not advance it.
+//! - `test_03`: multi-digit decimal revision carry across batches.
+//! - `test_04`: queries observe preceding mutations in the same batch.
+//! - `test_05`: source-managed mode rejects mutating batches and admits query-only ones.
+//! - `test_06`: continue-on-error at capacity limits without rollback.
+//! - `test_07`: batch isolation under concurrent batches and statistics reads.
+//!   This is a scheduling-dependent stress smoke test; see its documentation.
+//! - `test_08`: batch size bounds and malformed operations rejected before execution.
+//! - `test_09`: client disconnect after commit preserves the applied batch.
+//! - `test_10`: the source-managed mode check precedes the batch size check.
+//! - `test_11`: request timeout before execution returns 503 `request_timeout`;
+//!   the admitted worker applies the batch later.
+//! - `test_12`: a ready source-managed query-only batch held across a concurrent
+//!   replacement keeps its original results and version metadata.
+//!
+//! `test_09`, `test_11` and `test_12` require `test-support` and force their
+//! boundaries with the worker pause hooks. Every test except `test_07` is
+//! deterministic.
 
 use axum::{
     body::Body,
@@ -354,8 +364,16 @@ async fn test_06_batch_capacity_limits_continue_on_error() {
     assert_eq!(s["remaining_edges"], 0);
 }
 
+/// Stress smoke test for batch isolation; it is scheduling-dependent.
+///
+/// No test hook can pause a worker between two operations of one batch, so
+/// this test cannot force a reader into the middle of a batch. Isolation
+/// follows structurally from `Service::execute` running every operation in a
+/// single closure under one graph-lock acquisition. Passing runs show only
+/// that no intermediate state was observed in the interleavings that occurred;
+/// they do not prove determinism.
 #[tokio::test]
-async fn test_07_concurrent_batches_and_snapshots_isolation() {
+async fn test_07_concurrent_batches_and_snapshots_stress_smoke() {
     let app = router(knotrel_core::Graph::new());
     let mut tasks = Vec::new();
 
@@ -447,79 +465,390 @@ async fn test_08_batch_boundary_validation_before_lock() {
     assert_eq!(s["node_count"], 1024);
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test]
-async fn test_09_timeout_uncertainty_demonstration() {
-    use knotrel_server::{Lifecycle, serve};
-    use std::time::Duration;
+async fn test_10_source_managed_mode_check_precedes_batch_size_check() {
+    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
+        .unwrap()
+        .with_mode(ServerMode::SourceManaged);
+    let app = router_with_config(config);
+
+    // An oversized batch containing a mutation fails the mode check first.
+    let oversized_mutating: Vec<Value> = (0..1025)
+        .map(|i| json!({"op": "add_node", "node": i.to_string()}))
+        .collect();
+    let (status, headers, body) = post_batch(&app, json!(oversized_mutating)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "direct_mutation_disabled");
+    assert!(headers.get("x-knotrel-state-version").is_none());
+
+    // Query-only batches pass the mode check and then fail the size check.
+    let oversized_query: Vec<Value> = (0..1025)
+        .map(|_| json!({"op": "connected", "source": "1", "target": "2"}))
+        .collect();
+    let (status, _, body) = post_batch(&app, json!(oversized_query)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "invalid_batch_size");
+
+    let (status, _, body) = post_batch(&app, json!([])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "invalid_batch_size");
+}
+
+/// Loopback tests that use the `test-support` worker pause hooks to force
+/// specific scheduling boundaries. Every network wait is bounded by `STEP`;
+/// a pause handle dropped during assertion unwinding releases its worker.
+#[cfg(feature = "test-support")]
+mod paused {
+    use knotrel_core::EngineConfig;
+    use knotrel_server::{
+        Lifecycle, ServerConfig, ServerMode, ShutdownOutcome, router_with_lifecycle, serve,
+    };
+    use std::{net::SocketAddr, time::Duration};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream},
         sync::oneshot,
+        task::JoinHandle,
+        time::timeout,
     };
 
-    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
-        .unwrap()
-        .with_shutdown_timeout(Duration::from_secs(5))
-        .unwrap();
-    let lifecycle = Lifecycle::new();
-    let app = knotrel_server::router_with_lifecycle(config.clone(), lifecycle.clone());
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    const STEP: Duration = Duration::from_secs(5);
 
-    let (stop_tx, stop_rx) = oneshot::channel();
-    let srv_lifecycle = lifecycle.clone();
-    let srv_task = tokio::spawn(async move {
-        serve(listener, app, &config, &srv_lifecycle, async {
-            let _ = stop_rx.await;
+    fn base_config(mode: ServerMode) -> ServerConfig {
+        ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
+            .unwrap()
+            .with_mode(mode)
+            .with_shutdown_timeout(STEP)
+            .unwrap()
+    }
+
+    struct Running {
+        address: SocketAddr,
+        lifecycle: Lifecycle,
+        stop: Option<oneshot::Sender<()>>,
+        task: JoinHandle<ShutdownOutcome>,
+    }
+
+    impl Running {
+        async fn start(config: ServerConfig) -> Self {
+            let lifecycle = Lifecycle::new();
+            let app = router_with_lifecycle(config.clone(), lifecycle.clone());
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (stop, signal) = oneshot::channel::<()>();
+            let task_lifecycle = lifecycle.clone();
+            let task = tokio::spawn(async move {
+                serve(listener, app, &config, &task_lifecycle, async {
+                    let _ = signal.await;
+                })
+                .await
+            });
+            Self {
+                address,
+                lifecycle,
+                stop: Some(stop),
+                task,
+            }
+        }
+
+        async fn connect(&self) -> TcpStream {
+            timeout(STEP, TcpStream::connect(self.address))
+                .await
+                .expect("connect timed out")
+                .unwrap()
+        }
+
+        async fn instance_id(&self) -> String {
+            let mut stream = self.connect().await;
+            let reply = get(&mut stream, "/v1/info").await;
+            assert_eq!(reply.status, 200);
+            reply.json()["instance_id"].as_str().unwrap().to_string()
+        }
+
+        async fn stats(&self) -> serde_json::Value {
+            let mut stream = self.connect().await;
+            let reply = get(&mut stream, "/v1/stats").await;
+            assert_eq!(reply.status, 200);
+            reply.json()
+        }
+
+        async fn wait_for_jobs(&self, target: usize) {
+            timeout(STEP, async {
+                while self.lifecycle.outstanding_jobs() != target {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("outstanding jobs did not reach target");
+        }
+
+        async fn finish(mut self) -> ShutdownOutcome {
+            if let Some(stop) = self.stop.take() {
+                let _ = stop.send(());
+            }
+            timeout(STEP, self.task).await.unwrap().unwrap()
+        }
+    }
+
+    #[derive(Debug)]
+    struct Reply {
+        status: u16,
+        headers: String,
+        body: String,
+    }
+
+    impl Reply {
+        fn json(&self) -> serde_json::Value {
+            serde_json::from_str(&self.body).unwrap_or_else(|_| {
+                panic!(
+                    "expected JSON, got {} with body: {}",
+                    self.status, self.body
+                )
+            })
+        }
+
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers.lines().find_map(|line| {
+                let (k, v) = line.split_once(':')?;
+                k.trim().eq_ignore_ascii_case(name).then(|| v.trim())
+            })
+        }
+    }
+
+    async fn read_reply(stream: &mut TcpStream) -> Option<Reply> {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let head_end = loop {
+            if let Some(p) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                break p + 4;
+            }
+            let read = stream.read(&mut chunk).await.ok()?;
+            if read == 0 {
+                return None;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        };
+        let headers = String::from_utf8(buffer[..head_end].to_vec()).unwrap();
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (k, v) = line.split_once(':')?;
+                k.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then(|| v.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0);
+        let mut body = buffer[head_end..].to_vec();
+        while body.len() < length {
+            let read = stream.read(&mut chunk).await.ok()?;
+            if read == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..read]);
+        }
+        let status = headers.split_whitespace().nth(1)?.parse().ok()?;
+        Some(Reply {
+            status,
+            headers,
+            body: String::from_utf8(body).unwrap(),
         })
-        .await
-    });
+    }
 
-    // Pause next worker post lock acquisition
-    let mut pause = lifecycle.pause_next_worker_after_lock();
+    async fn bounded_reply(stream: &mut TcpStream) -> Reply {
+        timeout(STEP, read_reply(stream))
+            .await
+            .expect("response timed out")
+            .expect("connection closed without a response")
+    }
 
-    // Client connects and submits a batch
-    let mut client = TcpStream::connect(address).await.unwrap();
-    let batch_payload = json!({
-        "operations": [
-            {"op": "add_node", "node": "9999"}
-        ]
-    })
-    .to_string();
+    async fn send_post(stream: &mut TcpStream, path: &str, headers: &[(&str, &str)], body: &str) {
+        let mut head =
+            format!("POST {path} HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\n");
+        for (k, v) in headers {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
+        head.push_str(&format!("content-length: {}\r\n\r\n", body.len()));
+        stream.write_all(head.as_bytes()).await.unwrap();
+        stream.write_all(body.as_bytes()).await.unwrap();
+    }
 
-    let request = format!(
-        "POST /v1/batch HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-        batch_payload.len(),
-        batch_payload
-    );
-    client.write_all(request.as_bytes()).await.unwrap();
+    async fn post(
+        stream: &mut TcpStream,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> Reply {
+        send_post(stream, path, headers, body).await;
+        bounded_reply(stream).await
+    }
 
-    // Wait until worker acquires lock and pauses
-    pause.wait_started().await;
+    async fn get(stream: &mut TcpStream, path: &str) -> Reply {
+        let request = format!("GET {path} HTTP/1.1\r\nhost: knotrel\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        bounded_reply(stream).await
+    }
 
-    // Simulate client timeout or disconnect by dropping client stream
-    drop(client);
+    const MIXED_BATCH: &str = r#"{"operations":[
+        {"op":"add_node","node":"1"},
+        {"op":"link","source":"5","target":"5"},
+        {"op":"add_node","node":"2"},
+        {"op":"link","source":"1","target":"2"}
+    ]}"#;
 
-    // Unpause worker: worker completes in background
-    pause.release();
+    #[tokio::test]
+    async fn test_09_client_disconnect_after_commit_preserves_applied_batch() {
+        let running = Running::start(base_config(ServerMode::Standalone)).await;
 
-    // Connect fresh client to verify that worker indeed completed despite client drop
-    let mut verify_client = TcpStream::connect(address).await.unwrap();
-    verify_client
-        .write_all(b"GET /v1/stats HTTP/1.1\r\nhost: knotrel\r\n\r\n")
-        .await
-        .unwrap();
+        // The worker pauses after it has applied the batch and released the
+        // graph lock, but before the response can be delivered.
+        let mut pause = running.lifecycle.pause_next_worker_after_lock();
+        let mut stream = running.connect().await;
+        send_post(&mut stream, "/v1/batch", &[], MIXED_BATCH).await;
+        timeout(STEP, pause.wait_started())
+            .await
+            .expect("batch worker did not reach the post-lock pause");
 
-    let mut buf = vec![0u8; 1024];
-    let n = verify_client.read(&mut buf).await.unwrap();
-    let response_str = String::from_utf8_lossy(&buf[..n]);
-    assert!(response_str.contains("200 OK"));
-    assert!(
-        response_str.contains("\"state_version\":\"1\""),
-        "worker completed in background, confirming uncertain outcome after timeout/disconnect"
-    );
+        // The client abandons the request; the committed mutations are already visible.
+        drop(stream);
+        let stats = running.stats().await;
+        assert_eq!(stats["state_version"], "3");
+        assert_eq!(stats["node_count"], 2);
+        assert_eq!(stats["edge_count"], 1);
+        assert_eq!(running.lifecycle.outstanding_jobs(), 1);
 
-    let _ = stop_tx.send(());
-    srv_task.await.unwrap();
+        pause.release();
+        running.wait_for_jobs(0).await;
+        let stats = running.stats().await;
+        assert_eq!(stats["state_version"], "3");
+
+        assert_eq!(running.finish().await, ShutdownOutcome::Drained);
+    }
+
+    #[tokio::test]
+    async fn test_11_request_timeout_before_execution_has_unknown_effect() {
+        let config = base_config(ServerMode::Standalone)
+            .with_request_timeout(Duration::from_millis(100))
+            .unwrap();
+        let running = Running::start(config).await;
+
+        // The worker is admitted and pauses before acquiring the graph lock.
+        let mut pause = running.lifecycle.pause_next_worker();
+        let mut stream = running.connect().await;
+        send_post(&mut stream, "/v1/batch", &[], MIXED_BATCH).await;
+        timeout(STEP, pause.wait_started())
+            .await
+            .expect("batch worker did not reach the pre-lock pause");
+
+        let reply = bounded_reply(&mut stream).await;
+        assert_eq!(reply.status, 503);
+        assert_eq!(reply.json()["code"], "request_timeout");
+        assert!(reply.header("x-knotrel-state-version").is_none());
+
+        // At timeout the batch has not executed, yet its worker remains admitted.
+        let stats = running.stats().await;
+        assert_eq!(stats["state_version"], "0");
+        assert_eq!(stats["node_count"], 0);
+        assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+
+        // Once released, the worker finishes later and applies the whole batch.
+        pause.release();
+        running.wait_for_jobs(0).await;
+        let stats = running.stats().await;
+        assert_eq!(stats["state_version"], "3");
+        assert_eq!(stats["node_count"], 2);
+        assert_eq!(stats["edge_count"], 1);
+
+        assert_eq!(running.finish().await, ShutdownOutcome::Drained);
+    }
+
+    #[tokio::test]
+    async fn test_12_ready_query_batch_keeps_original_state_across_replacement() {
+        let running = Running::start(base_config(ServerMode::SourceManaged)).await;
+        let inst = running.instance_id().await;
+        let id_header = [("x-knotrel-instance-id", inst.as_str())];
+        let mut feeder = running.connect().await;
+
+        let session = post(
+            &mut feeder,
+            "/v1/feeder/session",
+            &id_header,
+            &format!(r#"{{"instance_id":"{inst}","feeder_session_id":"f-batch","feeder_epoch":1,"lease_duration_ms":30000}}"#),
+        )
+        .await;
+        assert_eq!(session.status, 200);
+
+        let import = post(
+            &mut feeder,
+            "/v1/feeder/import",
+            &id_header,
+            &format!(r#"{{"mode":"create_only","instance_id":"{inst}","graph_id":"default","source_id":"src-1","source_epoch":"ep-1","source_position":"pos-1","feeder_session_id":"f-batch","feeder_epoch":1,"nodes":["1","2"],"edges":[{{"source":"1","target":"2"}}]}}"#),
+        )
+        .await;
+        assert_eq!(import.status, 201);
+        let etag_g1 = import.header("etag").unwrap().to_string();
+        assert_eq!(etag_g1, "\"1.0.pos-1\"");
+
+        let barrier = post(
+            &mut feeder,
+            "/v1/feeder/barrier",
+            &id_header,
+            &format!(r#"{{"instance_id":"{inst}","graph_id":"default","generation":1,"feeder_session_id":"f-batch","feeder_epoch":1,"barrier_delivery_sequence":0,"barrier_source_position":"pos-1"}}"#),
+        )
+        .await;
+        assert_eq!(barrier.status, 200);
+        assert_eq!(barrier.json()["status"], "ready");
+
+        let batch = r#"{"operations":[
+            {"op":"connected","source":"1","target":"2"},
+            {"op":"connected","source":"3","target":"4"}
+        ]}"#;
+
+        // Hold the batch response after its results and metadata were captured
+        // under the graph lock and the lock was released.
+        let mut pause = running.lifecycle.pause_next_worker_after_lock();
+        let mut held = running.connect().await;
+        send_post(&mut held, "/v1/batch", &[], batch).await;
+        timeout(STEP, pause.wait_started())
+            .await
+            .expect("batch worker did not reach the post-lock pause");
+
+        let replace = post(
+            &mut feeder,
+            "/v1/feeder/import",
+            &[id_header[0], ("if-match", etag_g1.as_str())],
+            &format!(r#"{{"mode":"replace","instance_id":"{inst}","graph_id":"default","source_id":"src-1","source_epoch":"ep-1","source_position":"pos-2","feeder_session_id":"f-batch","feeder_epoch":1,"nodes":["1","2","3","4"],"edges":[{{"source":"3","target":"4"}}]}}"#),
+        )
+        .await;
+        assert_eq!(replace.status, 201);
+        assert_eq!(replace.header("x-knotrel-generation"), Some("2"));
+
+        pause.release();
+        let reply = bounded_reply(&mut held).await;
+        assert_eq!(reply.status, 200);
+        let results = reply.json()["results"].as_array().unwrap().clone();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["result"], "connected");
+        assert_eq!(results[0]["connected"], true);
+        assert_eq!(results[1]["result"], "error");
+        assert_eq!(results[1]["code"], "unknown_node");
+        assert_eq!(reply.header("x-knotrel-instance-id"), Some(inst.as_str()));
+        assert_eq!(reply.header("x-knotrel-graph-id"), Some("default"));
+        assert_eq!(reply.header("x-knotrel-generation"), Some("1"));
+        assert_eq!(reply.header("x-knotrel-state-version"), Some("0"));
+        assert_eq!(reply.header("x-knotrel-source-position"), Some("pos-1"));
+        assert_eq!(reply.header("x-knotrel-sync-status"), Some("ready"));
+        assert_eq!(reply.header("etag"), Some(etag_g1.as_str()));
+
+        // A batch issued after publication observes the replacement.
+        let fresh = post(&mut feeder, "/v1/batch", &[], batch).await;
+        assert_eq!(fresh.status, 200);
+        let results = fresh.json()["results"].as_array().unwrap().clone();
+        assert_eq!(results[0]["connected"], false);
+        assert_eq!(results[1]["connected"], true);
+        assert_eq!(fresh.header("x-knotrel-generation"), Some("2"));
+        assert_eq!(fresh.header("x-knotrel-source-position"), Some("pos-2"));
+        assert_eq!(fresh.header("etag"), Some("\"2.0.pos-2\""));
+
+        assert_eq!(running.finish().await, ShutdownOutcome::Drained);
+    }
 }

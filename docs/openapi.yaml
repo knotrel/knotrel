@@ -327,6 +327,10 @@ paths:
         Executes between 1 and 1024 operations under a single graph lock acquisition.
         Results correspond one-to-one with the input operations.
         Batches do not provide rollback: subsequent failures do not revert earlier operations.
+        Version headers on a 200 response are captured under the same lock acquisition and
+        describe the state after the whole batch. Error responses carry no version headers.
+        In source-managed mode, a batch containing any mutation is rejected with 409 before
+        the batch size is checked.
       tags:
         - Operations
       requestBody:
@@ -349,6 +353,21 @@ paths:
       responses:
         '200':
           description: Batch executed; per-operation outcomes returned in order
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
           content:
             application/json:
               schema:
@@ -391,6 +410,16 @@ paths:
                 result: error
                 code: invalid_request
                 message: "Expected request with `Content-Type: application/json`"
+        '409':
+          description: Source-managed mode and the batch contains a mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              example:
+                result: error
+                code: direct_mutation_disabled
+                message: "direct graph mutations are disabled in source-managed mode; use feeder endpoints"
         '422':
           description: Invalid batch size (not 1–1024) or invalid operation shape in batch
           content:
@@ -411,13 +440,79 @@ paths:
                     code: invalid_request
                     message: "node IDs must be nonempty strings of ASCII decimal digits"
         '503':
-          description: Server busy, unavailable, or shutting down
+          description: |
+            Server busy, unavailable, shutting down, or request timed out. After
+            `request_timeout`, the effect of the batch is unknown: an admitted worker
+            may still apply it later.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
+              examples:
+                busy:
+                  summary: No graph job slot available; no operation was admitted
+                  value:
+                    result: error
+                    code: busy
+                    message: "request capacity exhausted; retry later"
+                unavailable:
+                  summary: Graph worker unavailable
+                  value:
+                    result: error
+                    code: unavailable
+                    message: "graph worker unavailable"
+                shutting_down:
+                  summary: Server is draining
+                  value:
+                    result: error
+                    code: shutting_down
+                    message: "server is shutting down; retry against another instance"
+                request_timeout:
+                  summary: Request time limit exceeded; effect unknown
+                  value:
+                    result: error
+                    code: request_timeout
+                    message: "request exceeded the server time limit; its effect is unknown"
 
 components:
+  headers:
+    ETag:
+      description: |
+        Replacement token `"<generation>.<state_version>.<encoded source position>"`.
+        The position segment is empty when no source position exists (standalone mode).
+      schema:
+        type: string
+      example: '"1.0.pos-1"'
+    X-Knotrel-Instance-Id:
+      description: Identifier of the serving process instance.
+      schema:
+        type: string
+    X-Knotrel-Graph-Id:
+      description: Graph identifier; always `default`.
+      schema:
+        type: string
+        const: default
+    X-Knotrel-Generation:
+      description: Published graph generation; `0` in standalone mode.
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    X-Knotrel-State-Version:
+      description: |
+        Instance-local revision as an arbitrary-precision decimal string. It advances
+        once per effective mutation (`changed: true`).
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    X-Knotrel-Source-Position:
+      description: Percent-encoded applied source position. Present only when one exists.
+      schema:
+        type: string
+    X-Knotrel-Sync-Status:
+      description: Synchronization status. Present only in source-managed mode.
+      schema:
+        type: string
+        enum: [uninitialized, loading, catching_up, ready, stale, desynchronized]
   schemas:
     NodeId:
       type: string

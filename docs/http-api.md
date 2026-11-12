@@ -93,12 +93,16 @@ the response, and nothing is executed unless every step passes:
 | 3 | Body is at most 1 MiB | 413 `invalid_request` |
 | 4 | Body is syntactically valid JSON | 400 `invalid_request` |
 | 5 | Shape: known `op`, required fields, no unknown or duplicate fields, valid node IDs (the whole batch) | 422 `invalid_request` |
-| 6 | Batch length is 1–1024 | 422 `invalid_batch_size` |
-| 7 | A graph job slot is available | 503 `busy` / `unavailable` |
-| 8 | Operations run in order under the graph lock | per-operation outcome |
+| 6 | Source-managed mode only: no operation is a mutation (`add_node`, `link`, `cut`) | 409 `direct_mutation_disabled` |
+| 7 | Batch length is 1–1024 | 422 `invalid_batch_size` |
+| 8 | A graph job slot is available | 503 `busy` / `unavailable` |
+| 9 | Operations run in order under the graph lock | per-operation outcome |
 
-Steps 2–6 never touch the graph, so a rejected request changes nothing. Step 7
-happens after parsing; `busy` means no operation was admitted.
+Steps 2–7 never touch the graph, so a rejected request changes nothing. Step 8
+happens after parsing; `busy` means no operation was admitted. Because the mode
+check precedes the size check, a source-managed batch that contains a mutation
+returns 409 even when it exceeds 1024 operations, while an empty or oversized
+query-only batch returns 422 `invalid_batch_size`.
 
 ## Single operations
 
@@ -136,6 +140,7 @@ Successful operations return 200. A graph error has this shape:
 | --- | --- |
 | 400 | Malformed JSON (`invalid_request`) |
 | 404 | Unknown query vertex (`unknown_node`) |
+| 409 | Mutation sent in source-managed mode (`direct_mutation_disabled`) |
 | 413 | Body exceeds 1 MiB (`invalid_request`) |
 | 415 | Missing/unsupported JSON content type (`invalid_request`) |
 | 422 | Invalid fields/IDs (`invalid_request`), self-loop (`self_loop`), batch size (`invalid_batch_size`), or graph capacity (`node_limit_exceeded`, `edge_limit_exceeded`) |
@@ -202,7 +207,8 @@ In standalone mode (`KNOTREL_MODE=standalone`), `/v1/batch` accepts arbitrary
 combinations of mutations and queries. In source-managed mode
 (`KNOTREL_MODE=source_managed`), direct client mutations are rejected with HTTP 409
 `direct_mutation_disabled`; `/v1/batch` is permitted only if every operation is a
-query (`connected`).
+query (`connected`). This check runs before the batch size check (see
+[Request validation order](#request-validation-order)).
 
 ## Concurrency and order
 

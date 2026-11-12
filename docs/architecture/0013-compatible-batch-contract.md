@@ -1,6 +1,6 @@
 # Compatible batch contract and failure model (M3.1)
 
-Status: Proposed (Candidate Design for Review — Awaiting Maintainer Approval).
+Status: Accepted (functional contract), 2026-11-12. Performance qualification is governed separately by P0/P1 and remains open.
 
 Cross-references:
 - [HTTP API v1 Specification](../http-api.md)
@@ -102,11 +102,22 @@ When `POST /v1/batch` exceeds `KNOTREL_REQUEST_TIMEOUT_MS`, the HTTP connection 
 Feature M3.1 is evidenced through:
 1. Architectural decision documentation (this document).
 2. Specification enhancements in `docs/http-api.md`.
-3. Dedicated deterministic contract and concurrency integration tests in `crates/knotrel-server/tests/batch.rs` covering:
+3. Contract and concurrency integration tests in `crates/knotrel-server/tests/batch.rs` covering:
    - 1-to-1 outcome reporting across mutations, queries, no-ops, and domain errors.
    - Continue-on-error behavior preserving earlier and later mutations without rollback.
    - Revision progression arithmetic and arbitrary-precision carry.
    - Intra-batch sequential visibility of prior mutations to subsequent queries.
-   - Concurrency isolation proving absence of intermediate state leakage.
-   - Mode segregation rejecting direct mutations in source-managed mode.
-   - Timeout uncertainty demonstration under client abort.
+   - Mode segregation rejecting direct mutations in source-managed mode, with the
+     mode check preceding the batch size check.
+   - Client disconnect after commit preserving the applied batch (deterministic,
+     post-lock worker pause).
+   - Request timeout before execution: 503 `request_timeout` while the pre-batch
+     state is still visible, followed by the admitted worker applying the batch
+     later (deterministic, pre-lock worker pause).
+   - A ready source-managed query-only batch held across a concurrent replacement
+     retaining its original results and version metadata (deterministic,
+     post-lock worker pause).
+   - A scheduling-dependent stress smoke test of isolation between concurrent
+     batches and statistics reads. No hook can pause a worker between the
+     operations of one batch, so isolation rests on the single lock acquisition
+     in `Service::execute`; this test does not prove it deterministically.
