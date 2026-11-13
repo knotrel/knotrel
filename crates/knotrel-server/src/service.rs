@@ -2814,6 +2814,7 @@ mod tests {
 
     #[tokio::test]
     async fn feeder_events_sequence_exhaustion_and_arbitrary_precision_carry() {
+        let _clock_guard = lock_clock_for_test().await;
         let config = crate::ServerConfig::default().with_mode(ServerMode::SourceManaged);
         let service =
             Service::with_config(ConnectivityGraph::default(), 2, Lifecycle::new(), &config);
@@ -2986,6 +2987,7 @@ mod tests {
 
     #[tokio::test]
     async fn feeder_events_rejected_after_desynchronization() {
+        let _clock_guard = lock_clock_for_test().await;
         let config = crate::ServerConfig::default().with_mode(ServerMode::SourceManaged);
         let service =
             Service::with_config(ConnectivityGraph::default(), 2, Lifecycle::new(), &config);
@@ -3113,6 +3115,7 @@ mod tests {
 
     #[test]
     fn test_barrier_decision_table_b1_through_b9() {
+        let _clock_guard = CLOCK_TEST_MUTEX.blocking_lock();
         let limits = knotrel_core::GraphLimits {
             max_nodes: Some(100),
             max_edges: Some(100),
@@ -3507,6 +3510,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_feeder_validation_error_paths() {
+        let _clock_guard = lock_clock_for_test().await;
         use crate::ServerConfig;
         use crate::api::{FeederEvent, WireNode};
 
@@ -3685,6 +3689,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_import_validation_and_candidate_limits() {
+        let _clock_guard = lock_clock_for_test().await;
         use crate::ServerConfig;
         use axum::body::Bytes;
         use knotrel_core::GraphLimits;
@@ -3778,6 +3783,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_uncovered_branches_and_edge_cases() {
+        let _clock_guard = lock_clock_for_test().await;
         use crate::api::FeederEvent;
         use knotrel_core::ConnectivityGraph;
         let lifecycle = Lifecycle::ready();
