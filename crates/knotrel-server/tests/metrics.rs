@@ -966,3 +966,319 @@ mod outcomes {
         }
     }
 }
+
+mod graph_counts {
+    use super::*;
+
+    const NODES: &str = "knotrel_graph_nodes";
+    const EDGES: &str = "knotrel_graph_edges";
+
+    fn counts(samples: &[Sample]) -> (f64, f64) {
+        (
+            value(samples, NODES, &[]).unwrap_or_else(|| panic!("missing {NODES}")),
+            value(samples, EDGES, &[]).unwrap_or_else(|| panic!("missing {EDGES}")),
+        )
+    }
+
+    async fn op(app: &Router, body: &str) -> StatusCode {
+        send(app, Method::POST, "/v1/operations", body).await.0
+    }
+
+    fn source_managed() -> ServerConfig {
+        config(4).with_mode(knotrel_server::ServerMode::SourceManaged)
+    }
+
+    async fn instance_id(app: &Router) -> String {
+        let (_, body) = send(app, Method::GET, "/v1/info", "").await;
+        let info: serde_json::Value = serde_json::from_str(&body).unwrap();
+        info["instance_id"].as_str().unwrap().to_owned()
+    }
+
+    async fn feeder(
+        app: &Router,
+        instance: &str,
+        path: &str,
+        if_match: Option<&str>,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::post(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-knotrel-instance-id", instance);
+        if let Some(etag) = if_match {
+            request = request.header(header::IF_MATCH, etag);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn import(
+        instance: &str,
+        mode: &str,
+        position: &str,
+        nodes: &[&str],
+        edges: &[(&str, &str)],
+    ) -> serde_json::Value {
+        let edges: Vec<_> = edges
+            .iter()
+            .map(|(s, t)| serde_json::json!({"source": s, "target": t}))
+            .collect();
+        serde_json::json!({
+            "mode": mode,
+            "instance_id": instance,
+            "graph_id": "default",
+            "source_id": "pg-1",
+            "source_epoch": "ep-1",
+            "source_position": position,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+            "nodes": nodes,
+            "edges": edges,
+        })
+    }
+
+    fn events(instance: &str, generation: u64, events: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "instance_id": instance,
+            "graph_id": "default",
+            "generation": generation,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+            "source_id": "pg-1",
+            "source_epoch": "ep-1",
+            "events": events,
+        })
+    }
+
+    fn event(seq: u64, fields: serde_json::Value) -> serde_json::Value {
+        let mut event = serde_json::json!({
+            "event_id": format!("e-{seq}"),
+            "delivery_sequence": seq,
+            "prev_delivery_sequence": seq - 1,
+            "source_position": format!("p-{seq}"),
+            "prev_source_position": format!("p-{}", seq - 1),
+        });
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        event
+    }
+
+    /// Registers the session and publishes a create-only baseline at `p-0`.
+    async fn bootstrap(app: &Router, nodes: &[&str], edges: &[(&str, &str)]) -> String {
+        let instance = instance_id(app).await;
+        let session = serde_json::json!({
+            "instance_id": instance,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+            "lease_duration_ms": 60_000,
+        });
+        let (status, body) = feeder(app, &instance, "/v1/feeder/session", None, session).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let body = import(&instance, "create_only", "p-0", nodes, edges);
+        let (status, body) = feeder(app, &instance, "/v1/feeder/import", None, body).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        instance
+    }
+
+    #[tokio::test]
+    async fn fresh_server_reports_an_empty_graph_in_both_modes() {
+        for config in [config(4), source_managed()] {
+            let app = router_with_config(config);
+            let text = send(&app, Method::GET, "/metrics", "").await.1;
+            assert!(text.contains(&format!("# TYPE {NODES} gauge")), "{text}");
+            assert!(text.contains(&format!("# TYPE {EDGES} gauge")), "{text}");
+            assert_eq!(counts(&scrape(&app).await), (0.0, 0.0));
+        }
+    }
+
+    #[tokio::test]
+    async fn effective_operations_change_counts_and_no_ops_do_not() {
+        let app = router_with_config(config(4));
+        let add = r#"{"op":"add_node","node":"1"}"#;
+        let cut = r#"{"op":"cut","source":"1","target":"2"}"#;
+        let connected = r#"{"op":"connected","source":"1","target":"2"}"#;
+        let steps = [
+            (add, (1.0, 0.0)),
+            (add, (1.0, 0.0)),
+            (LINK, (2.0, 1.0)),
+            (LINK, (2.0, 1.0)),
+            (connected, (2.0, 1.0)),
+            (cut, (2.0, 0.0)),
+            (cut, (2.0, 0.0)),
+        ];
+        for (body, expected) in steps {
+            assert_eq!(op(&app, body).await, StatusCode::OK, "{body}");
+            assert_eq!(counts(&scrape(&app).await), expected, "after {body}");
+        }
+        send(&app, Method::GET, "/v1/stats", "").await;
+        assert_eq!(counts(&scrape(&app).await), (2.0, 0.0));
+    }
+
+    #[tokio::test]
+    async fn legacy_batch_keeps_successful_operations_around_a_domain_error() {
+        let app = router_with_config(config(4));
+        let batch = r#"{"operations":[
+            {"op":"link","source":"1","target":"2"},
+            {"op":"link","source":"3","target":"3"},
+            {"op":"add_node","node":"4"}
+        ]}"#;
+        let (status, body) = send(&app, Method::POST, "/v1/batch", batch).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("self_loop"), "{body}");
+        assert_eq!(counts(&scrape(&app).await), (3.0, 1.0));
+    }
+
+    #[tokio::test]
+    async fn feeder_events_publish_effective_changes_and_partial_prefixes() {
+        let app = router_with_config(source_managed());
+        let instance = bootstrap(&app, &["1", "2", "3"], &[("1", "2")]).await;
+        assert_eq!(counts(&scrape(&app).await), (3.0, 1.0));
+
+        let first = serde_json::json!([
+            event(
+                1,
+                serde_json::json!({"op": "link", "source": "2", "target": "3"})
+            ),
+            event(2, serde_json::json!({"op": "progress"})),
+        ]);
+        let body = events(&instance, 1, first.clone());
+        let (status, reply) = feeder(&app, &instance, "/v1/feeder/events", None, body).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_eq!(counts(&scrape(&app).await), (3.0, 2.0));
+
+        let body = events(&instance, 1, first);
+        let (status, reply) = feeder(&app, &instance, "/v1/feeder/events", None, body).await;
+        assert_eq!(status, StatusCode::OK, "duplicate: {reply}");
+        assert_eq!(counts(&scrape(&app).await), (3.0, 2.0));
+
+        let partial = serde_json::json!([
+            event(
+                3,
+                serde_json::json!({"op": "cut", "source": "1", "target": "2"})
+            ),
+            event(4, serde_json::json!({"op": "add_node", "node": "9"})),
+            event(
+                5,
+                serde_json::json!({"op": "link", "source": "3", "target": "3"})
+            ),
+        ]);
+        let body = events(&instance, 1, partial);
+        let (status, reply) = feeder(&app, &instance, "/v1/feeder/events", None, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{reply}");
+        assert_eq!(reply["result"], "partial_failure");
+        assert_eq!(reply["applied_delivery_sequence"], 4);
+        assert_eq!(counts(&scrape(&app).await), (4.0, 1.0));
+    }
+
+    #[tokio::test]
+    async fn only_a_published_replacement_import_changes_counts() {
+        let app = router_with_config(source_managed());
+        let instance = bootstrap(&app, &["1", "2"], &[("1", "2")]).await;
+        assert_eq!(counts(&scrape(&app).await), (2.0, 1.0));
+
+        let candidate = import(
+            &instance,
+            "replace",
+            "p-9",
+            &["10", "20", "30", "40"],
+            &[("10", "20"), ("20", "30")],
+        );
+        let (status, reply) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/import",
+            Some("\"1.0.wrong\""),
+            candidate.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{reply}");
+        assert_eq!(counts(&scrape(&app).await), (2.0, 1.0));
+
+        let (status, reply) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/import",
+            Some("\"1.0.p-0\""),
+            candidate,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{reply}");
+        assert_eq!(
+            (reply["node_count"].clone(), reply["edge_count"].clone()),
+            (4.into(), 2.into())
+        );
+        assert_eq!(counts(&scrape(&app).await), (4.0, 2.0));
+    }
+
+    #[tokio::test]
+    async fn server_instances_report_their_own_graph() {
+        let first = router_with_config(config(4));
+        let second = router_with_config(config(4));
+        assert_eq!(op(&first, LINK).await, StatusCode::OK);
+        assert_eq!(counts(&scrape(&first).await), (2.0, 1.0));
+        assert_eq!(counts(&scrape(&second).await), (0.0, 0.0));
+    }
+
+    #[cfg(feature = "test-support")]
+    mod paused {
+        use super::*;
+        use std::time::Duration;
+
+        async fn wait_idle(lifecycle: &Lifecycle) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while lifecycle.outstanding_jobs() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn worker_finishing_after_its_caller_timed_out_publishes_counts() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let timed = config(4)
+                .with_request_timeout(Duration::from_millis(50))
+                .unwrap();
+            let app = router_with_lifecycle(timed, lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker();
+            let (status, body) = send(&app, Method::POST, "/v1/operations", LINK).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("request_timeout"), "{body}");
+            pause.wait_started().await;
+            assert_eq!(counts(&scrape(&app).await), (0.0, 0.0));
+
+            pause.release();
+            wait_idle(&lifecycle).await;
+            assert_eq!(counts(&scrape(&app).await), (2.0, 1.0));
+        }
+
+        #[tokio::test]
+        async fn worker_finishing_after_its_caller_was_cancelled_publishes_counts() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(config(4), lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker();
+            let caller = tokio::spawn({
+                let app = app.clone();
+                async move { op(&app, LINK).await }
+            });
+            pause.wait_started().await;
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            assert_eq!(counts(&scrape(&app).await), (0.0, 0.0));
+
+            pause.release();
+            wait_idle(&lifecycle).await;
+            assert_eq!(counts(&scrape(&app).await), (2.0, 1.0));
+        }
+    }
+}

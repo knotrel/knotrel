@@ -315,6 +315,17 @@ from response codes ([contract section 8](observability-contract.md#8-second-m62
   whose worker later panics adds two. Read-only requests (`/v1/stats`,
   `connected`-only lists) are not counted.
 
+`knotrel_graph_nodes` and `knotrel_graph_edges` report the live graph's
+size without taking the graph lock or an admission permit, unlike
+`/v1/stats` ([contract section 10](observability-contract.md#10-third-m62-increment-graph-node-and-edge-gauges-implemented-unreleased)).
+The worker publishes them under the graph lock when a state-changing job's
+graph work returns or an import is published, so they keep the previous
+values while a batch, event request or import is in flight. They always hold
+the last published values: a worker panic before publication leaves the
+previous counts, and a panic after it does not roll them back, so after a
+worker failure they do not guarantee the service's current graph state.
+They are two independent samples, not a coherent pair.
+
 ### Graceful shutdown
 
 On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:

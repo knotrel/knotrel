@@ -1482,6 +1482,13 @@ impl Drop for WorkerPanicGuard {
     }
 }
 
+/// Publishes the live graph's counts while the caller holds its lock.
+fn publish_graph_counts(telemetry: Option<&ServiceTelemetry>, state: &GraphState) {
+    if let Some(telemetry) = telemetry {
+        telemetry.publish_graph_counts(state.graph.node_count(), state.graph.edge_count());
+    }
+}
+
 impl Service {
     /// Creates the service; zero capacity intentionally rejects every request.
     #[allow(dead_code)]
@@ -1501,6 +1508,10 @@ impl Service {
         let mode = config.mode();
         let instance_id = fresh_instance_id();
         let max_import_body_bytes = config.max_import_body_bytes();
+        let telemetry = config.metrics_enabled().then(ServiceTelemetry::new);
+        if let Some(telemetry) = &telemetry {
+            telemetry.publish_graph_counts(graph.node_count(), graph.edge_count());
+        }
 
         let (mode_str, inst_id_opt) = match mode {
             ServerMode::Standalone => (None, None),
@@ -1535,7 +1546,7 @@ impl Service {
             mode,
             instance_id,
             max_import_body_bytes,
-            telemetry: config.metrics_enabled().then(ServiceTelemetry::new),
+            telemetry,
         }
     }
 
@@ -1935,6 +1946,9 @@ impl Service {
 
             let node_count = state.graph.node_count();
             let edge_count = state.graph.edge_count();
+            if let Some(telemetry) = &telemetry {
+                telemetry.publish_graph_counts(node_count, edge_count);
+            }
 
             Ok(ImportResponse {
                 result: "published",
@@ -2111,6 +2125,8 @@ impl Service {
             published_atomic.store(word, Ordering::Release);
             if mutate {
                 state.failed = false;
+                // Also after a partial failure: its applied prefix is live.
+                publish_graph_counts(telemetry.as_deref(), &state);
             }
             drop(state);
             lifecycle.check_worker_post_lock_hook();
@@ -2230,6 +2246,9 @@ impl Service {
             graph.failed = true;
             let result = work(&mut graph);
             graph.failed = false;
+            if effect == JobEffect::MayChangeState {
+                publish_graph_counts(telemetry.as_deref(), &graph);
+            }
             drop(graph);
             lifecycle.check_worker_post_lock_hook();
             panic_guard.success = true;
@@ -4151,6 +4170,106 @@ mod tests {
                 assert_eq!(failure.error.code, "self_loop");
             }
             _ => panic!("expected partial failure for self-loop cut in batch"),
+        }
+    }
+
+    mod graph_counts {
+        use super::*;
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        fn metrics_config() -> crate::ServerConfig {
+            crate::ServerConfig::default().with_metrics_enabled(true)
+        }
+
+        fn metrics_router(service: &Service) -> axum::Router {
+            crate::build_router_from_service(service.clone(), metrics_config(), Lifecycle::ready())
+        }
+
+        async fn scrape_counts(app: &axum::Router) -> (String, String) {
+            let response = app
+                .clone()
+                .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            let sample = |name: &str| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix(&format!("{name} ")))
+                    .unwrap_or_else(|| panic!("missing {name} in {text}"))
+                    .to_owned()
+            };
+            (sample("knotrel_graph_nodes"), sample("knotrel_graph_edges"))
+        }
+
+        fn counts(nodes: &str, edges: &str) -> (String, String) {
+            (nodes.to_owned(), edges.to_owned())
+        }
+
+        #[tokio::test]
+        async fn embedded_nonempty_graph_is_reported_at_construction() {
+            let mut graph = ConnectivityGraph::default();
+            graph.link(1, 2).unwrap();
+            graph.link(2, 3).unwrap();
+            graph.add_node(9).unwrap();
+            let service = Service::with_config(graph, 2, Lifecycle::ready(), &metrics_config());
+            assert_eq!(
+                scrape_counts(&metrics_router(&service)).await,
+                counts("4", "2")
+            );
+        }
+
+        #[tokio::test]
+        async fn disabled_telemetry_publishes_nothing() {
+            let service = Service::with_config(
+                ConnectivityGraph::default(),
+                2,
+                Lifecycle::ready(),
+                &crate::ServerConfig::default(),
+            );
+            service.execute(vec![link(1, 2)]).await.unwrap();
+            assert!(service.telemetry().is_none());
+        }
+
+        /// The worker below is a real `run` job paused inside its locked
+        /// region; `try_lock` proves the lock is held while the scrape completes.
+        #[tokio::test]
+        async fn scrape_completes_while_a_worker_holds_the_graph_lock() {
+            let service = Service::with_config(
+                ConnectivityGraph::default(),
+                2,
+                Lifecycle::ready(),
+                &metrics_config(),
+            );
+            let app = metrics_router(&service);
+            let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let worker = tokio::spawn({
+                let service = service.clone();
+                async move {
+                    service
+                        .run(JobEffect::MayChangeState, move |state| {
+                            state.apply(link(1, 2));
+                            locked_tx.send(()).unwrap();
+                            let _ = release_rx.recv();
+                        })
+                        .await
+                }
+            });
+            locked_rx.await.unwrap();
+            assert!(service.graph.try_lock().is_none());
+
+            let scraped = tokio::time::timeout(Duration::from_secs(5), scrape_counts(&app))
+                .await
+                .expect("scrape must not wait for the graph lock");
+            assert_eq!(scraped, counts("0", "0"));
+            assert!(service.graph.try_lock().is_none());
+
+            release_tx.send(()).unwrap();
+            worker.await.unwrap().unwrap();
+            assert_eq!(scrape_counts(&app).await, counts("2", "1"));
         }
     }
 }

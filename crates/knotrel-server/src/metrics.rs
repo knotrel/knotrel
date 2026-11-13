@@ -2,8 +2,11 @@
 //!
 //! HTTP accounting lives in [`track_http`]; service-health gauges are read at
 //! scrape time by [`HealthCollector`]. Rejection and uncertain-outcome
-//! counters live in [`ServiceTelemetry`], owned by the `Service` they observe. Nothing here acquires the graph mutex,
-//! a graph-job admission permit or an import permit. Scrapes and request
+//! counters and the worker-published graph-size gauges live in
+//! [`ServiceTelemetry`], owned by the `Service` they observe. Nothing here
+//! acquires the graph mutex, a graph-job admission permit or an import
+//! permit; graph counts are published by workers that already hold the
+//! graph lock. Scrapes and request
 //! accounting do use synchronization internal to the `prometheus-client`
 //! registry (metric-family maps and histogram state) and the outstanding-job
 //! `watch` channel. Semantics are specified in `docs/observability-contract.md`.
@@ -19,7 +22,11 @@ use prometheus_client::{
     collector::Collector,
     encoding::{DescriptorEncoder, EncodeMetric, prometheus_text},
     metrics::{
-        MetricType, counter::Counter, family::Family, gauge::ConstGauge, histogram::Histogram,
+        MetricType,
+        counter::Counter,
+        family::Family,
+        gauge::{ConstGauge, Gauge},
+        histogram::Histogram,
     },
     registry::Registry,
 };
@@ -154,17 +161,20 @@ impl Uncertainty {
     }
 }
 
-/// Rejection and uncertain-outcome counters for one service instance.
+/// Rejection and uncertain-outcome counters and graph-size gauges for one
+/// service instance.
 ///
 /// Owned by `Service` only when metrics are enabled. Every series is created
-/// up front, so recording is a single atomic increment with no family lock.
-/// Holds no reference back to `Service` or the registry.
+/// up front, so recording is a single atomic store or increment with no
+/// family lock. Holds no reference back to `Service` or the registry.
 #[derive(Debug)]
 pub(crate) struct ServiceTelemetry {
     rejected_family: Family<OutcomeLabels, Counter>,
     uncertain_family: Family<OutcomeLabels, Counter>,
     rejected: [Counter; 4],
     uncertain: [Counter; 3],
+    graph_nodes: Gauge,
+    graph_edges: Gauge,
 }
 
 impl ServiceTelemetry {
@@ -186,6 +196,8 @@ impl ServiceTelemetry {
             uncertain_family,
             rejected,
             uncertain,
+            graph_nodes: Gauge::default(),
+            graph_edges: Gauge::default(),
         })
     }
 
@@ -200,6 +212,28 @@ impl ServiceTelemetry {
             "Uncertain-outcome observations by cause: an admitted state-changing job may have taken effect without its caller learning the result; counts observations, not distinct requests",
             self.uncertain_family.clone(),
         );
+        registry.register(
+            "knotrel_graph_nodes",
+            "Nodes in the live graph as last published at construction or by a worker under the graph lock when its state-changing graph work returned; a later panic does not roll it back, so after a worker failure it may not describe the current graph",
+            self.graph_nodes.clone(),
+        );
+        registry.register(
+            "knotrel_graph_edges",
+            "Edges in the live graph as last published at construction or by a worker under the graph lock when its state-changing graph work returned; a later panic does not roll it back, so after a worker failure it may not describe the current graph",
+            self.graph_edges.clone(),
+        );
+    }
+
+    /// Publishes the live graph's maintained counts. Callers hold the graph
+    /// lock, so publications are ordered and an older job cannot overwrite a
+    /// newer one. The two stores are separate: a concurrent scrape may pair
+    /// one job's node count with the next job's edge count. A publication is
+    /// never rolled back, even if the worker panics afterwards.
+    pub(crate) fn publish_graph_counts(&self, nodes: usize, edges: usize) {
+        self.graph_nodes
+            .set(i64::try_from(nodes).unwrap_or(i64::MAX));
+        self.graph_edges
+            .set(i64::try_from(edges).unwrap_or(i64::MAX));
     }
 
     pub(crate) fn reject(&self, reason: Rejection) {
