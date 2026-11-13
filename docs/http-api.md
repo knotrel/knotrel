@@ -326,6 +326,22 @@ previous counts, and a panic after it does not roll them back, so after a
 worker failure they do not guarantee the service's current graph state.
 They are two independent samples, not a coherent pair.
 
+`knotrel_graph_job_queue_seconds`, `knotrel_graph_lock_wait_seconds` and
+`knotrel_graph_job_execution_seconds` split worker time by `kind`
+(`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`,
+`feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`; only the
+first three in standalone mode)
+([contract section 11](observability-contract.md#11-fourth-m62-increment-graph-job-queue-lock-wait-and-execution-histograms-implemented-unreleased)).
+They cover:
+- **queue:** submission to the blocking pool until the worker starts;
+- **lock wait:** the worker's wait for the graph lock;
+- **execution:** the time it holds the lock.
+
+Workers record them even after the caller timed out or was cancelled.
+Rejected requests add none, and a worker records only the phases it reaches.
+They exclude HTTP parsing and serialization and, for imports, the body read,
+parsing and candidate construction, so they do not add up to HTTP latency.
+
 ### Graceful shutdown
 
 On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:

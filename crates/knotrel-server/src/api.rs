@@ -459,7 +459,7 @@ pub(crate) async fn single(
         );
     }
     tracing::debug!("executing single operation");
-    match service.execute(vec![operation]).await {
+    match service.execute_operation(operation).await {
         Ok(mut exec_result) => {
             let mut response = exec_result.outcomes.remove(0).into_response();
             inject_metadata_headers(response.headers_mut(), &exec_result.metadata);

@@ -8,7 +8,9 @@ use crate::{
         ImportMode, ImportRequest, ImportResponse, Operation, Outcome, PartialBatchFailure,
         SessionRequest, SessionResponse,
     },
-    metrics::{PendingOutcome, Rejection, ServiceTelemetry, Uncertainty},
+    metrics::{
+        JobClock, JobKind, PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed,
+    },
 };
 use knotrel_core::{ConnectivityGraph, EngineConfig, GraphError};
 use parking_lot::Mutex;
@@ -1508,7 +1510,9 @@ impl Service {
         let mode = config.mode();
         let instance_id = fresh_instance_id();
         let max_import_body_bytes = config.max_import_body_bytes();
-        let telemetry = config.metrics_enabled().then(ServiceTelemetry::new);
+        let telemetry = config
+            .metrics_enabled()
+            .then(|| ServiceTelemetry::new(mode));
         if let Some(telemetry) = &telemetry {
             telemetry.publish_graph_counts(graph.node_count(), graph.edge_count());
         }
@@ -1707,12 +1711,16 @@ impl Service {
         }
         let published_atomic = self.published_readiness.clone();
         let instance_id = self.instance_id.clone();
-        self.run(JobEffect::MayChangeState, move |state| {
-            let res = state.register_session(req, instance_id)?;
-            let word = state.current_readiness_word();
-            published_atomic.store(word, Ordering::Release);
-            Ok(res)
-        })
+        self.run(
+            JobKind::FeederSession,
+            JobEffect::MayChangeState,
+            move |state| {
+                let res = state.register_session(req, instance_id)?;
+                let word = state.current_readiness_word();
+                published_atomic.store(word, Ordering::Release);
+                Ok(res)
+            },
+        )
         .await
         .map_err(FeederError::from)?
     }
@@ -1733,12 +1741,16 @@ impl Service {
         }
         let published_atomic = self.published_readiness.clone();
         let instance_id = self.instance_id.clone();
-        self.run(JobEffect::MayChangeState, move |state| {
-            let res = state.heartbeat(req, instance_id)?;
-            let word = state.current_readiness_word();
-            published_atomic.store(word, Ordering::Release);
-            Ok(res)
-        })
+        self.run(
+            JobKind::FeederHeartbeat,
+            JobEffect::MayChangeState,
+            move |state| {
+                let res = state.heartbeat(req, instance_id)?;
+                let word = state.current_readiness_word();
+                published_atomic.store(word, Ordering::Release);
+                Ok(res)
+            },
+        )
         .await
         .map_err(FeederError::from)?
     }
@@ -1779,7 +1791,9 @@ impl Service {
             published_atomic.store(loading_word, Ordering::Release);
         }
 
+        let clock = JobClock::submit(self.telemetry.as_ref(), JobKind::ImportPublish);
         let handle = tokio::task::spawn_blocking(move || {
+            JobClock::start(clock.as_ref());
             let _permit = permit;
             let _job_guard = job_guard;
             let mut panic_guard = WorkerPanicGuard {
@@ -1888,7 +1902,7 @@ impl Service {
             }
 
             // 3. Lock acquisition & atomic precondition verification
-            let mut state = graph.lock();
+            let mut state = lock_timed(&graph, clock.as_ref(), &lifecycle);
             if state.failed || unavailable.load(Ordering::Acquire) {
                 panic_guard.unavailable.store(true, Ordering::Release);
                 if let Some(telemetry) = &telemetry {
@@ -1986,6 +2000,22 @@ impl Service {
         &self,
         operations: Vec<Operation>,
     ) -> Result<ExecutionResult, ServiceError> {
+        self.execute_with(JobKind::Batch, operations).await
+    }
+
+    /// Executes one `/v1/operations` request; see [`Service::execute`].
+    pub(crate) async fn execute_operation(
+        &self,
+        operation: Operation,
+    ) -> Result<ExecutionResult, ServiceError> {
+        self.execute_with(JobKind::Operation, vec![operation]).await
+    }
+
+    async fn execute_with(
+        &self,
+        kind: JobKind,
+        operations: Vec<Operation>,
+    ) -> Result<ExecutionResult, ServiceError> {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
         let effect = if operations
@@ -1996,7 +2026,7 @@ impl Service {
         } else {
             JobEffect::MayChangeState
         };
-        self.run(effect, move |state| {
+        self.run(kind, effect, move |state| {
             if mode == ServerMode::SourceManaged {
                 if state.generation == 0 || state.sync_status == SyncStatus::Uninitialized {
                     let outcomes = operations
@@ -2050,7 +2080,7 @@ impl Service {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
         let current_sync_status = self.sync_status();
-        self.run(JobEffect::ReadOnly, move |state| {
+        self.run(JobKind::Stats, JobEffect::ReadOnly, move |state| {
             let mut snapshot = state.snapshot(mode, &instance_id);
             if current_sync_status == SyncStatus::Loading && state.generation == 0 {
                 snapshot.sync_status = Some(SyncStatus::Loading);
@@ -2067,6 +2097,7 @@ impl Service {
     async fn execute_feeder_worker<T, F>(
         &self,
         worker_name: &'static str,
+        kind: JobKind,
         mutate: bool,
         op: F,
     ) -> Result<T, FeederError>
@@ -2099,8 +2130,10 @@ impl Service {
         let unavailable = self.unavailable.clone();
         let telemetry = self.telemetry.clone();
         let panic_telemetry = self.telemetry_for(JobEffect::MayChangeState);
+        let clock = JobClock::submit(self.telemetry.as_ref(), kind);
 
         let handle = tokio::task::spawn_blocking(move || {
+            JobClock::start(clock.as_ref());
             let _job_guard = job_guard;
             let _permit = permit;
             let mut panic_guard = WorkerPanicGuard {
@@ -2109,7 +2142,7 @@ impl Service {
                 success: false,
             };
             lifecycle.check_worker_hook();
-            let mut state = graph.lock();
+            let mut state = lock_timed(&graph, clock.as_ref(), &lifecycle);
             if state.failed || unavailable.load(Ordering::Acquire) {
                 panic_guard.unavailable.store(true, Ordering::Release);
                 if let Some(telemetry) = &telemetry {
@@ -2151,9 +2184,12 @@ impl Service {
         &self,
         req: FeederEventsRequest,
     ) -> Result<FeederEventsResult, FeederError> {
-        self.execute_feeder_worker("events", true, move |state, mode, inst| {
-            state.apply_events(req, mode, inst)
-        })
+        self.execute_feeder_worker(
+            "events",
+            JobKind::FeederEvents,
+            true,
+            move |state, mode, inst| state.apply_events(req, mode, inst),
+        )
         .await
     }
 
@@ -2162,7 +2198,7 @@ impl Service {
         &self,
         req: GapRequest,
     ) -> Result<(GapResponse, ResponseMetadata), FeederError> {
-        self.execute_feeder_worker("gap", true, move |state, mode, inst| {
+        self.execute_feeder_worker("gap", JobKind::FeederGap, true, move |state, mode, inst| {
             state.declare_gap(req, mode, inst)
         })
         .await
@@ -2173,9 +2209,12 @@ impl Service {
         &self,
         req: BarrierRequest,
     ) -> Result<(BarrierResponse, ResponseMetadata), FeederError> {
-        self.execute_feeder_worker("barrier", false, move |state, mode, inst| {
-            state.declare_barrier(req, mode, inst)
-        })
+        self.execute_feeder_worker(
+            "barrier",
+            JobKind::FeederBarrier,
+            false,
+            move |state, mode, inst| state.declare_barrier(req, mode, inst),
+        )
         .await
     }
 
@@ -2202,6 +2241,7 @@ impl Service {
     // owned permit stays with the blocking closure even if its caller is gone.
     async fn run<R: Send + 'static>(
         &self,
+        kind: JobKind,
         effect: JobEffect,
         work: impl FnOnce(&mut GraphState) -> R + Send + 'static,
     ) -> Result<R, ServiceError> {
@@ -2225,7 +2265,9 @@ impl Service {
         let failure_flag = self.unavailable.clone();
         let telemetry = self.telemetry.clone();
         let panic_telemetry = self.telemetry_for(effect);
+        let clock = JobClock::submit(self.telemetry.as_ref(), kind);
         let handle = tokio::task::spawn_blocking(move || {
+            JobClock::start(clock.as_ref());
             let _job_guard = job_guard;
             let _permit = permit;
             let mut panic_guard = WorkerPanicGuard {
@@ -2234,7 +2276,7 @@ impl Service {
                 success: false,
             };
             lifecycle.check_worker_hook();
-            let mut graph = graph.lock();
+            let mut graph = lock_timed(&graph, clock.as_ref(), &lifecycle);
             if graph.failed || unavailable.load(Ordering::Acquire) {
                 tracing::warn!("graph worker state marked as failed; rejecting work");
                 panic_guard.unavailable.store(true, Ordering::Release);
@@ -2402,7 +2444,7 @@ mod tests {
         assert_eq!(service.stats().await.unwrap().state_version, "0");
         assert!(
             service
-                .run(JobEffect::MayChangeState, |_| {
+                .run(JobKind::Operation, JobEffect::MayChangeState, |_| {
                     panic!("test worker panic");
                 })
                 .await
@@ -2435,12 +2477,16 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let job = tokio::spawn(async move {
             writer
-                .run(JobEffect::MayChangeState, move |state| {
-                    state.apply(add(1));
-                    started_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                    panic!("panic after partial mutation");
-                })
+                .run(
+                    JobKind::Operation,
+                    JobEffect::MayChangeState,
+                    move |state| {
+                        state.apply(add(1));
+                        started_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        panic!("panic after partial mutation");
+                    },
+                )
                 .await
         });
         started_rx.await.unwrap();
@@ -2496,12 +2542,16 @@ mod tests {
         let writer = service.clone();
         let job = tokio::spawn(async move {
             writer
-                .run(JobEffect::MayChangeState, move |state| {
-                    state.apply(add(1));
-                    started_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                    panic!("test worker panic after caller cancel");
-                })
+                .run(
+                    JobKind::Operation,
+                    JobEffect::MayChangeState,
+                    move |state| {
+                        state.apply(add(1));
+                        started_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        panic!("test worker panic after caller cancel");
+                    },
+                )
                 .await
         });
         started_rx.await.unwrap();
@@ -2581,12 +2631,16 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let job = tokio::spawn(async move {
             writer
-                .run(JobEffect::MayChangeState, move |state| {
-                    state.apply(add(1));
-                    started_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                    state.apply(add(2));
-                })
+                .run(
+                    JobKind::Operation,
+                    JobEffect::MayChangeState,
+                    move |state| {
+                        state.apply(add(1));
+                        started_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        state.apply(add(2));
+                    },
+                )
                 .await
         });
         started_rx.await.unwrap();
@@ -2628,11 +2682,15 @@ mod tests {
 
         let s1 = service.clone();
         let job1 = tokio::spawn(async move {
-            s1.run(JobEffect::MayChangeState, move |state| {
-                state.apply(add(1));
-                w1_started_tx.send(()).unwrap();
-                w1_release_rx.recv().unwrap();
-            })
+            s1.run(
+                JobKind::Operation,
+                JobEffect::MayChangeState,
+                move |state| {
+                    state.apply(add(1));
+                    w1_started_tx.send(()).unwrap();
+                    w1_release_rx.recv().unwrap();
+                },
+            )
             .await
         });
         w1_started_rx.await.unwrap();
@@ -2640,10 +2698,14 @@ mod tests {
 
         let s2 = service.clone();
         let job2 = tokio::spawn(async move {
-            s2.run(JobEffect::MayChangeState, move |state| {
-                state.apply(add(2));
-                w2_done_tx.send(()).unwrap();
-            })
+            s2.run(
+                JobKind::Operation,
+                JobEffect::MayChangeState,
+                move |state| {
+                    state.apply(add(2));
+                    w2_done_tx.send(()).unwrap();
+                },
+            )
             .await
         });
 
@@ -4250,11 +4312,15 @@ mod tests {
                 let service = service.clone();
                 async move {
                     service
-                        .run(JobEffect::MayChangeState, move |state| {
-                            state.apply(link(1, 2));
-                            locked_tx.send(()).unwrap();
-                            let _ = release_rx.recv();
-                        })
+                        .run(
+                            JobKind::Operation,
+                            JobEffect::MayChangeState,
+                            move |state| {
+                                state.apply(link(1, 2));
+                                locked_tx.send(()).unwrap();
+                                let _ = release_rx.recv();
+                            },
+                        )
                         .await
                 }
             });
@@ -4270,6 +4336,274 @@ mod tests {
             release_tx.send(()).unwrap();
             worker.await.unwrap().unwrap();
             assert_eq!(scrape_counts(&app).await, counts("2", "1"));
+        }
+    }
+
+    /// Timing-boundary proofs. Each test advances the `cfg(test)` timing
+    /// clock by `STEP` at one controlled point and checks which phase absorbs
+    /// it; real elapsed time in these tests is far below `STEP`.
+    mod job_timing {
+        use super::*;
+        use crate::metrics::{JobKind, advance_timing};
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        /// Serializes tests that move the shared timing clock.
+        static CLOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        const STEP: Duration = Duration::from_secs(5);
+        const PHASES: [&str; 3] = [
+            "knotrel_graph_job_queue_seconds",
+            "knotrel_graph_lock_wait_seconds",
+            "knotrel_graph_job_execution_seconds",
+        ];
+
+        fn metrics_config() -> crate::ServerConfig {
+            crate::ServerConfig::default().with_metrics_enabled(true)
+        }
+
+        fn timed_service(lifecycle: Lifecycle) -> Service {
+            Service::with_config(
+                ConnectivityGraph::default(),
+                4,
+                lifecycle,
+                &metrics_config(),
+            )
+        }
+
+        /// `(count, sum)` of the queue, lock-wait and execution histograms for `kind`.
+        async fn phases(service: &Service, kind: &str) -> [(u64, f64); 3] {
+            let app = crate::build_router_from_service(
+                service.clone(),
+                metrics_config(),
+                Lifecycle::ready(),
+            );
+            let response = app
+                .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            let read = |name: String| -> f64 {
+                let prefix = format!("{name}{{kind=\"{kind}\"}} ");
+                text.lines()
+                    .find_map(|line| line.strip_prefix(&prefix))
+                    .unwrap_or_else(|| panic!("missing {prefix} in {text}"))
+                    .parse()
+                    .unwrap()
+            };
+            PHASES.map(|phase| {
+                (
+                    read(format!("{phase}_count")) as u64,
+                    read(format!("{phase}_sum")),
+                )
+            })
+        }
+
+        fn absorbed(phase: (u64, f64)) -> bool {
+            phase.0 == 1 && phase.1 >= STEP.as_secs_f64()
+        }
+
+        fn excluded(phase: (u64, f64)) -> bool {
+            phase.0 == 1 && phase.1 < STEP.as_secs_f64()
+        }
+
+        #[tokio::test]
+        async fn execution_spans_work_under_the_graph_lock() {
+            let _clock = CLOCK.lock().await;
+            let service = timed_service(Lifecycle::ready());
+            service
+                .run(JobKind::Operation, JobEffect::MayChangeState, |_| {
+                    advance_timing(STEP)
+                })
+                .await
+                .unwrap();
+            let [queue, lock_wait, execution] = phases(&service, "operation").await;
+            assert!(excluded(queue), "{queue:?}");
+            assert!(excluded(lock_wait), "{lock_wait:?}");
+            assert!(absorbed(execution), "{execution:?}");
+        }
+
+        #[tokio::test]
+        async fn panicking_work_records_execution_until_unwinding_releases_the_lock() {
+            let _clock = CLOCK.lock().await;
+            let service = timed_service(Lifecycle::ready());
+            let result = service
+                .run(JobKind::Batch, JobEffect::MayChangeState, |_| {
+                    advance_timing(STEP);
+                    panic!("injected worker panic");
+                })
+                .await;
+            assert!(matches!(result, Err(ServiceError::Unavailable)));
+            let [queue, lock_wait, execution] = phases(&service, "batch").await;
+            assert!(excluded(queue), "{queue:?}");
+            assert!(excluded(lock_wait), "{lock_wait:?}");
+            assert!(absorbed(execution), "{execution:?}");
+        }
+
+        #[tokio::test]
+        async fn worker_rejection_under_the_lock_is_timed_and_admission_rejection_is_not() {
+            let service = timed_service(Lifecycle::ready());
+            service.graph.lock().failed = true;
+            assert!(matches!(
+                service.execute(vec![add(1)]).await,
+                Err(ServiceError::Unavailable)
+            ));
+            assert!(matches!(
+                service.execute(vec![add(1)]).await,
+                Err(ServiceError::Unavailable)
+            ));
+            let observed = phases(&service, "batch").await.map(|phase| phase.0);
+            assert_eq!(observed, [1, 1, 1]);
+        }
+
+        /// The worker holds the graph lock inside `work` while the scrape
+        /// completes. Queue time is already recorded; lock wait and execution
+        /// are recorded only after the lock is released.
+        #[tokio::test]
+        async fn scrape_completes_while_a_timed_worker_holds_the_graph_lock() {
+            let service = timed_service(Lifecycle::ready());
+            let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let worker = tokio::spawn({
+                let service = service.clone();
+                async move {
+                    service
+                        .run(JobKind::Stats, JobEffect::ReadOnly, move |_| {
+                            locked_tx.send(()).unwrap();
+                            let _ = release_rx.recv();
+                        })
+                        .await
+                }
+            });
+            locked_rx.await.unwrap();
+            assert!(service.graph.try_lock().is_none());
+            let observed = tokio::time::timeout(Duration::from_secs(5), phases(&service, "stats"))
+                .await
+                .expect("scrape must not wait for the graph lock")
+                .map(|phase| phase.0);
+            assert_eq!(observed, [1, 0, 0]);
+            assert!(service.graph.try_lock().is_none());
+
+            release_tx.send(()).unwrap();
+            worker.await.unwrap().unwrap();
+            let observed = phases(&service, "stats").await.map(|phase| phase.0);
+            assert_eq!(observed, [1, 1, 1]);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn execution_ends_when_the_graph_lock_is_released() {
+            let _clock = CLOCK.lock().await;
+            let lifecycle = Lifecycle::ready();
+            let service = timed_service(lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker_after_lock();
+            let worker = tokio::spawn({
+                let service = service.clone();
+                async move { service.execute_operation(add(1)).await }
+            });
+            pause.wait_started().await;
+            advance_timing(STEP);
+            pause.release();
+            worker.await.unwrap().unwrap();
+            for phase in phases(&service, "operation").await {
+                assert!(excluded(phase), "{phase:?}");
+            }
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn queue_ends_and_lock_wait_starts_around_the_pre_lock_hook() {
+            let _clock = CLOCK.lock().await;
+            let lifecycle = Lifecycle::ready();
+            let service = timed_service(lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker();
+            let worker = tokio::spawn({
+                let service = service.clone();
+                async move { service.stats().await }
+            });
+            pause.wait_started().await;
+            advance_timing(STEP);
+            pause.release();
+            worker.await.unwrap().unwrap();
+            for phase in phases(&service, "stats").await {
+                assert!(excluded(phase), "{phase:?}");
+            }
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn lock_wait_spans_the_lock_request_until_acquisition() {
+            let _clock = CLOCK.lock().await;
+            let lifecycle = Lifecycle::ready();
+            let service = timed_service(lifecycle.clone());
+            let graph = service.graph.clone();
+            let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let holder = std::thread::spawn(move || {
+                let _guard = graph.lock();
+                locked_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            });
+            locked_rx.await.unwrap();
+            let mut pause = lifecycle.pause_next_lock_request();
+            let worker = tokio::spawn({
+                let service = service.clone();
+                async move { service.execute_operation(add(1)).await }
+            });
+            pause.wait_started().await;
+            advance_timing(STEP);
+            pause.release();
+            release_tx.send(()).unwrap();
+            holder.join().unwrap();
+            worker.await.unwrap().unwrap();
+            let [queue, lock_wait, execution] = phases(&service, "operation").await;
+            assert!(excluded(queue), "{queue:?}");
+            assert!(absorbed(lock_wait), "{lock_wait:?}");
+            assert!(excluded(execution), "{execution:?}");
+        }
+
+        /// One blocking thread: the second job waits in Tokio's blocking
+        /// queue until the first, paused before its lock request, finishes.
+        #[cfg(feature = "test-support")]
+        #[test]
+        fn queue_spans_submission_until_the_worker_starts() {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .max_blocking_threads(1)
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let _clock = CLOCK.lock().await;
+                let lifecycle = Lifecycle::ready();
+                let service = timed_service(lifecycle.clone());
+                let mut pause = lifecycle.pause_next_worker();
+                let first = tokio::spawn({
+                    let service = service.clone();
+                    async move { service.stats().await }
+                });
+                pause.wait_started().await;
+                let second = tokio::spawn({
+                    let service = service.clone();
+                    async move { service.execute_operation(add(1)).await }
+                });
+                // Single-threaded runtime: once the permit is taken, the
+                // second caller has submitted its job and is awaiting it.
+                while service.permits.available_permits() != 2 {
+                    tokio::task::yield_now().await;
+                }
+                advance_timing(STEP);
+                pause.release();
+                first.await.unwrap().unwrap();
+                second.await.unwrap().unwrap();
+                for phase in phases(&service, "stats").await {
+                    assert!(excluded(phase), "{phase:?}");
+                }
+                let [queue, lock_wait, execution] = phases(&service, "operation").await;
+                assert!(absorbed(queue), "{queue:?}");
+                assert!(excluded(lock_wait), "{lock_wait:?}");
+                assert!(excluded(execution), "{execution:?}");
+            });
         }
     }
 }

@@ -2,11 +2,12 @@
 //!
 //! HTTP accounting lives in [`track_http`]; service-health gauges are read at
 //! scrape time by [`HealthCollector`]. Rejection and uncertain-outcome
-//! counters and the worker-published graph-size gauges live in
-//! [`ServiceTelemetry`], owned by the `Service` they observe. Nothing here
-//! acquires the graph mutex, a graph-job admission permit or an import
-//! permit; graph counts are published by workers that already hold the
-//! graph lock. Scrapes and request
+//! counters, the worker-published graph-size gauges and the worker-phase
+//! histograms live in [`ServiceTelemetry`], owned by the `Service` they
+//! observe. Nothing here acquires the graph mutex, a graph-job admission
+//! permit or an import permit; graph counts are published by workers that
+//! already hold the graph lock, and phase timings are recorded by workers
+//! after they release it. Scrapes and request
 //! accounting do use synchronization internal to the `prometheus-client`
 //! registry (metric-family maps and histogram state) and the outstanding-job
 //! `watch` channel. Semantics are specified in `docs/observability-contract.md`.
@@ -31,11 +32,12 @@ use prometheus_client::{
     registry::Registry,
 };
 use std::{
+    ops::{Deref, DerefMut},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 /// Route templates registered by the router; anything else is `unmatched`.
@@ -60,6 +62,16 @@ const DURATION_BUCKETS: [f64; 15] = [
     0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
 ];
 
+/// Upper bounds, in seconds, of the worker-phase histograms (plus `+Inf`).
+///
+/// Two steps per decade from 10 µs, below the HTTP floor because in-memory
+/// lock holds and uncontended acquisitions are typically microseconds, up to
+/// the 30 s default request timeout. They resolve orders of magnitude; they
+/// are not service-level objectives.
+const JOB_PHASE_BUCKETS: [f64; 14] = [
+    0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0,
+];
+
 const STANDALONE_STATES: [&str; 4] = ["unavailable", "draining", "starting", "ready"];
 const SOURCE_MANAGED_STATES: [&str; 9] = [
     "unavailable",
@@ -77,6 +89,7 @@ type RequestLabels = [(&'static str, &'static str); 3];
 type RouteLabels = [(&'static str, &'static str); 1];
 type OutcomeLabels = [(&'static str, &'static str); 1];
 type DurationFamily = Family<RouteLabels, Histogram, fn() -> Histogram>;
+type PhaseFamily = Family<OutcomeLabels, Histogram, fn() -> Histogram>;
 
 /// Registry and HTTP metric families for one router instance.
 #[derive(Debug)]
@@ -161,12 +174,75 @@ impl Uncertainty {
     }
 }
 
-/// Rejection and uncertain-outcome counters and graph-size gauges for one
-/// service instance.
+/// Graph job type, the `kind` label of the worker-phase histograms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JobKind {
+    Operation,
+    Batch,
+    Stats,
+    FeederSession,
+    FeederHeartbeat,
+    FeederEvents,
+    FeederGap,
+    FeederBarrier,
+    ImportPublish,
+}
+
+impl JobKind {
+    const ALL: [Self; 9] = [
+        Self::Operation,
+        Self::Batch,
+        Self::Stats,
+        Self::FeederSession,
+        Self::FeederHeartbeat,
+        Self::FeederEvents,
+        Self::FeederGap,
+        Self::FeederBarrier,
+        Self::ImportPublish,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Operation => "operation",
+            Self::Batch => "batch",
+            Self::Stats => "stats",
+            Self::FeederSession => "feeder_session",
+            Self::FeederHeartbeat => "feeder_heartbeat",
+            Self::FeederEvents => "feeder_events",
+            Self::FeederGap => "feeder_gap",
+            Self::FeederBarrier => "feeder_barrier",
+            Self::ImportPublish => "import_publish",
+        }
+    }
+
+    /// Whether HTTP can create this job in `mode`; feeder and import
+    /// endpoints answer `mode_conflict` in standalone mode before admission.
+    fn reachable_in(self, mode: ServerMode) -> bool {
+        mode == ServerMode::SourceManaged
+            || matches!(self, Self::Operation | Self::Batch | Self::Stats)
+    }
+}
+
+fn job_phase_histogram() -> Histogram {
+    Histogram::new(JOB_PHASE_BUCKETS)
+}
+
+/// Pre-created histograms of one job kind.
+#[derive(Debug)]
+struct PhaseHistograms {
+    queue: Histogram,
+    lock_wait: Histogram,
+    execution: Histogram,
+}
+
+/// Rejection and uncertain-outcome counters, graph-size gauges and
+/// worker-phase histograms for one service instance.
 ///
 /// Owned by `Service` only when metrics are enabled. Every series is created
-/// up front, so recording is a single atomic store or increment with no
-/// family lock. Holds no reference back to `Service` or the registry.
+/// up front, so recording never takes a family lock: counters and gauges are
+/// single atomic updates, and a histogram observation takes only that
+/// histogram's internal mutex. Holds no reference back to `Service` or the
+/// registry.
 #[derive(Debug)]
 pub(crate) struct ServiceTelemetry {
     rejected_family: Family<OutcomeLabels, Counter>,
@@ -175,10 +251,16 @@ pub(crate) struct ServiceTelemetry {
     uncertain: [Counter; 3],
     graph_nodes: Gauge,
     graph_edges: Gauge,
+    queue_family: PhaseFamily,
+    lock_wait_family: PhaseFamily,
+    execution_family: PhaseFamily,
+    // Indexed by `JobKind`; `None` for kinds HTTP cannot reach in this mode,
+    // whose observations (possible only through direct service calls) are dropped.
+    phases: [Option<PhaseHistograms>; 9],
 }
 
 impl ServiceTelemetry {
-    pub(crate) fn new() -> Arc<Self> {
+    pub(crate) fn new(mode: ServerMode) -> Arc<Self> {
         let rejected_family = Family::<OutcomeLabels, Counter>::default();
         let uncertain_family = Family::<OutcomeLabels, Counter>::default();
         let rejected = Rejection::ALL.map(|reason| {
@@ -191,6 +273,19 @@ impl ServiceTelemetry {
                 .get_or_create(&[("cause", cause.label())])
                 .clone()
         });
+        let queue_family: PhaseFamily = Family::new_with_constructor(job_phase_histogram);
+        let lock_wait_family: PhaseFamily = Family::new_with_constructor(job_phase_histogram);
+        let execution_family: PhaseFamily = Family::new_with_constructor(job_phase_histogram);
+        let phases = JobKind::ALL.map(|kind| {
+            kind.reachable_in(mode).then(|| {
+                let labels = [("kind", kind.label())];
+                PhaseHistograms {
+                    queue: queue_family.get_or_create(&labels).clone(),
+                    lock_wait: lock_wait_family.get_or_create(&labels).clone(),
+                    execution: execution_family.get_or_create(&labels).clone(),
+                }
+            })
+        });
         Arc::new(Self {
             rejected_family,
             uncertain_family,
@@ -198,6 +293,10 @@ impl ServiceTelemetry {
             uncertain,
             graph_nodes: Gauge::default(),
             graph_edges: Gauge::default(),
+            queue_family,
+            lock_wait_family,
+            execution_family,
+            phases,
         })
     }
 
@@ -222,6 +321,21 @@ impl ServiceTelemetry {
             "Edges in the live graph as last published at construction or by a worker under the graph lock when its state-changing graph work returned; a later panic does not roll it back, so after a worker failure it may not describe the current graph",
             self.graph_edges.clone(),
         );
+        registry.register(
+            "knotrel_graph_job_queue_seconds",
+            "Time an admitted graph job waited in the blocking pool, from submission to the start of its worker; recorded by the worker when it starts, also after its caller has gone",
+            self.queue_family.clone(),
+        );
+        registry.register(
+            "knotrel_graph_lock_wait_seconds",
+            "Time a graph job's worker waited to acquire the graph lock; recorded after the worker releases the lock, also after its caller has gone",
+            self.lock_wait_family.clone(),
+        );
+        registry.register(
+            "knotrel_graph_job_execution_seconds",
+            "Time a graph job's worker held the graph lock, including validation, graph work and publication under it, until release or unwinding; recorded after release, also after its caller has gone",
+            self.execution_family.clone(),
+        );
     }
 
     /// Publishes the live graph's maintained counts. Callers hold the graph
@@ -234,6 +348,10 @@ impl ServiceTelemetry {
             .set(i64::try_from(nodes).unwrap_or(i64::MAX));
         self.graph_edges
             .set(i64::try_from(edges).unwrap_or(i64::MAX));
+    }
+
+    fn phases(&self, kind: JobKind) -> Option<&PhaseHistograms> {
+        self.phases[kind as usize].as_ref()
     }
 
     pub(crate) fn reject(&self, reason: Rejection) {
@@ -252,6 +370,132 @@ impl ServiceTelemetry {
     #[cfg(test)]
     pub(crate) fn uncertain_count(&self, cause: Uncertainty) -> u64 {
         self.uncertain[cause as usize].get()
+    }
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn timing_now() -> Instant {
+    Instant::now()
+}
+
+/// Offset added to job-phase timestamps in unit tests; separate from the
+/// lease clock so timing tests cannot disturb lease expiry.
+#[cfg(test)]
+static TIMING_OFFSET_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+fn timing_now() -> Instant {
+    Instant::now() + Duration::from_nanos(TIMING_OFFSET_NANOS.load(Ordering::SeqCst))
+}
+
+/// Moves the job-phase clock forward; it never moves back.
+#[cfg(test)]
+pub(crate) fn advance_timing(by: Duration) {
+    let nanos = u64::try_from(by.as_nanos()).expect("test step fits in u64 nanoseconds");
+    TIMING_OFFSET_NANOS.fetch_add(nanos, Ordering::SeqCst);
+}
+
+/// Phase timing of one admitted graph job.
+///
+/// Created by the caller immediately before `spawn_blocking`, and only when
+/// metrics are enabled; disabled telemetry reads no clock. It has no `Drop`,
+/// so a job whose worker never starts records nothing rather than a zero.
+#[derive(Debug)]
+pub(crate) struct JobClock {
+    telemetry: Arc<ServiceTelemetry>,
+    kind: JobKind,
+    submitted: Instant,
+}
+
+impl JobClock {
+    pub(crate) fn submit(telemetry: Option<&Arc<ServiceTelemetry>>, kind: JobKind) -> Option<Self> {
+        telemetry.map(|telemetry| Self {
+            telemetry: Arc::clone(telemetry),
+            kind,
+            submitted: timing_now(),
+        })
+    }
+
+    /// Records queue time. Workers call this first, before any hook or lock.
+    pub(crate) fn start(clock: Option<&Self>) {
+        if let Some(clock) = clock {
+            let queued = timing_now().saturating_duration_since(clock.submitted);
+            if let Some(phases) = clock.telemetry.phases(clock.kind) {
+                phases.queue.observe(queued.as_secs_f64());
+            }
+        }
+    }
+}
+
+/// Acquires `mutex`, timing the wait when `clock` is present.
+///
+/// The returned guard records lock wait and execution only after it has
+/// released the lock, on normal drop, early return or unwinding alike, so
+/// histogram synchronization stays outside the critical section.
+pub(crate) fn lock_timed<'a, T>(
+    mutex: &'a parking_lot::Mutex<T>,
+    clock: Option<&'a JobClock>,
+    lifecycle: &Lifecycle,
+) -> TimedGuard<'a, T> {
+    let requested = clock.map(|_| timing_now());
+    lifecycle.check_lock_request_hook();
+    let guard = mutex.lock();
+    let timing = clock.zip(requested).map(|(clock, requested)| {
+        let acquired = timing_now();
+        LockTiming {
+            clock,
+            wait: acquired.saturating_duration_since(requested),
+            acquired,
+        }
+    });
+    TimedGuard {
+        guard: Some(guard),
+        timing,
+    }
+}
+
+struct LockTiming<'a> {
+    clock: &'a JobClock,
+    wait: Duration,
+    acquired: Instant,
+}
+
+/// Graph-lock guard from [`lock_timed`].
+pub(crate) struct TimedGuard<'a, T> {
+    guard: Option<parking_lot::MutexGuard<'a, T>>,
+    timing: Option<LockTiming<'a>>,
+}
+
+impl<T> Deref for TimedGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.guard.as_deref().expect("guard is held until drop")
+    }
+}
+
+impl<T> DerefMut for TimedGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.guard.as_deref_mut().expect("guard is held until drop")
+    }
+}
+
+impl<T> Drop for TimedGuard<'_, T> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        if let Some(LockTiming {
+            clock,
+            wait,
+            acquired,
+        }) = self.timing.take()
+        {
+            let held = timing_now().saturating_duration_since(acquired);
+            if let Some(phases) = clock.telemetry.phases(clock.kind) {
+                phases.lock_wait.observe(wait.as_secs_f64());
+                phases.execution.observe(held.as_secs_f64());
+            }
+        }
     }
 }
 

@@ -35,8 +35,9 @@ the v0.3.0 release.
 | Lifecycle phase, worker failure | `Phase`, `unavailable` flag | Exposed via `/ready` and opt-in `/metrics` | `readiness_state` and `service_unavailable` gauges. |
 | Synchronization state | `GraphState` (`generation`, `version`, `sync_status`, `applied_delivery_sequence`, `source_position`, session, epoch, `lease_deadline`) | Internal | Partly visible through `/v1/stats`, headers and `/ready`. |
 | Event outcome counts | `FeederEventsResponse.events_applied` | Exposed per response | No cumulative count anywhere. |
-| Queue, lock-wait, execution, import and catch-up timing | none | **Needs instrumentation** | Only whole-request server-side latency exists, in logs and (opt-in) `/metrics`. |
+| Import preparation and catch-up timing | none | **Needs instrumentation** | Only whole-request server-side latency exists, in logs and (opt-in) `/metrics`. |
 | HTTP counts, duration, backlog, capacity, unavailable flag, readiness, build, graph node and edge counts | `GET /metrics` (`metrics.rs`) | Exposed when `KNOTREL_METRICS_ENABLED=true` | M6.2 increments; sections 7, 8 and 10. |
+| Graph-job queue, lock-wait and execution time | `JobClock` and `lock_timed` (`metrics.rs`), recorded by workers | Exposed when `KNOTREL_METRICS_ENABLED=true` | Fourth M6.2 increment; section 11. |
 | Rejections before execution, uncertain-outcome observations | `ServiceTelemetry` (`metrics.rs`), owned by `Service` | Exposed when `KNOTREL_METRICS_ENABLED=true` | Second M6.2 increment; section 8. |
 
 ### Concrete operator gaps
@@ -44,7 +45,7 @@ the v0.3.0 release.
 1. No cumulative counts for applied and duplicate events, gaps, conflicts and imports: they are visible only as individual log lines or response bodies. (Request counts by route and status class, and pre-execution rejections by reason, are now available from the opt-in `/metrics`.)
 2. No backlog signal outside drain. (Now exported as `graph_jobs_outstanding` via the opt-in `/metrics`.)
 3. Graph counts are readable only through `/v1/stats`, which competes for the same admission permits and graph lock as the work being diagnosed. (The opt-in `/metrics` now exposes worker-published counts without either; section 10.)
-4. No breakdown of where time goes: caller latency cannot be split into queueing, lock wait and execution.
+4. No breakdown of where time goes: caller latency cannot be split into queueing, lock wait and execution. (The opt-in `/metrics` now records worker queue, lock-wait and execution time per job kind; these intervals do not add up to HTTP latency; section 11.)
 5. There is no record of how long bootstrap or replacement catch-up took.
 6. A dropped request future leaves no request log line. (The opt-in `/metrics` endpoint now counts it as `cancelled`.)
 7. The status code alone cannot distinguish the `503` causes: `busy`, `request_timeout`, `shutting_down`, `unavailable`, and `import_in_progress` from saturated feeder calls. (The opt-in rejection and uncertain-outcome counters now record the internal cause; section 8.)
@@ -84,7 +85,9 @@ either accepted or rejected. Once accepted, time is split into:
 - **lock wait:** from the start of `graph.lock()` until it is acquired;
 - **execution:** time holding the graph lock.
 
-Import preparation runs before the lock and is timed separately.
+Import preparation (parse and candidate construction) runs on the worker
+before its lock request and belongs to none of the three; its own timing is
+pending. Exact boundaries are in section 11.
 
 **Not executed vs. outcome uncertain.** A status code alone does not say
 whether work executed; observations are classified at the boundary that
@@ -180,7 +183,7 @@ durable state. "Replacement" means publication of a new generation by import.
 | `requests_outcome_uncertain_total` | counter | How often may a state change have happened without its caller learning the result? | One per **observation**, not per distinct request (section 8): a caller stopped waiting for an admitted state-changing job (`request_timeout`, `cancelled`), or such a job's worker panicked (`worker_panic`). One request can contribute a caller observation and later a `worker_panic`. `http_requests_total{status_class="cancelled"}` is unchanged and counts every dropped request, including probes and reads. | `cause` ∈ {`request_timeout`, `cancelled`, `worker_panic`} | continues | **implemented** | E |
 | `graph_jobs_outstanding` | gauge, jobs | How deep is the backlog? | `Lifecycle::outstanding_jobs` read at scrape: queued plus running, including import, and including jobs whose caller timed out or was cancelled. Not bounded by `max_pending_jobs`: an import can add one, and a finishing worker releases its admission permit just before its `JobGuard` (drop order in `Service::run` and `execute_feeder_worker`), so a newly admitted job can briefly be counted alongside it. Do not alert on `outstanding / capacity > 1`. | none | unaffected | **implemented** | E |
 | `graph_job_capacity` | gauge, jobs | What is the admission limit? | Graph-job admission permit limit (`max_pending_jobs`), constant after startup. Not a bound on `graph_jobs_outstanding`: imports and worker teardown can make outstanding jobs exceed it (see that row). | none | constant | **implemented** | E |
-| `graph_job_queue_seconds`, `graph_lock_wait_seconds`, `graph_job_execution_seconds` | histograms, s | Is latency queueing, contention or work? | Section 2 split, recorded inside the worker closure, so it is observed even when the caller has gone. | `kind` ∈ {`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`, `feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`} | continues | pending | E |
+| `graph_job_queue_seconds`, `graph_lock_wait_seconds`, `graph_job_execution_seconds` | histograms, s | Is latency queueing, contention or work? | Section 2 split, recorded inside the worker closure, so it is observed even when the caller has gone. Exact boundaries in section 11. | `kind` ∈ {`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`, `feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`} | continues | **implemented** | E |
 | `graph_operations_total` | counter | What mix of operations runs, and how many change the graph? | One per executed operation (section 3), counted at `Operation::apply`. | `op` ∈ {`add_node`, `link`, `cut`, `connected`}; `outcome` ∈ {`changed`, `unchanged`, `true`, `false`, `error`} | continues | pending | E |
 | `graph_nodes`, `graph_edges` | gauges | How big is the graph? | Published by the worker, under the graph lock, when a state-changing job's graph work returns and at import publication; initialized at construction. Retains the last published values; not rolled back by a later worker panic. Read at scrape without the graph lock. Not a coherent pair (section 10). | none | jump to published import counts | **implemented** | E |
 | `service_unavailable` | gauge 0/1 | Has a worker failure disabled the service? | The `unavailable` flag. Becomes 1 after a worker panic and stays 1 until process restart. | none | unaffected | **implemented** | E |
@@ -232,8 +235,10 @@ counters.
 
 **Third increment (done, section 10):** graph node and edge gauges.
 
-**Remaining essential (`E`, pending):** job queue/lock/execution histograms,
-operation and feeder-event counters, feeder rejections, desynchronizations,
+**Fourth increment (done, section 11):** graph-job queue, lock-wait and
+execution histograms.
+
+**Remaining essential (`E`, pending):** operation and feeder-event counters, feeder rejections, desynchronizations,
 lease remaining, last-applied age, import gauge/counter/durations
 and catch-up duration.
 
@@ -241,7 +246,6 @@ and catch-up duration.
 
 | Signal | Location |
 | --- | --- |
-| Job histograms | `Service::run` and `Service::execute_feeder_worker`. Record the instant before `spawn_blocking`, at closure start, around `graph.lock()`, and at release. |
 | Operations | `GraphState::apply`, called per operation for single and batch requests. |
 | Events, rejections, desynchronizations | `GraphState::apply_events`, `declare_gap`, and feeder-error construction. |
 | Imports | `api::feeder_import` and `Service::import`. |
@@ -353,8 +357,8 @@ only on process restart; graph replacement does not affect them.
 The library adds no other series (no `_created`, process or runtime
 metrics). Most route/method combinations can only yield `405`, so real
 counts are far below the bound. The second increment adds 7 series and the
-third adds 2, for a current maximum of **1249 standalone, 1254
-source-managed** (section 10).
+third adds 2. The fourth adds 153 standalone and 459 source-managed, for a
+current maximum of **1402 standalone, 1713 source-managed** (section 11).
 
 **Dependency.** [`prometheus-client`](https://crates.io/crates/prometheus-client)
 0.26, the Prometheus project's Rust client, with default features disabled.
@@ -559,8 +563,8 @@ reference to `Service` or the registry, and no process-global state. When
 metrics are disabled, `Service` holds `None`; nothing is registered,
 allocated or published.
 
-**Series.** 2 more series. The maximum becomes **1249 standalone, 1254
-source-managed**.
+**Series.** 2 more series. The maximum became **1249 standalone, 1254
+source-managed** (now 1402 and 1713; section 11).
 
 **Tests.** In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)
 (module `graph_counts`) and `service.rs` (module `tests::graph_counts`):
@@ -575,3 +579,140 @@ source-managed**.
 - independent server instances and disabled telemetry;
 - a scrape that completes while a real `Service::run` worker holds the graph
   lock, checked with `try_lock` before and after the scrape.
+
+## 11. Fourth M6.2 increment: graph-job queue, lock-wait and execution histograms (implemented, unreleased)
+
+**Series.** Three histograms in seconds, each labelled by `kind`:
+`knotrel_graph_job_queue_seconds`, `knotrel_graph_lock_wait_seconds` and
+`knotrel_graph_job_execution_seconds`. `kind` is fixed by the code path that
+creates the job (`metrics::JobKind`), never by request content:
+
+| `kind` | Request | Worker |
+| --- | --- | --- |
+| `operation` | `POST /v1/operations` | `Service::run` (`execute_operation`) |
+| `batch` | `POST /v1/batch` | `Service::run` (`execute`) |
+| `stats` | `GET /v1/stats` | `Service::run` |
+| `feeder_session`, `feeder_heartbeat` | `POST /v1/feeder/session`, `/heartbeat` | `Service::run` |
+| `feeder_events`, `feeder_gap`, `feeder_barrier` | `POST /v1/feeder/events`, `/gap`, `/barrier` | `Service::execute_feeder_worker` |
+| `import_publish` | `POST /v1/feeder/import` | `Service::import`, publication lock only |
+
+Series exist only for kinds reachable in the configured mode. In standalone
+mode the feeder and import endpoints refuse with `mode_conflict` before
+admission, so only `operation`, `batch` and `stats` are created; every kind
+exists in source-managed mode.
+
+**Boundaries.**
+
+| Phase | Starts | Ends | Recorded |
+| --- | --- | --- | --- |
+| Queue | In the caller, immediately before `spawn_blocking`, after admission | First statement of the worker closure | By the worker at that point; no graph lock held |
+| Lock wait | In the worker, immediately before it requests the graph lock | Lock acquired | By the worker, after it releases the lock |
+| Execution | Lock acquired | Lock released, on normal release, early return or unwinding | By the worker, immediately after release |
+
+Execution covers everything inside the critical section: the
+failed/unavailable check, validation, graph work, the readiness-word store,
+graph-count publication and, for imports, session and lease fencing, mode,
+precondition and generation checks, the atomic swap and response
+construction. Durations are measured at these boundaries, but the
+histograms are updated only after the lock is released, so their internal
+mutexes are never taken inside the graph critical section. As a
+consequence, while a worker holds the lock a scrape already shows its queue
+observation but not yet its lock-wait or execution observation.
+
+**Not a decomposition of HTTP latency.** The three intervals cover only
+worker-side graph-job time. They exclude:
+- HTTP middleware, body reading, JSON parsing and response serialization;
+- the async admission checks and the caller's wake-up after the worker
+  finishes;
+- worker steps outside the lock: before the lock request (test hooks; for
+  imports, JSON parsing and off-lock candidate construction) and after
+  release (post-lock steps and guard drops);
+- for imports, the import-permit acquisition, the body read and the caller's
+  brief pre-spawn graph-lock read that decides whether the import is the
+  initial load. Import `receive`/`prepare` timing remains pending.
+
+A caller that timed out stops its HTTP duration while the worker continues,
+so HTTP duration can be shorter than the sum of the phases.
+
+**Rejection, cancellation and failure.** Only phases a worker actually
+reaches are recorded, each at most once. A phase that is not reached is
+absent, never recorded as zero.
+
+| Situation | Queue | Lock wait | Execution |
+| --- | --- | --- | --- |
+| Admission refused (`busy`, `import_capacity`, `shutting_down`, entry `unavailable`) | — | — | — |
+| Worker never starts (runtime shut down before the blocking pool runs it) | — | — | — |
+| Caller timed out or cancelled; worker completes | ✓ | ✓ | ✓ |
+| Panic before the lock request | ✓ | — | — |
+| Import rejected before the lock (parse, `instance_id`, `graph_id`, candidate limits) | ✓ | — | — |
+| Rejected under the lock (failed graph, fencing, precondition, mode, generation) | ✓ | ✓ | ✓ |
+| Panic under the lock | ✓ | ✓ | ✓ (until unwinding releases the lock) |
+| Panic after release | ✓ | ✓ | ✓ |
+
+Once every worker has finished, each kind therefore satisfies
+`queue _count ≥ lock-wait _count = execution _count`.
+Admission-refused requests are counted only by
+`requests_rejected_total` (section 8).
+
+**Coherence.** The histograms are sampled independently at scrape time.
+They form no atomic tuple with each other (see above), with HTTP durations,
+outstanding jobs, readiness, graph counts or any other metric. Observations
+of a job become visible when they are recorded, not when its HTTP response
+is sent.
+
+**Buckets.** Upper bounds 10 µs, 50 µs, 100 µs, 500 µs, 1 ms, 5 ms, 10 ms,
+50 ms, 100 ms, 500 ms, 1 s, 5 s, 10 s and 30 s, plus `+Inf`. Two steps per
+decade starting below the HTTP buckets' 0.5 ms floor, because uncontended
+acquisition and small critical sections are typically microseconds; the top
+matches the 30 s default request timeout. The buckets resolve orders of
+magnitude; they do not define or imply a service-level objective.
+
+**Ownership and disabled mode.** The families and per-kind histogram
+handles are fields of the per-`Service` `ServiceTelemetry` (section 8),
+created at construction and registered by `Metrics`. A `JobClock` that
+holds an `Arc<ServiceTelemetry>` moves into each worker. Telemetry holds no
+reference to `Service`, the registry or workers, so there is no cycle and no
+process-global state. When metrics are disabled, `Service` holds `None`: no
+`JobClock` is created, no clock is read, no histogram is updated and nothing
+is allocated; the lock helper only wraps the guard.
+
+**Series.** Each histogram series has 14 buckets, `+Inf`, `_sum` and
+`_count`, which is 17 series:
+- standalone: 3 families × 3 kinds × 17 = 153;
+- source-managed: 3 × 9 × 17 = 459.
+
+The maximum becomes **1402 standalone, 1713 source-managed**. The test
+`series_exist_only_for_kinds_reachable_in_the_mode` checks the per-mode
+timing series counts against actual exposition.
+
+**Tests.** In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)
+(module `job_timing`):
+- exact per-kind counts for operation, batch, stats and every feeder kind;
+- import success, rejection before the lock (queue only) and under it;
+- admission rejections (`busy`, then entry `unavailable`) adding no
+  observations;
+- completion after caller timeout and after cancellation, observed once;
+- panic before the lock (queue only) and after release (all phases);
+- independent instances and the per-mode series set.
+
+In `service.rs` (module `tests::job_timing`), a `cfg(test)` timing clock
+(separate from the lease clock) is advanced at one controlled point per test
+to prove each boundary:
+- work under the lock and panicking work count as execution;
+- a pause after release is excluded from execution;
+- a pause in the pre-lock hook is excluded from both queue and lock wait;
+- a pause between the lock-wait start and the lock request, with the lock
+  held elsewhere, counts as lock wait;
+- with one blocking thread, a job queued behind a paused job counts the
+  wait as queue;
+- a rejection under the lock records all phases, and admission rejection none;
+- a scrape completes while a worker holds the lock, before that worker's
+  lock-wait and execution observations exist.
+
+The lock-wait proof uses a new hook, `Lifecycle::pause_next_lock_request`,
+which sits inside the lock-wait interval by design. Like the other worker
+hooks, it exists only with the `test-support` feature: default builds have
+no such method, and its internal call site compiles to an empty inline
+function. Dropping its handle releases the worker.
+
+**Overhead.** Not qualified. Section 6 applies unchanged.

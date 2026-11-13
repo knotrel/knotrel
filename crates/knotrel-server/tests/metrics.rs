@@ -45,6 +45,17 @@ const READINESS_STATES: [&str; 9] = [
 
 const REJECTION_REASONS: [&str; 4] = ["busy", "import_capacity", "shutting_down", "unavailable"];
 const UNCERTAINTY_CAUSES: [&str; 3] = ["request_timeout", "cancelled", "worker_panic"];
+const JOB_KINDS: [&str; 9] = [
+    "operation",
+    "batch",
+    "stats",
+    "feeder_session",
+    "feeder_heartbeat",
+    "feeder_events",
+    "feeder_gap",
+    "feeder_barrier",
+    "import_publish",
+];
 
 fn config(capacity: usize) -> ServerConfig {
     ServerConfig::new(
@@ -256,6 +267,7 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
                 "state" => &READINESS_STATES,
                 "reason" => &REJECTION_REASONS,
                 "cause" => &UNCERTAINTY_CAUSES,
+                "kind" => &JOB_KINDS,
                 "le" => &[],
                 "version" | "engine" | "mode" => &[],
                 other => panic!("unexpected label {other}"),
@@ -984,17 +996,17 @@ mod graph_counts {
         send(app, Method::POST, "/v1/operations", body).await.0
     }
 
-    fn source_managed() -> ServerConfig {
+    pub(super) fn source_managed() -> ServerConfig {
         config(4).with_mode(knotrel_server::ServerMode::SourceManaged)
     }
 
-    async fn instance_id(app: &Router) -> String {
+    pub(super) async fn instance_id(app: &Router) -> String {
         let (_, body) = send(app, Method::GET, "/v1/info", "").await;
         let info: serde_json::Value = serde_json::from_str(&body).unwrap();
         info["instance_id"].as_str().unwrap().to_owned()
     }
 
-    async fn feeder(
+    pub(super) async fn feeder(
         app: &Router,
         instance: &str,
         path: &str,
@@ -1017,7 +1029,7 @@ mod graph_counts {
         (status, serde_json::from_slice(&bytes).unwrap())
     }
 
-    fn import(
+    pub(super) fn import(
         instance: &str,
         mode: &str,
         position: &str,
@@ -1042,7 +1054,11 @@ mod graph_counts {
         })
     }
 
-    fn events(instance: &str, generation: u64, events: serde_json::Value) -> serde_json::Value {
+    pub(super) fn events(
+        instance: &str,
+        generation: u64,
+        events: serde_json::Value,
+    ) -> serde_json::Value {
         serde_json::json!({
             "instance_id": instance,
             "graph_id": "default",
@@ -1055,7 +1071,7 @@ mod graph_counts {
         })
     }
 
-    fn event(seq: u64, fields: serde_json::Value) -> serde_json::Value {
+    pub(super) fn event(seq: u64, fields: serde_json::Value) -> serde_json::Value {
         let mut event = serde_json::json!({
             "event_id": format!("e-{seq}"),
             "delivery_sequence": seq,
@@ -1071,7 +1087,7 @@ mod graph_counts {
     }
 
     /// Registers the session and publishes a create-only baseline at `p-0`.
-    async fn bootstrap(app: &Router, nodes: &[&str], edges: &[(&str, &str)]) -> String {
+    pub(super) async fn bootstrap(app: &Router, nodes: &[&str], edges: &[(&str, &str)]) -> String {
         let instance = instance_id(app).await;
         let session = serde_json::json!({
             "instance_id": instance,
@@ -1279,6 +1295,334 @@ mod graph_counts {
             pause.release();
             wait_idle(&lifecycle).await;
             assert_eq!(counts(&scrape(&app).await), (2.0, 1.0));
+        }
+    }
+}
+
+mod job_timing {
+    use super::graph_counts::{bootstrap, event, events, feeder, import, source_managed};
+    use super::*;
+
+    const PHASES: [&str; 3] = [
+        "knotrel_graph_job_queue_seconds",
+        "knotrel_graph_lock_wait_seconds",
+        "knotrel_graph_job_execution_seconds",
+    ];
+    const STANDALONE_KINDS: [&str; 3] = ["operation", "batch", "stats"];
+
+    /// Observation count of the queue, lock-wait and execution histograms
+    /// for `kind`, or `None` where the series does not exist.
+    fn phases(samples: &[Sample], kind: &str) -> [Option<f64>; 3] {
+        PHASES.map(|phase| value(samples, &format!("{phase}_count"), &[("kind", kind)]))
+    }
+
+    fn all(count: f64) -> [Option<f64>; 3] {
+        [Some(count); 3]
+    }
+
+    #[cfg(feature = "test-support")]
+    fn queue_only(count: f64) -> [Option<f64>; 3] {
+        [Some(count), Some(0.0), Some(0.0)]
+    }
+
+    fn timing_samples(samples: &[Sample]) -> usize {
+        samples
+            .iter()
+            .filter(|s| PHASES.iter().any(|phase| s.name.starts_with(phase)))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn series_exist_only_for_kinds_reachable_in_the_mode() {
+        let app = router_with_config(config(4));
+        let text = send(&app, Method::GET, "/metrics", "").await.1;
+        for phase in PHASES {
+            assert!(
+                text.contains(&format!("# TYPE {phase} histogram")),
+                "{text}"
+            );
+        }
+        let samples = scrape(&app).await;
+        for kind in JOB_KINDS {
+            let expected = if STANDALONE_KINDS.contains(&kind) {
+                all(0.0)
+            } else {
+                [None; 3]
+            };
+            assert_eq!(phases(&samples, kind), expected, "{kind}");
+        }
+        let buckets = samples
+            .iter()
+            .filter(|s| {
+                s.name == "knotrel_graph_lock_wait_seconds_bucket" && s.labels["kind"] == "batch"
+            })
+            .count();
+        assert_eq!(buckets, 15, "14 explicit buckets plus +Inf");
+        assert_eq!(timing_samples(&samples), 3 * 3 * 17);
+
+        let app = router_with_config(source_managed());
+        let samples = scrape(&app).await;
+        for kind in JOB_KINDS {
+            assert_eq!(phases(&samples, kind), all(0.0), "{kind}");
+        }
+        assert_eq!(timing_samples(&samples), 3 * 9 * 17);
+    }
+
+    #[tokio::test]
+    async fn standalone_jobs_are_observed_once_per_phase_under_their_kind() {
+        let app = router_with_config(config(4));
+        let connected = r#"{"op":"connected","source":"1","target":"2"}"#;
+        assert_eq!(
+            send(&app, Method::POST, "/v1/operations", LINK).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(&app, Method::POST, "/v1/operations", connected)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let batch = format!(r#"{{"operations":[{LINK},{connected}]}}"#);
+        assert_eq!(
+            send(&app, Method::POST, "/v1/batch", &batch).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(&app, Method::GET, "/v1/stats", "").await.0,
+            StatusCode::OK
+        );
+        let (status, _) = send(&app, Method::POST, "/v1/operations", "{").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let samples = scrape(&app).await;
+        assert_eq!(phases(&samples, "operation"), all(2.0));
+        assert_eq!(phases(&samples, "batch"), all(1.0));
+        assert_eq!(phases(&samples, "stats"), all(1.0));
+        for phase in PHASES {
+            let sum = value(&samples, &format!("{phase}_sum"), &[("kind", "operation")]);
+            assert!(sum.is_some_and(|sum| sum >= 0.0), "{phase}");
+        }
+    }
+
+    #[tokio::test]
+    async fn feeder_jobs_and_import_publication_use_their_own_kinds() {
+        let app = router_with_config(source_managed());
+        let instance = bootstrap(&app, &["1", "2"], &[]).await;
+        let samples = scrape(&app).await;
+        assert_eq!(phases(&samples, "feeder_session"), all(1.0));
+        assert_eq!(phases(&samples, "import_publish"), all(1.0));
+
+        let heartbeat = serde_json::json!({
+            "instance_id": instance,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+        });
+        let (status, body) = feeder(&app, &instance, "/v1/feeder/heartbeat", None, heartbeat).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let link = event(
+            1,
+            serde_json::json!({"op": "link", "source": "1", "target": "2"}),
+        );
+        let body = events(&instance, 1, serde_json::json!([link]));
+        let (status, body) = feeder(&app, &instance, "/v1/feeder/events", None, body).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let barrier = serde_json::json!({
+            "instance_id": instance,
+            "graph_id": "default",
+            "generation": 1,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+            "barrier_delivery_sequence": 1,
+            "barrier_source_position": "p-1",
+        });
+        let (status, body) = feeder(&app, &instance, "/v1/feeder/barrier", None, barrier).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let gap = serde_json::json!({
+            "instance_id": instance,
+            "graph_id": "default",
+            "generation": 1,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+            "failed_delivery_sequence": 2,
+        });
+        let (status, body) = feeder(&app, &instance, "/v1/feeder/gap", None, gap).await;
+        assert!(status.is_success(), "{status} {body}");
+
+        let samples = scrape(&app).await;
+        for kind in [
+            "feeder_session",
+            "feeder_heartbeat",
+            "feeder_events",
+            "feeder_barrier",
+            "feeder_gap",
+            "import_publish",
+        ] {
+            assert_eq!(phases(&samples, kind), all(1.0), "{kind}");
+        }
+        for kind in STANDALONE_KINDS {
+            assert_eq!(phases(&samples, kind), all(0.0), "{kind}");
+        }
+    }
+
+    #[tokio::test]
+    async fn import_records_only_the_phases_it_reached() {
+        let app = router_with_config(source_managed());
+        let instance = bootstrap(&app, &["1"], &[]).await;
+        assert_eq!(phases(&scrape(&app).await, "import_publish"), all(1.0));
+
+        // Rejected while parsing, before the publication lock.
+        let (status, body) = send_raw_import(&app, &instance, "{").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            phases(&scrape(&app).await, "import_publish"),
+            [Some(2.0), Some(1.0), Some(1.0)]
+        );
+
+        // Rejected under the publication lock.
+        let candidate = import(&instance, "replace", "p-9", &["5"], &[]);
+        let (status, body) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/import",
+            Some("\"1.0.wrong\""),
+            candidate,
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+        assert_eq!(
+            phases(&scrape(&app).await, "import_publish"),
+            [Some(3.0), Some(2.0), Some(2.0)]
+        );
+    }
+
+    async fn send_raw_import(app: &Router, instance: &str, body: &str) -> (StatusCode, String) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/feeder/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-knotrel-instance-id", instance)
+                    .body(Body::from(body.to_owned()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn server_instances_observe_their_own_jobs() {
+        let first = router_with_config(config(4));
+        let second = router_with_config(config(4));
+        assert_eq!(
+            send(&first, Method::POST, "/v1/operations", LINK).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(phases(&scrape(&first).await, "operation"), all(1.0));
+        assert_eq!(phases(&scrape(&second).await, "operation"), all(0.0));
+    }
+
+    #[cfg(feature = "test-support")]
+    mod paused {
+        use super::*;
+        use std::time::Duration;
+
+        async fn wait_idle(lifecycle: &Lifecycle) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while lifecycle.outstanding_jobs() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        fn paused_app(config: ServerConfig) -> (Router, Lifecycle) {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            (router_with_lifecycle(config, lifecycle.clone()), lifecycle)
+        }
+
+        #[tokio::test]
+        async fn admission_rejections_are_not_observed_as_jobs() {
+            let (app, lifecycle) = paused_app(config(1));
+            let mut pause = lifecycle.pause_next_worker();
+            let held = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::POST, "/v1/operations", LINK).await }
+            });
+            pause.wait_started().await;
+            let batch = format!(r#"{{"operations":[{LINK}]}}"#);
+            let (status, body) = send(&app, Method::POST, "/v1/batch", &batch).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("\"busy\""), "{body}");
+
+            pause.panic_on_release();
+            assert_eq!(held.await.unwrap().0, StatusCode::SERVICE_UNAVAILABLE);
+            wait_idle(&lifecycle).await;
+            let (status, body) = send(&app, Method::GET, "/v1/stats", "").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("\"unavailable\""), "{body}");
+
+            let samples = scrape(&app).await;
+            assert_eq!(phases(&samples, "operation"), queue_only(1.0));
+            assert_eq!(phases(&samples, "batch"), all(0.0));
+            assert_eq!(phases(&samples, "stats"), all(0.0));
+        }
+
+        #[tokio::test]
+        async fn worker_finishing_after_its_caller_timed_out_is_observed_once() {
+            let timed = config(4)
+                .with_request_timeout(Duration::from_millis(50))
+                .unwrap();
+            let (app, lifecycle) = paused_app(timed);
+            let mut pause = lifecycle.pause_next_worker();
+            let (status, body) = send(&app, Method::POST, "/v1/operations", LINK).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("request_timeout"), "{body}");
+            pause.wait_started().await;
+            assert_eq!(phases(&scrape(&app).await, "operation"), queue_only(1.0));
+
+            pause.release();
+            wait_idle(&lifecycle).await;
+            assert_eq!(phases(&scrape(&app).await, "operation"), all(1.0));
+        }
+
+        #[tokio::test]
+        async fn worker_finishing_after_its_caller_was_cancelled_is_observed_once() {
+            let (app, lifecycle) = paused_app(config(4));
+            let mut pause = lifecycle.pause_next_worker();
+            let caller = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::POST, "/v1/operations", LINK).await }
+            });
+            pause.wait_started().await;
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            assert_eq!(phases(&scrape(&app).await, "operation"), queue_only(1.0));
+
+            pause.release();
+            wait_idle(&lifecycle).await;
+            assert_eq!(phases(&scrape(&app).await, "operation"), all(1.0));
+        }
+
+        #[tokio::test]
+        async fn panic_after_the_lock_records_every_phase_once() {
+            let (app, lifecycle) = paused_app(config(4));
+            let mut pause = lifecycle.pause_next_worker_after_lock();
+            let caller = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::GET, "/v1/stats", "").await }
+            });
+            pause.wait_started().await;
+            assert_eq!(phases(&scrape(&app).await, "stats"), all(1.0));
+
+            pause.panic_on_release();
+            assert_eq!(caller.await.unwrap().0, StatusCode::SERVICE_UNAVAILABLE);
+            wait_idle(&lifecycle).await;
+            assert_eq!(phases(&scrape(&app).await, "stats"), all(1.0));
         }
     }
 }
