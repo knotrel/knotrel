@@ -20,8 +20,7 @@ asks: *are device A and device B still connected, through any path?* Knotrel
 keeps the graph current and answers each question exactly, without
 approximation or cached staleness.
 
-**Status:** v0.2.0 is the latest published preview. The `main` branch carries
-the v0.3.0 release candidate, which is not published until it appears on the
+**Status:** v0.3.0 is the latest published preview on crates.io and the
 [GitHub Releases page](https://github.com/knotrel/knotrel/releases).
 
 ## When Knotrel helps
@@ -78,12 +77,11 @@ checks which customers keep a path to the source.
 
 ### Rust library
 
-`knotrel-core` is synchronous and has no HTTP or async dependencies. The latest
-published version is 0.2.0; use `"0.3.0"` only after v0.3.0 is published.
+`knotrel-core` is synchronous and has no HTTP or async dependencies.
 
 ```toml
 [dependencies]
-knotrel-core = "0.2.0"
+knotrel-core = "0.3.0"
 ```
 
 ```rust
@@ -163,7 +161,7 @@ variant were measured in v0.3.0 release qualification. See
 the reproducible workloads, methodology and published reports: release
 regression qualification, engine/competitor comparisons and algorithm
 experiments, each labelled with the version and host it actually measured.
-For the v0.3.0 candidate, the release qualification outcome and its
+For v0.3.0, the release qualification outcome and its
 limitations are summarized in the
 [v0.3.0 release notes](docs/releases/v0.3.0-release-notes.md#performance-qualification);
 no speedup is claimed.
@@ -172,9 +170,7 @@ no speedup is claimed.
 
 Download the archive and checksum for your platform from the
 [GitHub Releases page](https://github.com/knotrel/knotrel/releases) and verify
-the SHA-256 checksum before running. The commands below use v0.3.0 file names
-and apply only after v0.3.0 is published; substitute `v0.2.0` for the latest
-published preview.
+the SHA-256 checksum before running.
 
 ```sh
 # Verify checksum on Linux:
@@ -259,7 +255,7 @@ Further timeouts and size limits are listed under
 - [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
-- [v0.3.0 release notes](docs/releases/v0.3.0-release-notes.md): candidate scope, qualification outcomes, platform coverage and limitations.
+- [v0.3.0 release notes](docs/releases/v0.3.0-release-notes.md): scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
 - [Release procedure](docs/releases/release-procedure.md): verification, packaging and authorized publication.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.
