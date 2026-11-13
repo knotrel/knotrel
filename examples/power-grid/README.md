@@ -12,6 +12,7 @@ model.
 | --- | --- |
 | [`grid.json`](grid.json) | Synthetic dataset: node names and types, connection states and the expected scenario results. Names and types are application metadata; Knotrel receives only node IDs and active edges. |
 | [`power_grid_demo.py`](power_grid_demo.py) | Python 3 standard-library script that acts as the application sending topology changes over the HTTP API. |
+| [`test_power_grid_demo.py`](test_power_grid_demo.py) | Dataset-validation regression checks; they need no server. |
 
 ## Run it
 
@@ -71,7 +72,7 @@ demonstration.
 | --- | --- |
 | 0 | Every check passed. |
 | 1 | Unexpected HTTP status, operation result, revision or connectivity set. |
-| 2 | Invalid arguments or dataset. |
+| 2 | Invalid arguments, or a dataset that is unreadable or structurally invalid (checked before any HTTP request). |
 | 3 | The server could not be reached, or a read-only request timed out. |
 | 4 | Refused: the server is not ready, runs in source-managed mode, already contains graph data, or lacks capacity. Nothing was modified. |
 | 5 | A mutation timed out, lost its connection or returned 503 `unavailable`. Its outcome is uncertain. |
@@ -79,6 +80,15 @@ demonstration.
 The script never retries. After exit 5 the server may or may not have applied
 the mutation (see [Admission and cancellation](../../docs/http-api.md#admission-and-cancellation)).
 Restart the server to obtain a known empty graph before running again.
+
+A custom `--dataset` must keep the structure of `grid.json`. Node IDs follow the
+HTTP API rules: ASCII decimal strings from `0` to `18446744073709551615`,
+compared numerically (`"7"` and `"007"` are the same node). To run the
+validation checks from the repository root:
+
+```sh
+python3 -m unittest discover -s examples/power-grid -p 'test_*.py'
+```
 
 Production integration with an authoritative external source uses source-managed
 mode, covered by the [integration contract](../../docs/integration-contract.md)

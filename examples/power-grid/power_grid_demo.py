@@ -41,6 +41,9 @@ EXIT_UNCERTAIN = 5
 NODE_TYPES = {"primary_substation", "secondary_substation", "customer"}
 MUTATIONS = {"add_node", "link", "cut"}
 MAX_BATCH = 1024
+MAX_NODE_ID = 2**64 - 1
+DECIMAL_DIGITS = set("0123456789")
+KIND_NAMES = {dict: "object", list: "array", str: "string"}
 
 
 class DemoError(Exception):
@@ -131,7 +134,11 @@ def fail(message: str) -> DemoError:
 
 
 def load_dataset(path: Path) -> dict[str, Any]:
-    """Load and validate the synthetic dataset; application metadata stays here."""
+    """Load and validate the synthetic dataset; application metadata stays here.
+
+    Every structural problem raises ``DemoError`` with ``EXIT_USAGE`` before any
+    HTTP request is sent.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as err:
@@ -140,49 +147,89 @@ def load_dataset(path: Path) -> dict[str, Any]:
     def invalid(message: str) -> DemoError:
         return DemoError(EXIT_USAGE, f"invalid dataset {path}: {message}")
 
-    nodes = {}
-    for node in data.get("nodes", []):
+    def require(value: Any, kind: type, where: str) -> Any:
+        if not isinstance(value, kind):
+            raise invalid(f"{where} must be a JSON {KIND_NAMES[kind]}, got {type(value).__name__}")
+        return value
+
+    def text(value: Any, where: str) -> str:
+        if not require(value, str, where):
+            raise invalid(f"{where} must not be empty")
+        return value
+
+    def node_number(value: Any, where: str) -> int:
+        # HTTP API node IDs: ASCII decimal strings for 0..2^64-1; leading zeroes
+        # are accepted and normalized numerically, so "7" and "007" are one node.
+        if not isinstance(value, str) or not value or not set(value) <= DECIMAL_DIGITS:
+            raise invalid(f"{where} {value!r} is not a string of ASCII decimal digits")
+        number = int(value)
+        if number > MAX_NODE_ID:
+            raise invalid(f"{where} {value!r} exceeds {MAX_NODE_ID}")
+        return number
+
+    require(data, dict, "top level")
+    nodes: dict[str, dict[str, Any]] = {}
+    by_number: dict[int, str] = {}
+    for index, node in enumerate(require(data.get("nodes"), list, "nodes")):
+        where = f"nodes[{index}]"
+        require(node, dict, where)
         node_id = node.get("id")
-        if not isinstance(node_id, str) or not node_id.isdigit() or not node_id.isascii():
-            raise invalid(f"node id {node_id!r} is not an ASCII decimal string")
-        if node_id in nodes:
-            raise invalid(f"duplicate node id {node_id}")
-        if node.get("type") not in NODE_TYPES:
-            raise invalid(f"node {node_id} has unknown type {node.get('type')!r}")
+        number = node_number(node_id, f"{where}.id")
+        if number in by_number:
+            raise invalid(f"{where}.id {node_id!r} duplicates node {by_number[number]!r} numerically")
+        text(node.get("name"), f"{where}.name")
+        if text(node.get("type"), f"{where}.type") not in NODE_TYPES:
+            raise invalid(f"{where}.type must be one of {sorted(NODE_TYPES)}, got {node.get('type')!r}")
+        by_number[number] = node_id
         nodes[node_id] = node
+
+    def known_node(value: Any, where: str) -> str:
+        number = node_number(value, where)
+        if number not in by_number:
+            raise invalid(f"{where} {value!r} is not a declared node")
+        return by_number[number]
+
     primaries = [n for n, v in nodes.items() if v["type"] == "primary_substation"]
     if len(primaries) != 1:
         raise invalid("exactly one primary substation is required")
 
-    connections = {}
+    connections: dict[str, dict[str, str]] = {}
     edges = set()
-    for conn in data.get("connections", []):
-        conn_id = conn.get("id")
+    for index, conn in enumerate(require(data.get("connections"), list, "connections")):
+        where = f"connections[{index}]"
+        require(conn, dict, where)
+        conn_id = text(conn.get("id"), f"{where}.id")
         if conn_id in connections:
-            raise invalid(f"duplicate connection id {conn_id}")
-        a, b = conn.get("a"), conn.get("b")
-        if a not in nodes or b not in nodes or a == b:
-            raise invalid(f"connection {conn_id} must join two distinct known nodes")
+            raise invalid(f"{where}.id duplicates connection {conn_id!r}")
+        a = known_node(conn.get("a"), f"{where}.a")
+        b = known_node(conn.get("b"), f"{where}.b")
+        if a == b:
+            raise invalid(f"connection {conn_id} must join two distinct nodes")
         edge = frozenset((a, b))
         if edge in edges:
             raise invalid(f"connection {conn_id} duplicates another undirected edge")
-        if conn.get("state") not in {"closed", "open"}:
-            raise invalid(f"connection {conn_id} has state {conn.get('state')!r}")
+        if text(conn.get("state"), f"{where}.state") not in {"closed", "open"}:
+            raise invalid(f"connection {conn_id} state must be 'closed' or 'open', got {conn.get('state')!r}")
         edges.add(edge)
-        connections[conn_id] = conn
+        connections[conn_id] = {"id": conn_id, "a": a, "b": b, "state": conn["state"]}
 
-    scenario = data.get("scenario", {})
-    opened = connections.get(scenario.get("open_connection"))
-    closed = connections.get(scenario.get("close_connection"))
+    scenario = require(data.get("scenario"), dict, "scenario")
+    opened = connections.get(text(scenario.get("open_connection"), "scenario.open_connection"))
+    closed = connections.get(text(scenario.get("close_connection"), "scenario.close_connection"))
     if opened is None or opened["state"] != "closed":
         raise invalid("scenario.open_connection must name a normally closed connection")
     if closed is None or closed["state"] != "open":
         raise invalid("scenario.close_connection must name a normally open connection")
     customers = [n for n, v in nodes.items() if v["type"] == "customer"]
+    expected = {}
     for key in ("expected_without_path_after_open", "expected_without_path_after_close"):
-        expected = scenario.get(key)
-        if not isinstance(expected, list) or not set(expected) <= set(customers):
-            raise invalid(f"scenario.{key} must list customer node ids")
+        members = set()
+        for index, value in enumerate(require(scenario.get(key), list, f"scenario.{key}")):
+            node_id = known_node(value, f"scenario.{key}[{index}]")
+            if node_id not in customers:
+                raise invalid(f"scenario.{key}[{index}] {value!r} is not a customer node")
+            members.add(node_id)
+        expected[key] = members
     if len(nodes) + len(connections) > MAX_BATCH or len(customers) > MAX_BATCH:
         raise invalid("dataset is too large for the single-batch steps of this demonstration")
 
@@ -193,8 +240,8 @@ def load_dataset(path: Path) -> dict[str, Any]:
         "closed": [c for c in connections.values() if c["state"] == "closed"],
         "opened": opened,
         "reserve": closed,
-        "expected_after_open": set(scenario["expected_without_path_after_open"]),
-        "expected_after_close": set(scenario["expected_without_path_after_close"]),
+        "expected_after_open": expected["expected_without_path_after_open"],
+        "expected_after_close": expected["expected_without_path_after_close"],
     }
 
 
