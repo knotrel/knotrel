@@ -264,3 +264,29 @@ readiness was `ready` immediately after each feeder exit; lease expiry produced
 `stale`; restart returned to `uninitialized`, followed by a successful rebuild;
 and shutdown exited 0 without an OOM kill. This remains a pre-RC check and does
 not replace the required RC-SHA transcript.
+
+**Candidate deployment check, 2026-11-13:** The image and reference feeder were
+built from clean commit `a076c031a94e9e72c8b80b78e1dc512f51599220` on macOS
+arm64 with Docker Engine 29.1.2 and a Linux arm64 VM. Both builds exited 0.
+The image ID was
+`sha256:4240c876759512a00c96d3118aa8275ccee66951b5602b6500a87181faa057fe`;
+the feeder SHA-256 was
+`3a95772ef9691393d621cffe8cbf07ac2e2ee2c86dec1f232be41f48aa0ea0bb`.
+The [full transcript and logs](../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/deployment/transcript.txt)
+are retained in the maintainer workspace. Times below are UTC:
+
+```text
+06:33:40.202 /health 200; container user and uid 10001; HEALTHCHECK healthy
+             /ready 503 {"status":"uninitialized"} before feeding
+06:33:45.922 feeder 1 exit 0; /ready 200 {"status":"ready"} after 0.049 s
+06:33:56.397 /ready 503 {"status":"stale"} after lease expiry; /health 200
+06:33:56.749 restart exit 0; /ready 503 {"status":"uninitialized"}
+06:33:56.867 feeder 2 exit 0; /ready 200 {"status":"ready"} after 0.050 s
+             docker stop exit 0; container exit 0; OOMKilled false
+             check-deployment.sh exit 0; 0 failures
+```
+
+The feeder stops heartbeating when it exits; the two readiness results apply
+only at the recorded probe instants. This check applies to the recorded commit
+or a documentation-only descendant. Changes to the container, feeder, feeder
+helper or server sources require repeating it.

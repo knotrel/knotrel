@@ -1,17 +1,33 @@
 # v0.3.0 performance evaluation plan
 
-Status: proposed for independent review, 2026-10-24. Planning only: no performance acceptance is implied.
+Status (2026-11-13): the approved reduced-scope qualification has run against
+candidate `6a1267f48c0f72f5b9705ad7f44da74af54b9b70`. Of nine cells, 7 are
+PASS and 2 remain INCONCLUSIVE after the permitted extension. D6, approved
+before the campaign, accepts these two outcomes for release with disclosure:
 
-Status update (2026-11-11): campaigns have run since this plan was written. P0 coverage increment 1 (`p0-coverage-increment-1-campaign-20261107-2158`) qualified 102/102 pairs, but P0 remains open: owner Decisions 1–4 and transition criteria 6 (remaining matrix or approved coverage exception) and 7 (approved P1 analysis plan) in `p0-coverage-plan-and-p1-transition.md` are unapproved. Candidate comparisons (Candidate A, visited `put`, production FIFO) are inconclusive and not promoted. P1 has not started. M3.1's functional contract was accepted on 2026-11-12; that acceptance implies no performance qualification. This plan adds no persistence or algorithm redesign.
+- HTTP batch B8: median paired change **-1.42%**, interval **-15.63% to +12.09%**.
+- HTTP lifecycle readiness: median paired change **+8.02%**, interval
+  **-11.46% to +21.97%**.
 
-Status update (2026-11-12): the maintainer approved a reduced v0.3.0 scope. The full matrix in this plan is deferred; v0.3.0 is gated by the bounded 9-cell baseline/candidate comparison, tolerances, budgets and decision rules approved before execution in [the v0.3.0 release closure plan](release-v0.3.0-closure-plan.md) §5. P0 is closed by the approved coverage exception D3 after offline revalidation of Increment 1 ([Q1 report](../../evidence/v0.3.0-package3-q0-q1-20261112/q1/REPORT.md)); no release qualification has run yet.
+Neither inconclusive cell is a PASS, and the intervals do not exclude a
+regression. The [decision report](../../evidence/v0.3.0-qualification-20261112T224213Z-6a1267f/final-decision-analysis.json)
+records all 288 valid observations, the per-cell outcomes and guardrails. The
+qualification covers only the specified cells on the macOS arm64 measurement
+host, using `compact-bfs` and `compact-workspace`; final release-candidate
+applicability remains subject to [the closure plan](release-v0.3.0-closure-plan.md)
+§5.9. No speedup is claimed.
 
-Toolchain amendment (approved 2026-11-12): the controlled comparison will use
+Historical status: P0 coverage increment 1 (`p0-coverage-increment-1-campaign-20261107-2158`)
+qualified 102/102 pairs. P0 was subsequently closed under the approved D3
+coverage exception after offline revalidation ([Q1 report](../../evidence/v0.3.0-package3-q0-q1-20261112/q1/REPORT.md)).
+The earlier Candidate A, visited `put` and production FIFO experiments remain
+historical, not performance qualification. The full original matrix is deferred.
+
+Toolchain amendment (approved 2026-11-12): the controlled comparison used
 Rust 1.100.0 for both the rebuilt v0.2.0 baseline and the final candidate. The
 separate baseline build and provenance are recorded in the
 [closure plan](release-v0.3.0-closure-plan.md#52-comparison-design-and-identities);
-the historical Rust 1.98.1 binaries and evidence remain unchanged. The candidate
-qualification build and campaign have not run.
+the historical Rust 1.98.1 binaries and evidence remain unchanged.
 
 ## 1. Reviewed baseline and existing assets
 

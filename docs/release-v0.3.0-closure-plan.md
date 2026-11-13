@@ -1,11 +1,10 @@
 # Knotrel v0.3.0 reduced-scope release closure plan
 
-**Status: Approved 2026-11-12 — the maintainer approved decisions D1–D8 (§6), including the reduced
-release scope, the qualification tolerances and the disclosed inconclusive-result policy. Packages 1
-and 2 are implemented; the updated container passed a pre-RC revalidation, and O3/M4.5 acceptance
-awaits the RC SHA. Package 3 Q0/Q1 are complete; Q2–Q6 remain open. The maintainer approved the
-Rust 1.100.0 baseline/candidate amendment in §5.2 on 2026-11-12, and the separate baseline build
-is recorded there.**
+**Status: D1–D8 and the Rust 1.100.0 comparison amendment were approved on 2026-11-12.
+Packages 1–3 are complete for the identities recorded below. The O3 deployment check passed from
+clean commit `a076c03` on 2026-11-13, and M4.5/M4 acceptance is recorded under D2. Package 4
+verification is in progress; the final committed-RC dry run, qualification-validity check and
+maintainer release approval remain open.**
 
 Prepared 2026-11-12 against `knotrel` `cdb0e5b4d5694ec38087250e5134c1481cc347b7` (clean, equal to
 `origin/main`) and `knotrel-benchmarks` `f85d88eb` (clean). The approval record is in §6.
@@ -22,10 +21,10 @@ v0.3.0 ships the functionality that already exists on `main`, plus a minimum ope
 
 - **Compatible batch contract (M3.1)** — accepted 2026-11-12 (ROADMAP line 405, ADR 0013).
 - **Feeder failure model, retry/uncertain-outcome reconciliation, shared mutation execution and
-  their tests (M3.2–M3.5)** — implemented and committed (`0f21b58`, `f0b79d1`, `cdb0e5b`), with
-  evidence in `docs/integration-contract.md` §9.3–9.5. Functional acceptance is proposed in §6.
+  their tests (M3.2–M3.5)** — implemented and committed (`cc27279`, `ce6e784`, `c6dc3e1`), with
+  evidence in `docs/integration-contract.md` §9.3–9.5. Functional acceptance was recorded under D2.
 - **Lifecycle (M4.1–M4.4)** — existing liveness, readiness, drain/shutdown and startup-only
-  configuration, documented in `docs/http-api.md`. Functional acceptance is proposed in §6.
+  configuration, documented in `docs/http-api.md` and accepted under D2.
 - **Deployment example and runbook (M4.5)** — new in Package 2: a non-published container example
   driving the existing reference feeder, plus a verified restart/rebuild runbook.
 - **Candidate changes since v0.2.0** — the only production source change is Candidate A
@@ -91,19 +90,19 @@ Purpose: record what ships, what is accepted, and what is deferred, in the roadm
 | Item | Requirement | Category | Evidence | Smallest remaining action |
 |---|---|---|---|---|
 | M3.1 | Compatible batch contract | Satisfied | ROADMAP line 405; ADR 0013 "Accepted (functional contract)"; `crates/knotrel-server/tests/batch.rs` | None |
-| M3.2 | Feeder failure model | Implemented, not accepted | `0f21b58`; `docs/integration-contract.md` §9.3; `tests/events.rs` `test_20`, `test_21`, `test_23`, `test_24`, `test_26` | Owner records functional acceptance |
-| M3.3 | Retry and uncertain outcome | Implemented, not accepted | `f0b79d1`; integration contract §9.4 decision table; `events.rs` `test_25`, `test_27`; `tests/e2e_rebuild.rs` `test_15`, `test_22`, `test_23` | Owner records functional acceptance |
-| M3.4 | Shared mutation execution | Implemented, not accepted | `cdb0e5b` (no production change needed); integration contract §9.5; `events.rs` `test_28` | Owner records functional acceptance |
-| M3.5 | Failure/duplicate/concurrency/restart/rebuild tests | Implemented, not accepted | Failure at first/middle/last index (`events.rs` `test_20`); duplicate/no-op/progress (`test_22`); concurrent queries and batch isolation (`batch.rs`); disconnect/restart/takeover (`e2e_rebuild.rs` `test_15`); rebuild (`e2e_rebuild.rs` `test_23`) | Owner records functional acceptance. No new tests. |
-| M3.6 | Batching measurement | Deferred | — | Roadmap deferral text |
-| M4.1 | Liveness | Satisfied in code, not accepted | `/health` is a state-independent closure (`crates/knotrel-server/src/lib.rs` lines 134–137). It is asserted 200 in uninitialized (`tests/bootstrap.rs` line 376), unavailable after worker panic (`tests/import.rs` line 833), draining (`tests/lifecycle.rs` lines 359, 399–411, 473) and process tests (`tests/process.rs` lines 248, 478). | Owner records acceptance |
-| M4.2 | Readiness and freshness policy | Implemented, not accepted | `SyncStatus` (`uninitialized`, `loading`, `catching_up`, `ready`, `stale`, `desynchronized`) in `service.rs`; `/ready` precedence documented in `docs/http-api.md` lines ~237–275 | Acceptance; the "lagging" wording is replaced (§3) |
-| M4.3 | Drain and shutdown | Implemented, not accepted | Lifecycle phase `Draining` (`lifecycle.rs`); exit codes 0/1/2/130 in `docs/http-api.md` lines ~276–306; `tests/lifecycle.rs`, `tests/process.rs` | Owner records acceptance |
-| M4.4 | Configuration validation | Implemented, not accepted | 13 startup-only variables, no runtime reload (`docs/http-api.md` lines ~329–355); lease bounds 1000–60000 ms (`api.rs` line 922) | Owner records acceptance |
-| M4.5 | Deployment example | Missing | No container asset exists. `examples/external_feeder.rs` exists but is reference code. | Package 2 |
-| M5, M6, P2 | Deferred | — | — | Roadmap deferral text |
-| P0 | Released baseline | Implemented, not accepted | Increment 1 (17 cells, 102/102 pairs). In `evidence/p0-coverage-plan-and-p1-transition.md` §9, the transition criteria "Remaining P0 Matrix Disposition" and "Prespecified P1 Analysis Plan" are unmet, and owner Decisions 1–4 (§8) are unapproved. The criteria are cited by name because that document numbers them differently in its diagram and its list. | Coverage exception (D3), offline revalidation (Q1) and the pre-approved protocol (D4) |
-| P1, P3 | Regression and qualification | Missing measurement | — | Replaced by the bounded gate in Package 3 |
+| M3.2 | Feeder failure model | Accepted under D2 | `cc27279`; `docs/integration-contract.md` §9.3; `tests/events.rs` `test_20`, `test_21`, `test_23`, `test_24`, `test_26` | None |
+| M3.3 | Retry and uncertain outcome | Accepted under D2 | `ce6e784`; integration contract §9.4 decision table; `events.rs` `test_25`, `test_27`; `tests/e2e_rebuild.rs` `test_15`, `test_22`, `test_23` | None |
+| M3.4 | Shared mutation execution | Accepted under D2 | `c6dc3e1` (no production change needed); integration contract §9.5; `events.rs` `test_28` | None |
+| M3.5 | Failure/duplicate/concurrency/restart/rebuild tests | Accepted under D2 | `events.rs` `test_20`, `test_22`; `batch.rs`; `e2e_rebuild.rs` `test_15`, `test_23` | No new tests |
+| M3.6 | Batching measurement | Deferred | — | None in v0.3.0 |
+| M4.1 | Liveness | Accepted under D2 | `/health`; `tests/bootstrap.rs`, `tests/import.rs`, `tests/lifecycle.rs`, `tests/process.rs` | None |
+| M4.2 | Readiness and freshness policy | Accepted under D2 | Synchronization states in `service.rs`; `/ready` precedence in `docs/http-api.md` | None; quantitative lag is deferred |
+| M4.3 | Drain and shutdown | Accepted under D2 | `docs/http-api.md`; `tests/lifecycle.rs`, `tests/process.rs` | None |
+| M4.4 | Configuration validation | Accepted under D2 | Startup-only configuration and lease bounds in `docs/http-api.md` | None |
+| M4.5 | Deployment example | Accepted under D2 | `examples/container/`, `docs/deployment.md`, and the 2026-11-13 candidate transcript | Revalidate if relevant inputs change |
+| M5, M6, P2 | Deferred | — | — | None in v0.3.0 |
+| P0 | Released baseline | Closed under D3 | Increment 1 (17 cells, 102/102 pairs), revalidated under Q1 | None; historical evidence is not a new comparison baseline |
+| P1, P3 | Regression and qualification | Bounded gate completed | Package 3 decision report; 7 PASS and 2 INCONCLUSIVE with D6 disclosure | Verify applicability to final RC |
 
 Deliverables:
 
@@ -166,21 +165,23 @@ from the release candidate SHA (or a docs-only descendant of it). Any later chan
 `crates/knotrel-server/tests/common/feeder.rs` or the server sources requires repeating the O1 checks
 and the O3 transcript at the new SHA.
 
-Progress (2026-11-12, not an acceptance record):
+Progress:
 - Package 1 (S1) applied to `ROADMAP.md` and `docs/performance-v0.3.0.md`.
 - O1, O2 and O4 delivered: `examples/container/`, `docs/deployment.md` and `docs/http-api.md`.
 - O3 is scripted as `examples/container/check-deployment.sh`. It was executed with 0 failures on an
   uncommitted working tree based on `cdb0e5b`. That run is retained in the `docs/deployment.md`
   appendix as a pre-RC record.
-- The O3 checklist item, M4.5 and Acceptance M4 stay open until the transcript is repeated from the
-  release-candidate SHA.
+- O3 was repeated on 2026-11-13 from clean commit `a076c03`; the
+  [transcript](../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/deployment/transcript.txt)
+  records zero failures. M4.5 and Acceptance M4 are recorded under D2 for that source or a
+  documentation-only descendant.
 - Q0/Q1 completed 2026-11-12. The driver copy and hash record are under
   `evidence/v0.3.0-package3-q0-q1-20261112/q0/`; the offline validation report and per-observation
   CSV are under `evidence/v0.3.0-package3-q0-q1-20261112/q1/`. P0 is closed under the approved D3
-  coverage exception. Q2–Q6, including the final-candidate qualification, remain open.
+  coverage exception.
 - The maintainer approved the same-toolchain amendment on 2026-11-12. A separate Rust 1.100.0
   v0.2.0 baseline and its provenance are retained under
-  `evidence/v0.3.0-rust110-baseline-20261112/`; no candidate qualification build or campaign has run.
+  `evidence/v0.3.0-rust110-baseline-20261112/`. Q2–Q6 have since completed as recorded below.
 
 ### Package 3 — Qualify the final candidate
 
@@ -190,7 +191,7 @@ Detailed in §4 and §5. Ordered tasks:
 |---|---|---|
 | Q0 | Preserve the Increment 1 driver binary (`knotrel/target/release/examples/measure_e2e`, sha256 `3dda9c76…`) before any release build of the examples overwrites it. | A copy exists under a new `evidence/` directory, with a recorded sha256 equal to the manifest value. |
 | Q1 | Revalidate Increment 1 offline with the repaired collector validator (`knotrel-benchmarks` `d3cf6198`), per `evidence/collector-validation-repair-20261111/closure.md`. Read-only over the historical bundle; output goes to a new directory. | Report states, for each of the 204 observations: schema valid, exit 0, `parsed_metrics` present, oracle/`all_items_matched` true. Per-cell A/A dispersion is recomputed and matches `offline_analysis/ANALYSIS.md`, or differences are explained. Any invalid observation is listed, and its cell is removed from noise calibration. |
-| Q2 | Add a two-label baseline/candidate mode to `knotrel-benchmarks/scripts/run_p0_aa.py`. It needs per-label server binary and core-harness binary paths with sha256 checks, labels `B`/`C`, and the balanced schedule of §5.3. No existing collector does this: `run_p0_aa.py` is A/A only (`labels` `A`/`Aprime`, identical binaries), and `run_candidate_a_comparison.py` is core-only. | `--dry-run` over the new manifest passes provenance checks. A dry run where both labels point to the same binaries reproduces the existing A/A behavior. Collector tests cover label balance, per-label hash mismatch rejection, and validation of every entry. |
+| Q2 | Add two-label baseline/candidate mode to `knotrel-benchmarks/scripts/run_p0_aa.py`, with independent binary identities and the balanced schedule; implemented at collector commit `580c7e44` while retaining A/A mode. | `--dry-run` over the new manifest passes provenance checks. A dry run where both labels point to the same binaries reproduces the existing A/A behavior. Collector tests cover label balance, per-label hash mismatch rejection, and validation of every entry. |
 | Q3 | Build the candidate binaries from the frozen final SHA (§5.2). | Manifest records the full SHA, dirty=false, `rustc -vV`, lockfile hashes, binary sha256 values, and the dep-info source set of the server, driver and core harness (§5.9). The derived benchmark lockfile differs from the baseline's only in the `knotrel-core` version line. |
 | Q4 | Host qualification and pre-execution dry run (§5.6). | Dry run exits 0 and host checks pass. |
 | Q5 | Execute the 9-cell, 12-pair campaign (§5.3). | All 108 pairs recorded, or a stop condition is recorded with all partial evidence retained. |
@@ -198,6 +199,18 @@ Detailed in §4 and §5. Ordered tasks:
 
 Package completion condition: Q6 report filed under `evidence/v0.3.0-qualification-<timestamp>/`,
 naming the qualified SHA.
+
+**Q6 outcome:** The [decision report](../../evidence/v0.3.0-qualification-20261112T224213Z-6a1267f/final-decision-analysis.json)
+records candidate `6a1267f48c0f72f5b9705ad7f44da74af54b9b70`, 108 initial pairs and
+36 extension pairs, with 288/288 valid observations. Seven cells are PASS; two remain INCONCLUSIVE
+and are accepted with disclosure under the previously approved D6 policy:
+
+- HTTP batch B8: median paired change **-1.42%**, interval **-15.63% to +12.09%**.
+- HTTP lifecycle readiness: median paired change **+8.02%**, interval **-11.46% to +21.97%**.
+
+The two inconclusive cells are not PASS results, and their intervals do not exclude regressions.
+The comparison covers only the specified nine cells on the macOS arm64 host; it makes no speedup
+claim. Applicability to the final committed RC is checked under §5.9.
 
 ### Package 4 — Prepare and approve the release
 
@@ -207,7 +220,7 @@ dynamically.
 | # | Check | Source | Completion condition |
 |---|---|---|---|
 | R4.1 | Version and dependency consistency | Workspace `Cargo.toml` (`0.3.0`), `knotrel-core` path dependency `0.3.0`, `Cargo.lock`, server `rust-version` 1.100.0 and core MSRV 1.98.1 | At the RC SHA, `cargo metadata --locked` succeeds, the per-crate Rust versions match, and no `0.2.0` self-references remain. |
-| R4.2 | Quality gates | Procedure §3.1: `cargo fmt` check, strict Clippy with `--locked`, warning-denied Rustdoc, workspace tests, `test-support` tests, the 3 core examples, and `cargo +1.98.1 test --locked -p knotrel-core` for the core MSRV | Every command exits 0 at the RC SHA, with logs retained. |
+| R4.2 | Quality gates | Procedure §3.1: `cargo fmt` check, strict Clippy with `--locked` for default and `test-support`, warning-denied Rustdoc, workspace tests, `test-support` tests, the 3 core examples, and `cargo +1.98.1 test --locked -p knotrel-core` for the core MSRV | Every command exits 0 at the RC SHA, with logs retained. |
 | R4.3 | Source package verification | §3.2 `scripts/verify-source-packages.sh` | Exits 0. |
 | R4.4 | Release binary smoke test | §3.3 release build plus `scripts/smoke-test-release-binary.sh` (standalone mode only); the O3 transcript covers source-managed mode in a container | Exits 0. |
 | R4.5 | CI dry run | §4 `release.yml` dry run: input validation, quality gates, binaries for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc` with smoke tests, source build, 14-asset bundle; publish jobs skipped | Workflow succeeds at the RC SHA. **Limitation:** `scripts/verify-dry-run-publish.sh` defers the `knotrel-server` `cargo publish --dry-run` while `knotrel-core` 0.3.0 is absent from crates.io (404), so server publication is not fully verified until `knotrel-core` is published. §7 partial-failure recovery applies. |
@@ -218,36 +231,54 @@ dynamically.
 A successful dry run does not guarantee registry publication. Publication follows procedure §6–7
 and is outside this plan.
 
+**Local Package 4 evidence (2026-11-13).** On `a076c03` with the documentation changes in
+this working tree, [retained logs and exit codes](../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/logs/)
+show R4.1 metadata/version checks and all R4.2 quality gates exiting 0. The default and
+`test-support` workspace suites passed 214 and 301 tests respectively; the core MSRV suite
+passed 59 tests, including doctests. R4.3 source-package verification passed in a disposable
+clone with the documentation overlaid; R4.4 passed for a locally built release binary, an
+extracted macOS archive and the O3 source-managed deployment transcript. The local archive
+deliberately records unknown commit provenance and is not a release artifact. These are local
+results, not checks at a committed RC.
+
+The [provisional applicability record](../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/logs/qualification-applicability.log)
+compares the recorded dependency inputs and frozen binary hashes with `6a1267f`. The sole
+subsequent committed change at `a076c03` reorders the coverage-workflow cache and tool
+installation steps; the working-tree changes are documentation only. No measured input or
+deployment input changed. R4.7 remains open for the final committed RC. The R4.5 workflow
+must run after that RC is committed and pushed; a 2026-11-13 crates.io check returned 404 for
+`knotrel-core` 0.3.0, so the `knotrel-server` publish dry run is presently deferred.
+
 ## 2. Finite checklist
 
 Execute in order. Each line is complete only when its condition holds.
 
 **1 — Corrections and missing functionality**
 
-- [ ] **S1** `ROADMAP.md` amended per §3; acceptances M3.2–M3.5 and M4.1–M4.4 dated with evidence (requires D1, D2).
-- [ ] **O1** `examples/container/Dockerfile` and `Dockerfile.dockerignore` build, and the image runs as non-root.
-- [ ] **O2** `docs/deployment.md` runbook, covering every assumption listed in Package 2.
-- [ ] **O4** `docs/http-api.md` stale wording corrected.
+- [x] **S1** `ROADMAP.md` amended per §3; acceptances M3.2–M3.5 and M4.1–M4.4 dated with evidence (D1, D2).
+- [x] **O1** Container example builds and runs as non-root; the candidate build and check are recorded in the O3 transcript.
+- [x] **O2** `docs/deployment.md` runbook covers the Package 2 assumptions.
+- [x] **O4** `docs/http-api.md` stale wording corrected.
 
 **2 — Focused verification of concrete gaps**
 
-- [ ] **O3** Container restart/rebuild transcript recorded, with every exit code and probe status as specified.
+- [x] **O3** Candidate container restart/rebuild [transcript](../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/deployment/transcript.txt) recorded; revalidate if relevant inputs change.
 - [x] **Q0** Driver `3dda9c76…` preserved at `evidence/v0.3.0-package3-q0-q1-20261112/q0/measure_e2e`; [hash record](../../evidence/v0.3.0-package3-q0-q1-20261112/q0/SHA256SUMS.txt) matches the manifest.
 - [x] **Q1** [Offline revalidation report](../../evidence/v0.3.0-package3-q0-q1-20261112/q1/REPORT.md): 204 observations revalidated; per-cell dispersion matches all 17 rows.
-- [ ] **Q2** Two-label collector mode, with dry run and collector tests passing.
+- [x] **Q2** Two-label collector mode at `580c7e44`, with dry run and collector tests passing.
 
 **3 — Approved performance qualification**
 
-- [ ] **Q3** Candidate binaries built from the frozen final SHA, with provenance recorded.
-- [ ] **Q4** Host qualified, dry run passes.
-- [ ] **Q5** Campaign executed with all evidence retained.
-- [ ] **Q6** Per-cell decisions recorded; every REGRESSION or INCONCLUSIVE cell dispositioned by the owner.
+- [x] **Q3** Candidate binaries built from `6a1267f`, with provenance recorded.
+- [x] **Q4** Host qualified and dry runs passed for the campaign and extension.
+- [x] **Q5** Campaign and permitted extension executed with all evidence retained.
+- [x] **Q6** Per-cell decisions recorded; both INCONCLUSIVE cells use the pre-approved D6 disclosure.
 
 **4 — Release candidate checks and packaging**
 
-- [ ] **R4.1–R4.5** All pass at the RC SHA.
-- [ ] **R4.6** Release notes, README and procedure examples updated.
-- [ ] **R4.7** Qualification validity diff is clean.
+- [ ] **R4.1–R4.5** Local R4.1–R4.4 checks passed; the committed-RC checks and R4.5 workflow remain.
+- [x] **R4.6** Release notes, README and procedure examples updated, including both D6 disclosures.
+- [ ] **R4.7** Working-snapshot applicability passed; check the final committed RC.
 
 **5 — Release approval**
 
@@ -388,8 +419,9 @@ release.
     built from harness `df635a1e872fd9e2d556b166ac23f342ee45d675` against v0.2.0 core.
   - Full source identities, build commands, lockfiles, toolchain details and logs:
     `evidence/v0.3.0-rust110-baseline-20261112/PROVENANCE.txt`.
-- Label **C**: v0.3.0 binaries built with Rust 1.100.0 from the final committed, clean
-  candidate SHA. They have not yet been built for qualification.
+- Label **C**: v0.3.0 binaries built with Rust 1.100.0 from clean candidate
+  `6a1267f48c0f72f5b9705ad7f44da74af54b9b70`; the binary identities and
+  provenance are in the Q6 decision report and its retained campaign manifest.
 
 Historical Increment 1 values are **not** compared with new values.
 
@@ -423,7 +455,7 @@ Historical Increment 1 values are **not** compared with new values.
 | Batch | `window_duration_ns` | `request_latency_p99_ns`; sampled server RSS (`sampled_max_rss_bytes`, polled every 25 ms by the driver; it can miss short peaks and is not the exact process peak); `requests_per_sec` (report only) |
 | Lifecycle | `time_to_ready_ms` | query latency p99; `restart_recovery_ms`, `import`, `catchup` (report only); sampled server RSS (`sampled_max_rss`, same sampling limits) |
 
-### 5.5 Decision rules (proposed; product judgements, not significance claims)
+### 5.5 Decision rules (approved; product judgements, not significance claims)
 
 For each cell, compute the paired log ratio `r_i = ln(C_i / B_i)` over the pairs. Report the median
 and the distribution-free order-statistic interval for the median, assuming independent pairs:
@@ -431,7 +463,7 @@ and the distribution-free order-statistic interval for the median, assuming inde
 - n = 12: interval `[r(3), r(10)]`, coverage 96.1%.
 - n = 24: interval `[r(7), r(18)]`, coverage 97.7%.
 
-Proposed tolerances:
+Approved tolerances:
 
 | Guardrail | Ratio | Log ratio |
 |---|---|---|
@@ -547,7 +579,7 @@ the Cargo dep-info (`*.d`) files of these three binaries at the qualified SHA.
 performance qualification. They do require repeating the O1 checks and the O3 transcript, as do
 changes to `examples/external_feeder.rs` or `tests/common/feeder.rs`.
 
-**Check (R4.7).** Intersect `git diff --name-only <qualified>..<tag>` with the recorded source set
+**Check (R4.7).** Intersect `git diff --name-only <qualified>..<rc>` with the recorded source set
 and the build-configuration paths above. The intersection must be empty.
 
 ## 6. Approval block (owner decisions)

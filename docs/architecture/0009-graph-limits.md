@@ -38,3 +38,19 @@ Tests cover all backends, full-width IDs, zero capacity, duplicate operations,
 both-new endpoint rejection, node retention after cuts, edge capacity reuse,
 environment validation, batch error continuation and concurrent admissions.
 Cardinality limits cannot guarantee allocator capacity, RSS or latency ceilings.
+
+## Migration notes for embedders
+
+- `ConnectivityGraph::add_node` returns `Result<bool, GraphError>`; handle
+  capacity errors where the previous `bool` was used.
+- Rust callers matching `GraphError` exhaustively must also handle
+  `NodeLimitExceeded` and `EdgeLimitExceeded`.
+- Bounded embedded graphs use `ConnectivityGraph::with_limits(engine,
+  GraphLimits { max_nodes: Some(100000), max_edges: Some(200000) })`. The raw
+  `Graph`, `ForestGraph` and `HdtGraph` algorithm types remain unlimited.
+- Server embedders can use `ServerConfig::with_graph_limits`;
+  `ServerConfig::new` applies the defaults, while the legacy `router(Graph)`
+  retains unlimited cardinality.
+- Limits are fixed per graph instance and reported by `/v1/info` (`null` for
+  unlimited). Cuts free edge capacity but retain vertices and their capacity
+  usage; allocation capacity can remain high after cuts.

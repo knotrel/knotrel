@@ -10,198 +10,77 @@
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=knotrel_knotrel&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=knotrel_knotrel)
 [![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=knotrel_knotrel&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=knotrel_knotrel)
 
-Dynamic connectivity for undirected graphs: insert edges, delete edges, and ask
-whether two vertices are connected.
+Knotrel is an in-memory engine for **exact connectivity in undirected graphs
+whose edges change over time**. Use it as a Rust library (`knotrel-core`) or as
+an HTTP service (`knotrel-server`).
 
-The default core uses compact adjacency and breadth-first traversal. It supports
-growing vertex sets and retains the original ordered-adjacency engine as
-`ReferenceGraph` for comparison. An experimental Euler-tour forest is available
-explicitly; no production scalability claim has been established.
+**Example:** a network of devices and links. Links are added when cables, radio
+paths or tunnels come up and removed when they fail. The application repeatedly
+asks: *are device A and device B still connected, through any path?* Knotrel
+keeps the graph current and answers each question exactly, without
+approximation or cached staleness.
 
-## Workspace
+**Status:** v0.2.0 is the latest published preview. The `main` branch carries
+the v0.3.0 release candidate, which is not published until it appears on the
+[GitHub Releases page](https://github.com/knotrel/knotrel/releases).
 
-| Crate | Responsibility |
-| --- | --- |
-| `knotrel-core` | Synchronous graph operations and exact connectivity |
-| `knotrel-server` | Axum HTTP API, validation and bounded blocking graph work |
+## When Knotrel helps
 
-Rust **1.100.0**, edition **2024**, and Cargo resolver **3** are pinned for the
-workspace and server. The `knotrel-core` minimum supported Rust version (MSRV)
-is **1.98.1**. The toolchain file installs Clippy and rustfmt when using rustup.
-Cargo.lock records the resolved dependency versions. Both crates are configured
-for crates.io publishing upon release.
+- Edges are both **inserted and deleted**, and connectivity is queried
+  repeatedly between changes.
+- You need exact yes/no answers for arbitrary pairs, not a periodic batch
+  recomputation.
+- You want an embeddable synchronous Rust library or a small local HTTP
+  service with bounded limits.
 
-## Installation and Running
+### When something simpler may suffice
 
-### From a prebuilt release binary
+- **Insertion-only graphs:** a union-find (disjoint-set) structure answers
+  connectivity without supporting deletions.
+- **Infrequent queries:** a breadth-first or depth-first search over your
+  own adjacency data, run on demand, may be enough.
+- **Durable or distributed graph storage:** Knotrel is not a database; see the
+  integration model below.
 
-Download the archive for your platform from the GitHub Releases page, verify its SHA-256 checksum, and run:
+## Quickstart
 
-```sh
-# Verify checksum on Linux:
-sha256sum -c knotrel-server-v0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-# Or on macOS:
-# shasum -a 256 -c knotrel-server-v0.1.0-aarch64-apple-darwin.tar.gz.sha256
+### HTTP service
 
-# Extract and start on Linux (x86_64):
-tar -xzf knotrel-server-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-cd knotrel-server-v0.1.0-x86_64-unknown-linux-gnu
-./knotrel-server
-
-# Or on macOS (Apple Silicon):
-# tar -xzf knotrel-server-v0.1.0-aarch64-apple-darwin.tar.gz
-# cd knotrel-server-v0.1.0-aarch64-apple-darwin
-# ./knotrel-server
-```
-
-On Windows (PowerShell):
-```powershell
-Expand-Archive knotrel-server-v0.1.0-x86_64-pc-windows-msvc.zip
-cd knotrel-server-v0.1.0-x86_64-pc-windows-msvc
-.\knotrel-server.exe
-```
-
-### From source
+From a clone of this repository:
 
 ```sh
 cargo run --release --locked -p knotrel-server
 ```
 
-The server listens on `127.0.0.1:8080` and uses compact BFS by default.
-Configuration is read once before binding:
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `KNOTREL_ADDR` | `127.0.0.1:8080` | IP address and port; non-loopback needs `KNOTREL_ALLOW_NON_LOOPBACK=true` |
-| `KNOTREL_ALLOW_NON_LOOPBACK` | `false` | `true` permits a non-loopback `KNOTREL_ADDR` (no auth/TLS; see [trust model](docs/http-api.md#trust-model)) |
-| `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` |
-| `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
-| `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
-| `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges; zero allowed; `unlimited` opts out |
-| `RUST_LOG` | `info` | Logging filter |
-
-For example, to opt into the experimental forest:
+The server listens on `127.0.0.1:8080`. In another terminal, connect three
+devices, ask a question, remove a link and ask again:
 
 ```sh
-KNOTREL_ENGINE=ett KNOTREL_MAX_PENDING_JOBS=16 \
-  cargo run --release --locked -p knotrel-server
-curl -sS http://127.0.0.1:8080/v1/info
-```
-
-> **Security:** v0.1.0 has no authentication, authorization or TLS, and no
-> protection for exposure to untrusted clients or the public internet. The server
-> listens on loopback by default and refuses a non-loopback `KNOTREL_ADDR` unless
-> `KNOTREL_ALLOW_NON_LOOPBACK=true` is set. A private network alone is not
-> sufficient; see the [trust model](docs/http-api.md#trust-model).
-
-Invalid values and unknown `KNOTREL_` variables stop startup. `hdt` selects the
-experimental level-based HDT engine. `GET /v1/info` reports the effective engine and limits without
-locking the graph. Settings cannot be changed through operation requests.
-See [configuration and API details](docs/http-api.md#startup-configuration-and-engine-selection).
-
-`GET /ready` reports readiness (`ready`, or 503 `starting`/`draining`/`unavailable`);
-`GET /health` is liveness only.
-On Unix (Linux/macOS), graceful shutdown is initiated by SIGINT or SIGTERM: the server turns
-unready, rejects new graph work with 503 `shutting_down`, lets admitted requests
-finish, and exits 0. If the drain deadline expires before all work finishes, the server
-exits 2; a second signal forces immediate exit (130). On Windows, Unix signals are not
-supported by the OS; process shutdown is initiated via Ctrl+C or platform termination.
-Header-read, request and connection limits are configurable; see
-[lifecycle details](docs/http-api.md#lifecycle-health-and-shutdown). All graph
-data is lost when the process exits or restarts; restarting with another engine
-does not migrate existing data.
-
-```sh
-curl -sS http://127.0.0.1:8080/v1/operations \
-  -H 'Content-Type: application/json' \
-  -d '{"op":"link","source":"1","target":"2"}'
-
-curl -sS http://127.0.0.1:8080/v1/operations \
-  -H 'Content-Type: application/json' \
-  -d '{"op":"connected","source":"1","target":"2"}'
+op() {
+  curl -sS http://127.0.0.1:8080/v1/operations \
+    -H 'Content-Type: application/json' -d "$1"; echo
+}
+op '{"op":"link","source":"1","target":"2"}'       # {"result":"changed","changed":true}
+op '{"op":"link","source":"2","target":"3"}'
+op '{"op":"connected","source":"1","target":"3"}'  # {"result":"connected","connected":true}
+op '{"op":"cut","source":"2","target":"3"}'
+op '{"op":"connected","source":"1","target":"3"}'  # {"result":"connected","connected":false}
 ```
 
 IDs are decimal strings over HTTP, preserving the full `u64` range. Links create
 absent endpoints. Repeated links and cuts are idempotent; cuts retain vertices.
 Self-loops are rejected. Queries involving unknown vertices return an error.
+See the [HTTP API](docs/http-api.md) for batches, errors and limits.
 
-## Development and Quality Gates
+### Rust library
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
-cargo test --workspace --locked --features knotrel-server/test-support
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
-./scripts/verify-source-packages.sh
-./scripts/smoke-test-release-binary.sh
-```
-
-Public items require English Rustdoc. Nontrivial private algorithms also require
-documentation of invariants, correctness and complexity. Workspace lints enforce
-missing docs and forbid unsafe code; each crate inherits them explicitly.
-CI builds and tests on Linux, Windows and macOS; formatting, Clippy and Rustdoc
-gates run on Linux.
-
-## Documentation and measurements
-
-- [v0.1.0 release notes](docs/releases/v0.1.0-release-notes.md): preview highlights, support matrix, checksum verification, and known limitations.
-- [Release procedure](docs/releases/release-procedure.md): step-by-step verification, artifact packaging, and authorized publication protocol.
-- [v0.1.0 release scope](docs/releases/v0.1.0-scope.md): supported preview surface,
-  verified runtime matrix, release blockers and performance-validation plan.
-- [HTTP API](docs/http-api.md) ([OpenAPI specification](docs/openapi.yaml)): operations, batch semantics, limits, errors and standard OpenAPI definition.
-- [Architecture](docs/architecture/0001-foundation.md): contract, costs and scope.
-- [Contributing](CONTRIBUTING.md): quality and documentation requirements.
-- [knotrel-benchmarks](https://github.com/knotrel/knotrel-benchmarks): reproducible
-  local workloads and future comparisons. Keep its clone beside this repository.
-
-Documentation lives here alongside the code. Authentication, persistence,
-multiple graph namespaces and distributed execution are not implemented.
-
-An opt-in experimental `ForestGraph` maintains exact connectivity using AVL
-Euler-tour trees and smaller-side replacement scans. The default `Graph` and HTTP
-service use compact BFS; `KNOTREL_ENGINE=ett` opts the server into `ForestGraph`. See [design and limits](docs/architecture/0005-experimental-euler-tour-forest.md).
-
-The experimental forest skips candidate-free subtrees and stops replacement
-searches lazily. See [candidate pruning and measured tradeoffs](docs/architecture/0006-candidate-pruning.md).
-
-
-Embedded callers can choose an engine through `ConnectivityGraph::new(EngineConfig)`
-without environment or HTTP dependencies. Existing `Graph`, `ForestGraph` and
-`knotrel_server::router(Graph)` APIs remain available. See
-[startup configuration design](docs/architecture/0007-startup-engine-configuration.md).
-
-For ordered bulk initialization, use
-`ConnectivityGraph::try_from_edges(engine, limits, nodes, edges)` with borrowed
-node and edge slices. It registers nodes first, then links edges in input order
-through the existing limit-enforcing operations. Duplicate vertices and
-duplicate/reversed edges are no-ops; missing endpoints are created implicitly.
-The first incremental error is returned and no partial graph is published.
-Successful graphs retain their limits and support normal dynamic operations.
-This convenience API does not reserve or reorder input, build forests directly,
-restore snapshots, provide recoverable allocation failure, or change HTTP batch
-semantics. No speedup has been established; its work is the ordered incremental
-construction work, with constant auxiliary space beyond the graph.
-
-
-Experimental `HdtGraph` adds deterministic edge levels and promotions to avoid
-repeated failed replacement work. Select it with `KNOTREL_ENGINE=hdt` or
-`ConnectivityGraph::new(EngineConfig::Hdt)`. It uses O(E + V log V) logical memory;
-update bounds are amortized, not per-request latency guarantees. Compact BFS
-remains the default. See [HDT design and limits](docs/architecture/0008-experimental-hdt.md).
-
-## Using `knotrel-core` as a Rust Library
-
-`knotrel-core` provides synchronous, exact dynamic connectivity without HTTP or async dependencies.
-
-Add `knotrel-core` to your `Cargo.toml`:
+`knotrel-core` is synchronous and has no HTTP or async dependencies. The latest
+published version is 0.2.0; use `"0.3.0"` only after v0.3.0 is published.
 
 ```toml
 [dependencies]
-knotrel-core = "0.1.0"
+knotrel-core = "0.2.0"
 ```
-
-### Quick start
 
 ```rust
 use knotrel_core::{ConnectivityGraph, EngineConfig};
@@ -227,77 +106,190 @@ See runnable Cargo examples in [`crates/knotrel-core/examples`](crates/knotrel-c
 - `cargo run -p knotrel-core --example bulk_import`
 - `cargo run -p knotrel-core --example engine_selection`
 
-## Engine Selection and Guidance
+## Integration model
 
-Knotrel provides three dynamic connectivity engines via [`EngineConfig`](crates/knotrel-core/src/configuration.rs):
+- **Your database or event source owns the authoritative graph.** Knotrel holds
+  derived, reconstructible state in memory; it has no durable graph
+  persistence.
+- **Restart means rebuild.** All graph data is lost when the process exits;
+  restarting with another engine does not migrate data. In source-managed mode
+  (`KNOTREL_MODE=source_managed`) an external feeder publishes a snapshot and
+  then ordered events, and readiness reports `uninitialized` until it does.
+- **The reference feeder is an example, not a production connector.**
+  [`external_feeder`](crates/knotrel-server/examples/external_feeder.rs) and the
+  [example container](examples/container/) demonstrate the protocol; adapting it
+  to your source, retention and ownership rules is your responsibility.
 
-### 1. Compact BFS (`EngineConfig::CompactBfs`) — Default
-- **Algorithmic properties**: Sorted adjacency vectors with stable internal indices; $O(V + E)$ worst-case BFS queries; $O(\text{deg}(u) + \text{deg}(v))$ amortized link and cut; $O(V + E)$ logical memory. Adding vertices can trigger an $O(V)$ outer-vector reallocation.
-- **Workload expectations**: Contiguous memory layout and low allocation overhead. Best suited for general workloads or mutation-heavy workloads where mutations dominate queries.
-- **Limitations**: Query latency scales with component size in the worst case.
+See the [integration contract](docs/integration-contract.md) and the
+[deployment runbook](docs/deployment.md) for sessions, leases, readiness states
+and the restart/rebuild procedure.
 
-### 2. Euler Tour Trees (`EngineConfig::EulerTour`) — Experimental
-- **Algorithmic properties**: Single spanning forest using AVL-balanced Euler tour sequences. $O(\log V)$ algorithmic queries by comparing tour roots. $O(\log V + \log E)$ amortized link and non-tree cut. Tree cuts partition the tree and scan non-tree edges of the smaller component ($O(\log V + \log E + s + c \log V)$ amortized) using candidate-pruned subtrees.
-- **Workload expectations**: Effective for query-dominated workloads and tree-like topologies where replacement searches are rare.
-- **Limitations**: In dense cyclic subgraphs with frequent bridge cuts, lacking an edge-level hierarchy can cause repeated scans over the same non-tree edges.
+> **Security boundary:** Knotrel has **no built-in authentication, authorization
+> or TLS**. Anyone who can reach the listener can read and mutate the graph. It
+> listens on loopback by default and refuses a non-loopback address unless
+> `KNOTREL_ALLOW_NON_LOOPBACK=true`. Run it inside a trusted deployment boundary,
+> or behind an external gateway that you configure separately; no gateway is
+> included or configured by Knotrel. A private network alone is not sufficient;
+> see the [trust model](docs/http-api.md#trust-model).
 
-### 3. Holm–de Lichtenberg–Thorup (`EngineConfig::Hdt`) — Experimental
-- **Algorithmic properties**: Deterministic implementation of Holm, de Lichtenberg, and Thorup (2001) with an append-only growth policy for expanding vertex universes. Maintains a hierarchy of $O(\log V)$ levels materialized lazily as promotions require them. Promotes examined tree and non-tree edges to upper levels during downward search, bounding amortized updates to $O(\log^2 V)$; queries take $O(\log V)$; logical memory is $O(E + V \log V)$.
-- **Workload expectations**: Avoids repeated scan storms in dense graphs undergoing frequent bridge cuts.
-- **Limitations**: Higher structural complexity and memory footprint can mean higher constant factors on small or sparse graphs; verify against your actual workload. Amortized bounds represent sequence averages rather than worst-case per-request latency bounds.
+## Choosing an engine
 
-### Complexity & Memory Qualifications
-- **Algorithmic vs. API costs**: Algorithmic complexity bounds apply to internal index structures. The public API maps external `NodeId` (`u64`) keys via hash maps (`IntMap` / `FxHashMap`), which rely on expected $O(1)$ lookups and do not offer deterministic worst-case constant bounds for arbitrary ID distributions.
-- **Logical memory vs. heap/RSS**: Stated memory bounds ($O(V + E)$ and $O(E + V \log V)$) describe logical graph entity storage. Allocated vector capacities are retained after cuts and do not bound process heap memory or RSS.
+Select an engine with `KNOTREL_ENGINE` (server) or
+[`EngineConfig`](crates/knotrel-core/src/configuration.rs) (library). No engine
+is fastest for every topology and operation mix; measure your own workload.
 
-### Empirical findings and recommendations
-- **No universal winner**: Benchmark comparisons show that no single engine dominates across all topologies and operation mixes.
-- **Uncertain workloads**: If the benchmark repository does not test your specific graph scale and topology, do not assume polylogarithmic engines are faster.
-- **Pragmatic advice**: Start with **Compact BFS** (`EngineConfig::CompactBfs`) as the simple, robust, low-memory default. Consider **ETT** for query-dominated workloads on trees/forests, or **HDT** for dense graphs with frequent bridge cuts, empirically measuring actual topology, scale, and mutation mix.
+| Engine | Status | Costs (logical) | Consider it for | Design |
+| --- | --- | --- | --- | --- |
+| `compact-bfs` / `EngineConfig::CompactBfs` | **Default** | Queries $O(V + E)$ worst case; link/cut $O(\deg u + \deg v)$ amortized; memory $O(V + E)$ | General and mutation-heavy workloads; simplest, lowest memory | [ADR 0004](docs/architecture/0004-compact-core.md) |
+| `ett` / `EngineConfig::EulerTour` | Experimental, opt-in | Queries $O(\log V)$; tree cuts may scan non-tree edges of the smaller side | Query-heavy workloads on tree-like topologies | [ADR 0005](docs/architecture/0005-experimental-euler-tour-forest.md), [0006](docs/architecture/0006-candidate-pruning.md) |
+| `hdt` / `EngineConfig::Hdt` | Experimental, opt-in | Queries $O(\log V)$; updates $O(\log^2 V)$ amortized; memory $O(E + V \log V)$ | Dense graphs with frequent bridge cuts | [ADR 0008](docs/architecture/0008-experimental-hdt.md) |
 
-## Graph cardinality limits
+Library callers can also reuse traversal scratch space with the opt-in
+`BfsWorkspace`, and compare against the original ordered-adjacency
+`ReferenceGraph`. Bounds describe internal structures: external `u64` IDs use
+hash maps with expected, not worst-case, $O(1)$ lookups, and logical memory does
+not bound heap or RSS because capacity is retained after cuts. Amortized bounds
+are not per-request latency guarantees. Only `compact-bfs` and its workspace
+variant were measured in v0.3.0 release qualification. See
+[startup engine configuration](docs/architecture/0007-startup-engine-configuration.md).
 
-The standalone server defaults to 100 000 nodes and 500 000 edges. Override them
-with `KNOTREL_MAX_NODES` and/or `KNOTREL_MAX_EDGES` before starting the server:
+## Performance evidence
 
-```sh
-KNOTREL_MAX_NODES=100000 KNOTREL_MAX_EDGES=200000 cargo run --locked -p knotrel-server
-```
+**[knotrel-benchmarks](https://github.com/knotrel/knotrel-benchmarks)** holds
+the reproducible workloads, methodology and published reports: release
+regression qualification, engine/competitor comparisons and algorithm
+experiments, each labelled with the version and host it actually measured.
+For the v0.3.0 candidate, the release qualification outcome and its
+limitations are summarized in the
+[v0.3.0 release notes](docs/releases/v0.3.0-release-notes.md#performance-qualification);
+no speedup is claimed.
 
-Absent variables use the defaults; the literal `unlimited` removes a ceiling.
-Zero forbids new entries; other values must be ASCII decimal integers fitting
-`usize`. Limits are fixed for each graph instance and reported by `/v1/info`
-(`null` for unlimited).
-A rejected operation changes nothing, including implicitly created endpoints.
-Duplicate vertices/edges remain successful no-ops. Cuts free edge capacity but
-retain vertices and their capacity usage. These are not RAM limits: allocation
-capacities can remain high after cuts.
+## Installing a release
 
-Embedded callers use `ConnectivityGraph::with_limits(engine, GraphLimits {
-max_nodes: Some(100000), max_edges: Some(200000) })`. The raw `Graph`,
-`ForestGraph` and `HdtGraph` algorithm types remain unlimited; use the wrapper
-for enforced limits. `ConnectivityGraph::add_node` now returns
-`Result<bool, GraphError>` so callers must handle capacity errors. Server
-embedders can use `ServerConfig::with_graph_limits`; `ServerConfig::new` applies
-the defaults, while the legacy `router(Graph)` retains unlimited cardinality. See [ADR 0009](docs/architecture/0009-graph-limits.md).
-
-Rust callers matching `GraphError` exhaustively must also handle the new
-`NodeLimitExceeded` and `EdgeLimitExceeded` variants.
-
-## Inspecting the running instance
-
-`GET /v1/info` reports fixed engine/configuration settings without entering the
-graph queue. `GET /v1/stats` reports a coherent snapshot of node/edge counts,
-limits, remaining capacity and a decimal-string `state_version`. The version
-starts at zero for each instance and advances once per effective operation,
-including each effective operation in a batch. Errors and no-ops do not advance
-it; a restart resets it. Stats shares the graph job limit and can return 503
-`busy`, while info remains available. Stats responses disable HTTP storage via
-`Cache-Control: no-store`.
+Download the archive and checksum for your platform from the
+[GitHub Releases page](https://github.com/knotrel/knotrel/releases) and verify
+the SHA-256 checksum before running. The commands below use v0.3.0 file names
+and apply only after v0.3.0 is published; substitute `v0.2.0` for the latest
+published preview.
 
 ```sh
-curl -sS http://127.0.0.1:8080/v1/stats
+# Verify checksum on Linux:
+sha256sum -c knotrel-server-v0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+# Or on macOS:
+# shasum -a 256 -c knotrel-server-v0.3.0-aarch64-apple-darwin.tar.gz.sha256
+
+# Extract and start on Linux (x86_64):
+tar -xzf knotrel-server-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+cd knotrel-server-v0.3.0-x86_64-unknown-linux-gnu
+./knotrel-server
+
+# Or on macOS (Apple Silicon):
+# tar -xzf knotrel-server-v0.3.0-aarch64-apple-darwin.tar.gz
+# cd knotrel-server-v0.3.0-aarch64-apple-darwin
+# ./knotrel-server
 ```
 
-See the [snapshot contract](docs/http-api.md#live-graph-snapshot-versus-instance-information)
-for batch isolation, unlimited capacities, precision and instance scope.
+On Windows (PowerShell):
+```powershell
+# Compare the displayed hash with the downloaded .sha256 file before extracting.
+Get-FileHash -Algorithm SHA256 knotrel-server-v0.3.0-x86_64-pc-windows-msvc.zip
+Get-Content knotrel-server-v0.3.0-x86_64-pc-windows-msvc.zip.sha256
+Expand-Archive knotrel-server-v0.3.0-x86_64-pc-windows-msvc.zip -DestinationPath .
+cd knotrel-server-v0.3.0-x86_64-pc-windows-msvc
+.\knotrel-server.exe
+```
+
+## Configuration and operation
+
+Configuration is read once at startup from environment variables; it cannot be
+changed through requests. Invalid values and unknown `KNOTREL_` variables stop
+startup.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `KNOTREL_ADDR` | `127.0.0.1:8080` | IP address and port; non-loopback needs `KNOTREL_ALLOW_NON_LOOPBACK=true` |
+| `KNOTREL_ALLOW_NON_LOOPBACK` | `false` | `true` permits a non-loopback `KNOTREL_ADDR` (no auth/TLS; see [trust model](docs/http-api.md#trust-model)) |
+| `KNOTREL_MODE` | `standalone` | `standalone` or `source_managed`; the latter requires an external feeder |
+| `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` |
+| `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
+| `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
+| `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges; zero allowed; `unlimited` opts out |
+| `RUST_LOG` | `info` | Logging filter |
+
+For example, to opt into the experimental forest:
+
+```sh
+KNOTREL_ENGINE=ett KNOTREL_MAX_PENDING_JOBS=16 \
+  cargo run --release --locked -p knotrel-server
+curl -sS http://127.0.0.1:8080/v1/info
+```
+
+Further timeouts and size limits are listed under
+[startup configuration](docs/http-api.md#startup-configuration-and-engine-selection).
+
+- **Probes:** `GET /health` is liveness only. `GET /ready` reports `ready`, or
+  503 `starting`, `draining` or `unavailable`; in source-managed mode also
+  `uninitialized`, `loading`, `catching_up`, `stale` or `desynchronized`.
+- **Shutdown:** on Unix, SIGINT or SIGTERM makes the server unready, rejects new
+  graph work with 503 `shutting_down`, lets admitted requests finish and exits
+  0; it exits 2 if the drain deadline expires, and a second signal forces exit
+  130. On Windows, shutdown uses Ctrl+C or platform termination. See
+  [lifecycle details](docs/http-api.md#lifecycle-health-and-shutdown).
+- **Cardinality limits:** a rejected operation changes nothing, including
+  implicitly created endpoints. Duplicate vertices and edges remain successful
+  no-ops; cuts free edge capacity but retain vertices. Limits are not RAM
+  limits. Embedded callers use `ConnectivityGraph::with_limits`; see
+  [ADR 0009](docs/architecture/0009-graph-limits.md) for embedder and migration
+  notes.
+- **Inspection:** `GET /v1/info` reports the fixed engine and limits
+  without entering the graph queue. `GET /v1/stats` returns a coherent snapshot
+  of counts, remaining capacity and a decimal-string `state_version` that
+  advances once per effective operation and resets on restart; it can return
+  503 `busy`. See the
+  [snapshot contract](docs/http-api.md#live-graph-snapshot-versus-instance-information).
+
+## Documentation
+
+- [HTTP API](docs/http-api.md) and [OpenAPI specification](docs/openapi.yaml): operations, batch semantics, limits and errors.
+- [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
+- [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
+- [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
+- [v0.3.0 release notes](docs/releases/v0.3.0-release-notes.md): candidate scope, qualification outcomes, platform coverage and limitations.
+- [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
+- [Release procedure](docs/releases/release-procedure.md): verification, packaging and authorized publication.
+- [Contributing](CONTRIBUTING.md): quality and documentation requirements.
+- [knotrel-benchmarks](https://github.com/knotrel/knotrel-benchmarks): workloads, methodology and reports. Keep its clone beside this repository to run it locally.
+
+Authentication, persistence, multiple graph namespaces and distributed execution
+are not implemented.
+
+## Development and quality gates
+
+| Crate | Responsibility |
+| --- | --- |
+| `knotrel-core` | Synchronous graph operations and exact connectivity |
+| `knotrel-server` | Axum HTTP API, validation and bounded blocking graph work |
+
+Rust **1.100.0**, edition **2024**, and Cargo resolver **3** are pinned for the
+workspace and server. The `knotrel-core` minimum supported Rust version (MSRV)
+is **1.98.1**. The toolchain file installs Clippy and rustfmt when using rustup.
+Cargo.lock records the resolved dependency versions.
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked --features knotrel-server/test-support -- -D warnings
+cargo test --workspace --locked
+cargo test --workspace --locked --features knotrel-server/test-support
+cargo +1.98.1 test --locked -p knotrel-core
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+# Run in a disposable checkout: this script removes target/package.
+./scripts/verify-source-packages.sh
+./scripts/smoke-test-release-binary.sh
+```
+
+Public items require English Rustdoc. Nontrivial private algorithms also require
+documentation of invariants, correctness and complexity. Workspace lints enforce
+missing docs and forbid unsafe code; each crate inherits them explicitly.
+CI builds and tests on Linux, Windows and macOS; formatting, Clippy and Rustdoc
+gates run on Linux.
