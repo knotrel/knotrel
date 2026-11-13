@@ -1,6 +1,10 @@
 //! Process lifecycle phase shared by the accept loop and the HTTP router.
 
-use crate::{api, service::Service};
+use crate::{
+    api,
+    metrics::{self, Rejection, ServiceTelemetry},
+    service::Service,
+};
 use axum::{
     Json,
     extract::{Request, State},
@@ -11,7 +15,7 @@ use axum::{
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::Duration,
 };
@@ -576,13 +580,24 @@ fn close_connection(response: &mut Response) {
         .insert(header::CONNECTION, HeaderValue::from_static("close"));
 }
 
+/// State of [`shutdown_gate`]: the lifecycle and, when metrics are enabled,
+/// the service's rejection counters.
+#[derive(Clone)]
+pub(crate) struct GateState {
+    pub(crate) lifecycle: Lifecycle,
+    pub(crate) telemetry: Option<Arc<ServiceTelemetry>>,
+}
+
 /// Rejects new work while draining and asks clients to close the connection.
 ///
 /// Probes, and `/metrics` when enabled, stay answerable so orchestrators
 /// can observe the drain. A request
 /// that passed this gate before draining began runs to completion.
 pub(crate) async fn shutdown_gate(
-    State(lifecycle): State<Lifecycle>,
+    State(GateState {
+        lifecycle,
+        telemetry,
+    }): State<GateState>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -608,6 +623,9 @@ pub(crate) async fn shutdown_gate(
     let mut response = if probe {
         next.run(request).await
     } else {
+        if let Some(telemetry) = &telemetry {
+            telemetry.reject(Rejection::ShuttingDown);
+        }
         api::error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "shutting_down",
@@ -618,21 +636,43 @@ pub(crate) async fn shutdown_gate(
     response
 }
 
+/// State of [`request_timeout`].
+#[derive(Clone, Copy)]
+pub(crate) struct TimeoutPolicy {
+    pub(crate) limit: Duration,
+    /// Set when metrics are enabled, so an abandoned graph job can tell a
+    /// timeout from any other cancellation.
+    pub(crate) mark_timeouts: bool,
+}
+
 /// Bounds body receipt plus handling of one request.
 ///
 /// Dropping the handler future cancels body reads and queued admission, but a
 /// graph job already handed to a worker still completes: after a timeout the
 /// client cannot tell whether its mutation was applied.
 pub(crate) async fn request_timeout(
-    State(limit): State<Duration>,
+    State(policy): State<TimeoutPolicy>,
     request: Request,
     next: Next,
 ) -> Response {
-    match tokio::time::timeout(limit, next.run(request)).await {
+    let completed = if policy.mark_timeouts {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut handler = Box::pin(metrics::mark_timeouts(flag.clone(), next.run(request)));
+        let result = tokio::time::timeout(policy.limit, handler.as_mut()).await;
+        if result.is_err() {
+            // Mark before dropping, so the handler's drop guards see it.
+            flag.store(true, Ordering::Release);
+            drop(handler);
+        }
+        result
+    } else {
+        tokio::time::timeout(policy.limit, next.run(request)).await
+    };
+    match completed {
         Ok(response) => response,
         Err(_) => {
             tracing::warn!(
-                limit_ms = limit.as_millis(),
+                limit_ms = policy.limit.as_millis(),
                 "request exceeded its time limit"
             );
             let mut response = api::error_response(

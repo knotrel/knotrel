@@ -88,8 +88,8 @@ you need the exit code after stopping.
 **Metrics (opt-in).** Add `-e KNOTREL_METRICS_ENABLED=true` to serve
 `GET /metrics` in Prometheus text format on the same port
 ([metrics](http-api.md#metrics-opt-in)). It is **unauthenticated** and
-exposes operational state: route counts, backlog, readiness and build
-version. Scrape it only from inside the same trusted boundary that may reach
+exposes operational state: route counts, backlog, rejection and
+uncertain-outcome counts, readiness and build version. Scrape it only from inside the same trusted boundary that may reach
 the API. Neither Knotrel nor this image adds authentication or TLS for it.
 A minimal Prometheus scrape job:
 

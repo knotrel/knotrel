@@ -298,6 +298,23 @@ An HTTP `503 request_timeout` or a cancelled request in these metrics never
 means the graph job finished or did not run; see
 [admission and cancellation](#admission-and-cancellation).
 
+Two further counters are recorded where the decision is made, not derived
+from response codes ([contract section 8](observability-contract.md#8-second-m62-increment-rejection-and-uncertain-outcomes-implemented-unreleased)):
+
+- `knotrel_requests_rejected_total{reason}`: requests refused before any
+  graph job or import ran for them: `busy` (admission permits exhausted,
+  including feeder session, heartbeat, events, gap and barrier calls answered
+  `503 import_in_progress`), `import_capacity`, `shutting_down` (every
+  non-probe request refused while draining, including `/v1/info` and
+  unmatched routes that would not create a graph job) or `unavailable`. Validation, domain, feeder-protocol and
+  partial batch or event failures are not counted.
+- `knotrel_requests_outcome_uncertain_total{cause}`: observations that
+  an admitted state-changing job may have taken effect without its caller
+  learning the result: `request_timeout`, `cancelled` or `worker_panic`.
+  The unit is an observation, not a request. A request that times out and
+  whose worker later panics adds two. Read-only requests (`/v1/stats`,
+  `connected`-only lists) are not counted.
+
 ### Graceful shutdown
 
 On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:

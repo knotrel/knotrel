@@ -188,11 +188,17 @@ fn build_router_from_service(
     }
     router = router
         .layer(middleware::from_fn_with_state(
-            request_timeout,
+            lifecycle::TimeoutPolicy {
+                limit: request_timeout,
+                mark_timeouts: service.telemetry().is_some(),
+            },
             lifecycle::request_timeout,
         ))
         .layer(middleware::from_fn_with_state(
-            lifecycle,
+            lifecycle::GateState {
+                lifecycle,
+                telemetry: service.telemetry().cloned(),
+            },
             lifecycle::shutdown_gate,
         ));
     if let Some(metrics) = metrics {

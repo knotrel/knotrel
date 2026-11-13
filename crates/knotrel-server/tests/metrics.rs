@@ -43,6 +43,9 @@ const READINESS_STATES: [&str; 9] = [
     "desynchronized",
 ];
 
+const REJECTION_REASONS: [&str; 4] = ["busy", "import_capacity", "shutting_down", "unavailable"];
+const UNCERTAINTY_CAUSES: [&str; 3] = ["request_timeout", "cancelled", "worker_panic"];
+
 fn config(capacity: usize) -> ServerConfig {
     ServerConfig::new(
         "127.0.0.1:0".parse().unwrap(),
@@ -251,6 +254,8 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
                 "method" => &METHODS,
                 "status_class" => &STATUS_CLASSES,
                 "state" => &READINESS_STATES,
+                "reason" => &REJECTION_REASONS,
+                "cause" => &UNCERTAINTY_CAUSES,
                 "le" => &[],
                 "version" | "engine" | "mode" => &[],
                 other => panic!("unexpected label {other}"),
@@ -581,5 +586,383 @@ mod paused {
             value(&samples, "knotrel_graph_jobs_outstanding", &[]),
             Some(0.0)
         );
+    }
+}
+
+mod outcomes {
+    use super::*;
+
+    const REJECTED: &str = "knotrel_requests_rejected_total";
+    const UNCERTAIN: &str = "knotrel_requests_outcome_uncertain_total";
+
+    /// Asserts every rejection and uncertainty series, treating unlisted ones as zero.
+    fn assert_outcomes(samples: &[Sample], nonzero: &[(&str, f64)]) {
+        let expected = |key: &str| {
+            nonzero
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map_or(0.0, |(_, v)| *v)
+        };
+        for reason in REJECTION_REASONS {
+            let actual = value(samples, REJECTED, &[("reason", reason)])
+                .unwrap_or_else(|| panic!("missing {REJECTED}{{reason={reason}}}"));
+            assert_eq!(actual, expected(reason), "rejected reason={reason}");
+        }
+        for cause in UNCERTAINTY_CAUSES {
+            let actual = value(samples, UNCERTAIN, &[("cause", cause)])
+                .unwrap_or_else(|| panic!("missing {UNCERTAIN}{{cause={cause}}}"));
+            assert_eq!(actual, expected(cause), "uncertain cause={cause}");
+        }
+    }
+
+    #[tokio::test]
+    async fn outcome_series_exist_at_zero_in_both_modes() {
+        for config in [
+            config(4),
+            config(4).with_mode(knotrel_server::ServerMode::SourceManaged),
+        ] {
+            let app = router_with_config(config);
+            let text = send(&app, Method::GET, "/metrics", "").await.1;
+            assert!(text.contains(&format!("# TYPE {REJECTED} counter")));
+            assert!(text.contains(&format!("# TYPE {UNCERTAIN} counter")));
+            assert_outcomes(&scrape(&app).await, &[]);
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_rejection_is_counted_once_and_probes_are_not() {
+        let lifecycle = Lifecycle::new();
+        lifecycle.mark_ready();
+        let app = router_with_lifecycle(config(4), lifecycle.clone());
+        lifecycle.begin_draining();
+        let (status, body) = send(&app, Method::POST, "/v1/operations", LINK).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("shutting_down"));
+        send(&app, Method::GET, "/ready", "").await;
+        send(&app, Method::GET, "/health", "").await;
+        assert_outcomes(&scrape(&app).await, &[("shutting_down", 1.0)]);
+    }
+
+    #[tokio::test]
+    async fn validation_and_domain_errors_are_not_rejections() {
+        let app = router_with_config(config(4));
+        let (status, _) = send(&app, Method::POST, "/v1/operations", "{").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let cut = r#"{"operations":[{"op":"cut","source":"1","target":"2"},{"op":"connected","source":"1","target":"2"}]}"#;
+        let (status, _) = send(&app, Method::POST, "/v1/batch", cut).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_outcomes(&scrape(&app).await, &[]);
+    }
+
+    #[tokio::test]
+    async fn server_instances_count_outcomes_independently() {
+        let draining = Lifecycle::new();
+        draining.mark_ready();
+        let first = router_with_lifecycle(config(4), draining.clone());
+        let ready = Lifecycle::new();
+        ready.mark_ready();
+        let second = router_with_lifecycle(config(4), ready);
+        draining.begin_draining();
+        send(&first, Method::POST, "/v1/operations", LINK).await;
+        send(&second, Method::POST, "/v1/operations", LINK).await;
+        assert_outcomes(&scrape(&first).await, &[("shutting_down", 1.0)]);
+        assert_outcomes(&scrape(&second).await, &[]);
+    }
+
+    #[cfg(feature = "test-support")]
+    mod paused {
+        use super::*;
+        use std::time::Duration;
+
+        const CONNECTED: &str = r#"{"op":"connected","source":"1","target":"2"}"#;
+
+        async fn wait_idle(lifecycle: &Lifecycle) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while lifecycle.outstanding_jobs() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        fn source_managed(capacity: usize) -> ServerConfig {
+            config(capacity).with_mode(knotrel_server::ServerMode::SourceManaged)
+        }
+
+        fn timed(capacity: usize) -> ServerConfig {
+            config(capacity)
+                .with_request_timeout(Duration::from_millis(50))
+                .unwrap()
+        }
+
+        async fn instance_id(app: &Router) -> String {
+            let (_, body) = send(app, Method::GET, "/v1/info", "").await;
+            let info: serde_json::Value = serde_json::from_str(&body).unwrap();
+            info["instance_id"].as_str().unwrap().to_owned()
+        }
+
+        async fn send_feeder(
+            app: &Router,
+            instance: &str,
+            path: &str,
+            body: String,
+        ) -> (StatusCode, String) {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header("x-knotrel-instance-id", instance)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            (status, String::from_utf8(bytes.to_vec()).unwrap())
+        }
+
+        fn gap_body(instance: &str) -> String {
+            serde_json::json!({
+                "instance_id": instance,
+                "graph_id": "default",
+                "generation": 1,
+                "feeder_session_id": "s",
+                "feeder_epoch": 1,
+                "failed_delivery_sequence": 1,
+            })
+            .to_string()
+        }
+
+        #[tokio::test]
+        async fn busy_rejection_is_counted_once_through_service_and_api_layers() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(config(1), lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker();
+            let held = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::POST, "/v1/operations", LINK).await }
+            });
+            pause.wait_started().await;
+
+            let (status, body) = send(
+                &app,
+                Method::POST,
+                "/v1/batch",
+                &format!(r#"{{"operations":[{LINK}]}}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("\"busy\""));
+            assert_outcomes(&scrape(&app).await, &[("busy", 1.0)]);
+
+            pause.release();
+            assert_eq!(held.await.unwrap().0, StatusCode::OK);
+            wait_idle(&lifecycle).await;
+            assert_outcomes(&scrape(&app).await, &[("busy", 1.0)]);
+        }
+
+        #[tokio::test]
+        async fn feeder_admission_rejection_keeps_import_in_progress_and_counts_busy() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(source_managed(1), lifecycle.clone());
+            let instance = instance_id(&app).await;
+            let mut pause = lifecycle.pause_next_worker();
+            let held = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::GET, "/v1/stats", "").await }
+            });
+            pause.wait_started().await;
+
+            let (status, body) =
+                send_feeder(&app, &instance, "/v1/feeder/gap", gap_body(&instance)).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("import_in_progress"), "{body}");
+            assert_outcomes(&scrape(&app).await, &[("busy", 1.0)]);
+
+            pause.release();
+            assert_eq!(held.await.unwrap().0, StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn import_permit_rejection_is_counted_as_import_capacity() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(source_managed(4), lifecycle.clone());
+            let instance = instance_id(&app).await;
+            let mut pause = lifecycle.pause_next_worker();
+            let held = tokio::spawn({
+                let app = app.clone();
+                let instance = instance.clone();
+                async move { send_feeder(&app, &instance, "/v1/feeder/import", "{}".into()).await }
+            });
+            pause.wait_started().await;
+
+            let (status, body) =
+                send_feeder(&app, &instance, "/v1/feeder/import", "{}".into()).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("import_in_progress"), "{body}");
+            assert_outcomes(&scrape(&app).await, &[("import_capacity", 1.0)]);
+
+            pause.release();
+            assert_eq!(held.await.unwrap().0, StatusCode::UNPROCESSABLE_ENTITY);
+            wait_idle(&lifecycle).await;
+            assert_outcomes(&scrape(&app).await, &[("import_capacity", 1.0)]);
+        }
+
+        #[tokio::test]
+        async fn timeout_with_outstanding_worker_then_success_counts_one_observation() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(timed(4), lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker();
+            let (status, body) = send(&app, Method::POST, "/v1/operations", LINK).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("request_timeout"));
+            pause.wait_started().await;
+            assert_outcomes(&scrape(&app).await, &[("request_timeout", 1.0)]);
+
+            pause.release();
+            wait_idle(&lifecycle).await;
+            let samples = scrape(&app).await;
+            assert_outcomes(&samples, &[("request_timeout", 1.0)]);
+            assert_eq!(
+                value(&samples, "knotrel_service_unavailable", &[]),
+                Some(0.0)
+            );
+        }
+
+        #[tokio::test]
+        async fn worker_panic_after_caller_cancellation_is_counted() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(config(4), lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker();
+            let request = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::POST, "/v1/operations", LINK).await }
+            });
+            pause.wait_started().await;
+            request.abort();
+            assert!(request.await.unwrap_err().is_cancelled());
+            assert_outcomes(&scrape(&app).await, &[("cancelled", 1.0)]);
+
+            pause.panic_on_release();
+            wait_idle(&lifecycle).await;
+            assert_outcomes(
+                &scrape(&app).await,
+                &[("cancelled", 1.0), ("worker_panic", 1.0)],
+            );
+        }
+
+        #[tokio::test]
+        async fn timeout_followed_by_worker_panic_counts_two_observations() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(timed(4), lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker();
+            let (status, _) = send(&app, Method::POST, "/v1/operations", LINK).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            pause.wait_started().await;
+            pause.panic_on_release();
+            wait_idle(&lifecycle).await;
+            assert_outcomes(
+                &scrape(&app).await,
+                &[("request_timeout", 1.0), ("worker_panic", 1.0)],
+            );
+        }
+
+        #[tokio::test]
+        async fn read_only_timeout_and_cancellation_are_not_uncertain() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(timed(4), lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker();
+            let (status, body) = send(&app, Method::GET, "/v1/stats", "").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("request_timeout"));
+            pause.wait_started().await;
+            pause.release();
+            wait_idle(&lifecycle).await;
+
+            let mut pause = lifecycle.pause_next_worker();
+            let request = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::POST, "/v1/operations", CONNECTED).await }
+            });
+            pause.wait_started().await;
+            request.abort();
+            assert!(request.await.unwrap_err().is_cancelled());
+            pause.release();
+            wait_idle(&lifecycle).await;
+
+            let samples = scrape(&app).await;
+            assert_outcomes(&samples, &[]);
+            assert_eq!(
+                requests(&samples, "/v1/operations", "POST", "cancelled"),
+                1.0
+            );
+        }
+
+        #[tokio::test]
+        async fn worker_panic_is_not_a_rejection_but_later_refusals_are() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(config(4), lifecycle.clone());
+            let mut pause = lifecycle.pause_next_worker();
+            let failed = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::POST, "/v1/operations", LINK).await }
+            });
+            pause.wait_started().await;
+            pause.panic_on_release();
+            let (status, body) = failed.await.unwrap();
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("\"unavailable\""));
+            wait_idle(&lifecycle).await;
+            assert_outcomes(&scrape(&app).await, &[("worker_panic", 1.0)]);
+
+            let (status, body) = send(&app, Method::POST, "/v1/operations", LINK).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("\"unavailable\""));
+            send(&app, Method::GET, "/v1/stats", "").await;
+            assert_outcomes(
+                &scrape(&app).await,
+                &[("worker_panic", 1.0), ("unavailable", 2.0)],
+            );
+        }
+
+        #[tokio::test]
+        async fn read_only_panic_then_feeder_refusal_is_counted_once() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(source_managed(4), lifecycle.clone());
+            let instance = instance_id(&app).await;
+            let mut pause = lifecycle.pause_next_worker();
+            let failed = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::GET, "/v1/stats", "").await }
+            });
+            pause.wait_started().await;
+            pause.panic_on_release();
+            assert_eq!(failed.await.unwrap().0, StatusCode::SERVICE_UNAVAILABLE);
+            wait_idle(&lifecycle).await;
+            let samples = scrape(&app).await;
+            assert_outcomes(&samples, &[]);
+            assert_eq!(
+                value(&samples, "knotrel_service_unavailable", &[]),
+                Some(1.0)
+            );
+
+            let (status, body) =
+                send_feeder(&app, &instance, "/v1/feeder/gap", gap_body(&instance)).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("\"unavailable\""), "{body}");
+            assert_outcomes(&scrape(&app).await, &[("unavailable", 1.0)]);
+        }
     }
 }

@@ -1,7 +1,8 @@
 //! Opt-in Prometheus exposition (`GET /metrics`), owned per router instance.
 //!
 //! HTTP accounting lives in [`track_http`]; service-health gauges are read at
-//! scrape time by [`HealthCollector`]. Nothing here acquires the graph mutex,
+//! scrape time by [`HealthCollector`]. Rejection and uncertain-outcome
+//! counters live in [`ServiceTelemetry`], owned by the `Service` they observe. Nothing here acquires the graph mutex,
 //! a graph-job admission permit or an import permit. Scrapes and request
 //! accounting do use synchronization internal to the `prometheus-client`
 //! registry (metric-family maps and histogram state) and the outstanding-job
@@ -22,7 +23,13 @@ use prometheus_client::{
     },
     registry::Registry,
 };
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 /// Route templates registered by the router; anything else is `unmatched`.
 const ROUTES: [&str; 13] = [
@@ -61,6 +68,7 @@ const SOURCE_MANAGED_STATES: [&str; 9] = [
 
 type RequestLabels = [(&'static str, &'static str); 3];
 type RouteLabels = [(&'static str, &'static str); 1];
+type OutcomeLabels = [(&'static str, &'static str); 1];
 type DurationFamily = Family<RouteLabels, Histogram, fn() -> Histogram>;
 
 /// Registry and HTTP metric families for one router instance.
@@ -87,12 +95,184 @@ impl Metrics {
             "Server-side time from middleware entry to response construction for requests that produced a response; excludes body transmission",
             durations.clone(),
         );
+        if let Some(telemetry) = service.telemetry() {
+            telemetry.register(&mut registry);
+        }
         registry.register_collector(Box::new(HealthCollector { service, lifecycle }));
         Arc::new(Self {
             registry,
             requests,
             durations,
         })
+    }
+}
+
+/// Why a request was refused before any graph job or import ran for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rejection {
+    Busy,
+    ImportCapacity,
+    ShuttingDown,
+    Unavailable,
+}
+
+impl Rejection {
+    const ALL: [Self; 4] = [
+        Self::Busy,
+        Self::ImportCapacity,
+        Self::ShuttingDown,
+        Self::Unavailable,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Busy => "busy",
+            Self::ImportCapacity => "import_capacity",
+            Self::ShuttingDown => "shutting_down",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Why the effect of an admitted state-changing job may be unknown to its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Uncertainty {
+    RequestTimeout,
+    Cancelled,
+    WorkerPanic,
+}
+
+impl Uncertainty {
+    const ALL: [Self; 3] = [Self::RequestTimeout, Self::Cancelled, Self::WorkerPanic];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::RequestTimeout => "request_timeout",
+            Self::Cancelled => "cancelled",
+            Self::WorkerPanic => "worker_panic",
+        }
+    }
+}
+
+/// Rejection and uncertain-outcome counters for one service instance.
+///
+/// Owned by `Service` only when metrics are enabled. Every series is created
+/// up front, so recording is a single atomic increment with no family lock.
+/// Holds no reference back to `Service` or the registry.
+#[derive(Debug)]
+pub(crate) struct ServiceTelemetry {
+    rejected_family: Family<OutcomeLabels, Counter>,
+    uncertain_family: Family<OutcomeLabels, Counter>,
+    rejected: [Counter; 4],
+    uncertain: [Counter; 3],
+}
+
+impl ServiceTelemetry {
+    pub(crate) fn new() -> Arc<Self> {
+        let rejected_family = Family::<OutcomeLabels, Counter>::default();
+        let uncertain_family = Family::<OutcomeLabels, Counter>::default();
+        let rejected = Rejection::ALL.map(|reason| {
+            rejected_family
+                .get_or_create(&[("reason", reason.label())])
+                .clone()
+        });
+        let uncertain = Uncertainty::ALL.map(|cause| {
+            uncertain_family
+                .get_or_create(&[("cause", cause.label())])
+                .clone()
+        });
+        Arc::new(Self {
+            rejected_family,
+            uncertain_family,
+            rejected,
+            uncertain,
+        })
+    }
+
+    fn register(&self, registry: &mut Registry) {
+        registry.register(
+            "knotrel_requests_rejected",
+            "Requests refused before any graph job or import ran for them, by refusing boundary; shutting_down includes non-probe requests that would not create a graph job",
+            self.rejected_family.clone(),
+        );
+        registry.register(
+            "knotrel_requests_outcome_uncertain",
+            "Uncertain-outcome observations by cause: an admitted state-changing job may have taken effect without its caller learning the result; counts observations, not distinct requests",
+            self.uncertain_family.clone(),
+        );
+    }
+
+    pub(crate) fn reject(&self, reason: Rejection) {
+        self.rejected[reason as usize].inc();
+    }
+
+    pub(crate) fn uncertain(&self, cause: Uncertainty) {
+        self.uncertain[cause as usize].inc();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rejected_count(&self, reason: Rejection) -> u64 {
+        self.rejected[reason as usize].get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uncertain_count(&self, cause: Uncertainty) -> u64 {
+        self.uncertain[cause as usize].get()
+    }
+}
+
+tokio::task_local! {
+    /// Set by `lifecycle::request_timeout` before it drops a timed-out handler.
+    static TIMED_OUT: Arc<AtomicBool>;
+}
+
+/// Runs `future` with a timeout marker visible to [`PendingOutcome`].
+pub(crate) fn mark_timeouts<F: std::future::Future>(
+    flag: Arc<AtomicBool>,
+    future: F,
+) -> impl std::future::Future<Output = F::Output> {
+    TIMED_OUT.scope(flag, future)
+}
+
+/// Records a caller that stops waiting for an admitted state-changing job.
+///
+/// Armed after the job is handed to its worker and disarmed when the worker's
+/// result arrives. Dropped while armed, it records `request_timeout` if the
+/// timeout middleware marked this request, otherwise `cancelled`.
+pub(crate) struct PendingOutcome {
+    telemetry: Option<Arc<ServiceTelemetry>>,
+    timed_out: Option<Arc<AtomicBool>>,
+}
+
+impl PendingOutcome {
+    pub(crate) fn arm(telemetry: Option<Arc<ServiceTelemetry>>) -> Self {
+        let timed_out = telemetry
+            .as_ref()
+            .and_then(|_| TIMED_OUT.try_with(Arc::clone).ok());
+        Self {
+            telemetry,
+            timed_out,
+        }
+    }
+
+    pub(crate) fn disarm(mut self) {
+        self.telemetry = None;
+    }
+}
+
+impl Drop for PendingOutcome {
+    fn drop(&mut self) {
+        if let Some(telemetry) = self.telemetry.take() {
+            let timed_out = self
+                .timed_out
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire));
+            telemetry.uncertain(if timed_out {
+                Uncertainty::RequestTimeout
+            } else {
+                Uncertainty::Cancelled
+            });
+        }
     }
 }
 

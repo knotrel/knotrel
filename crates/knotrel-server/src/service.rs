@@ -8,6 +8,7 @@ use crate::{
         ImportMode, ImportRequest, ImportResponse, Operation, Outcome, PartialBatchFailure,
         SessionRequest, SessionResponse,
     },
+    metrics::{PendingOutcome, Rejection, ServiceTelemetry, Uncertainty},
 };
 use knotrel_core::{ConnectivityGraph, EngineConfig, GraphError};
 use parking_lot::Mutex;
@@ -538,6 +539,8 @@ pub(crate) struct Service {
     mode: ServerMode,
     instance_id: String,
     max_import_body_bytes: usize,
+    // Present only when metrics are enabled; see `metrics::ServiceTelemetry`.
+    telemetry: Option<Arc<ServiceTelemetry>>,
 }
 
 /// Graph and revision share one mutex: snapshots cannot split a batch or observe
@@ -1447,10 +1450,24 @@ pub(crate) enum ServiceError {
     Unavailable,
 }
 
+/// Whether a graph job can change state. Only state-changing jobs produce
+/// uncertain-outcome observations when abandoned or panicking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JobEffect {
+    ReadOnly,
+    MayChangeState,
+}
+
 /// Worker-owned RAII failure guard ensuring any panic during execution immediately
 /// marks the service unavailable, even if the awaiting async caller was cancelled.
+///
+/// It also records `worker_panic` for state-changing jobs. Counting here,
+/// on the worker, rather than in the caller's `JoinError` mapping keeps the
+/// observation when the caller is gone and avoids counting it twice.
 struct WorkerPanicGuard {
     unavailable: Arc<AtomicBool>,
+    // Set only for state-changing jobs when metrics are enabled.
+    panic_telemetry: Option<Arc<ServiceTelemetry>>,
     success: bool,
 }
 
@@ -1458,6 +1475,9 @@ impl Drop for WorkerPanicGuard {
     fn drop(&mut self) {
         if !self.success && std::thread::panicking() {
             self.unavailable.store(true, Ordering::Release);
+            if let Some(telemetry) = &self.panic_telemetry {
+                telemetry.uncertain(Uncertainty::WorkerPanic);
+            }
         }
     }
 }
@@ -1515,7 +1535,27 @@ impl Service {
             mode,
             instance_id,
             max_import_body_bytes,
+            telemetry: config.metrics_enabled().then(ServiceTelemetry::new),
         }
+    }
+
+    /// Rejection and uncertain-outcome counters, present when metrics are enabled.
+    pub(crate) fn telemetry(&self) -> Option<&Arc<ServiceTelemetry>> {
+        self.telemetry.as_ref()
+    }
+
+    /// Counts a request refused before its graph job or import ran.
+    pub(crate) fn count_rejection(&self, reason: Rejection) {
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.reject(reason);
+        }
+    }
+
+    fn telemetry_for(&self, effect: JobEffect) -> Option<Arc<ServiceTelemetry>> {
+        self.telemetry
+            .as_ref()
+            .filter(|_| effect == JobEffect::MayChangeState)
+            .cloned()
     }
 
     /// Acquires the single import permit before reading request body.
@@ -1527,6 +1567,7 @@ impl Service {
             .try_acquire_owned()
             .map_err(|_| {
                 tracing::warn!("import capacity exhausted; rejecting with 503 import_in_progress");
+                self.count_rejection(Rejection::ImportCapacity);
                 FeederError::ImportInProgress
             })
     }
@@ -1655,7 +1696,7 @@ impl Service {
         }
         let published_atomic = self.published_readiness.clone();
         let instance_id = self.instance_id.clone();
-        self.run(move |state| {
+        self.run(JobEffect::MayChangeState, move |state| {
             let res = state.register_session(req, instance_id)?;
             let word = state.current_readiness_word();
             published_atomic.store(word, Ordering::Release);
@@ -1681,7 +1722,7 @@ impl Service {
         }
         let published_atomic = self.published_readiness.clone();
         let instance_id = self.instance_id.clone();
-        self.run(move |state| {
+        self.run(JobEffect::MayChangeState, move |state| {
             let res = state.heartbeat(req, instance_id)?;
             let word = state.current_readiness_word();
             published_atomic.store(word, Ordering::Release);
@@ -1704,6 +1745,8 @@ impl Service {
         let unavailable = self.unavailable.clone();
         let failure_flag = self.unavailable.clone();
         let published_atomic = self.published_readiness.clone();
+        let telemetry = self.telemetry.clone();
+        let panic_telemetry = self.telemetry_for(JobEffect::MayChangeState);
         let engine = self.info.engine;
         let limits = knotrel_core::GraphLimits {
             max_nodes: self.info.max_nodes,
@@ -1725,11 +1768,12 @@ impl Service {
             published_atomic.store(loading_word, Ordering::Release);
         }
 
-        tokio::task::spawn_blocking(move || {
+        let handle = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let _job_guard = job_guard;
             let mut panic_guard = WorkerPanicGuard {
                 unavailable: unavailable.clone(),
+                panic_telemetry,
                 success: false,
             };
 
@@ -1836,6 +1880,9 @@ impl Service {
             let mut state = graph.lock();
             if state.failed || unavailable.load(Ordering::Acquire) {
                 panic_guard.unavailable.store(true, Ordering::Release);
+                if let Some(telemetry) = &telemetry {
+                    telemetry.reject(Rejection::Unavailable);
+                }
                 return Err(FeederError::Unavailable);
             }
 
@@ -1900,9 +1947,11 @@ impl Service {
                 source_position: req.source_position,
                 status: "catching_up",
             })
-        })
-        .await
-        .map_err(|error| {
+        });
+        let pending = PendingOutcome::arm(self.telemetry_for(JobEffect::MayChangeState));
+        let joined = handle.await;
+        pending.disarm();
+        joined.map_err(|error| {
             tracing::error!(panicked = error.is_panic(), "import worker thread failed");
             failure_flag.store(true, Ordering::Release);
             FeederError::Unavailable
@@ -1925,7 +1974,15 @@ impl Service {
     ) -> Result<ExecutionResult, ServiceError> {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
-        self.run(move |state| {
+        let effect = if operations
+            .iter()
+            .all(|operation| matches!(operation, Operation::Connected { .. }))
+        {
+            JobEffect::ReadOnly
+        } else {
+            JobEffect::MayChangeState
+        };
+        self.run(effect, move |state| {
             if mode == ServerMode::SourceManaged {
                 if state.generation == 0 || state.sync_status == SyncStatus::Uninitialized {
                     let outcomes = operations
@@ -1979,7 +2036,7 @@ impl Service {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
         let current_sync_status = self.sync_status();
-        self.run(move |state| {
+        self.run(JobEffect::ReadOnly, move |state| {
             let mut snapshot = state.snapshot(mode, &instance_id);
             if current_sync_status == SyncStatus::Loading && state.generation == 0 {
                 snapshot.sync_status = Some(SyncStatus::Loading);
@@ -2009,6 +2066,7 @@ impl Service {
         let failure_flag = self.unavailable.clone();
 
         if self.is_unavailable() {
+            self.count_rejection(Rejection::Unavailable);
             return Err(FeederError::Unavailable);
         }
 
@@ -2017,24 +2075,32 @@ impl Service {
                 capacity = self.info.max_pending_jobs,
                 "request capacity exhausted; rejecting with 503 busy"
             );
+            // Counted as `busy`; the HTTP mapping keeps `import_in_progress`.
+            self.count_rejection(Rejection::Busy);
             FeederError::from(ServiceError::Busy)
         })?;
         let job_guard = self.lifecycle.track_job();
         let lifecycle = self.lifecycle.clone();
         let graph = self.graph.clone();
         let unavailable = self.unavailable.clone();
+        let telemetry = self.telemetry.clone();
+        let panic_telemetry = self.telemetry_for(JobEffect::MayChangeState);
 
-        tokio::task::spawn_blocking(move || {
+        let handle = tokio::task::spawn_blocking(move || {
             let _job_guard = job_guard;
             let _permit = permit;
             let mut panic_guard = WorkerPanicGuard {
                 unavailable: unavailable.clone(),
+                panic_telemetry,
                 success: false,
             };
             lifecycle.check_worker_hook();
             let mut state = graph.lock();
             if state.failed || unavailable.load(Ordering::Acquire) {
                 panic_guard.unavailable.store(true, Ordering::Release);
+                if let Some(telemetry) = &telemetry {
+                    telemetry.reject(Rejection::Unavailable);
+                }
                 return Err(FeederError::Unavailable);
             }
             if mutate {
@@ -2050,9 +2116,11 @@ impl Service {
             lifecycle.check_worker_post_lock_hook();
             panic_guard.success = true;
             result
-        })
-        .await
-        .map_err(|error| {
+        });
+        let pending = PendingOutcome::arm(self.telemetry_for(JobEffect::MayChangeState));
+        let joined = handle.await;
+        pending.disarm();
+        joined.map_err(|error| {
             tracing::error!(
                 panicked = error.is_panic(),
                 "{worker_name} worker thread failed"
@@ -2118,9 +2186,11 @@ impl Service {
     // owned permit stays with the blocking closure even if its caller is gone.
     async fn run<R: Send + 'static>(
         &self,
+        effect: JobEffect,
         work: impl FnOnce(&mut GraphState) -> R + Send + 'static,
     ) -> Result<R, ServiceError> {
         if self.is_unavailable() {
+            self.count_rejection(Rejection::Unavailable);
             return Err(ServiceError::Unavailable);
         }
 
@@ -2129,6 +2199,7 @@ impl Service {
                 capacity = self.info.max_pending_jobs,
                 "request capacity exhausted; rejecting with 503 busy"
             );
+            self.count_rejection(Rejection::Busy);
             ServiceError::Busy
         })?;
         let job_guard = self.lifecycle.track_job();
@@ -2136,11 +2207,14 @@ impl Service {
         let graph = self.graph.clone();
         let unavailable = self.unavailable.clone();
         let failure_flag = self.unavailable.clone();
-        tokio::task::spawn_blocking(move || {
+        let telemetry = self.telemetry.clone();
+        let panic_telemetry = self.telemetry_for(effect);
+        let handle = tokio::task::spawn_blocking(move || {
             let _job_guard = job_guard;
             let _permit = permit;
             let mut panic_guard = WorkerPanicGuard {
                 unavailable: unavailable.clone(),
+                panic_telemetry,
                 success: false,
             };
             lifecycle.check_worker_hook();
@@ -2148,6 +2222,9 @@ impl Service {
             if graph.failed || unavailable.load(Ordering::Acquire) {
                 tracing::warn!("graph worker state marked as failed; rejecting work");
                 panic_guard.unavailable.store(true, Ordering::Release);
+                if let Some(telemetry) = &telemetry {
+                    telemetry.reject(Rejection::Unavailable);
+                }
                 return Err(ServiceError::Unavailable);
             }
             graph.failed = true;
@@ -2157,9 +2234,11 @@ impl Service {
             lifecycle.check_worker_post_lock_hook();
             panic_guard.success = true;
             Ok(result)
-        })
-        .await
-        .map_err(|error| {
+        });
+        let pending = PendingOutcome::arm(self.telemetry_for(effect));
+        let joined = handle.await;
+        pending.disarm();
+        joined.map_err(|error| {
             // Never log the error itself: a panic message may embed request data.
             tracing::error!(panicked = error.is_panic(), "graph worker thread failed");
             failure_flag.store(true, Ordering::Release);
@@ -2304,7 +2383,7 @@ mod tests {
         assert_eq!(service.stats().await.unwrap().state_version, "0");
         assert!(
             service
-                .run(|_| {
+                .run(JobEffect::MayChangeState, |_| {
                     panic!("test worker panic");
                 })
                 .await
@@ -2337,7 +2416,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let job = tokio::spawn(async move {
             writer
-                .run(move |state| {
+                .run(JobEffect::MayChangeState, move |state| {
                     state.apply(add(1));
                     started_tx.send(()).unwrap();
                     release_rx.recv().unwrap();
@@ -2398,7 +2477,7 @@ mod tests {
         let writer = service.clone();
         let job = tokio::spawn(async move {
             writer
-                .run(move |state| {
+                .run(JobEffect::MayChangeState, move |state| {
                     state.apply(add(1));
                     started_tx.send(()).unwrap();
                     release_rx.recv().unwrap();
@@ -2483,7 +2562,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let job = tokio::spawn(async move {
             writer
-                .run(move |state| {
+                .run(JobEffect::MayChangeState, move |state| {
                     state.apply(add(1));
                     started_tx.send(()).unwrap();
                     release_rx.recv().unwrap();
@@ -2530,7 +2609,7 @@ mod tests {
 
         let s1 = service.clone();
         let job1 = tokio::spawn(async move {
-            s1.run(move |state| {
+            s1.run(JobEffect::MayChangeState, move |state| {
                 state.apply(add(1));
                 w1_started_tx.send(()).unwrap();
                 w1_release_rx.recv().unwrap();
@@ -2542,7 +2621,7 @@ mod tests {
 
         let s2 = service.clone();
         let job2 = tokio::spawn(async move {
-            s2.run(move |state| {
+            s2.run(JobEffect::MayChangeState, move |state| {
                 state.apply(add(2));
                 w2_done_tx.send(()).unwrap();
             })
@@ -2595,6 +2674,54 @@ mod tests {
 
         // Job guard must have been dropped, returning outstanding jobs to 0.
         assert_eq!(lifecycle.outstanding_jobs(), 0);
+    }
+
+    #[tokio::test]
+    async fn in_worker_unavailable_refusal_is_counted_once_at_its_boundary() {
+        let lifecycle = Lifecycle::ready();
+        let config = crate::ServerConfig::default().with_metrics_enabled(true);
+        let service = Service::with_config(ConnectivityGraph::default(), 1, lifecycle, &config);
+        let telemetry = Arc::clone(service.telemetry().unwrap());
+
+        // Passes the entry check; the worker refuses under the graph lock.
+        service.graph.lock().failed = true;
+        let result = service.execute(vec![add(1)]).await;
+        assert!(matches!(result, Err(ServiceError::Unavailable)));
+        assert_eq!(telemetry.rejected_count(Rejection::Unavailable), 1);
+
+        // The worker published the flag, so the entry check refuses next.
+        let result = service.stats().await;
+        assert!(matches!(result, Err(ServiceError::Unavailable)));
+        assert_eq!(telemetry.rejected_count(Rejection::Unavailable), 2);
+        for reason in [
+            Rejection::Busy,
+            Rejection::ImportCapacity,
+            Rejection::ShuttingDown,
+        ] {
+            assert_eq!(telemetry.rejected_count(reason), 0);
+        }
+        for cause in [
+            Uncertainty::RequestTimeout,
+            Uncertainty::Cancelled,
+            Uncertainty::WorkerPanic,
+        ] {
+            assert_eq!(telemetry.uncertain_count(cause), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_metrics_create_no_service_telemetry() {
+        let service = Service::new(ConnectivityGraph::default(), 1, Lifecycle::ready());
+        assert!(service.telemetry().is_none());
+        service.graph.lock().failed = true;
+        let result = service.execute(vec![add(1)]).await;
+        assert!(matches!(result, Err(ServiceError::Unavailable)));
+        assert!(service.telemetry().is_none());
+
+        let config = crate::ServerConfig::default();
+        let service =
+            Service::with_config(ConnectivityGraph::default(), 1, Lifecycle::ready(), &config);
+        assert!(service.telemetry().is_none());
     }
 
     #[test]

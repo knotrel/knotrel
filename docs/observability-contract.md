@@ -31,22 +31,23 @@ the v0.3.0 release.
 | Rejection and failure logs | `Service::run`, `Service::execute_feeder_worker`, `Service::acquire_import_permit`, `lifecycle::request_timeout`, `declare_gap`, worker `JoinError` handlers | Exposed (tracing) | Messages for capacity exhaustion, import capacity, request time limit, declared gap (`failed_delivery_sequence`, caller-supplied `reason`), worker panic and unavailable service. |
 | Process lifecycle logs | [`main.rs`](../crates/knotrel-server/src/main.rs), [`serve.rs`](../crates/knotrel-server/src/serve.rs) | Exposed (tracing) | Startup configuration, shutdown requested, draining (`open_connections`, `outstanding_jobs`), shutdown deadline (`abandoned`), accept backoff, connection limit. |
 | Outstanding worker jobs | `Lifecycle::outstanding_jobs`, `JobGuard` | Exposed via opt-in `/metrics` | Queued plus running graph jobs, including import workers. Otherwise logged only when draining. |
-| Admission capacity | `Service` permit semaphore (`max_pending_jobs`), import semaphore (1) | Internal | Rejections are logged but not counted. |
+| Admission capacity | `Service` permit semaphore (`max_pending_jobs`), import semaphore (1) | Exposed via opt-in `/metrics` | Rejections are logged and counted by `requests_rejected_total` (section 8). |
 | Lifecycle phase, worker failure | `Phase`, `unavailable` flag | Exposed via `/ready` and opt-in `/metrics` | `readiness_state` and `service_unavailable` gauges. |
 | Synchronization state | `GraphState` (`generation`, `version`, `sync_status`, `applied_delivery_sequence`, `source_position`, session, epoch, `lease_deadline`) | Internal | Partly visible through `/v1/stats`, headers and `/ready`. |
 | Event outcome counts | `FeederEventsResponse.events_applied` | Exposed per response | No cumulative count anywhere. |
 | Queue, lock-wait, execution, import and catch-up timing | none | **Needs instrumentation** | Only whole-request server-side latency exists, in logs and (opt-in) `/metrics`. |
 | HTTP counts, duration, backlog, capacity, unavailable flag, readiness, build | `GET /metrics` (`metrics.rs`) | Exposed when `KNOTREL_METRICS_ENABLED=true` | First M6.2 slice; section 7. |
+| Rejections before execution, uncertain-outcome observations | `ServiceTelemetry` (`metrics.rs`), owned by `Service` | Exposed when `KNOTREL_METRICS_ENABLED=true` | Second M6.2 increment; section 8. |
 
 ### Concrete operator gaps
 
-1. No cumulative counts for rejection reasons, applied and duplicate events, gaps, conflicts and imports: they are visible only as individual log lines or response bodies. (Request counts by route and status class are now available from the opt-in `/metrics`.)
+1. No cumulative counts for applied and duplicate events, gaps, conflicts and imports: they are visible only as individual log lines or response bodies. (Request counts by route and status class, and pre-execution rejections by reason, are now available from the opt-in `/metrics`.)
 2. No backlog signal outside drain. (Now exported as `graph_jobs_outstanding` via the opt-in `/metrics`.)
 3. Graph counts are readable only through `/v1/stats`, which competes for the same admission permits and graph lock as the work being diagnosed.
 4. No breakdown of where time goes: caller latency cannot be split into queueing, lock wait and execution.
 5. There is no record of how long bootstrap or replacement catch-up took.
 6. A dropped request future leaves no request log line. (The opt-in `/metrics` endpoint now counts it as `cancelled`.)
-7. The status code alone cannot distinguish the `503` causes: `busy`, `request_timeout`, `shutting_down`, `unavailable`, and `import_in_progress` from saturated feeder calls.
+7. The status code alone cannot distinguish the `503` causes: `busy`, `request_timeout`, `shutting_down`, `unavailable`, and `import_in_progress` from saturated feeder calls. (The opt-in rejection and uncertain-outcome counters now record the internal cause; section 8.)
 
 ## 2. Semantic rules
 
@@ -101,8 +102,11 @@ Definitely not executed:
 
 Outcome uncertain:
 
-- `503 request_timeout`: the worker keeps running and may still apply the mutation;
-- `cancelled` (dropped request future): same as above;
+- `503 request_timeout` while the handler was waiting for an admitted
+  state-changing graph job: the worker keeps running and may still apply the
+  mutation. A timeout before admission (for example during body receipt) or
+  while waiting for a read-only job leaves no graph effect in doubt;
+- `cancelled` (dropped request future) in the same position: same as above;
 - `unavailable` produced by a worker failure (the `JoinError` mapping after
   `spawn_blocking` in `Service::run`, `execute_feeder_worker` and
   `Service::import`): the job may have started, and a batch or event stream
@@ -141,8 +145,8 @@ must therefore derive `stale` at observation time from the lease deadline.
 It must not count recorded transitions, which would depend on who happened to
 look.
 
-**`import_in_progress` from feeder saturation.** Feeder events, gap and
-barrier calls that fail admission return `503 import_in_progress`
+**`import_in_progress` from feeder saturation.** Feeder session, heartbeat,
+events, gap and barrier calls that fail admission return `503 import_in_progress`
 (`FeederError::from(ServiceError::Busy)`), although the log says
 `busy`. This is accepted compatibility debt (closure plan D7). Telemetry
 classifies by the internal cause (`busy`) and leaves the HTTP code unchanged.
@@ -156,6 +160,8 @@ classifies by the internal cause (`busy`) and leaves the HTTP code unchanged.
 | Graph operation | operation in `/v1/operations` or `/v1/batch` that reached the graph | Every executed batch entry is counted once with its own outcome; a batch is never counted as a single failure. Operations rejected before execution (size limit, malformed request) are not graph operations. |
 | Feeder event | event evaluated in `/v1/feeder/events` | Applied prefix: each event counted by outcome. A retained exact duplicate counts as `duplicate`. The first failing event counts as `rejected`. Events after it were never evaluated and are not counted. Whole-request rejections count zero events. |
 | Import | import request that obtained the import permit | Counted once with a terminal result. |
+| Rejected request | request refused before any graph job or import ran for it (`shutting_down` also covers requests that would not create one) | At most once, at the first refusing boundary (section 8). Partial batch or event failures are not rejections. |
+| Uncertain-outcome observation | caller abandonment of, or worker panic in, an admitted state-changing job | Not deduplicated per request: a timeout followed by a worker panic is two observations (section 8). |
 
 ## 4. Minimum vocabulary
 
@@ -170,8 +176,8 @@ durable state. "Replacement" means publication of a new generation by import.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `http_requests_total` | counter | What are callers sending and receiving? | One per request (section 3), recorded by `metrics::track_http` when the inner service returns a response, or by its drop guard as `cancelled` if the future is dropped first. Never both. | section 7 | continues | **implemented** | E |
 | `http_request_duration_seconds` | histogram, s | How long does the server take to produce a response? | Server-side, from middleware entry to response construction (section 2). Includes `request_timeout` and `shutting_down` responses. Excludes body transmission, cancelled requests and worker time after the caller has gone. | `route` | continues | **implemented** | E |
-| `requests_rejected_total` | counter | Is work refused before execution, and why? | One per refusal at the boundary that refuses it: admission in `Service::run` / `execute_feeder_worker` (`busy`), `acquire_import_permit` (`import_capacity`), `shutdown_gate` (`shutting_down`), the pre-execution unavailable checks (`unavailable`). | `reason` ∈ {`busy`, `import_capacity`, `shutting_down`, `unavailable`} | continues | pending | E |
-| `requests_outcome_uncertain_total` | counter | How many mutations may or may not have run? | One per request whose outcome is uncertain (section 2), at its producing boundary: `lifecycle::request_timeout` (`request_timeout`) and the `JoinError` mappings (`worker_failed`). Cancellation is already counted by `http_requests_total{status_class="cancelled"}`. | `cause` ∈ {`request_timeout`, `worker_failed`} | continues | pending | E |
+| `requests_rejected_total` | counter | Is work refused before execution, and why? | One per request refused before its graph job or import runs, at the boundary that refuses it (section 8). At most one per request. | `reason` ∈ {`busy`, `import_capacity`, `shutting_down`, `unavailable`} | continues | **implemented** | E |
+| `requests_outcome_uncertain_total` | counter | How often may a state change have happened without its caller learning the result? | One per **observation**, not per distinct request (section 8): a caller stopped waiting for an admitted state-changing job (`request_timeout`, `cancelled`), or such a job's worker panicked (`worker_panic`). One request can contribute a caller observation and later a `worker_panic`. `http_requests_total{status_class="cancelled"}` is unchanged and counts every dropped request, including probes and reads. | `cause` ∈ {`request_timeout`, `cancelled`, `worker_panic`} | continues | **implemented** | E |
 | `graph_jobs_outstanding` | gauge, jobs | How deep is the backlog? | `Lifecycle::outstanding_jobs` read at scrape: queued plus running, including import, and including jobs whose caller timed out or was cancelled. Not bounded by `max_pending_jobs`: an import can add one, and a finishing worker releases its admission permit just before its `JobGuard` (drop order in `Service::run` and `execute_feeder_worker`), so a newly admitted job can briefly be counted alongside it. Do not alert on `outstanding / capacity > 1`. | none | unaffected | **implemented** | E |
 | `graph_job_capacity` | gauge, jobs | What is the admission limit? | Graph-job admission permit limit (`max_pending_jobs`), constant after startup. Not a bound on `graph_jobs_outstanding`: imports and worker teardown can make outstanding jobs exceed it (see that row). | none | constant | **implemented** | E |
 | `graph_job_queue_seconds`, `graph_lock_wait_seconds`, `graph_job_execution_seconds` | histograms, s | Is latency queueing, contention or work? | Section 2 split, recorded inside the worker closure, so it is observed even when the caller has gone. | `kind` ∈ {`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`, `feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`} | continues | pending | E |
@@ -221,18 +227,19 @@ generation identity is a correlation key, not a quantity.
 duration, outstanding jobs, capacity, unavailable flag, readiness state and
 build info.
 
-**Remaining essential (`E`, pending):** rejection and outcome-uncertain
-counters, job queue/lock/execution histograms, operation and feeder-event
-counters, feeder rejections, desynchronizations, graph counts, lease
-remaining, last-applied age, import gauge/counter/durations and catch-up
-duration.
+**Second increment (done, section 8):** rejection and uncertain-outcome
+counters.
+
+**Remaining essential (`E`, pending):** job queue/lock/execution histograms,
+operation and feeder-event counters, feeder rejections, desynchronizations,
+graph counts, lease remaining, last-applied age, import gauge/counter/durations
+and catch-up duration.
 
 **Instrumentation locations for the remaining rows:**
 
 | Signal | Location |
 | --- | --- |
-| Admission rejections and the job histograms | `Service::run` and `Service::execute_feeder_worker`. Record the instant before `spawn_blocking`, at closure start, around `graph.lock()`, and at release. |
-| Outcome uncertain | `lifecycle::request_timeout` and the `JoinError` mappings in `Service::run`, `execute_feeder_worker` and `Service::import`. |
+| Job histograms | `Service::run` and `Service::execute_feeder_worker`. Record the instant before `spawn_blocking`, at closure start, around `graph.lock()`, and at release. |
 | Operations | `GraphState::apply`, called per operation for single and batch requests. |
 | Events, rejections, desynchronizations | `GraphState::apply_events`, `declare_gap`, and feeder-error construction. |
 | Imports | `api::feeder_import` and `Service::import`. |
@@ -240,8 +247,8 @@ duration.
 | Graph counts and last-applied instant | Atomics updated by the worker under the lock. |
 | `/metrics` reads | Atomics, the published readiness word, `outstanding_jobs` (a `watch` channel) and the registry. No graph lock, admission permit or import permit; registry and `watch` synchronization still applies. |
 
-These need a handle to the per-instance registry inside `Service`, which
-the first slice deliberately avoided (it reads `Service` from outside).
+These can reuse the per-instance `ServiceTelemetry` handle that `Service`
+now owns (section 8).
 
 **Invariants (all slices):**
 
@@ -255,8 +262,6 @@ the first slice deliberately avoided (it reads `Service` from outside).
 
 **Focused tests for the remaining rows:**
 
-- Request timeout counts `request_timeout` as uncertain while the job histogram is still observed after release.
-- A worker panic counts `worker_failed` as uncertain, not as `unavailable` rejection.
 - A batch with a mid-batch domain error yields one request and per-operation outcomes.
 - A partial feeder failure counts the prefix as applied, the failing event as `rejected` and later events not at all.
 - Duplicates and `progress` events do not count as `changed`.
@@ -328,8 +333,8 @@ metrics therefore see `shutting_down` and `request_timeout` responses.
 | `knotrel_readiness_state{state}` | gauge, one-hot | Section 4. Standalone exposes 4 states, source-managed 9. Computed once per scrape, so the output is never torn. |
 | `knotrel_build_info{version,engine,mode}` | gauge = 1 | Crate version, configured engine (`/v1/info` value) and `standalone` or `source_managed`. Constant for the process. |
 
-Counters and histograms are created on first use and reset only on process
-restart. Graph replacement does not affect any series.
+HTTP counters and histograms are created on first use. All series reset
+only on process restart; graph replacement does not affect them.
 
 **Maximum series count** (one process, including every histogram bucket,
 `_sum` and `_count`):
@@ -345,7 +350,8 @@ restart. Graph replacement does not affect any series.
 
 The library adds no other series (no `_created`, process or runtime
 metrics). Most route/method combinations can only yield `405`, so real
-counts are far below the bound.
+counts are far below the bound. The second increment adds 7 series, for a
+current maximum of **1247 standalone, 1252 source-managed** (section 8).
 
 **Dependency.** [`prometheus-client`](https://crates.io/crates/prometheus-client)
 0.26, the Prometheus project's Rust client, with default features disabled.
@@ -383,7 +389,99 @@ checks `readiness_state` against `/ready` for every phase and sync status,
 including expired leases, without changing the published word.
 `configuration.rs` covers strict parsing.
 
-## 8. Decisions
+## 8. Second M6.2 increment: rejection and uncertain outcomes (implemented, unreleased)
+
+Two counters separate work that was refused before it ran from work whose
+effect its caller did not learn. Each is recorded where the decision is
+made, never derived from an HTTP status or error code.
+
+**Accounting.** "Caller" is the request future; "worker" is the
+`spawn_blocking` closure. A job is *state-changing* unless it is
+`/v1/stats` or an `/v1/operations` / `/v1/batch` request containing only
+`connected` queries. Session, heartbeat, events, gap, barrier and import
+jobs are state-changing.
+
+| Case | Observation boundary | Series | Unit | Recorded by |
+| --- | --- | --- | --- | --- |
+| Admission capacity exhausted | `try_acquire_owned` failure in `Service::run` or `Service::execute_feeder_worker` | `requests_rejected_total{reason="busy"}`. HTTP stays `503 busy`, or `503 import_in_progress` for feeder session, heartbeat, events, gap and barrier calls (section 2); telemetry still records the internal cause `busy`. | request | caller |
+| Import permit exhausted | `Service::acquire_import_permit` | `requests_rejected_total{reason="import_capacity"}` | request | caller |
+| Shutdown | `lifecycle::shutdown_gate` refusing a non-probe request while draining. This includes requests that would never create a graph job, such as `/v1/info` and unmatched routes. | `requests_rejected_total{reason="shutting_down"}` | request | caller |
+| Service already unavailable | The first check that refuses: `api::check_service_available`; the entry checks of `Service::run` and `execute_feeder_worker`; or the in-worker check under the graph lock (`graph.failed` or the unavailable flag) in `run`, `execute_feeder_worker` and `Service::import`. That check refuses before any change is applied to the live graph or a candidate is published; for import, JSON parsing and candidate construction may already have happened off-lock. | `requests_rejected_total{reason="unavailable"}` | request | caller, or worker for the in-worker check |
+| Request timeout | `lifecycle::request_timeout` drops a caller that is still waiting for an admitted state-changing job | `requests_outcome_uncertain_total{cause="request_timeout"}` | observation | caller-side drop guard |
+| Request-future cancellation | The same caller is dropped for any other reason | `requests_outcome_uncertain_total{cause="cancelled"}` | observation | caller-side drop guard |
+| Worker panic | `WorkerPanicGuard` dropped while panicking in a state-changing job's worker, including after its caller has gone | `requests_outcome_uncertain_total{cause="worker_panic"}` | observation | worker |
+
+**Counting units.**
+
+- `requests_rejected_total` counts requests. Each request stops at its first
+  refusal, so it is counted at most once.
+- `requests_outcome_uncertain_total` keeps the name proposed in M6.1, but
+  its unit is an **uncertainty observation by cause**, not a distinct
+  request. A request that times out and whose worker later panics adds one
+  `request_timeout` and one `worker_panic`, so the sum over `cause` can
+  exceed the number of affected requests. Do not read it as a request count.
+- The two counters can both see one request. A caller that times out while
+  its job is still queued adds `request_timeout`. If that worker later finds
+  the service unavailable, it adds `rejected{unavailable}`. Each observation
+  is true at its own boundary.
+
+**Exactly once through layers.** Busy and import-capacity rejections are
+counted only where the permit is refused. The service and API error mappings
+that follow never count. The `JoinError` mappings never count: a panic is
+counted inside the worker, and a caller that receives the `JoinError` has
+already disarmed its drop guard.
+
+**Not counted.** The following produce no observation:
+- validation and domain errors, and feeder protocol rejections (fencing,
+  lease, generation, sequence); these are pending under `feeder_rejections_total`;
+- partial batch or event failures;
+- timeouts and cancellations before admission or while waiting for a
+  read-only job;
+- panics in read-only jobs. These still set `service_unavailable`;
+- a blocking task cancelled by runtime shutdown before it starts.
+
+**Mechanism and ownership.**
+- `Service` owns an `Option<Arc<ServiceTelemetry>>`. It is created only when
+  metrics are enabled, and `shutdown_gate` receives a clone. `Metrics`
+  registers its two families.
+- Neither `ServiceTelemetry` nor its counters reference `Service` or the
+  registry, so there is no ownership cycle.
+- Every series is created at startup, so the families report zeros before
+  the first event. The counters are atomics; recording takes no registry lock.
+- When metrics are disabled, `Service` holds `None`. No counter is
+  registered or updated. `request_timeout` keeps its previous code path
+  without a timeout marker. The service still builds an inert
+  `PendingOutcome` on the stack, but no uncertainty guard is armed, and it
+  performs no heap allocation or task-local access.
+- When enabled, `request_timeout` runs the handler inside a task-local
+  timeout marker. It sets the marker before dropping the timed-out future,
+  which lets the caller-side drop guard tell `request_timeout` from
+  `cancelled`.
+
+**Series.**
+
+| Series | Type | Values |
+| --- | --- | --- |
+| `knotrel_requests_rejected_total{reason}` | counter | 4 |
+| `knotrel_requests_outcome_uncertain_total{cause}` | counter | 3 |
+
+These add 7 series. The maximum becomes **1247 standalone, 1252
+source-managed**.
+
+**Tests.** The deterministic cases are in
+[`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs) (module
+`outcomes`), plus a unit test in `service.rs` for the in-worker unavailable
+check. They cover:
+- every rejection reason, each counted exactly once;
+- the feeder `import_in_progress` mapping counted as `busy`;
+- a timeout with the worker outstanding, followed by success;
+- a worker panic after caller cancellation;
+- a timeout followed by a worker panic;
+- an already-unavailable rejection versus a worker failure;
+- read-only timeouts and cancellations not counted;
+- disabled telemetry and instance isolation.
+
+## 9. Decisions
 
 1. **Exposure of `/metrics`.** Resolved in section 7: existing listener and
    trust boundary, disabled by default, enabled by a startup option,

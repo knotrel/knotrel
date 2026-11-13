@@ -577,6 +577,7 @@ fn check_default_graph_id(graph_id: &str) -> Option<Response> {
 
 fn check_service_available(service: &Service) -> Option<Response> {
     if service.is_unavailable() {
+        service.count_rejection(crate::metrics::Rejection::Unavailable);
         return Some(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "unavailable",
