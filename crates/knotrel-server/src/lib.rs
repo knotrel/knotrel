@@ -10,6 +10,7 @@
 mod api;
 mod configuration;
 mod lifecycle;
+mod metrics;
 mod serve;
 mod service;
 pub use configuration::{ConfigError, ServerConfig, ServerMode};
@@ -130,7 +131,10 @@ fn build_router_from_service(
     };
     let ready_lifecycle = lifecycle.clone();
     let request_timeout = config.request_timeout();
-    axum::Router::new()
+    let metrics = config
+        .metrics_enabled()
+        .then(|| metrics::Metrics::new(service.clone(), lifecycle.clone()));
+    let mut router = axum::Router::new()
         .route(
             "/health",
             get(|| async { axum::Json(Health { status: "ok" }) }),
@@ -174,7 +178,15 @@ fn build_router_from_service(
         .route(
             "/v1/feeder/barrier",
             post(api::feeder_barrier).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
-        )
+        );
+    if let Some(metrics) = &metrics {
+        let scrape = std::sync::Arc::clone(metrics);
+        router = router.route(
+            "/metrics",
+            get(move || async move { metrics::render(&scrape) }),
+        );
+    }
+    router = router
         .layer(middleware::from_fn_with_state(
             request_timeout,
             lifecycle::request_timeout,
@@ -182,7 +194,12 @@ fn build_router_from_service(
         .layer(middleware::from_fn_with_state(
             lifecycle,
             lifecycle::shutdown_gate,
-        ))
+        ));
+    if let Some(metrics) = metrics {
+        // Outside the gate and timeout, so their rejections are counted.
+        router = router.layer(middleware::from_fn_with_state(metrics, metrics::track_http));
+    }
+    router
         .layer(middleware::from_fn(api::logging_middleware))
         .with_state(service)
 }

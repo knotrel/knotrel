@@ -26,6 +26,7 @@ mimalloc = { version = "0.1", default-features = false }
 simd-json = "0.19"
 parking_lot = "0.13"
 mime = "0.3.17"
+prometheus-client = { version = "0.26", default-features = false }
 tinyvec = { version = "1.8", features = ["alloc"] }
 nohash-hasher = "0.2"
 fixedbitset = "0.5"

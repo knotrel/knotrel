@@ -448,6 +448,7 @@ Evidence: [container example](examples/container/Dockerfile) and [deployment run
 
 - [ ] **M6.1 Vocabulary:** Requests/status, graph counts, pending jobs, active imports, applied source progress, bootstrap duration, duplicate/gap/conflict counters and feeder health. Report lag only when the source protocol supplies a meaningful comparison.
 - [ ] **M6.2 Prometheus metrics:** Bounded-cardinality HTTP/execution/lock-wait/import/catch-up histograms and backlog gauges. Never use raw node IDs, request IDs, generations or source cursors as metric labels. Persistence metrics are conditional on v0.4.0 capabilities.
+  - In progress, unreleased: first slice implemented (opt-in `GET /metrics`, HTTP counts and server-side duration, outstanding jobs, capacity, unavailable flag, readiness state, build info; [observability contract §7](docs/observability-contract.md#7-first-m62-slice-implemented-unreleased)). Execution, lock-wait, import, catch-up, operation and feeder signals remain pending; overhead qualification is pending under M6.5.
 - [ ] **M6.3 Logs:** Structured operation/request correlation, generation/revision and sanitized synchronization diagnostics without graph payloads or credentials.
 - [ ] **M6.4 Alerts:** Readiness flapping, gaps, feeder loss, slow bootstrap, queue saturation and repeated errors; local storage alerts only for an enabled persistence capability.
 - [ ] **M6.5 Budgets:** Verify instrumentation overhead and bounded series counts under churn, rebuilds and repeated source sessions.

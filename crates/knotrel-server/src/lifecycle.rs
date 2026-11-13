@@ -527,8 +527,47 @@ pub(crate) async fn readiness(lifecycle: &Lifecycle, service: &Service) -> Respo
     response
 }
 
+/// Returns the label `/ready` would report, without changing any state.
+///
+/// Precedence matches [`readiness`]: unavailable, draining, starting, then
+/// (in source-managed mode) the published synchronization status. An
+/// expired lease on `ready` or `catching_up` is reported as `stale`, but the
+/// published word is never modified: lease expiry stays lazily recorded by
+/// `/ready` and feeder calls, so telemetry observation cannot change what
+/// other callers see. Lock-free; reads two atomics and the clock.
+pub(crate) fn readiness_state(lifecycle: &Lifecycle, service: &Service) -> &'static str {
+    use crate::service::{PublishedReadiness, SyncStatus, now_to_millis};
+
+    if service.is_unavailable() {
+        return "unavailable";
+    }
+    match lifecycle.phase() {
+        Phase::Draining => "draining",
+        Phase::Starting => "starting",
+        Phase::Ready if service.mode() == crate::ServerMode::Standalone => "ready",
+        Phase::Ready => {
+            let published = PublishedReadiness::unpack(service.published_readiness_word());
+            let expired =
+                published.deadline_millis != 0 && now_to_millis() > published.deadline_millis;
+            match published.status {
+                SyncStatus::Ready | SyncStatus::CatchingUp if expired => "stale",
+                status => status.as_str(),
+            }
+        }
+    }
+}
+
 fn is_probe(path: &str) -> bool {
     path == "/health" || path == "/ready"
+}
+
+/// True only for the registered `/metrics` route; when metrics are disabled
+/// the path is unmatched and draining rejects it like any other request.
+pub(crate) fn is_metrics_scrape(request: &Request) -> bool {
+    request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .is_some_and(|matched| matched.as_str() == "/metrics")
 }
 
 fn close_connection(response: &mut Response) {
@@ -539,7 +578,8 @@ fn close_connection(response: &mut Response) {
 
 /// Rejects new work while draining and asks clients to close the connection.
 ///
-/// Probes stay answerable so orchestrators can observe the drain. A request
+/// Probes, and `/metrics` when enabled, stay answerable so orchestrators
+/// can observe the drain. A request
 /// that passed this gate before draining began runs to completion.
 pub(crate) async fn shutdown_gate(
     State(lifecycle): State<Lifecycle>,
@@ -548,7 +588,7 @@ pub(crate) async fn shutdown_gate(
 ) -> Response {
     let path = request.uri().path();
     let is_draining = lifecycle.phase() == Phase::Draining;
-    let probe = is_probe(path);
+    let probe = is_probe(path) || is_metrics_scrape(&request);
 
     #[cfg(feature = "test-support")]
     {
@@ -730,6 +770,84 @@ mod tests {
         service.mark_unavailable_for_test();
         let resp = readiness(&lifecycle, &service).await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    async fn probe_label(lifecycle: &Lifecycle, service: &Service) -> String {
+        let body = readiness(lifecycle, service).await.into_body();
+        let bytes = axum::body::to_bytes(body, 1024).await.unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        text.trim_start_matches(r#"{"status":""#)
+            .trim_end_matches(r#""}"#)
+            .to_owned()
+    }
+
+    /// Telemetry must report what `/ready` would report, by the same
+    /// precedence, without itself recording an expired lease as `stale`.
+    #[tokio::test]
+    async fn observed_readiness_matches_probe_without_transitioning() {
+        use crate::service::{Service, SyncStatus};
+        use knotrel_core::ConnectivityGraph;
+
+        let _clock_guard = crate::service::lock_clock_for_test().await;
+        crate::service::advance_clock(std::time::Duration::from_secs(10));
+        let future = || crate::service::now_to_millis() + 60_000;
+
+        let standalone = crate::ServerConfig::default();
+        let managed = standalone
+            .clone()
+            .with_mode(crate::ServerMode::SourceManaged);
+        let draining = Lifecycle::ready();
+        draining.begin_draining();
+        let phases = [
+            ("starting", Lifecycle::new()),
+            ("ready", Lifecycle::ready()),
+            ("draining", draining),
+        ];
+        let statuses: [(SyncStatus, bool, &str); 8] = [
+            (SyncStatus::Uninitialized, false, "uninitialized"),
+            (SyncStatus::Loading, false, "loading"),
+            (SyncStatus::Desynchronized, false, "desynchronized"),
+            (SyncStatus::Stale, false, "stale"),
+            (SyncStatus::CatchingUp, false, "catching_up"),
+            (SyncStatus::CatchingUp, true, "stale"),
+            (SyncStatus::Ready, false, "ready"),
+            (SyncStatus::Ready, true, "stale"),
+        ];
+
+        for (phase, lifecycle) in phases {
+            let service = Service::with_config(
+                ConnectivityGraph::default(),
+                2,
+                lifecycle.clone(),
+                &standalone,
+            );
+            assert_eq!(readiness_state(&lifecycle, &service), phase);
+            assert_eq!(probe_label(&lifecycle, &service).await, phase);
+
+            for (status, expired, label) in statuses {
+                let service = Service::with_config(
+                    ConnectivityGraph::default(),
+                    2,
+                    lifecycle.clone(),
+                    &managed,
+                );
+                let deadline = if expired { 1 } else { future() };
+                service.set_published_readiness_for_test(status, deadline);
+                let expected = if phase == "ready" { label } else { phase };
+                let word = service.published_readiness_word();
+                for _ in 0..2 {
+                    assert_eq!(readiness_state(&lifecycle, &service), expected);
+                    assert_eq!(service.published_readiness_word(), word, "{status:?}");
+                }
+                assert_eq!(probe_label(&lifecycle, &service).await, expected);
+                assert_eq!(readiness_state(&lifecycle, &service), expected);
+
+                service.mark_unavailable_for_test();
+                assert_eq!(readiness_state(&lifecycle, &service), "unavailable");
+                assert_eq!(probe_label(&lifecycle, &service).await, "unavailable");
+            }
+        }
+        crate::service::reset_clock();
     }
 
     #[cfg(feature = "test-support")]

@@ -409,6 +409,7 @@ pub(crate) async fn logging_middleware(
 ) -> Response {
     let method = request.method().clone();
     let uri = request.uri().path().to_string();
+    let scrape = crate::lifecycle::is_metrics_scrape(&request);
     let start = std::time::Instant::now();
 
     let response = next.run(request).await;
@@ -417,7 +418,7 @@ pub(crate) async fn logging_middleware(
     let status = response.status().as_u16();
 
     // Log probes at trace level to avoid log pollution in orchestration environments.
-    if uri == "/health" || uri == "/ready" {
+    if uri == "/health" || uri == "/ready" || scrape {
         tracing::trace!(
             method = %method,
             uri = %uri,

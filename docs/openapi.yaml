@@ -81,6 +81,32 @@ paths:
                   value:
                     status: unavailable
 
+  /metrics:
+    get:
+      summary: Prometheus metrics (opt-in)
+      description: |
+        Present only when the server is started with `KNOTREL_METRICS_ENABLED=true`;
+        otherwise the route is not registered and returns 404. Unauthenticated, like
+        every other route. Prometheus text format 0.0.4. Takes no graph lock and no
+        admission or import permit. While draining it is still served, with
+        `Connection: close`. See observability-contract.md for metric semantics.
+      tags:
+        - Lifecycle
+      responses:
+        '200':
+          description: Current metrics
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            text/plain; version=0.0.4; charset=utf-8:
+              schema:
+                type: string
+        '404':
+          description: Metrics are disabled
+
   /v1/info:
     get:
       summary: Server configuration and metadata

@@ -28,6 +28,7 @@ mimalloc.workspace = true
 parking_lot.workspace = true
 simd-json.workspace = true
 mime.workspace = true
+prometheus-client.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util"] }

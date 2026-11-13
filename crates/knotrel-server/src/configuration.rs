@@ -33,6 +33,7 @@ pub struct ServerConfig {
     mode: ServerMode,
     max_import_body_bytes: usize,
     dedup_window_size: usize,
+    metrics_enabled: bool,
 }
 
 /// A malformed or unsupported startup setting.
@@ -61,6 +62,7 @@ impl Default for ServerConfig {
             mode: ServerMode::default(),
             max_import_body_bytes: Self::DEFAULT_MAX_IMPORT_BODY_BYTES,
             dedup_window_size: Self::DEFAULT_DEDUP_WINDOW_SIZE,
+            metrics_enabled: false,
         }
     }
 }
@@ -159,6 +161,7 @@ impl ServerConfig {
             mode: ServerMode::default(),
             max_import_body_bytes: Self::DEFAULT_MAX_IMPORT_BODY_BYTES,
             dedup_window_size: Self::DEFAULT_DEDUP_WINDOW_SIZE,
+            metrics_enabled: false,
         })
     }
 
@@ -178,6 +181,22 @@ impl ServerConfig {
     pub fn with_dedup_window_size(mut self, size: usize) -> Result<Self, ConfigError> {
         self.dedup_window_size = check_dedup_window_size(size)?;
         Ok(self)
+    }
+
+    /// Enables or disables the `GET /metrics` Prometheus endpoint.
+    ///
+    /// Disabled by default. When enabled, the endpoint is served on the same
+    /// listener and trust boundary as the API, without authentication; see
+    /// `docs/observability-contract.md`. When disabled, the route is not
+    /// registered and no HTTP accounting or timing work is performed.
+    pub fn with_metrics_enabled(mut self, enabled: bool) -> Self {
+        self.metrics_enabled = enabled;
+        self
+    }
+
+    /// Reports whether the `GET /metrics` endpoint is enabled.
+    pub fn metrics_enabled(&self) -> bool {
+        self.metrics_enabled
     }
 
     /// Returns the operating mode of the server.
@@ -271,7 +290,7 @@ impl ServerConfig {
     /// `KNOTREL_MAX_CONNECTIONS` (default 1024) is a positive integer.
     /// `KNOTREL_HEADER_READ_TIMEOUT_MS` (5000), `KNOTREL_REQUEST_TIMEOUT_MS` (30000) and
     /// `KNOTREL_SHUTDOWN_TIMEOUT_MS` (10000) are positive millisecond counts of at most
-    /// one hour.
+    /// one hour. `KNOTREL_METRICS_ENABLED` is exactly `true` or `false` (default).
     ///
     /// Returns [`ConfigError`] for unknown `KNOTREL_` keys, non-Unicode names
     /// or values in that namespace, unsupported engines and malformed values.
@@ -322,6 +341,7 @@ impl ServerConfig {
                     | "KNOTREL_MODE"
                     | "KNOTREL_MAX_IMPORT_BODY_BYTES"
                     | "KNOTREL_DEDUP_WINDOW_SIZE"
+                    | "KNOTREL_METRICS_ENABLED"
             ) {
                 return Err(ConfigError(format!("unknown setting: {name}")));
             }
@@ -348,6 +368,15 @@ impl ServerConfig {
             Some(_) => {
                 return Err(ConfigError(
                     "KNOTREL_ALLOW_NON_LOOPBACK must be true or false".into(),
+                ));
+            }
+        };
+        let metrics_enabled = match settings.get("KNOTREL_METRICS_ENABLED").map(String::as_str) {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(_) => {
+                return Err(ConfigError(
+                    "KNOTREL_METRICS_ENABLED must be true or false".into(),
                 ));
             }
         };
@@ -428,6 +457,7 @@ impl ServerConfig {
         };
         Self::build(address, allow_non_loopback, engine, max_pending_jobs)?
             .with_mode(mode)
+            .with_metrics_enabled(metrics_enabled)
             .with_max_import_body_bytes(max_import_body_bytes)?
             .with_dedup_window_size(dedup_window_size)?
             .with_graph_limits(limits)
@@ -502,6 +532,35 @@ fn check_timeout(key: &str, timeout: Duration) -> Result<Duration, ConfigError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metrics_exposure_is_disabled_by_default_and_strictly_validated() {
+        assert!(!ServerConfig::default().metrics_enabled());
+        assert!(!ServerConfig::from_variables([]).unwrap().metrics_enabled());
+        let enabled =
+            ServerConfig::from_variables([("KNOTREL_METRICS_ENABLED".into(), "true".into())])
+                .unwrap();
+        assert!(enabled.metrics_enabled());
+        let disabled =
+            ServerConfig::from_variables([("KNOTREL_METRICS_ENABLED".into(), "false".into())])
+                .unwrap();
+        assert!(!disabled.metrics_enabled());
+        for value in [
+            "", "TRUE", "True", "1", "0", "yes", "on", " true", "enabled",
+        ] {
+            let error =
+                ServerConfig::from_variables([("KNOTREL_METRICS_ENABLED".into(), value.into())])
+                    .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "KNOTREL_METRICS_ENABLED must be true or false",
+                "{value:?}"
+            );
+        }
+        let explicit = ServerConfig::default().with_metrics_enabled(true);
+        assert!(explicit.metrics_enabled());
+        assert!(!explicit.with_metrics_enabled(false).metrics_enabled());
+    }
 
     #[test]
     fn snapshot_defaults_and_explicit_values_do_not_depend_on_process_environment() {

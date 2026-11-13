@@ -85,6 +85,28 @@ you need the exit code after stopping.
   ([probes](http-api.md#probes)).
 - Route traffic on `/ready`; restart the container only on `/health`.
 
+**Metrics (opt-in).** Add `-e KNOTREL_METRICS_ENABLED=true` to serve
+`GET /metrics` in Prometheus text format on the same port
+([metrics](http-api.md#metrics-opt-in)). It is **unauthenticated** and
+exposes operational state: route counts, backlog, readiness and build
+version. Scrape it only from inside the same trusted boundary that may reach
+the API. Neither Knotrel nor this image adds authentication or TLS for it.
+A minimal Prometheus scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: knotrel
+    static_configs:
+      - targets: ["127.0.0.1:8080"]
+```
+
+`knotrel_readiness_state` mirrors `/ready`; it does not replace the probes.
+Metrics reset on every restart, like the graph. Their overhead has not yet
+been qualified (see the
+[observability contract](observability-contract.md#6-m62-handoff)), so
+enabling them in latency-sensitive deployments is at the operator's
+discretion.
+
 **Source-relative lag is not reported.** `catching_up` and `stale` are states,
 not lag measurements. `ready` means the last barrier was verified and the
 feeder lease is current. It does not mean the graph is within any time or

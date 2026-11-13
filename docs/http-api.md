@@ -276,13 +276,35 @@ rather than `starting` before readiness. Embedded routers created with `router(.
 `unavailable` if a graph worker fails or panics. `router_with_lifecycle(config, lifecycle)` exposes all
 lifecycle phases, and `serve(...)` drives them.
 
+### Metrics (opt-in)
+
+`GET /metrics` exists only when `KNOTREL_METRICS_ENABLED=true` (embedded:
+`ServerConfig::with_metrics_enabled(true)`); otherwise the route is not
+registered and returns 404 like any unknown path. It is served on the same
+listener and has the same trust model as every other route: **no
+authentication**. It returns 200 with
+`Content-Type: text/plain; version=0.0.4; charset=utf-8` and
+`Cache-Control: no-store`.
+
+Like the probes, a scrape takes no graph lock and no admission or import
+permit; it does use synchronization internal to the metrics registry and the
+outstanding-job counter. It is answered during saturation, after a worker failure and while
+draining (with `Connection: close`). It exposes HTTP request counts and
+server-side durations by route template, outstanding graph jobs, the
+graph-job admission permit limit, the unavailable flag, the state `/ready` would report, and build
+information. Names, labels, exact semantics and the series bound are
+specified in the [observability contract](observability-contract.md#7-first-m62-slice-implemented-unreleased).
+An HTTP `503 request_timeout` or a cancelled request in these metrics never
+means the graph job finished or did not run; see
+[admission and cancellation](#admission-and-cancellation).
+
 ### Graceful shutdown
 
 On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:
 
 1. switches `/ready` to 503 `draining`;
 2. keeps accepting connections only so it can answer them: any request other
-   than `/health` or `/ready` is rejected with 503 and
+   than `/health`, `/ready` or (when enabled) `/metrics` is rejected with 503 and
    `{"result":"error","code":"shutting_down",...}`, and every response carries
    `Connection: close`;
 3. closes idle keep-alive connections and connections still reading request
@@ -342,6 +364,7 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_MODE` | Exactly `standalone` or `source_managed` | `standalone` |
 | `KNOTREL_MAX_IMPORT_BODY_BYTES` | ASCII decimal integer from 1 through 1073741824 | `67108864` (64 MiB) |
 | `KNOTREL_DEDUP_WINDOW_SIZE` | ASCII decimal integer from 1 through 1000000 | `10000` |
+| `KNOTREL_METRICS_ENABLED` | Exactly `true` or `false`; `true` serves [`GET /metrics`](#metrics-opt-in) | `false` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
 | `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
 | `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |
