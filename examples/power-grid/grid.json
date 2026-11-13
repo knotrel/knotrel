@@ -1,0 +1,39 @@
+{
+  "description": "SYNTHETIC tutorial network. Not derived from, or validated against, any real electrical distribution network.",
+  "nodes": [
+    {"id": "100", "name": "Primary substation P", "type": "primary_substation"},
+    {"id": "201", "name": "Secondary substation A1", "type": "secondary_substation"},
+    {"id": "202", "name": "Secondary substation A2", "type": "secondary_substation"},
+    {"id": "203", "name": "Secondary substation A3", "type": "secondary_substation"},
+    {"id": "204", "name": "Secondary substation B1", "type": "secondary_substation"},
+    {"id": "205", "name": "Secondary substation B2", "type": "secondary_substation"},
+    {"id": "301", "name": "Meter M1", "type": "customer"},
+    {"id": "302", "name": "Meter M2", "type": "customer"},
+    {"id": "303", "name": "Meter M3", "type": "customer"},
+    {"id": "304", "name": "Meter M4", "type": "customer"},
+    {"id": "305", "name": "Meter M5", "type": "customer"},
+    {"id": "306", "name": "Meter M6", "type": "customer"},
+    {"id": "307", "name": "Meter M7", "type": "customer"}
+  ],
+  "connections": [
+    {"id": "A-P-A1", "a": "100", "b": "201", "state": "closed"},
+    {"id": "A-A1-A2", "a": "201", "b": "202", "state": "closed"},
+    {"id": "A-A2-A3", "a": "202", "b": "203", "state": "closed"},
+    {"id": "B-P-B1", "a": "100", "b": "204", "state": "closed"},
+    {"id": "B-B1-B2", "a": "204", "b": "205", "state": "closed"},
+    {"id": "S-A1-M1", "a": "201", "b": "301", "state": "closed"},
+    {"id": "S-A1-M2", "a": "201", "b": "302", "state": "closed"},
+    {"id": "S-A2-M3", "a": "202", "b": "303", "state": "closed"},
+    {"id": "S-A2-M4", "a": "202", "b": "304", "state": "closed"},
+    {"id": "S-A3-M5", "a": "203", "b": "305", "state": "closed"},
+    {"id": "S-B1-M6", "a": "204", "b": "306", "state": "closed"},
+    {"id": "S-B2-M7", "a": "205", "b": "307", "state": "closed"},
+    {"id": "TIE-A3-B2", "a": "203", "b": "205", "state": "open"}
+  ],
+  "scenario": {
+    "open_connection": "A-A1-A2",
+    "expected_without_path_after_open": ["303", "304", "305"],
+    "close_connection": "TIE-A3-B2",
+    "expected_without_path_after_close": []
+  }
+}

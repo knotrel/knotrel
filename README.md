@@ -72,6 +72,10 @@ absent endpoints. Repeated links and cuts are idempotent; cuts retain vertices.
 Self-loops are rejected. Queries involving unknown vertices return an error.
 See the [HTTP API](docs/http-api.md) for batches, errors and limits.
 
+For a guided scenario, the [power-grid tutorial](docs/tutorials/power-grid.md)
+opens and closes connections in a small synthetic distribution network and
+checks which customers keep a path to the source.
+
 ### Rust library
 
 `knotrel-core` is synchronous and has no HTTP or async dependencies. The latest
@@ -251,6 +255,7 @@ Further timeouts and size limits are listed under
 ## Documentation
 
 - [HTTP API](docs/http-api.md) and [OpenAPI specification](docs/openapi.yaml): operations, batch semantics, limits and errors.
+- [Power-grid tutorial](docs/tutorials/power-grid.md): runnable topology demonstration of connectivity loss and restoration over the HTTP API.
 - [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
