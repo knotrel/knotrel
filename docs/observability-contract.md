@@ -202,7 +202,7 @@ durable state. "Replacement" means publication of a new generation by import.
 | `import_in_progress` | gauge 0/1 | Is an import running? | Import permit held: from acquisition, through body receipt, worker queue, preparation and publication, until the import is recorded, also after its caller has gone. Source-managed mode only (section 15). | none | — | **implemented** | E |
 | `imports_total` | counter | Do imports succeed? | Exactly one per permitted import, classified by the phase reached (section 15). Source-managed mode only. | `result` ∈ {`published`, `payload_rejected` (body read, parse, request identity, limits and candidate), `publication_rejected` (after the lock request: unavailable, fencing, lease, mode, precondition, exhausted), `worker_failed` (panic before publication), `abandoned` (ownership ended before the worker started: abandoned body read, worker closure dropped unrun)} | continues | **implemented** | E |
 | `import_duration_seconds` | histogram, s | Where does import time go? | `receive` (permit acquired to body read returned), `prepare` (worker parse and build, off-lock), `publish` (lock request to worker end: lock wait, validation, swap). Disjoint; a failed phase is observed up to its error, a phase interrupted by a panic or an abandoned body read is not (section 15). Source-managed mode only. | `phase` ∈ {`receive`, `prepare`, `publish`} | continues | **implemented** | E |
-| `catchup_duration_seconds` | histogram, s | How long did bootstrap or replacement take to become ready? | From import publication (entering `catching_up`) to the first `synchronized` barrier (B2) in that generation. Abandoned if the generation is replaced or desynchronized first. | `kind` ∈ {`initial`, `replacement`} | new interval starts | pending | E |
+| `catchup_duration_seconds` | histogram, s | How long did bootstrap or replacement take to become ready? | From import publication (entering `catching_up`) to the first `synchronized` barrier (B2) in that generation (section 16). Abandoned if the generation is replaced or desynchronized first. | `kind` ∈ {`initial`, `replacement`} | new interval starts | **implemented** | E |
 | Recovery-from-stale duration | histogram | — | The start of `stale` is lazy (section 2); defining it needs a decision on lease-deadline anchoring. | — | — | none | D |
 | Session churn (`registered`, `takeover`, `renewed`) | counter | — | Fencing failures are already covered by `feeder_rejections_total`. | — | — | none | D |
 | Dedup window occupancy, applied delivery sequence | gauges | — | Not needed to explain failures in the first delivery. | — | — | none | D |
@@ -256,7 +256,9 @@ last-applied age gauges.
 **Eighth increment (done, section 15):** import in-progress gauge, result
 counter and phase durations.
 
-**Remaining essential (`E`, pending):** catch-up duration.
+**Ninth increment (done, section 16):** catch-up duration.
+
+**Remaining essential (`E`):** none (all essential M6.2 metrics implemented, pending independent review).
 
 **Instrumentation locations for the remaining rows:**
 
@@ -264,7 +266,7 @@ counter and phase durations.
 | --- | --- |
 | Operations | `GraphState::apply`, called per operation for single and batch requests. |
 | Imports | `api::feeder_import` and `Service::import` (implemented, section 15). |
-| Catch-up | Start instant stored in `GraphState` at publication; observed in `declare_barrier` B2. |
+| Catch-up | Start instant stored in `GraphState` at publication; observed in `declare_barrier` B2 and recorded on worker drop (implemented, section 16). |
 | `/metrics` reads | Atomics, the published readiness word, `outstanding_jobs` (a `watch` channel) and the registry. No graph lock, admission permit or import permit; registry and `watch` synchronization still applies. |
 
 These can reuse the per-instance `ServiceTelemetry` handle that `Service`
@@ -375,8 +377,8 @@ third adds 2. The fourth adds 153 standalone and 459 source-managed
 (section 11). The fifth adds 12 standalone and 7 source-managed (section
 12). The sixth adds 23 source-managed only (section 13). The seventh adds
 at most 2 source-managed only (section 14). The eighth adds 57
-source-managed only, for a current maximum of
-**1414 standalone, 1802 source-managed** (section 15).
+source-managed only (section 15). The ninth adds 32 source-managed only, for a
+current maximum of **1414 standalone, 1834 source-managed** (section 16).
 
 **Dependency.** [`prometheus-client`](https://crates.io/crates/prometheus-client)
 0.26, the Prometheus project's Rust client, with default features disabled.
@@ -1256,3 +1258,118 @@ gauge increment and decrement, one counter increment and at most three
 histogram observations, none in a per-node or per-edge loop. These counts
 exclude other instrumentation on the same request, such as the HTTP request
 metrics and the `import_publish` graph-job histograms (section 11).
+
+## 16. Ninth M6.2 increment: catch-up duration (implemented, unreleased)
+
+Adds the remaining essential (`E`) metric from section 4 in source-managed
+mode:
+
+- `knotrel_catchup_duration_seconds{kind}` (histogram, seconds; `kind` ∈
+  {`initial`, `replacement`}).
+
+**Interval boundaries and ownership.** The open interval (`CatchupInterval`) is
+owned by the authoritative `GraphState` under the graph mutex, avoiding any
+parallel state machine:
+
+- **Start:** Under the graph lock at import publication in `Service::import`,
+  when the generation advances and `sync_status` transitions to `catching_up`.
+  `create_only` starts `kind="initial"`; `replace` starts `kind="replacement"`.
+- **Completion:** Under the graph lock in `GraphState::declare_barrier`, on the
+  first `synchronized` barrier (B2) of that generation (transitioning
+  `catching_up` or `stale` to `ready`). The interval is taken from `GraphState`,
+  its elapsed monotonic duration (`timing_now().saturating_duration_since(...)`)
+  is computed, and the `CompletedCatchup` value is handed to a worker-owned
+  `CatchupRecorder` declared before `lock_timed`.
+- **Off-lock observation:** `CatchupRecorder` observes the histogram on drop,
+  after the graph lock is released (even if the worker unwinds after
+  completing the barrier). Scraping takes no graph lock or admission/import
+  permits; histograms use `prometheus-client`'s per-histogram `parking_lot::Mutex`
+  and pre-created handles.
+
+**Incomplete, interrupted and non-completing transitions.**
+
+- **Rejected and repeated barriers:** Any barrier that fails validation, is
+  premature/superseded/fenced, or returns `already_synchronized` (B1) leaves
+  `catchup` untouched and adds no observation.
+- **Events and heartbeats:** Applied events, progress events and heartbeats do
+  not complete a catch-up interval.
+- **Replacement before barrier:** A `replace` import overwrites `state.catchup`
+  with the new generation's interval; the superseded generation's unfinished
+  interval is dropped unobserved and cannot be completed later (old-generation
+  barriers are fenced by `generation`).
+- **Desynchronization:** Transitioning to `desynchronized` (`declare_gap` or
+  conflicting event) prevents any barrier from succeeding in that generation;
+  the unfinished interval remains unobserved until a `replace` import starts a
+  fresh generation.
+- **Lease expiry and takeover:** Entering `stale` during an open catch-up
+  interval does not discard it. If the feeder acquires a newer session epoch
+  and completes the first `synchronized` barrier for that generation, the
+  recorded duration includes the time spent `stale`. By contrast, recovering from
+  `stale` *after* a generation has already completed its catch-up finds no open
+  interval and adds no observation.
+- **Caller timeout/cancellation and worker panic:** Once the barrier worker has
+  started, it owns completion regardless of caller timeout or cancellation. A
+  worker panic before completing the barrier leaves the interval unobserved; a
+  panic after `declare_barrier` completes the interval still records it via
+  `CatchupRecorder::drop`.
+
+**Not source lag or ongoing freshness.** `knotrel_catchup_duration_seconds`
+measures elapsed monotonic time on this server from import publication to the
+first verified barrier of that generation. It does not measure how far the
+graph lagged behind the external source, and a completed barrier does not imply
+ongoing freshness after that instant (contrast with `knotrel_feeder_lease_remaining_seconds`
+and `knotrel_feeder_last_applied_age_seconds` in section 14).
+
+**Buckets and limitations.** Uses `CATCHUP_BUCKETS` (13 explicit upper bounds
+in seconds plus `+Inf`): `[0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0,
+300.0, 600.0, 1800.0, 3600.0]`. These span 10 ms to 1 hour to resolve orders of
+magnitude rather than SLOs; intervals exceeding 1 hour fall into `+Inf`.
+
+**Series and cardinality.**
+
+| Family | Series (source-managed) |
+| --- | --- |
+| `knotrel_catchup_duration_seconds` | 2 × (13 buckets + `+Inf` + `_sum` + `_count`) = 32 |
+| **Total** | **32** |
+
+The revised calculated maximum across all increments is **1414 standalone, 1834
+source-managed** (`1802 + 32`). `catchup::series_exist_at_zero_only_in_source_managed_mode`
+checks these 32 series against actual exposition; the total bound remains a
+calculation.
+
+**Disabled mode and standalone.** Standalone mode and disabled telemetry
+(`KNOTREL_METRICS_ENABLED=false`) construct no `CatchupMetrics`, so
+`CatchupInterval::start` returns `None` immediately without reading any clock
+or allocating.
+
+**Overhead.** Not qualified. Section 6 applies unchanged. With source-managed
+metrics enabled, each completed catch-up interval adds two monotonic clock
+reads (one at import publication, one at barrier completion) and one off-lock
+histogram observation.
+
+**Tests.** In `src/service.rs` (`tests::import_metrics::catchup`, with controlled
+`timing_now()` and lease clocks):
+
+- zero-initialized series count (32) and histogram type/HELP;
+- initial import through events, heartbeats, rejected barriers (`barrier_not_reached`,
+  older sequence, stale generation) to first `synchronized` barrier (observed once)
+  and repeated `already_synchronized` barrier (adds nothing);
+- replacement after a completed catch-up (starts fresh `replacement` interval)
+  and replacement of an uncompleted interval (abandons initial interval, fences
+  old generation);
+- desynchronization via `declare_gap` followed by rebuild;
+- lease expiry and session-epoch takeover during catch-up (interval completes and
+  includes stale duration) versus recovery from `stale` after completion (adds
+  no observation);
+- caller cancellation, caller request timeout, worker panic before barrier
+  (observes nothing) and worker panic after barrier (preserves observation);
+- standalone mode, disabled telemetry (no interval tracked, no clock read),
+  independent instances and scraping while the graph lock is held.
+
+In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs) (module
+`catchup` and `exposition_is_valid_and_uses_only_bounded_labels`):
+
+- bounded `kind` label validation (`initial`, `replacement`), series presence
+  only in source-managed mode (32 series, 14 buckets per kind including `+Inf`),
+  HELP/TYPE checks, HTTP initial + replacement end-to-end counts and isolated
+  instances.

@@ -115,6 +115,10 @@ including those whose caller timed out; a `503` import response is not by
 itself a failed import. `result="abandoned"` counts imports whose caller went
 away during the body upload, or whose worker never ran, before any worker
 outcome existed.
+`knotrel_catchup_duration_seconds{kind}` (`initial`, `replacement`) records the
+elapsed time from import publication to the first `synchronized` barrier of
+that generation; it includes any time spent `stale` during catch-up, and is
+neither source lag nor proof of ongoing freshness.
 Metrics reset on every restart, like the graph. Their overhead has not yet
 been qualified (see the
 [observability contract](observability-contract.md#6-m62-handoff)), so

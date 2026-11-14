@@ -9,8 +9,9 @@ use crate::{
         SessionRequest, SessionResponse,
     },
     metrics::{
-        Desynchronization, FeederEventResult, FeederRejection, GraphOp, ImportObservation,
-        JobClock, JobKind, PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed,
+        CatchupInterval, CatchupKind, CatchupRecorder, CompletedCatchup, Desynchronization,
+        FeederEventResult, FeederRejection, GraphOp, ImportObservation, JobClock, JobKind,
+        PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed,
     },
 };
 use knotrel_core::{ConnectivityGraph, EngineConfig, GraphError};
@@ -572,6 +573,14 @@ struct GraphState {
     publication_seq: u16,
     last_expired_epoch: Option<u64>,
     dedup_window: DedupWindow,
+    // The open catch-up interval of the current generation: set by an import
+    // publication, taken by the first `synchronized` barrier. Replacing the
+    // generation drops an unfinished interval unobserved. `None` without
+    // catch-up metrics, so disabled telemetry reads no clock.
+    catchup: Option<CatchupInterval>,
+    // Handed from `declare_barrier` to the worker, which observes it after
+    // releasing the lock.
+    completed_catchup: Option<CompletedCatchup>,
 }
 
 impl GraphState {
@@ -593,6 +602,8 @@ impl GraphState {
             publication_seq: 0,
             last_expired_epoch: None,
             dedup_window: DedupWindow::new(dedup_capacity),
+            catchup: None,
+            completed_catchup: None,
         }
     }
 
@@ -943,6 +954,13 @@ impl GraphState {
             SyncStatus::Ready => "already_synchronized",
             SyncStatus::CatchingUp | SyncStatus::Stale => {
                 self.sync_status = SyncStatus::Ready;
+                // The first synchronized barrier of a generation completes
+                // its catch-up interval; a later recovery from stale finds
+                // none. Rejected and `already_synchronized` barriers never
+                // reach this arm.
+                if let Some(interval) = self.catchup.take() {
+                    self.completed_catchup = Some(interval.complete());
+                }
                 "synchronized"
             }
             _ => unreachable!(),
@@ -2104,6 +2122,14 @@ impl Service {
             state.dedup_window.reset();
             state.failed = false;
             state.last_expired_epoch = None;
+            // Starts this generation's catch-up interval, superseding any
+            // unfinished one of the replaced generation.
+            let kind = match req.mode {
+                ImportMode::CreateOnly => CatchupKind::Initial,
+                ImportMode::Replace => CatchupKind::Replacement,
+            };
+            state.catchup = CatchupInterval::start(telemetry.as_deref(), kind);
+            state.completed_catchup = None;
 
             initial_guard.success = true;
             panic_guard.success = true;
@@ -2310,6 +2336,9 @@ impl Service {
                 success: false,
             };
             lifecycle.check_worker_hook();
+            // Declared before the lock, so it observes after the lock is
+            // released, also when unwinding.
+            let mut catchup = CatchupRecorder::new(telemetry.clone());
             let mut state = lock_timed(&graph, clock.as_ref(), &lifecycle);
             if state.failed || unavailable.load(Ordering::Acquire) {
                 panic_guard.unavailable.store(true, Ordering::Release);
@@ -2322,6 +2351,7 @@ impl Service {
                 state.failed = true;
             }
             let result = op(&mut state, mode, &instance_id);
+            catchup.record(state.completed_catchup.take());
             if let Err(error) = &result {
                 count_feeder_rejection(telemetry.as_deref(), error);
             }
@@ -6090,6 +6120,520 @@ mod tests {
             assert_eq!(telemetry.import_result_count(ImportResult::WorkerFailed), 0);
             assert_eq!(app.service.import_permits.available_permits(), 1);
             assert_eq!(app.service.lifecycle.outstanding_jobs(), 0);
+        }
+
+        /// Catch-up duration: `knotrel_catchup_duration_seconds`.
+        mod catchup {
+            use super::*;
+
+            const KINDS: [&str; 2] = ["initial", "replacement"];
+
+            impl Scrape {
+                /// `(count, sum)` of one catch-up kind.
+                fn catchup(&self, kind: &str) -> (u64, f64) {
+                    let read = |suffix: &str| {
+                        let series =
+                            format!("knotrel_catchup_duration_seconds_{suffix}{{kind=\"{kind}\"}}");
+                        self.sample(&series)
+                            .unwrap_or_else(|| panic!("missing {series} in {}", self.0))
+                    };
+                    (read("count") as u64, read("sum"))
+                }
+
+                fn catchup_counts(&self) -> [u64; 2] {
+                    KINDS.map(|kind| self.catchup(kind).0)
+                }
+
+                fn catchup_series(&self) -> usize {
+                    self.0
+                        .lines()
+                        .filter(|line| line.starts_with("knotrel_catchup_duration_seconds_"))
+                        .count()
+                }
+            }
+
+            /// An elapsed time of `steps` timing steps plus negligible real time.
+            fn steps(sum: f64, steps: u32) -> bool {
+                let expected = STEP.as_secs_f64() * f64::from(steps);
+                sum >= expected && sum < expected + 1.0
+            }
+
+            impl App {
+                async fn post_json(&self, path: &str, body: Value) -> (StatusCode, Value) {
+                    let request = Request::post(path)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header("x-knotrel-instance-id", &self.instance)
+                        .body(Body::from(body.to_string()))
+                        .unwrap();
+                    let response = self.router.clone().oneshot(request).await.unwrap();
+                    let status = response.status();
+                    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+                    (
+                        status,
+                        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+                    )
+                }
+
+                async fn session_epoch(&self, epoch: u64) -> StatusCode {
+                    let body = json!({
+                        "instance_id": self.instance,
+                        "feeder_session_id": "s",
+                        "feeder_epoch": epoch,
+                        "lease_duration_ms": 60_000,
+                    });
+                    self.post_json("/v1/feeder/session", body).await.0
+                }
+
+                async fn heartbeat(&self) -> StatusCode {
+                    let body = json!({
+                        "instance_id": self.instance,
+                        "feeder_session_id": "s",
+                        "feeder_epoch": 1,
+                    });
+                    self.post_json("/v1/feeder/heartbeat", body).await.0
+                }
+
+                /// A barrier at `sequence` and position `p-<sequence>`.
+                async fn barrier(
+                    &self,
+                    generation: u64,
+                    epoch: u64,
+                    sequence: u64,
+                ) -> (StatusCode, Value) {
+                    let body = json!({
+                        "instance_id": self.instance,
+                        "graph_id": "default",
+                        "generation": generation,
+                        "feeder_session_id": "s",
+                        "feeder_epoch": epoch,
+                        "barrier_delivery_sequence": sequence,
+                        "barrier_source_position": format!("p-{sequence}"),
+                    });
+                    self.post_json("/v1/feeder/barrier", body).await
+                }
+
+                /// Links nodes 1 and 2 as delivery sequence 1.
+                async fn link_event(&self, generation: u64) -> StatusCode {
+                    let body = json!({
+                        "instance_id": self.instance,
+                        "graph_id": "default",
+                        "generation": generation,
+                        "feeder_session_id": "s",
+                        "feeder_epoch": 1,
+                        "source_id": "pg-1",
+                        "source_epoch": "ep-1",
+                        "events": [{
+                            "event_id": "e-1",
+                            "delivery_sequence": 1,
+                            "prev_delivery_sequence": 0,
+                            "source_position": "p-1",
+                            "prev_source_position": "p-0",
+                            "op": "link",
+                            "source": "1",
+                            "target": "2",
+                        }],
+                    });
+                    self.post_json("/v1/feeder/events", body).await.0
+                }
+
+                async fn gap(&self, generation: u64) -> StatusCode {
+                    let body = json!({
+                        "instance_id": self.instance,
+                        "graph_id": "default",
+                        "generation": generation,
+                        "feeder_session_id": "s",
+                        "feeder_epoch": 1,
+                        "failed_delivery_sequence": 1,
+                    });
+                    self.post_json("/v1/feeder/gap", body).await.0
+                }
+
+                #[cfg(feature = "test-support")]
+                async fn wait_for_no_jobs(&self) {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        while self.service.lifecycle.outstanding_jobs() != 0 {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .expect("worker never finished");
+                }
+            }
+
+            async fn started(app: &App) {
+                app.session().await;
+                assert_eq!(app.import("create_only", None).await, StatusCode::CREATED);
+            }
+
+            #[tokio::test]
+            async fn series_exist_at_zero_with_the_calculated_count() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.catchup_counts(), [0, 0]);
+                assert_eq!(scrape.catchup("initial").1, 0.0);
+                // 2 kinds x (13 buckets + `+Inf` + `_sum` + `_count`).
+                assert_eq!(scrape.catchup_series(), 2 * (13 + 1 + 2), "{}", scrape.0);
+                assert!(
+                    scrape
+                        .0
+                        .contains("# TYPE knotrel_catchup_duration_seconds histogram")
+                );
+            }
+
+            #[tokio::test]
+            async fn initial_import_to_the_first_barrier_is_observed_once() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                started(&app).await;
+
+                // Nothing completes the interval before a successful barrier:
+                // an event, a heartbeat, the passage of time and every
+                // rejected barrier leave it open.
+                assert_eq!(app.link_event(1).await, StatusCode::OK);
+                advance_timing(STEP);
+                assert_eq!(app.heartbeat().await, StatusCode::OK);
+                let (status, body) = app.barrier(1, 1, 5).await;
+                assert_eq!(status, StatusCode::CONFLICT, "{body}");
+                assert_eq!(body["code"], "barrier_not_reached", "{body}");
+                let (status, _) = app.barrier(1, 1, 0).await;
+                assert_eq!(status, StatusCode::CONFLICT, "older sequence");
+                let (status, _) = app.barrier(7, 1, 1).await;
+                assert_eq!(status, StatusCode::CONFLICT, "stale generation");
+                assert_eq!(app.scrape().await.catchup_counts(), [0, 0]);
+
+                advance_timing(STEP);
+                let (status, body) = app.barrier(1, 1, 1).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert_eq!(body["result"], "synchronized");
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.catchup_counts(), [1, 0]);
+                let (count, sum) = scrape.catchup("initial");
+                assert_eq!(count, 1);
+                assert!(steps(sum, 2), "{sum}");
+
+                // A repeated barrier is `already_synchronized` and adds nothing.
+                advance_timing(STEP);
+                let (status, body) = app.barrier(1, 1, 1).await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(body["result"], "already_synchronized");
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.catchup_counts(), [1, 0]);
+                assert!(steps(scrape.catchup("initial").1, 2));
+            }
+
+            #[tokio::test]
+            async fn replacement_starts_a_new_interval_after_a_completed_one() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                started(&app).await;
+                advance_timing(STEP);
+                assert_eq!(app.barrier(1, 1, 0).await.0, StatusCode::OK);
+                assert_eq!(app.scrape().await.catchup_counts(), [1, 0]);
+
+                advance_timing(STEP * 4);
+                assert_eq!(
+                    app.import("replace", Some(r#""1.0.p-0""#)).await,
+                    StatusCode::CREATED
+                );
+                assert_eq!(app.scrape().await.catchup_counts(), [1, 0], "still open");
+                advance_timing(STEP * 2);
+                let (status, body) = app.barrier(2, 1, 0).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert_eq!(body["result"], "synchronized");
+
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.catchup_counts(), [1, 1]);
+                assert!(steps(scrape.catchup("initial").1, 1));
+                // Measured from the replacement, not from the first import.
+                assert!(steps(scrape.catchup("replacement").1, 2));
+            }
+
+            #[tokio::test]
+            async fn a_replaced_interval_is_not_observed_and_not_completed_late() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                started(&app).await;
+                advance_timing(STEP);
+                assert_eq!(
+                    app.import("replace", Some(r#""1.0.p-0""#)).await,
+                    StatusCode::CREATED
+                );
+                assert_eq!(app.scrape().await.catchup_counts(), [0, 0]);
+
+                // The obsolete generation cannot complete: its barrier is
+                // fenced by the generation check.
+                let (status, _) = app.barrier(1, 1, 0).await;
+                assert_eq!(status, StatusCode::CONFLICT);
+                assert_eq!(app.scrape().await.catchup_counts(), [0, 0]);
+
+                advance_timing(STEP * 2);
+                assert_eq!(app.barrier(2, 1, 0).await.0, StatusCode::OK);
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.catchup_counts(), [0, 1]);
+                assert!(steps(scrape.catchup("replacement").1, 2));
+            }
+
+            #[tokio::test]
+            async fn a_desynchronized_interval_is_abandoned_until_rebuilt() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                started(&app).await;
+                advance_timing(STEP);
+                assert_eq!(app.gap(1).await, StatusCode::OK);
+                let (status, body) = app.barrier(1, 1, 0).await;
+                assert_eq!(status, StatusCode::CONFLICT, "{body}");
+                assert_eq!(body["code"], "graph_desynchronized", "{body}");
+                assert_eq!(app.scrape().await.catchup_counts(), [0, 0]);
+
+                advance_timing(STEP);
+                assert_eq!(
+                    app.import("replace", Some(r#""1.0.p-0""#)).await,
+                    StatusCode::CREATED
+                );
+                advance_timing(STEP);
+                assert_eq!(app.barrier(2, 1, 0).await.0, StatusCode::OK);
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.catchup_counts(), [0, 1]);
+                assert!(steps(scrape.catchup("replacement").1, 1));
+            }
+
+            #[tokio::test]
+            async fn lease_expiry_and_takeover_do_not_interrupt_the_interval() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                started(&app).await;
+                advance_timing(STEP);
+                advance_clock(Duration::from_secs(61));
+
+                // The expired lease rejects the barrier and the old epoch stays fenced.
+                let (status, body) = app.barrier(1, 1, 0).await;
+                assert_eq!(status, StatusCode::CONFLICT, "{body}");
+                assert_eq!(app.scrape().await.catchup_counts(), [0, 0]);
+
+                assert_eq!(app.session_epoch(2).await, StatusCode::OK);
+                let (status, _) = app.barrier(1, 1, 0).await;
+                assert_eq!(status, StatusCode::CONFLICT, "fenced epoch");
+                assert_eq!(app.scrape().await.catchup_counts(), [0, 0]);
+
+                advance_timing(STEP);
+                let (status, body) = app.barrier(1, 2, 0).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert_eq!(body["result"], "synchronized");
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.catchup_counts(), [1, 0]);
+                // The interval includes the time the generation was stale.
+                assert!(steps(scrape.catchup("initial").1, 2));
+            }
+
+            #[tokio::test]
+            async fn recovery_from_stale_after_completion_is_not_a_catchup() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                started(&app).await;
+                assert_eq!(app.barrier(1, 1, 0).await.0, StatusCode::OK);
+                assert_eq!(app.scrape().await.catchup_counts(), [1, 0]);
+
+                advance_clock(Duration::from_secs(61));
+                assert_eq!(app.barrier(1, 1, 0).await.0, StatusCode::CONFLICT);
+                assert_eq!(app.session_epoch(2).await, StatusCode::OK);
+                let (status, body) = app.barrier(1, 2, 0).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert_eq!(body["result"], "synchronized", "recovered from stale");
+                assert_eq!(app.scrape().await.catchup_counts(), [1, 0]);
+            }
+
+            #[tokio::test]
+            async fn standalone_mode_has_no_catchup_series() {
+                let app = app_with(crate::ServerConfig::default().with_metrics_enabled(true));
+                assert!(!app.scrape().await.0.contains("knotrel_catchup"));
+            }
+
+            #[tokio::test]
+            async fn disabled_telemetry_tracks_no_interval_and_keeps_behavior() {
+                let _clocks = Clocks::lock().await;
+                let app =
+                    app_with(crate::ServerConfig::default().with_mode(ServerMode::SourceManaged));
+                assert!(app.service.telemetry().is_none());
+                started(&app).await;
+                {
+                    let state = app.service.graph.lock();
+                    assert!(state.catchup.is_none(), "no clock read, no interval");
+                }
+                let (status, body) = app.barrier(1, 1, 0).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert_eq!(body["result"], "synchronized");
+                let state = app.service.graph.lock();
+                assert!(state.catchup.is_none() && state.completed_catchup.is_none());
+            }
+
+            #[tokio::test]
+            async fn instances_count_independently() {
+                let _clocks = Clocks::lock().await;
+                let first = app_with(source_managed());
+                let second = app_with(source_managed());
+                started(&first).await;
+                started(&second).await;
+                advance_timing(STEP);
+                assert_eq!(first.barrier(1, 1, 0).await.0, StatusCode::OK);
+                assert_eq!(first.scrape().await.catchup_counts(), [1, 0]);
+                assert_eq!(second.scrape().await.catchup_counts(), [0, 0]);
+                assert_eq!(second.barrier(1, 1, 0).await.0, StatusCode::OK);
+                assert_eq!(second.scrape().await.catchup_counts(), [1, 0]);
+                assert_eq!(first.scrape().await.catchup_counts(), [1, 0]);
+            }
+
+            #[tokio::test]
+            async fn scrape_reads_catchup_while_the_graph_lock_is_held() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                started(&app).await;
+                let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+                let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+                let holder = tokio::spawn({
+                    let service = app.service.clone();
+                    async move {
+                        service
+                            .run(JobKind::Stats, JobEffect::ReadOnly, move |_| {
+                                locked_tx.send(()).unwrap();
+                                let _ = release_rx.recv();
+                            })
+                            .await
+                    }
+                });
+                locked_rx.await.unwrap();
+                assert!(app.service.graph.try_lock().is_none());
+                let scrape = tokio::time::timeout(Duration::from_secs(5), app.scrape())
+                    .await
+                    .expect("scrape must not wait for the graph lock");
+                assert_eq!(scrape.catchup_counts(), [0, 0]);
+                release_tx.send(()).unwrap();
+                holder.await.unwrap().unwrap();
+            }
+
+            /// Tests that pause the barrier worker through the test-support hooks.
+            #[cfg(feature = "test-support")]
+            mod paused {
+                use super::*;
+
+                /// Releases a paused worker even when an assertion fails.
+                struct Release(Option<crate::WorkerPauseHandle>);
+
+                impl Release {
+                    fn now(&mut self) {
+                        if let Some(handle) = self.0.take() {
+                            handle.release();
+                        }
+                    }
+                }
+
+                impl Drop for Release {
+                    fn drop(&mut self) {
+                        self.now();
+                    }
+                }
+
+                #[tokio::test]
+                async fn caller_cancellation_leaves_the_completion_to_the_worker() {
+                    let _clocks = Clocks::lock().await;
+                    let app = app_with(source_managed());
+                    started(&app).await;
+                    let mut pause = app.service.lifecycle.pause_next_worker();
+                    let caller = tokio::spawn({
+                        let router = app.router.clone();
+                        let instance = app.instance.clone();
+                        let body = json!({
+                            "instance_id": app.instance,
+                            "graph_id": "default",
+                            "generation": 1,
+                            "feeder_session_id": "s",
+                            "feeder_epoch": 1,
+                            "barrier_delivery_sequence": 0,
+                            "barrier_source_position": "p-0",
+                        });
+                        async move {
+                            let request = Request::post("/v1/feeder/barrier")
+                                .header(header::CONTENT_TYPE, "application/json")
+                                .header("x-knotrel-instance-id", instance)
+                                .body(Body::from(body.to_string()))
+                                .unwrap();
+                            router.oneshot(request).await.unwrap().status()
+                        }
+                    });
+                    pause.wait_started().await;
+                    let mut release = Release(Some(pause));
+
+                    caller.abort();
+                    assert!(caller.await.unwrap_err().is_cancelled());
+                    advance_timing(STEP);
+                    assert_eq!(app.scrape().await.catchup_counts(), [0, 0]);
+
+                    release.now();
+                    app.wait_for_no_jobs().await;
+                    let scrape = app.scrape().await;
+                    assert_eq!(scrape.catchup_counts(), [1, 0]);
+                    assert!(steps(scrape.catchup("initial").1, 1));
+                }
+
+                #[tokio::test]
+                async fn caller_timeout_leaves_the_completion_to_the_worker() {
+                    let _clocks = Clocks::lock().await;
+                    let app = app_with(
+                        source_managed()
+                            .with_request_timeout(Duration::from_millis(50))
+                            .unwrap(),
+                    );
+                    started(&app).await;
+                    let mut pause = app.service.lifecycle.pause_next_worker();
+                    let (status, _) = app.barrier(1, 1, 0).await;
+                    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                    pause.wait_started().await;
+                    let mut release = Release(Some(pause));
+                    advance_timing(STEP);
+                    assert_eq!(app.scrape().await.catchup_counts(), [0, 0]);
+
+                    release.now();
+                    app.wait_for_no_jobs().await;
+                    let scrape = app.scrape().await;
+                    assert_eq!(scrape.catchup_counts(), [1, 0]);
+                    assert!(steps(scrape.catchup("initial").1, 1));
+                }
+
+                #[tokio::test]
+                async fn a_worker_panic_before_the_barrier_observes_nothing() {
+                    let _clocks = Clocks::lock().await;
+                    let app = app_with(source_managed());
+                    started(&app).await;
+                    let mut pause = app.service.lifecycle.pause_next_worker();
+                    let barrier = app.barrier(1, 1, 0);
+                    let (status, _) = tokio::join!(barrier, async {
+                        pause.wait_started().await;
+                        pause.panic_on_release();
+                    })
+                    .0;
+                    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                    assert_eq!(app.scrape().await.catchup_counts(), [0, 0]);
+                }
+
+                #[tokio::test]
+                async fn a_panic_after_the_barrier_keeps_the_completed_interval() {
+                    let _clocks = Clocks::lock().await;
+                    let app = app_with(source_managed());
+                    started(&app).await;
+                    advance_timing(STEP);
+                    let mut pause = app.service.lifecycle.pause_next_worker_after_lock();
+                    let barrier = app.barrier(1, 1, 0);
+                    let (status, _) = tokio::join!(barrier, async {
+                        pause.wait_started().await;
+                        pause.panic_on_release();
+                    })
+                    .0;
+                    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                    let scrape = app.scrape().await;
+                    assert_eq!(scrape.catchup_counts(), [1, 0]);
+                    assert!(steps(scrape.catchup("initial").1, 1));
+                }
+            }
         }
     }
 }

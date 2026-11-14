@@ -431,6 +431,10 @@ before the permit, including
 acquired to body read returned), `prepare` (worker parse and candidate build)
 and `publish` (graph-lock request to the end of the worker) phases
 ([contract section 15](observability-contract.md#15-eighth-m62-increment-import-gauge-results-and-phase-durations-implemented-unreleased)).
+`knotrel_catchup_duration_seconds{kind}` (`initial` for `create_only`,
+`replacement` for `replace`) times completed catch-up intervals from import
+publication to the first `synchronized` barrier in that generation
+([contract section 16](observability-contract.md#16-ninth-m62-increment-catch-up-duration-implemented-unreleased)).
 
 ### Graceful shutdown
 

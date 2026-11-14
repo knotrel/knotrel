@@ -88,6 +88,7 @@ const IMPORT_RESULTS: [&str; 5] = [
     "abandoned",
 ];
 const IMPORT_PHASES: [&str; 3] = ["receive", "prepare", "publish"];
+const CATCHUP_KINDS: [&str; 2] = ["initial", "replacement"];
 const DESYNC_CAUSES: [&str; 4] = [
     "gap_declared",
     "source_epoch_mismatch",
@@ -320,6 +321,7 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
                 "reason" => &REJECTION_REASONS,
                 "cause" => &CAUSES,
                 "code" => &FEEDER_REJECTION_CODES,
+                "kind" if sample.name.starts_with("knotrel_catchup") => &CATCHUP_KINDS,
                 "kind" => &JOB_KINDS,
                 "op" => &GRAPH_OPS,
                 "outcome" => &OPERATION_OUTCOMES,
@@ -3061,5 +3063,140 @@ mod imports {
         let samples = scrape(&second).await;
         assert_eq!(results(&samples), [0.0; 5]);
         assert_eq!(phase_counts(&samples), [0.0; 3]);
+    }
+}
+
+mod catchup {
+    use super::graph_counts::{bootstrap, feeder, import, instance_id, source_managed};
+    use super::*;
+
+    const CATCHUP: &str = "knotrel_catchup_duration_seconds";
+
+    fn catchup_series(samples: &[Sample]) -> Vec<&Sample> {
+        samples
+            .iter()
+            .filter(|s| s.name.starts_with(CATCHUP))
+            .collect()
+    }
+
+    fn counts(samples: &[Sample]) -> [f64; 2] {
+        CATCHUP_KINDS.map(|kind| {
+            value(samples, &format!("{CATCHUP}_count"), &[("kind", kind)])
+                .unwrap_or_else(|| panic!("missing {CATCHUP}_count{{kind={kind}}}"))
+        })
+    }
+
+    fn barrier(instance: &str, generation: u64, seq: u64, pos: &str) -> serde_json::Value {
+        serde_json::json!({
+            "instance_id": instance,
+            "graph_id": "default",
+            "generation": generation,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+            "barrier_delivery_sequence": seq,
+            "barrier_source_position": pos,
+        })
+    }
+
+    #[tokio::test]
+    async fn series_exist_at_zero_only_in_source_managed_mode() {
+        let standalone = router_with_config(config(4));
+        assert!(catchup_series(&scrape(&standalone).await).is_empty());
+
+        let samples = scrape(&router_with_config(source_managed())).await;
+        let series = catchup_series(&samples);
+        assert_eq!(series.len(), 32, "2 kinds of 16 series");
+        assert!(series.iter().all(|s| s.value == 0.0), "{series:?}");
+        assert_eq!(counts(&samples), [0.0, 0.0]);
+        for kind in CATCHUP_KINDS {
+            let buckets = series
+                .iter()
+                .filter(|s| s.name == format!("{CATCHUP}_bucket") && s.labels["kind"] == kind)
+                .count();
+            assert_eq!(buckets, 14, "{kind}: 13 explicit buckets plus +Inf");
+        }
+    }
+
+    #[tokio::test]
+    async fn family_is_typed_and_described_on_monotonic_clock() {
+        let text = send(
+            &router_with_config(source_managed()),
+            Method::GET,
+            "/metrics",
+            "",
+        )
+        .await
+        .1;
+        assert!(
+            text.contains(&format!("# TYPE {CATCHUP} histogram\n")),
+            "{text}"
+        );
+        let help = text
+            .lines()
+            .find(|line| line.starts_with(&format!("# HELP {CATCHUP} ")))
+            .unwrap_or_else(|| panic!("no HELP for {CATCHUP}"));
+        assert!(help.contains("monotonic clock"), "{help}");
+        assert!(help.contains("not source lag"), "{help}");
+    }
+
+    #[tokio::test]
+    async fn initial_and_replacement_catchups_count_once_over_http() {
+        let app = router_with_config(source_managed());
+        let instance = bootstrap(&app, &["1", "2"], &[]).await;
+        assert_eq!(counts(&scrape(&app).await), [0.0, 0.0]);
+
+        let (status, _) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/barrier",
+            None,
+            barrier(&instance, 1, 0, "p-0"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(counts(&scrape(&app).await), [1.0, 0.0]);
+
+        let replace = import(&instance, "replace", "p-1", &["1"], &[]);
+        let (status, _) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/import",
+            Some("\"1.0.p-0\""),
+            replace,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(counts(&scrape(&app).await), [1.0, 0.0]);
+
+        let (status, _) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/barrier",
+            None,
+            barrier(&instance, 2, 0, "p-1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(counts(&scrape(&app).await), [1.0, 1.0]);
+    }
+
+    #[tokio::test]
+    async fn server_instances_count_catchups_independently() {
+        let first = router_with_config(source_managed());
+        let second = router_with_config(source_managed());
+        let first_inst = bootstrap(&first, &["1"], &[]).await;
+        let _second_inst = instance_id(&second).await;
+
+        let (status, _) = feeder(
+            &first,
+            &first_inst,
+            "/v1/feeder/barrier",
+            None,
+            barrier(&first_inst, 1, 0, "p-0"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(counts(&scrape(&first).await), [1.0, 0.0]);
+        assert_eq!(counts(&scrape(&second).await), [0.0, 0.0]);
     }
 }

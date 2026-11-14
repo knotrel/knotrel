@@ -1533,9 +1533,6 @@ addr = "{address}"
 host, port = addr.split(":")
 port = int(port)
 
-with open(pid_file, "w") as f:
-    f.write(str(os.getpid()))
-
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
@@ -1561,6 +1558,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 server = socketserver.TCPServer((host, port), Handler)
+
+# Publish the pid only once the socket is bound and listening, so the test
+# never starts the driver against a server that is not yet accepting.
+with open(pid_file, "w") as f:
+    f.write(str(os.getpid()))
+
 server.serve_forever()
 '
 "#,

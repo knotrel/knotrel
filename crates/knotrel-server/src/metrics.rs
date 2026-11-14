@@ -79,6 +79,16 @@ const JOB_PHASE_BUCKETS: [f64; 14] = [
     0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0,
 ];
 
+/// Upper bounds, in seconds, of the catch-up histogram (plus `+Inf`).
+///
+/// Catch-up spans a feeder replaying source history, so it ranges from
+/// milliseconds to many minutes: the buckets run from 10 ms to one hour. They
+/// resolve orders of magnitude; they are not service-level objectives, and an
+/// interval beyond one hour lands only in `+Inf`.
+const CATCHUP_BUCKETS: [f64; 13] = [
+    0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0,
+];
+
 const STANDALONE_STATES: [&str; 4] = ["unavailable", "draining", "starting", "ready"];
 const SOURCE_MANAGED_STATES: [&str; 9] = [
     "unavailable",
@@ -543,6 +553,33 @@ struct ImportMetrics {
     durations: [Histogram; 3],
 }
 
+/// Kind of catch-up interval: the `kind` label of the catch-up histogram.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CatchupKind {
+    /// Started by a `create_only` import, the first publication.
+    Initial,
+    /// Started by a `replace` import of an already initialized graph.
+    Replacement,
+}
+
+impl CatchupKind {
+    const ALL: [Self; 2] = [Self::Initial, Self::Replacement];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Replacement => "replacement",
+        }
+    }
+}
+
+/// Pre-created catch-up histograms; present only in source-managed mode.
+#[derive(Debug)]
+struct CatchupMetrics {
+    durations_family: PhaseFamily,
+    durations: [Histogram; 2],
+}
+
 /// Pre-created feeder-rejection and desynchronization counters; present
 /// only in source-managed mode.
 #[derive(Debug)]
@@ -551,6 +588,10 @@ struct FeederFailureCounters {
     rejections: [Counter; 19],
     desyncs_family: Family<OutcomeLabels, Counter>,
     desyncs: [Counter; 4],
+}
+
+fn catchup_histogram() -> Histogram {
+    Histogram::new(CATCHUP_BUCKETS)
 }
 
 fn job_phase_histogram() -> Histogram {
@@ -599,6 +640,7 @@ pub(crate) struct ServiceTelemetry {
     // 0 means none yet.
     last_applied: AtomicU64,
     imports: Option<ImportMetrics>,
+    catchup: Option<CatchupMetrics>,
 }
 
 impl ServiceTelemetry {
@@ -685,6 +727,18 @@ impl ServiceTelemetry {
                 durations,
             }
         });
+        let catchup = (mode == ServerMode::SourceManaged).then(|| {
+            let durations_family: PhaseFamily = Family::new_with_constructor(catchup_histogram);
+            let durations = CatchupKind::ALL.map(|kind| {
+                durations_family
+                    .get_or_create(&[("kind", kind.label())])
+                    .clone()
+            });
+            CatchupMetrics {
+                durations_family,
+                durations,
+            }
+        });
         Arc::new(Self {
             rejected_family,
             uncertain_family,
@@ -702,6 +756,7 @@ impl ServiceTelemetry {
             feeder_failures,
             last_applied: AtomicU64::new(0),
             imports,
+            catchup,
         })
     }
 
@@ -780,6 +835,13 @@ impl ServiceTelemetry {
                 "knotrel_import_duration_seconds",
                 "Import time by phase on the monotonic clock: receive (permit acquired to body read returned), prepare (worker parse and off-lock candidate build), publish (graph-lock request to the worker's end, including lock wait, validation and swap); disjoint, excluding the handler's pre-spawn work, the blocking-pool queue and the worker start; a failed phase is observed up to its error, a phase interrupted by a panic or an abandoned body read, or never reached, is not",
                 imports.durations_family.clone(),
+            );
+        }
+        if let Some(catchup) = &self.catchup {
+            registry.register(
+                "knotrel_catchup_duration_seconds",
+                "Completed catch-up intervals on the monotonic clock, by kind: from the publication of an import (initial for create_only, replacement for replace) to the first synchronized barrier in that generation, observed once per interval; includes any time the generation spent stale; an interval replaced by a newer import, left on a desynchronized graph, or whose barrier worker panicked is not observed; not source lag and not the time since the last event",
+                catchup.durations_family.clone(),
             );
         }
     }
@@ -990,6 +1052,81 @@ impl Drop for ImportObservation {
         let imports = self.imports();
         imports.results[result as usize].inc();
         imports.in_progress.dec();
+    }
+}
+
+/// A catch-up interval open on the graph: owned by the authoritative graph
+/// state, started under the graph lock when an import publishes, and taken
+/// under the same lock by the first `synchronized` barrier of that generation.
+///
+/// Exists only when catch-up metrics do (source-managed mode with metrics
+/// enabled); otherwise no clock is read.
+#[derive(Debug)]
+pub(crate) struct CatchupInterval {
+    kind: CatchupKind,
+    started: Instant,
+}
+
+impl CatchupInterval {
+    /// Starts an interval now; `None` without catch-up metrics.
+    pub(crate) fn start(telemetry: Option<&ServiceTelemetry>, kind: CatchupKind) -> Option<Self> {
+        telemetry?.catchup.as_ref()?;
+        Some(Self {
+            kind,
+            started: timing_now(),
+        })
+    }
+
+    /// Ends the interval now.
+    pub(crate) fn complete(self) -> CompletedCatchup {
+        CompletedCatchup {
+            kind: self.kind,
+            elapsed: timing_now().saturating_duration_since(self.started),
+        }
+    }
+}
+
+/// A finished catch-up interval awaiting observation.
+#[derive(Debug)]
+pub(crate) struct CompletedCatchup {
+    kind: CatchupKind,
+    elapsed: Duration,
+}
+
+/// Observes a completed catch-up interval when dropped.
+///
+/// A worker declares it before taking the graph lock, so it drops after the
+/// lock is released, also while unwinding: the histogram is never updated under
+/// the graph lock, and a completed interval is not lost to a later panic.
+#[derive(Debug)]
+pub(crate) struct CatchupRecorder {
+    telemetry: Option<Arc<ServiceTelemetry>>,
+    completed: Option<CompletedCatchup>,
+}
+
+impl CatchupRecorder {
+    pub(crate) fn new(telemetry: Option<Arc<ServiceTelemetry>>) -> Self {
+        Self {
+            telemetry,
+            completed: None,
+        }
+    }
+
+    /// Hands over the interval to observe at drop.
+    pub(crate) fn record(&mut self, completed: Option<CompletedCatchup>) {
+        if completed.is_some() {
+            self.completed = completed;
+        }
+    }
+}
+
+impl Drop for CatchupRecorder {
+    fn drop(&mut self) {
+        if let (Some(telemetry), Some(done)) = (&self.telemetry, self.completed.take())
+            && let Some(catchup) = &telemetry.catchup
+        {
+            catchup.durations[done.kind as usize].observe(done.elapsed.as_secs_f64());
+        }
     }
 }
 
