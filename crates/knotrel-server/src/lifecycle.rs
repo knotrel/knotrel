@@ -1,7 +1,7 @@
 //! Process lifecycle phase shared by the accept loop and the HTTP router.
 
 use crate::{
-    api,
+    api::{self, ErrorCode, Route},
     metrics::{self, Rejection, ServiceTelemetry},
     service::Service,
 };
@@ -21,19 +21,26 @@ use std::{
 };
 use tokio::sync::watch;
 
-const STARTING: u8 = 0;
-const READY: u8 = 1;
-const DRAINING: u8 = 2;
-
 /// Externally visible server phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum Phase {
     /// The server exists but is not yet accepting connections.
-    Starting,
+    Starting = 0,
     /// The server is accepting connections and serving requests.
-    Ready,
+    Ready = 1,
     /// Shutdown has begun: admitted work finishes, everything else is rejected.
-    Draining,
+    Draining = 2,
+}
+
+impl Phase {
+    const fn from_code(code: u8) -> Self {
+        match code {
+            code if code == Self::Starting as u8 => Self::Starting,
+            code if code == Self::Ready as u8 => Self::Ready,
+            _ => Self::Draining,
+        }
+    }
 }
 
 #[cfg(feature = "test-support")]
@@ -208,7 +215,7 @@ impl Lifecycle {
         let (jobs_tx, jobs_rx) = watch::channel(0);
         #[cfg(feature = "test-support")]
         let inner = LifecycleInner {
-            phase: AtomicU8::new(STARTING),
+            phase: AtomicU8::new(Phase::Starting as u8),
             jobs_tx,
             jobs_rx,
             worker_hook: parking_lot::Mutex::new(None),
@@ -220,7 +227,7 @@ impl Lifecycle {
         };
         #[cfg(not(feature = "test-support"))]
         let inner = LifecycleInner {
-            phase: AtomicU8::new(STARTING),
+            phase: AtomicU8::new(Phase::Starting as u8),
             jobs_tx,
             jobs_rx,
         };
@@ -232,7 +239,7 @@ impl Lifecycle {
         let (jobs_tx, jobs_rx) = watch::channel(0);
         #[cfg(feature = "test-support")]
         let inner = LifecycleInner {
-            phase: AtomicU8::new(READY),
+            phase: AtomicU8::new(Phase::Ready as u8),
             jobs_tx,
             jobs_rx,
             worker_hook: parking_lot::Mutex::new(None),
@@ -244,7 +251,7 @@ impl Lifecycle {
         };
         #[cfg(not(feature = "test-support"))]
         let inner = LifecycleInner {
-            phase: AtomicU8::new(READY),
+            phase: AtomicU8::new(Phase::Ready as u8),
             jobs_tx,
             jobs_rx,
         };
@@ -253,24 +260,22 @@ impl Lifecycle {
 
     /// Returns the current phase.
     pub fn phase(&self) -> Phase {
-        match self.0.phase.load(Ordering::Acquire) {
-            STARTING => Phase::Starting,
-            READY => Phase::Ready,
-            _ => Phase::Draining,
-        }
+        Phase::from_code(self.0.phase.load(Ordering::Acquire))
     }
 
     /// Moves `Starting` to `Ready`; has no effect once draining has begun.
     pub fn mark_ready(&self) {
-        let _ = self
-            .0
-            .phase
-            .compare_exchange(STARTING, READY, Ordering::AcqRel, Ordering::Acquire);
+        let _ = self.0.phase.compare_exchange(
+            Phase::Starting as u8,
+            Phase::Ready as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
 
     /// Moves any phase to `Draining`; this is irreversible.
     pub fn begin_draining(&self) {
-        self.0.phase.store(DRAINING, Ordering::Release);
+        self.0.phase.store(Phase::Draining as u8, Ordering::Release);
     }
 
     /// Tracks an outstanding graph worker job.
@@ -489,9 +494,70 @@ impl Default for Lifecycle {
     }
 }
 
+/// State reported by readiness probes and their Prometheus mirror.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReadinessState {
+    Unavailable,
+    Draining,
+    Starting,
+    Ready,
+    Uninitialized,
+    Loading,
+    CatchingUp,
+    Stale,
+    Desynchronized,
+}
+
+impl ReadinessState {
+    pub(crate) const STANDALONE: [Self; 4] = [
+        Self::Unavailable,
+        Self::Draining,
+        Self::Starting,
+        Self::Ready,
+    ];
+
+    pub(crate) const SOURCE_MANAGED: [Self; 9] = [
+        Self::Unavailable,
+        Self::Draining,
+        Self::Starting,
+        Self::Ready,
+        Self::Uninitialized,
+        Self::Loading,
+        Self::CatchingUp,
+        Self::Stale,
+        Self::Desynchronized,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Draining => "draining",
+            Self::Starting => "starting",
+            Self::Ready => crate::service::SyncStatus::Ready.as_str(),
+            Self::Uninitialized => crate::service::SyncStatus::Uninitialized.as_str(),
+            Self::Loading => crate::service::SyncStatus::Loading.as_str(),
+            Self::CatchingUp => crate::service::SyncStatus::CatchingUp.as_str(),
+            Self::Stale => crate::service::SyncStatus::Stale.as_str(),
+            Self::Desynchronized => crate::service::SyncStatus::Desynchronized.as_str(),
+        }
+    }
+
+    const fn from_sync_status(status: crate::service::SyncStatus) -> Self {
+        match status {
+            crate::service::SyncStatus::Uninitialized => Self::Uninitialized,
+            crate::service::SyncStatus::Loading => Self::Loading,
+            crate::service::SyncStatus::CatchingUp => Self::CatchingUp,
+            crate::service::SyncStatus::Ready => Self::Ready,
+            crate::service::SyncStatus::Stale => Self::Stale,
+            crate::service::SyncStatus::Desynchronized => Self::Desynchronized,
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 struct Status {
-    status: &'static str,
+    status: ReadinessState,
 }
 
 /// Reports whether the server can currently accept graph work.
@@ -499,15 +565,15 @@ struct Status {
 /// A failed graph worker wins over every other state, then draining, then
 /// starting. It never takes the graph lock or a worker permit.
 pub(crate) async fn readiness(lifecycle: &Lifecycle, service: &Service) -> Response {
-    let (status, label) = if service.is_unavailable() {
-        (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+    let (status, state) = if service.is_unavailable() {
+        (StatusCode::SERVICE_UNAVAILABLE, ReadinessState::Unavailable)
     } else {
         match lifecycle.phase() {
-            Phase::Draining => (StatusCode::SERVICE_UNAVAILABLE, "draining"),
-            Phase::Starting => (StatusCode::SERVICE_UNAVAILABLE, "starting"),
+            Phase::Draining => (StatusCode::SERVICE_UNAVAILABLE, ReadinessState::Draining),
+            Phase::Starting => (StatusCode::SERVICE_UNAVAILABLE, ReadinessState::Starting),
             Phase::Ready => {
                 if service.mode() == crate::ServerMode::Standalone {
-                    (StatusCode::OK, "ready")
+                    (StatusCode::OK, ReadinessState::Ready)
                 } else {
                     let word = service.published_readiness_word();
                     let published = crate::service::PublishedReadiness::unpack(word);
@@ -515,23 +581,25 @@ pub(crate) async fn readiness(lifecycle: &Lifecycle, service: &Service) -> Respo
                         && crate::service::now_to_millis() > published.deadline_millis;
 
                     match published.status {
-                        crate::service::SyncStatus::Uninitialized => {
-                            (StatusCode::SERVICE_UNAVAILABLE, "uninitialized")
-                        }
+                        crate::service::SyncStatus::Uninitialized => (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            ReadinessState::Uninitialized,
+                        ),
                         crate::service::SyncStatus::Loading => {
-                            (StatusCode::SERVICE_UNAVAILABLE, "loading")
+                            (StatusCode::SERVICE_UNAVAILABLE, ReadinessState::Loading)
                         }
-                        crate::service::SyncStatus::Desynchronized => {
-                            (StatusCode::SERVICE_UNAVAILABLE, "desynchronized")
-                        }
+                        crate::service::SyncStatus::Desynchronized => (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            ReadinessState::Desynchronized,
+                        ),
                         crate::service::SyncStatus::Stale => {
-                            (StatusCode::SERVICE_UNAVAILABLE, "stale")
+                            (StatusCode::SERVICE_UNAVAILABLE, ReadinessState::Stale)
                         }
                         crate::service::SyncStatus::CatchingUp => {
                             if is_expired {
-                                (StatusCode::SERVICE_UNAVAILABLE, "stale")
+                                (StatusCode::SERVICE_UNAVAILABLE, ReadinessState::Stale)
                             } else {
-                                (StatusCode::SERVICE_UNAVAILABLE, "catching_up")
+                                (StatusCode::SERVICE_UNAVAILABLE, ReadinessState::CatchingUp)
                             }
                         }
                         crate::service::SyncStatus::Ready => {
@@ -539,7 +607,7 @@ pub(crate) async fn readiness(lifecycle: &Lifecycle, service: &Service) -> Respo
                                 lifecycle.check_ready_probe_hook().await;
 
                                 if service.try_mark_stale_from_expired_lease(word) {
-                                    (StatusCode::SERVICE_UNAVAILABLE, "stale")
+                                    (StatusCode::SERVICE_UNAVAILABLE, ReadinessState::Stale)
                                 } else {
                                     let fresh = service.published_readiness();
                                     let fresh_expired = fresh.deadline_millis != 0
@@ -547,17 +615,20 @@ pub(crate) async fn readiness(lifecycle: &Lifecycle, service: &Service) -> Respo
                                     if fresh.status == crate::service::SyncStatus::Ready
                                         && !fresh_expired
                                     {
-                                        (StatusCode::OK, "ready")
+                                        (StatusCode::OK, ReadinessState::Ready)
                                     } else if fresh.status == crate::service::SyncStatus::Ready
                                         && fresh_expired
                                     {
-                                        (StatusCode::SERVICE_UNAVAILABLE, "stale")
+                                        (StatusCode::SERVICE_UNAVAILABLE, ReadinessState::Stale)
                                     } else {
-                                        (StatusCode::SERVICE_UNAVAILABLE, fresh.status.as_str())
+                                        (
+                                            StatusCode::SERVICE_UNAVAILABLE,
+                                            ReadinessState::from_sync_status(fresh.status),
+                                        )
                                     }
                                 }
                             } else {
-                                (StatusCode::OK, "ready")
+                                (StatusCode::OK, ReadinessState::Ready)
                             }
                         }
                     }
@@ -565,7 +636,7 @@ pub(crate) async fn readiness(lifecycle: &Lifecycle, service: &Service) -> Respo
             }
         }
     };
-    let mut response = (status, Json(Status { status: label })).into_response();
+    let mut response = (status, Json(Status { status: state })).into_response();
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -580,30 +651,30 @@ pub(crate) async fn readiness(lifecycle: &Lifecycle, service: &Service) -> Respo
 /// published word is never modified: lease expiry stays lazily recorded by
 /// `/ready` and feeder calls, so telemetry observation cannot change what
 /// other callers see. Lock-free; reads two atomics and the clock.
-pub(crate) fn readiness_state(lifecycle: &Lifecycle, service: &Service) -> &'static str {
+pub(crate) fn readiness_state(lifecycle: &Lifecycle, service: &Service) -> ReadinessState {
     use crate::service::{PublishedReadiness, SyncStatus, now_to_millis};
 
     if service.is_unavailable() {
-        return "unavailable";
+        return ReadinessState::Unavailable;
     }
     match lifecycle.phase() {
-        Phase::Draining => "draining",
-        Phase::Starting => "starting",
-        Phase::Ready if service.mode() == crate::ServerMode::Standalone => "ready",
+        Phase::Draining => ReadinessState::Draining,
+        Phase::Starting => ReadinessState::Starting,
+        Phase::Ready if service.mode() == crate::ServerMode::Standalone => ReadinessState::Ready,
         Phase::Ready => {
             let published = PublishedReadiness::unpack(service.published_readiness_word());
             let expired =
                 published.deadline_millis != 0 && now_to_millis() > published.deadline_millis;
             match published.status {
-                SyncStatus::Ready | SyncStatus::CatchingUp if expired => "stale",
-                status => status.as_str(),
+                SyncStatus::Ready | SyncStatus::CatchingUp if expired => ReadinessState::Stale,
+                status => ReadinessState::from_sync_status(status),
             }
         }
     }
 }
 
 fn is_probe(path: &str) -> bool {
-    path == "/health" || path == "/ready"
+    path == Route::Health.as_str() || path == Route::Ready.as_str()
 }
 
 /// True only for the registered `/metrics` route; when metrics are disabled
@@ -612,7 +683,7 @@ pub(crate) fn is_metrics_scrape(request: &Request) -> bool {
     request
         .extensions()
         .get::<axum::extract::MatchedPath>()
-        .is_some_and(|matched| matched.as_str() == "/metrics")
+        .is_some_and(|matched| matched.as_str() == Route::Metrics.as_str())
 }
 
 fn close_connection(response: &mut Response) {
@@ -669,7 +740,7 @@ pub(crate) async fn shutdown_gate(
         }
         api::error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            "shutting_down",
+            ErrorCode::ShuttingDown,
             "server is shutting down; retry against another instance".into(),
         )
     };
@@ -718,7 +789,7 @@ pub(crate) async fn request_timeout(
             );
             let mut response = api::error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "request_timeout",
+                ErrorCode::RequestTimeout,
                 "request exceeded the server time limit; its effect is unknown".into(),
             );
             close_connection(&mut response);
@@ -730,6 +801,30 @@ pub(crate) async fn request_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readiness_domains_match_the_http_and_metrics_contract() {
+        assert_eq!(
+            ReadinessState::STANDALONE.map(ReadinessState::as_str),
+            ["unavailable", "draining", "starting", "ready"]
+        );
+        assert_eq!(
+            ReadinessState::SOURCE_MANAGED.map(ReadinessState::as_str),
+            [
+                "unavailable",
+                "draining",
+                "starting",
+                "ready",
+                "uninitialized",
+                "loading",
+                "catching_up",
+                "stale",
+                "desynchronized",
+            ]
+        );
+        assert_eq!(crate::ServerMode::Standalone.as_str(), "standalone");
+        assert_eq!(crate::ServerMode::SourceManaged.as_str(), "source_managed");
+    }
 
     #[test]
     fn phases_only_move_forward() {
@@ -902,7 +997,7 @@ mod tests {
                 lifecycle.clone(),
                 &standalone,
             );
-            assert_eq!(readiness_state(&lifecycle, &service), phase);
+            assert_eq!(readiness_state(&lifecycle, &service).as_str(), phase);
             assert_eq!(probe_label(&lifecycle, &service).await, phase);
 
             for (status, expired, label) in statuses {
@@ -917,14 +1012,17 @@ mod tests {
                 let expected = if phase == "ready" { label } else { phase };
                 let word = service.published_readiness_word();
                 for _ in 0..2 {
-                    assert_eq!(readiness_state(&lifecycle, &service), expected);
+                    assert_eq!(readiness_state(&lifecycle, &service).as_str(), expected);
                     assert_eq!(service.published_readiness_word(), word, "{status:?}");
                 }
                 assert_eq!(probe_label(&lifecycle, &service).await, expected);
-                assert_eq!(readiness_state(&lifecycle, &service), expected);
+                assert_eq!(readiness_state(&lifecycle, &service).as_str(), expected);
 
                 service.mark_unavailable_for_test();
-                assert_eq!(readiness_state(&lifecycle, &service), "unavailable");
+                assert_eq!(
+                    readiness_state(&lifecycle, &service).as_str(),
+                    "unavailable"
+                );
                 assert_eq!(probe_label(&lifecycle, &service).await, "unavailable");
             }
         }

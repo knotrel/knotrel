@@ -136,53 +136,53 @@ fn build_router_from_service(
         .then(|| metrics::Metrics::new(service.clone(), lifecycle.clone()));
     let mut router = axum::Router::new()
         .route(
-            "/health",
+            api::Route::Health.as_str(),
             get(|| async { axum::Json(Health { status: "ok" }) }),
         )
         .route(
-            "/ready",
+            api::Route::Ready.as_str(),
             get(move |State(service): State<service::Service>| async move {
                 lifecycle::readiness(&ready_lifecycle, &service).await
             }),
         )
-        .route("/v1/info", get(api::info))
-        .route("/v1/stats", get(api::stats))
+        .route(api::Route::Info.as_str(), get(api::info))
+        .route(api::Route::Stats.as_str(), get(api::stats))
         .route(
-            "/v1/operations",
+            api::Route::Operations.as_str(),
             post(api::single).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
         )
         .route(
-            "/v1/batch",
+            api::Route::Batch.as_str(),
             post(api::batch).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
         )
         .route(
-            "/v1/feeder/session",
+            api::Route::FeederSession.as_str(),
             post(api::feeder_session).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
         )
         .route(
-            "/v1/feeder/heartbeat",
+            api::Route::FeederHeartbeat.as_str(),
             post(api::feeder_heartbeat).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
         )
         .route(
-            "/v1/feeder/import",
+            api::Route::FeederImport.as_str(),
             post(api::feeder_import).layer(DefaultBodyLimit::disable()),
         )
         .route(
-            "/v1/feeder/events",
+            api::Route::FeederEvents.as_str(),
             post(api::feeder_events).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
         )
         .route(
-            "/v1/feeder/gap",
+            api::Route::FeederGap.as_str(),
             post(api::feeder_gap).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
         )
         .route(
-            "/v1/feeder/barrier",
+            api::Route::FeederBarrier.as_str(),
             post(api::feeder_barrier).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
         );
     if let Some(metrics) = &metrics {
         let scrape = std::sync::Arc::clone(metrics);
         router = router.route(
-            "/metrics",
+            api::Route::Metrics.as_str(),
             get(move || async move { metrics::render(&scrape) }),
         );
     }

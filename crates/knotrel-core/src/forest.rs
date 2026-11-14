@@ -6,6 +6,8 @@
 //! section 2: <https://www.cs.princeton.edu/courses/archive/fall07/cos521/handouts/poly.pdf>
 //! This module implements forest connectivity only, not HDT replacement levels.
 
+const SCAN_STACK_INLINE_CAPACITY: usize = 32;
+
 pub(crate) type Forest = crate::index::GenericForest<bool>;
 
 impl Forest {
@@ -54,7 +56,7 @@ impl Forest {
 pub(crate) struct Candidates<'a> {
     forest: &'a Forest,
     root: usize,
-    stack: tinyvec::TinyVec<[usize; 32]>,
+    stack: tinyvec::TinyVec<[usize; SCAN_STACK_INLINE_CAPACITY]>,
 }
 
 impl Candidates<'_> {

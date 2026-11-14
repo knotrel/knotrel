@@ -16,8 +16,8 @@
 
 use crate::{
     Lifecycle, ServerMode,
-    api::{Operation, Outcome},
-    lifecycle,
+    api::{ErrorCode, Operation, Outcome, Route},
+    lifecycle::{self, ReadinessState},
     service::{self, FeederError, Service},
 };
 use axum::{
@@ -47,22 +47,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Route templates registered by the router; anything else is `unmatched`.
-const ROUTES: [&str; 13] = [
-    "/health",
-    "/ready",
-    "/metrics",
-    "/v1/info",
-    "/v1/stats",
-    "/v1/operations",
-    "/v1/batch",
-    "/v1/feeder/session",
-    "/v1/feeder/heartbeat",
-    "/v1/feeder/import",
-    "/v1/feeder/events",
-    "/v1/feeder/gap",
-    "/v1/feeder/barrier",
-];
+const MILLISECONDS_PER_SECOND: f64 = 1_000.0;
+const PRESENT_STAMP_OFFSET: u64 = 1;
 
 /// Upper bounds, in seconds, of the HTTP duration histogram (plus `+Inf`).
 const DURATION_BUCKETS: [f64; 15] = [
@@ -89,23 +75,15 @@ const CATCHUP_BUCKETS: [f64; 13] = [
     0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0,
 ];
 
-const STANDALONE_STATES: [&str; 4] = ["unavailable", "draining", "starting", "ready"];
-const SOURCE_MANAGED_STATES: [&str; 9] = [
-    "unavailable",
-    "draining",
-    "starting",
-    "ready",
-    "uninitialized",
-    "loading",
-    "catching_up",
-    "stale",
-    "desynchronized",
-];
+const REQUEST_LABEL_COUNT: usize = 3;
+const ROUTE_LABEL_COUNT: usize = 1;
+const OUTCOME_LABEL_COUNT: usize = 1;
+const OPERATION_LABEL_COUNT: usize = 2;
 
-type RequestLabels = [(&'static str, &'static str); 3];
-type RouteLabels = [(&'static str, &'static str); 1];
-type OutcomeLabels = [(&'static str, &'static str); 1];
-type OperationLabels = [(&'static str, &'static str); 2];
+type RequestLabels = [(&'static str, &'static str); REQUEST_LABEL_COUNT];
+type RouteLabels = [(&'static str, &'static str); ROUTE_LABEL_COUNT];
+type OutcomeLabels = [(&'static str, &'static str); OUTCOME_LABEL_COUNT];
+type OperationLabels = [(&'static str, &'static str); OPERATION_LABEL_COUNT];
 type DurationFamily = Family<RouteLabels, Histogram, fn() -> Histogram>;
 type PhaseFamily = Family<OutcomeLabels, Histogram, fn() -> Histogram>;
 
@@ -272,7 +250,7 @@ impl GraphOp {
     }
 
     /// `outcome` labels, indexed by [`outcome_index`].
-    fn outcomes(self) -> [&'static str; 3] {
+    fn outcomes(self) -> [&'static str; OperationOutcome::COUNT] {
         match self {
             Self::Connected => ["true", "false", "error"],
             _ => ["changed", "unchanged", "error"],
@@ -287,12 +265,28 @@ impl GraphOp {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+enum OperationOutcome {
+    Positive = 0,
+    Negative = 1,
+    Error = 2,
+}
+
+impl OperationOutcome {
+    const COUNT: usize = Self::Error as usize + 1;
+}
+
 /// Index into [`GraphOp::outcomes`]: changed or `true`, unchanged or `false`, error.
 fn outcome_index(outcome: &Outcome) -> usize {
     match outcome {
-        Outcome::Changed { changed: true } | Outcome::Connected { connected: true } => 0,
-        Outcome::Changed { changed: false } | Outcome::Connected { connected: false } => 1,
-        Outcome::Error { .. } => 2,
+        Outcome::Changed { changed: true } | Outcome::Connected { connected: true } => {
+            OperationOutcome::Positive as usize
+        }
+        Outcome::Changed { changed: false } | Outcome::Connected { connected: false } => {
+            OperationOutcome::Negative as usize
+        }
+        Outcome::Error { .. } => OperationOutcome::Error as usize,
     }
 }
 
@@ -329,7 +323,7 @@ impl FeederEventResult {
 #[derive(Debug)]
 struct FeederEventCounters {
     family: Family<OutcomeLabels, Counter>,
-    results: [Counter; 4],
+    results: [Counter; FeederEventResult::ALL.len()],
 }
 
 /// Why the service rejected a feeder session, heartbeat, events, gap or
@@ -424,27 +418,28 @@ impl FeederRejection {
     }
 
     pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::SessionRequired => "session_required",
-            Self::FencedSession => "fenced_feeder_session",
-            Self::LeaseExpired => "lease_expired",
-            Self::InvalidLeaseDuration => "invalid_lease_duration",
-            Self::GraphUninitialized => "graph_uninitialized",
-            Self::GraphDesynchronized => "graph_desynchronized",
-            Self::StaleGeneration => "stale_generation",
-            Self::SourceMismatch => "source_mismatch",
-            Self::SourceEpochMismatch => "source_epoch_mismatch",
-            Self::OutOfOrderSequence => "out_of_order_sequence",
-            Self::SourcePredecessorMismatch => "source_predecessor_mismatch",
-            Self::ConflictingDuplicate => "conflicting_duplicate",
-            Self::UnverifiableDuplicate => "unverifiable_duplicate",
-            Self::SequenceExhausted => "sequence_exhausted",
-            Self::InvalidRequest => "invalid_request",
-            Self::EventFailed => "event_failed",
-            Self::BarrierPositionMismatch => "barrier_position_mismatch",
-            Self::BarrierNotReached => "barrier_not_reached",
-            Self::SupersededBarrier => "superseded_barrier",
-        }
+        let code = match self {
+            Self::SessionRequired => ErrorCode::SessionRequired,
+            Self::FencedSession => ErrorCode::FencedFeederSession,
+            Self::LeaseExpired => ErrorCode::LeaseExpired,
+            Self::InvalidLeaseDuration => ErrorCode::InvalidLeaseDuration,
+            Self::GraphUninitialized => ErrorCode::GraphUninitialized,
+            Self::GraphDesynchronized => ErrorCode::GraphDesynchronized,
+            Self::StaleGeneration => ErrorCode::StaleGeneration,
+            Self::SourceMismatch => ErrorCode::SourceMismatch,
+            Self::SourceEpochMismatch => ErrorCode::SourceEpochMismatch,
+            Self::OutOfOrderSequence => ErrorCode::OutOfOrderSequence,
+            Self::SourcePredecessorMismatch => ErrorCode::SourcePredecessorMismatch,
+            Self::ConflictingDuplicate => ErrorCode::ConflictingDuplicate,
+            Self::UnverifiableDuplicate => ErrorCode::UnverifiableDuplicate,
+            Self::SequenceExhausted => ErrorCode::SequenceExhausted,
+            Self::InvalidRequest => ErrorCode::InvalidRequest,
+            Self::EventFailed => ErrorCode::EventFailed,
+            Self::BarrierPositionMismatch => ErrorCode::BarrierPositionMismatch,
+            Self::BarrierNotReached => ErrorCode::BarrierNotReached,
+            Self::SupersededBarrier => ErrorCode::SupersededBarrier,
+        };
+        code.as_str()
     }
 }
 
@@ -548,9 +543,9 @@ impl ImportPhase {
 struct ImportMetrics {
     in_progress: Gauge,
     results_family: Family<OutcomeLabels, Counter>,
-    results: [Counter; 5],
+    results: [Counter; ImportResult::ALL.len()],
     durations_family: PhaseFamily,
-    durations: [Histogram; 3],
+    durations: [Histogram; ImportPhase::ALL.len()],
 }
 
 /// Kind of catch-up interval: the `kind` label of the catch-up histogram.
@@ -577,7 +572,7 @@ impl CatchupKind {
 #[derive(Debug)]
 struct CatchupMetrics {
     durations_family: PhaseFamily,
-    durations: [Histogram; 2],
+    durations: [Histogram; CatchupKind::ALL.len()],
 }
 
 /// Pre-created feeder-rejection and desynchronization counters; present
@@ -585,9 +580,9 @@ struct CatchupMetrics {
 #[derive(Debug)]
 struct FeederFailureCounters {
     rejections_family: Family<OutcomeLabels, Counter>,
-    rejections: [Counter; 19],
+    rejections: [Counter; FeederRejection::ALL.len()],
     desyncs_family: Family<OutcomeLabels, Counter>,
-    desyncs: [Counter; 4],
+    desyncs: [Counter; Desynchronization::ALL.len()],
 }
 
 fn catchup_histogram() -> Histogram {
@@ -620,8 +615,8 @@ struct PhaseHistograms {
 pub(crate) struct ServiceTelemetry {
     rejected_family: Family<OutcomeLabels, Counter>,
     uncertain_family: Family<OutcomeLabels, Counter>,
-    rejected: [Counter; 4],
-    uncertain: [Counter; 3],
+    rejected: [Counter; Rejection::ALL.len()],
+    uncertain: [Counter; Uncertainty::ALL.len()],
     graph_nodes: Gauge,
     graph_edges: Gauge,
     queue_family: PhaseFamily,
@@ -629,11 +624,11 @@ pub(crate) struct ServiceTelemetry {
     execution_family: PhaseFamily,
     // Indexed by `JobKind`; `None` for kinds HTTP cannot reach in this mode,
     // whose observations (possible only through direct service calls) are dropped.
-    phases: [Option<PhaseHistograms>; 9],
+    phases: [Option<PhaseHistograms>; JobKind::ALL.len()],
     operations_family: Family<OperationLabels, Counter>,
     // Indexed by `GraphOp`, then `outcome_index`; `None` for operations HTTP
     // cannot execute in this mode.
-    operations: [Option<[Counter; 3]>; 4],
+    operations: [Option<[Counter; OperationOutcome::COUNT]>; GraphOp::ALL.len()],
     feeder_events: Option<FeederEventCounters>,
     feeder_failures: Option<FeederFailureCounters>,
     // Lease-clock milliseconds of the last feeder application plus one;
@@ -898,14 +893,16 @@ impl ServiceTelemetry {
     /// Callers hold the graph lock, so stamps arrive in order; `fetch_max`
     /// additionally keeps an older stamp from replacing a newer one.
     pub(crate) fn mark_applied(&self) {
-        let stamp = service::now_to_millis().saturating_add(1);
+        let stamp = service::now_to_millis().saturating_add(PRESENT_STAMP_OFFSET);
         self.last_applied.fetch_max(stamp, Ordering::Relaxed);
     }
 
     /// Seconds from the last application to `now_millis`, if there was one.
     fn last_applied_age_seconds(&self, now_millis: u64) -> Option<f64> {
         let stamp = self.last_applied.load(Ordering::Relaxed);
-        (stamp != 0).then(|| now_millis.saturating_sub(stamp - 1) as f64 / 1000.0)
+        (stamp != 0).then(|| {
+            now_millis.saturating_sub(stamp - PRESENT_STAMP_OFFSET) as f64 / MILLISECONDS_PER_SECOND
+        })
     }
 
     pub(crate) fn reject(&self, reason: Rejection) {
@@ -1322,8 +1319,9 @@ impl Drop for PendingOutcome {
 /// millisecond (`now_millis > deadline_millis`), when every check, published
 /// or worker-side, reports it expired.
 pub(crate) fn lease_remaining_seconds(deadline_millis: u64, now_millis: u64) -> Option<f64> {
-    (deadline_millis != 0)
-        .then(|| (i128::from(deadline_millis) - i128::from(now_millis)) as f64 / 1000.0)
+    (deadline_millis != 0).then(|| {
+        (i128::from(deadline_millis) - i128::from(now_millis)) as f64 / MILLISECONDS_PER_SECOND
+    })
 }
 
 /// Service-health gauges sampled at encode time, without the graph mutex or
@@ -1404,9 +1402,9 @@ impl Collector for HealthCollector {
         }
 
         let current = lifecycle::readiness_state(&self.lifecycle, &self.service);
-        let states: &[&str] = match self.service.mode() {
-            ServerMode::Standalone => &STANDALONE_STATES,
-            ServerMode::SourceManaged => &SOURCE_MANAGED_STATES,
+        let states: &[ReadinessState] = match self.service.mode() {
+            ServerMode::Standalone => &ReadinessState::STANDALONE,
+            ServerMode::SourceManaged => &ReadinessState::SOURCE_MANAGED,
         };
         let mut family = encoder.encode_descriptor(
             "knotrel_readiness_state",
@@ -1415,14 +1413,11 @@ impl Collector for HealthCollector {
             MetricType::Gauge,
         )?;
         for state in states {
-            let labels = [("state", *state)];
+            let labels = [("state", state.as_str())];
             ConstGauge::new(i64::from(*state == current)).encode(family.encode_family(&labels)?)?;
         }
 
-        let mode = match self.service.mode() {
-            ServerMode::Standalone => "standalone",
-            ServerMode::SourceManaged => "source_managed",
-        };
+        let mode = self.service.mode().as_str();
         let mut build = encoder.encode_descriptor(
             "knotrel_build_info",
             "Constant 1 labelled with the server version, graph engine and mode.",
@@ -1442,8 +1437,12 @@ fn route_label(request: &Request) -> &'static str {
     request
         .extensions()
         .get::<MatchedPath>()
-        .and_then(|matched| ROUTES.iter().find(|route| **route == matched.as_str()))
-        .copied()
+        .and_then(|matched| {
+            Route::ALL
+                .into_iter()
+                .map(Route::as_str)
+                .find(|route| *route == matched.as_str())
+        })
         .unwrap_or("unmatched")
 }
 
