@@ -4,7 +4,7 @@
 //! scrape time by [`HealthCollector`]. Rejection and uncertain-outcome
 //! counters, the worker-published graph-size gauges and the worker-phase
 //! histograms live in [`ServiceTelemetry`], owned by the `Service` they
-//! observe. Nothing here acquires the graph mutex, a graph-job admission
+//! observe, as does the instant of the last feeder application. Nothing here acquires the graph mutex, a graph-job admission
 //! permit or an import permit; graph counts are published by workers that
 //! already hold the graph lock, and phase timings are recorded by workers
 //! after they release it. Scrapes and request
@@ -16,7 +16,7 @@ use crate::{
     Lifecycle, ServerMode,
     api::{Operation, Outcome},
     lifecycle,
-    service::{FeederError, Service},
+    service::{self, FeederError, Service},
 };
 use axum::{
     extract::{MatchedPath, Request, State},
@@ -40,7 +40,7 @@ use std::{
     ops::{Deref, DerefMut},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -370,8 +370,11 @@ impl FeederRejection {
     ];
 
     /// Classifies a feeder error. `None` for admission refusals (counted by
-    /// the request-rejection counter), errors only the HTTP adapter or an
-    /// import can produce, and malformed input.
+    /// the request-rejection counter); mode and request-identity refusals,
+    /// which the HTTP adapter checks first and which some service entry
+    /// points (`Service::register_session`, `Service::heartbeat`,
+    /// `Service::import`) also return; import-only errors; and malformed
+    /// input.
     pub(crate) fn of(error: &FeederError) -> Option<Self> {
         Some(match error {
             FeederError::SessionRequired => Self::SessionRequired,
@@ -514,6 +517,9 @@ pub(crate) struct ServiceTelemetry {
     operations: [Option<[Counter; 3]>; 4],
     feeder_events: Option<FeederEventCounters>,
     feeder_failures: Option<FeederFailureCounters>,
+    // Lease-clock milliseconds of the last feeder application plus one;
+    // 0 means none yet.
+    last_applied: AtomicU64,
 }
 
 impl ServiceTelemetry {
@@ -594,6 +600,7 @@ impl ServiceTelemetry {
             operations,
             feeder_events,
             feeder_failures,
+            last_applied: AtomicU64::new(0),
         })
     }
 
@@ -705,6 +712,20 @@ impl ServiceTelemetry {
         if let Some(failures) = &self.feeder_failures {
             failures.desyncs[cause as usize].inc();
         }
+    }
+
+    /// Records that a feeder event was applied or an import published now.
+    /// Callers hold the graph lock, so stamps arrive in order; `fetch_max`
+    /// additionally keeps an older stamp from replacing a newer one.
+    pub(crate) fn mark_applied(&self) {
+        let stamp = service::now_to_millis().saturating_add(1);
+        self.last_applied.fetch_max(stamp, Ordering::Relaxed);
+    }
+
+    /// Seconds from the last application to `now_millis`, if there was one.
+    fn last_applied_age_seconds(&self, now_millis: u64) -> Option<f64> {
+        let stamp = self.last_applied.load(Ordering::Relaxed);
+        (stamp != 0).then(|| now_millis.saturating_sub(stamp - 1) as f64 / 1000.0)
     }
 
     pub(crate) fn reject(&self, reason: Rejection) {
@@ -921,6 +942,21 @@ impl Drop for PendingOutcome {
     }
 }
 
+/// Signed seconds from `now_millis` to a published lease deadline, or `None`
+/// when none was published (`0`). Both are whole milliseconds since the
+/// process start instant, truncated. The result is positive while
+/// `now_millis < deadline_millis`, when no expiry check reports the lease
+/// expired. It is zero for the whole deadline millisecond
+/// (`now_millis == deadline_millis`): published readiness still treats the
+/// lease as live, but worker lease validation, which compares unrounded
+/// instants, may already report it expired. It is negative from the next
+/// millisecond (`now_millis > deadline_millis`), when every check, published
+/// or worker-side, reports it expired.
+pub(crate) fn lease_remaining_seconds(deadline_millis: u64, now_millis: u64) -> Option<f64> {
+    (deadline_millis != 0)
+        .then(|| (i128::from(deadline_millis) - i128::from(now_millis)) as f64 / 1000.0)
+}
+
 /// Service-health gauges sampled at encode time, without the graph mutex or
 /// any permit. The outstanding-job count is read through its `watch` channel.
 struct HealthCollector {
@@ -944,6 +980,16 @@ fn gauge(
     ConstGauge::new(value).encode(metric)
 }
 
+fn gauge_seconds(
+    encoder: &mut DescriptorEncoder,
+    name: &str,
+    help: &str,
+    seconds: f64,
+) -> Result<(), std::fmt::Error> {
+    let metric = encoder.encode_descriptor(name, help, None, MetricType::Gauge)?;
+    ConstGauge::new(seconds).encode(metric)
+}
+
 impl Collector for HealthCollector {
     fn encode(&self, mut encoder: DescriptorEncoder) -> Result<(), std::fmt::Error> {
         let info = self.service.info();
@@ -965,6 +1011,28 @@ impl Collector for HealthCollector {
             "1 after a graph worker failure made the service permanently unavailable, else 0.",
             i64::from(self.service.is_unavailable()),
         )?;
+
+        if self.service.mode() == ServerMode::SourceManaged {
+            let now = service::now_to_millis();
+            let deadline = self.service.published_readiness().deadline_millis;
+            if let Some(remaining) = lease_remaining_seconds(deadline, now) {
+                gauge_seconds(
+                    &mut encoder,
+                    "knotrel_feeder_lease_remaining_seconds",
+                    "Seconds until the feeder lease deadline last published under the graph lock, derived at scrape from the monotonic clock without renewing it; positive while no check reports the lease expired, 0 throughout the deadline millisecond (feeder calls may already fail with lease_expired), negative once every check, including /ready, reports it expired; absent until a session is registered.",
+                    remaining,
+                )?;
+            }
+            let telemetry = self.service.telemetry();
+            if let Some(age) = telemetry.and_then(|t| t.last_applied_age_seconds(now)) {
+                gauge_seconds(
+                    &mut encoder,
+                    "knotrel_feeder_last_applied_age_seconds",
+                    "Seconds since a worker last applied a feeder event (including no-op mutations and progress) or published an import, on the monotonic clock; absent until the first; grows while the source is idle, so it measures inactivity, not source lag.",
+                    age,
+                )?;
+            }
+        }
 
         let current = lifecycle::readiness_state(&self.lifecycle, &self.service);
         let states: &[&str] = match self.service.mode() {

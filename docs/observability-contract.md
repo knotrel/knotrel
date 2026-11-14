@@ -1,7 +1,7 @@
 # Observability contract
 
-**Status:** Vocabulary for roadmap M6.1, plus six M6.2 increments
-(sections 7, 8, 10, 11, 12 and 13), which are implemented but unreleased. M6 is deferred and is not
+**Status:** Vocabulary for roadmap M6.1, plus seven M6.2 increments
+(sections 7, 8, 10, 11, 12, 13 and 14), which are implemented but unreleased. M6 is deferred and is not
 part of v0.3.0. Neither M6.2 nor M6 is complete. Rows marked *pending* in
 section 4 are vocabulary only: no endpoint, metric or log field exists for
 them yet. The opt-in `/metrics` endpoint does not change any existing route,
@@ -33,7 +33,7 @@ the v0.3.0 release.
 | Outstanding worker jobs | `Lifecycle::outstanding_jobs`, `JobGuard` | Exposed via opt-in `/metrics` | Queued plus running graph jobs, including import workers. Otherwise logged only when draining. |
 | Admission capacity | `Service` permit semaphore (`max_pending_jobs`), import semaphore (1) | Exposed via opt-in `/metrics` | Rejections are logged and counted by `requests_rejected_total` (section 8). |
 | Lifecycle phase, worker failure | `Phase`, `unavailable` flag | Exposed via `/ready` and opt-in `/metrics` | `readiness_state` and `service_unavailable` gauges. |
-| Synchronization state | `GraphState` (`generation`, `version`, `sync_status`, `applied_delivery_sequence`, `source_position`, session, epoch, `lease_deadline`) | Internal | Partly visible through `/v1/stats`, headers and `/ready`. |
+| Synchronization state | `GraphState` (`generation`, `version`, `sync_status`, `applied_delivery_sequence`, `source_position`, session, epoch, `lease_deadline`) | Internal | Partly visible through `/v1/stats`, headers and `/ready`; lease time remaining via opt-in `/metrics` (section 14). |
 | Event outcome counts | `FeederEventsResponse.events_applied` | Exposed per response; cumulative via opt-in `/metrics` | Fifth M6.2 increment; section 12. |
 | Import preparation and catch-up timing | none | **Needs instrumentation** | Only whole-request server-side latency exists, in logs and (opt-in) `/metrics`. |
 | HTTP counts, duration, backlog, capacity, unavailable flag, readiness, build, graph node and edge counts | `GET /metrics` (`metrics.rs`) | Exposed when `KNOTREL_METRICS_ENABLED=true` | M6.2 increments; sections 7, 8 and 10. |
@@ -41,6 +41,7 @@ the v0.3.0 release.
 | Rejections before execution, uncertain-outcome observations | `ServiceTelemetry` (`metrics.rs`), owned by `Service` | Exposed when `KNOTREL_METRICS_ENABLED=true` | Second M6.2 increment; section 8. |
 | Graph-operation and feeder-event outcomes | `ServiceTelemetry::count_operation`, `count_feeder_event` (`metrics.rs`), called by workers | Exposed when `KNOTREL_METRICS_ENABLED=true` | Fifth M6.2 increment; section 12. |
 | Feeder rejections and desynchronizations | `ServiceTelemetry::count_feeder_rejection`, `count_desynchronization` (`metrics.rs`), called where the error or transition is produced | Exposed when `KNOTREL_METRICS_ENABLED=true` (source-managed mode) | Sixth M6.2 increment; section 13. |
+| Feeder lease remaining, last-applied age | Published readiness word and `ServiceTelemetry::mark_applied` (`metrics.rs`), read by `HealthCollector` at scrape | Exposed when `KNOTREL_METRICS_ENABLED=true` (source-managed mode) | Seventh M6.2 increment; section 14. Inactivity, not source lag. |
 
 ### Concrete operator gaps
 
@@ -192,11 +193,11 @@ durable state. "Replacement" means publication of a new generation by import.
 | `graph_nodes`, `graph_edges` | gauges | How big is the graph? | Published by the worker, under the graph lock, when a state-changing job's graph work returns and at import publication; initialized at construction. Retains the last published values; not rolled back by a later worker panic. Read at scrape without the graph lock. Not a coherent pair (section 10). | none | jump to published import counts | **implemented** | E |
 | `service_unavailable` | gauge 0/1 | Has a worker failure disabled the service? | The `unavailable` flag. Becomes 1 after a worker panic and stays 1 until process restart. | none | unaffected | **implemented** | E |
 | `readiness_state` | gauge, one-hot | What would `/ready` say? | `lifecycle::readiness_state`: same precedence as `lifecycle::readiness`, computed read-only at scrape. Stale is derived from the published deadline, without the compare-and-swap. | `state` ∈ {`unavailable`, `draining`, `starting`, `ready`, and in source-managed mode `uninitialized`, `loading`, `catching_up`, `stale`, `desynchronized`} | follows state | **implemented** | E |
-| `feeder_lease_remaining_seconds` | gauge, s | Is the feeder alive? | Published lease deadline minus now at scrape. Negative once expired. Absent with no session or in standalone mode. | none | session kept | pending | E |
+| `feeder_lease_remaining_seconds` | gauge, s | Is the feeder alive? | Lease deadline from the published readiness word minus the monotonic clock, derived at scrape (section 14). Positive while no check reports the lease expired; zero throughout the deadline millisecond, when feeder calls may already fail with `lease_expired`; negative once every check, including `/ready`, reports it expired. Scraping never renews the lease or publishes staleness. Absent before the first session and in standalone mode. | none | session kept | **implemented** | E |
 | `feeder_events_total` | counter | Is the source making progress, and how much is redundant? | Per evaluated event (section 3) in `GraphState::apply_events`, under the graph lock (section 12). `unchanged` covers no-op mutations and `progress`. | `result` ∈ {`changed`, `unchanged`, `duplicate`, `rejected`} | continues | **implemented** | E |
 | `feeder_rejections_total` | counter | Why did a feeder call fail? | One per session, heartbeat, events, gap or barrier request the service rejected, where the `FeederError` is produced (section 13). Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Excluded: admission `busy` (HTTP `import_in_progress`) and `unavailable` (counted in `requests_rejected_total`), timeouts, cancellations and panics (`requests_outcome_uncertain_total`), HTTP-adapter checks and malformed bodies, and imports (`imports_total`). Source-managed mode only. | `code` ∈ {`session_required`, `fenced_feeder_session`, `lease_expired`, `invalid_lease_duration`, `graph_uninitialized`, `graph_desynchronized`, `stale_generation`, `source_mismatch`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `sequence_exhausted`, `invalid_request`, `event_failed`, `barrier_position_mismatch`, `barrier_not_reached`, `superseded_barrier`} | continues | **implemented** | E |
 | `desynchronizations_total` | counter | Why did the graph require a rebuild? | One per transition into `desynchronized`, at the sites in `GraphState::apply_events` and `declare_gap` that set it. A predecessor mismatch covers both `prev_delivery_sequence` and `prev_source_position`, which share one wire code. Out-of-order sequences and evicted duplicates do not desynchronize. | `cause` ∈ {`gap_declared`, `source_epoch_mismatch`, `source_predecessor_mismatch`, `conflicting_duplicate`}. Source-managed mode only (section 13). | continues | **implemented** | E |
-| `feeder_last_applied_age_seconds` | gauge, s | When did the graph last move forward? | Now minus the monotonic instant of the last applied (non-duplicate) event or import publication. **Not lag** (section 2). | none | reset by publication | pending | E |
+| `feeder_last_applied_age_seconds` | gauge, s | When did the graph last move forward? | Monotonic time since a worker, under the graph lock, last applied a non-duplicate event (including no-op mutations and `progress`) or published an import (section 14). Not reset by duplicates, rejected events or imports, gaps, barriers, sessions, heartbeats or queries. Absent before the first application and in standalone mode. **Not lag** (section 2). | none | reset by publication | **implemented** | E |
 | `import_in_progress` | gauge 0/1 | Is an import running? | Import permit held. | none | — | pending | E |
 | `imports_total` | counter | Do imports succeed? | One per permitted import, at its terminal result. | `result` ∈ {`published`, `payload_rejected` (size, parse, limits), `publication_rejected` (fencing, lease, precondition, mode, exhausted), `worker_failed`} | continues | pending | E |
 | `import_duration_seconds` | histogram, s | Where does import time go? | `receive` (body read after permit), `prepare` (parse and build, off-lock), `publish` (lock wait, validation, swap). Observed even when publication is rejected. | `phase` ∈ {`receive`, `prepare`, `publish`} | continues | pending | E |
@@ -248,8 +249,11 @@ outcome counters.
 **Sixth increment (done, section 13):** feeder rejection and
 desynchronization counters.
 
-**Remaining essential (`E`, pending):** lease remaining, last-applied age, import gauge/counter/durations
-and catch-up duration.
+**Seventh increment (done, section 14):** feeder lease remaining and
+last-applied age gauges.
+
+**Remaining essential (`E`, pending):** import gauge/counter/durations and
+catch-up duration.
 
 **Instrumentation locations for the remaining rows:**
 
@@ -258,7 +262,6 @@ and catch-up duration.
 | Operations | `GraphState::apply`, called per operation for single and batch requests. |
 | Imports | `api::feeder_import` and `Service::import`. |
 | Catch-up | Start instant stored in `GraphState` at publication; observed in `declare_barrier` B2. |
-| Last-applied instant | Atomics updated by the worker under the lock (as graph counts are; section 10). |
 | `/metrics` reads | Atomics, the published readiness word, `outstanding_jobs` (a `watch` channel) and the registry. No graph lock, admission permit or import permit; registry and `watch` synchronization still applies. |
 
 These can reuse the per-instance `ServiceTelemetry` handle that `Service`
@@ -367,8 +370,9 @@ metrics). Most route/method combinations can only yield `405`, so real
 counts are far below the bound. The second increment adds 7 series and the
 third adds 2. The fourth adds 153 standalone and 459 source-managed
 (section 11). The fifth adds 12 standalone and 7 source-managed (section
-12). The sixth adds 23 source-managed only, for a current maximum of
-**1414 standalone, 1743 source-managed** (section 13).
+12). The sixth adds 23 source-managed only (section 13). The seventh adds
+at most 2 source-managed only, for a current maximum of
+**1414 standalone, 1745 source-managed** (section 14).
 
 **Dependency.** [`prometheus-client`](https://crates.io/crates/prometheus-client)
 0.26, the Prometheus project's Rust client, with default features disabled.
@@ -575,7 +579,7 @@ metrics are disabled, `Service` holds `None`; nothing is registered,
 allocated or published.
 
 **Series.** 2 more series. The maximum became **1249 standalone, 1254
-source-managed** (now 1414 and 1743; section 13).
+source-managed** (now 1414 and 1745; section 14).
 
 **Tests.** In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)
 (module `graph_counts`) and `service.rs` (module `tests::graph_counts`):
@@ -693,7 +697,7 @@ is allocated; the lock helper only wraps the guard.
 - source-managed: 3 × 9 × 17 = 459.
 
 The maximum becomes **1402 standalone, 1713 source-managed** (now 1414
-and 1743; section 13). The test
+and 1745; section 14). The test
 `series_exist_only_for_kinds_reachable_in_the_mode` checks the per-mode
 timing series counts against actual exposition.
 
@@ -796,7 +800,7 @@ there is no ownership cycle.
 | source-managed | 3: `connected` × {`true`, `false`, `error`}; direct mutations are refused before execution | 4 |
 
 The maximum becomes **1414 standalone, 1720 source-managed** (now 1414 and
-1743; section 13). The test
+1745; section 14). The test
 `series_exist_at_zero_only_for_reachable_combinations` checks these sets
 against actual exposition.
 
@@ -858,11 +862,13 @@ Not counted:
 | --- | --- | --- |
 | Admission `busy` (HTTP `503 import_in_progress`) and `unavailable`, including the worker's own pre-job check and the barrier's `failed` check | admission or worker | `requests_rejected_total` |
 | Request timeout, cancellation, worker panic | lifecycle, worker join | `requests_outcome_uncertain_total` |
-| `mode_conflict`, missing or invalid instance header (`invalid_instance_id`), header or body `stale_instance_id`, `invalid_graph_id`, malformed or unprocessable JSON | HTTP adapter, before the service is called; malformed bodies never become a typed `FeederError` | `http_requests_total` only |
+| `mode_conflict`, missing or invalid instance header (`invalid_instance_id`), header or body `stale_instance_id`, `invalid_graph_id`, malformed or unprocessable JSON | HTTP adapter, before the service is called; malformed bodies never become a typed `FeederError`. `Service::register_session` and `Service::heartbeat` also return `ModeMismatch` and `StaleInstanceId` from their entry checks (as `Service::import` does with `StaleInstanceId` and `InvalidGraphId`); these are not counted either | `http_requests_total` only |
 | Import, including its fencing and precondition failures | import path | pending `imports_total` |
 
-`FeederRejection::of` is total over `FeederError`. Variants produced only by
-the HTTP adapter, by imports or by admission map to `None`. The unit test
+`FeederRejection::of` is total over `FeederError`. Mode and request-identity
+variants (`ModeMismatch`, `StaleInstanceId`, `InvalidInstanceId`,
+`InvalidGraphId`), whether returned by the HTTP adapter or by a service entry
+check, import-only variants and admission variants map to `None`. The unit test
 `api::tests::feeder_rejection_labels_match_wire_codes` checks that every
 counted label equals the response `code` that `api::feeder_error` produces,
 except `Domain`, which collapses to `event_failed`.
@@ -914,7 +920,8 @@ counting is a single atomic increment.
 | standalone | 0: family not registered (feeder endpoints refuse with `mode_conflict`) | 0 |
 | source-managed | 19 | 4 |
 
-The maximum becomes **1414 standalone, 1743 source-managed**. The test
+The maximum becomes **1414 standalone, 1743 source-managed** (now 1414 and
+1745; section 14). The test
 `feeder_rejections::series_exist_at_zero_only_in_source_managed_mode` checks
 these sets against actual exposition.
 
@@ -950,3 +957,106 @@ variant that the u64 wire protocol cannot reach; it is covered only by the
 classification test.
 
 **Overhead.** Not qualified. Section 6 applies unchanged.
+
+## 14. Seventh M6.2 increment: feeder lease remaining and last-applied age (implemented, unreleased)
+
+**Series.** Two unlabelled gauges, emitted only in source-managed mode by the
+scrape-time `HealthCollector`, and only once they have a value:
+`knotrel_feeder_lease_remaining_seconds` and
+`knotrel_feeder_last_applied_age_seconds`. Neither stores absolute time in a
+label. Neither measures source-relative lag or proves synchronization:
+only `/ready` (and `readiness_state`) says whether the graph is synchronized
+(section 2).
+
+**Clock.** Both use the monotonic lease clock (`service::now_to_millis`,
+milliseconds since a process-local start instant), never wall-clock time.
+Values are computed at scrape in signed milliseconds and exposed in seconds,
+so their resolution is 1 ms. No timer task updates them.
+
+**Lease remaining.**
+
+| Aspect | Behavior |
+| --- | --- |
+| Source | `deadline_millis` of the published readiness word, which feeder and import workers republish from `GraphState::lease_deadline` under the graph lock; the initial-import `loading` store and the `/ready` staleness compare-and-swap carry the deadline over unchanged. No separate lease state. |
+| Value | `(deadline_millis − now_millis) / 1000`, signed. |
+| Boundary | Let `D` be the true deadline truncated to whole milliseconds since the start instant (`deadline_millis`) and `N` the scrape time truncated likewise (`now_millis`). **Positive** while `N < D`: the true time is before `D` ms, so no expiry check reports expiry. **`0`** for the whole deadline millisecond, `N = D` (exactly 1 ms of lease-clock time): `/ready` and `readiness_state` (which compare `N > D`) still treat the lease as live, while worker lease validation (`monotonic_now() > lease_deadline`, unrounded) reports `lease_expired` once the true deadline inside that millisecond has passed, for less than 1 ms before `N` reaches `D + 1`. `0` therefore means "deadline reached", not "still valid". **Negative** from `N = D + 1`: the true time is past the true deadline, so `/ready`, `readiness_state` and worker validation all report expiry. |
+| Absent | Standalone mode; source-managed mode before the first successful session registration (published deadline `0`). Nothing clears a deadline afterwards, so the series stays once present. |
+| Session and takeover | A successful registration (same session, higher epoch or takeover) publishes `now + lease_duration`; a refused one (for example `fenced_feeder_session`) leaves it unchanged. |
+| Heartbeat | A successful heartbeat renews the deadline; a rejected one leaves it. |
+| Import | Does not change the deadline, including on replacement. |
+| Expiry | Keeps decreasing below zero. Scraping does not renew the lease, does not mark the graph `stale` and does not run the `/ready` compare-and-swap. |
+| Unavailable, draining | The last published deadline is still reported. After a worker failure no feeder call can renew it, so it runs negative; it is an observation, not a statement that a feeder exists. |
+
+**Last-applied age.**
+
+| Aspect | Behavior |
+| --- | --- |
+| Reset by | Each event the event loop applies (`GraphState::apply_events`, right after counting it `changed` or `unchanged`), including no-op mutations and `progress` events; and each successful import publication (`Service::import`, after the new generation is live). |
+| Not reset by | Exact duplicates, rejected events, rejected requests, rejected or unpublished imports (the candidate is never stamped), declared gaps, barriers, session registration, heartbeats, `/v1/stats` and `connected` queries. |
+| Partial success | A request that fails after an applied prefix keeps the stamp of its last applied prefix event. |
+| Value | Time since the stamp. An idle source legitimately makes it large: it measures inactivity, not lag. |
+| Absent | Standalone mode; source-managed mode before the first qualifying application. |
+| Replacement | Reset by the published import; never removed afterwards. Counters are unaffected (sections 12 and 13). |
+
+**Storage and ownership.** The age stamp is one `AtomicU64` in the
+per-instance `ServiceTelemetry`, holding lease-clock milliseconds plus one
+(`0` means none). Workers write it while holding the graph lock, so writes are
+ordered; `fetch_max` also prevents an older stamp from replacing a newer one.
+Lease remaining reuses the published readiness word and adds no storage.
+
+**Scrape.** Both are read lock-free by `HealthCollector`: no graph lock,
+admission permit or import permit. Each value is sampled independently, so it
+is not coherent with `readiness_state`, the graph gauges or each other within
+one scrape.
+
+**Cancellation and failure.** Stamps and deadlines are written by the worker,
+so a job that applies events or publishes an import after its caller timed
+out or was cancelled still updates them. After a worker panic both keep their
+last published values; they describe what workers last published, not the
+current graph.
+
+**Disabled mode.** Without metrics there is no `/metrics` route, no collector
+and no `ServiceTelemetry`; the stamp helper receives `None` and reads no
+clock.
+
+**Series.**
+
+| Mode | Lease remaining | Last-applied age |
+| --- | --- | --- |
+| standalone | 0 | 0 |
+| source-managed | 0 or 1 | 0 or 1 |
+
+The maximum becomes **1414 standalone, 1745 source-managed**.
+`feeder_activity::series_appear_with_a_session_and_a_first_application`
+checks the exposed series against actual exposition.
+
+**Tests.** In `src/service.rs` (`tests::feeder_activity`), through the
+production router, with the lease clock locked and reset on entry and drop:
+- the gauge reading `0` throughout the deadline millisecond, with
+  constructed instants on both sides of the unrounded deadline inside it
+  (published readiness live on both sides, worker comparison expired after
+  it), and `±0.001` either side;
+- outside that millisecond, published deadlines whose positive and negative
+  gauge readings agree with `/ready`, `Service::is_lease_expired`,
+  `GraphState::is_lease_expired_internal` and `validate_session_and_lease`;
+- lease after session, heartbeat renewal, takeover, fenced takeover and expiry,
+  with repeated scrapes not renewing it;
+- age reset by an import, an effective event, a no-op mutation, a `progress`
+  event and the prefix of a partial failure, and not reset by an exact
+  duplicate, out-of-order and domain-rejected events, a query, stats, a
+  session, heartbeats, a barrier or a gap;
+- rejected create-only and replacement imports leaving age unchanged, a
+  published replacement resetting it without renewing the lease;
+- age reset by a worker that applies after its caller was cancelled, or timed
+  out, while a real job held the graph lock;
+- a scrape completing while a worker holds the graph lock;
+- standalone mode and disabled telemetry.
+
+In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs) (module
+`feeder_activity`): standalone absence, presence after a session and after the
+first application, unlabelled `gauge` types with HELP text that disclaims
+lag, and independent instances.
+
+**Overhead.** Not qualified. Section 6 applies unchanged. With metrics
+enabled, each applied event adds one clock read and one atomic `fetch_max`
+under the graph lock.

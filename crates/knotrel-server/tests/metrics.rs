@@ -2846,3 +2846,81 @@ mod feeder_rejections {
         }
     }
 }
+
+mod feeder_activity {
+    use super::graph_counts::{bootstrap, feeder, instance_id, source_managed};
+    use super::*;
+
+    const LEASE: &str = "knotrel_feeder_lease_remaining_seconds";
+    const AGE: &str = "knotrel_feeder_last_applied_age_seconds";
+
+    /// Samples of the two gauges, which never carry labels.
+    fn activity(samples: &[Sample]) -> Vec<&str> {
+        samples
+            .iter()
+            .filter(|s| s.name == LEASE || s.name == AGE)
+            .inspect(|s| assert!(s.labels.is_empty(), "{s:?}"))
+            .map(|s| s.name.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn standalone_mode_never_exposes_either_gauge() {
+        let app = router_with_config(config(4));
+        send(&app, Method::POST, "/v1/operations", LINK).await;
+        let text = send(&app, Method::GET, "/metrics", "").await.1;
+        assert!(!text.contains("knotrel_feeder_lease"), "{text}");
+        assert!(!text.contains("knotrel_feeder_last_applied"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn series_appear_with_a_session_and_a_first_application() {
+        let app = router_with_config(source_managed());
+        assert!(activity(&scrape(&app).await).is_empty());
+
+        let instance = instance_id(&app).await;
+        let session = serde_json::json!({
+            "instance_id": instance,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+            "lease_duration_ms": 60_000,
+        });
+        let (status, _) = feeder(&app, &instance, "/v1/feeder/session", None, session).await;
+        assert_eq!(status, StatusCode::OK);
+        let samples = scrape(&app).await;
+        assert_eq!(activity(&samples), [LEASE]);
+        let lease = value(&samples, LEASE, &[]).unwrap();
+        assert!(lease > 0.0 && lease <= 60.0, "{lease}");
+
+        let app = router_with_config(source_managed());
+        bootstrap(&app, &["1", "2"], &[]).await;
+        let samples = scrape(&app).await;
+        assert_eq!(activity(&samples), [LEASE, AGE]);
+        let age = value(&samples, AGE, &[]).unwrap();
+        assert!((0.0..60.0).contains(&age), "{age}");
+    }
+
+    #[tokio::test]
+    async fn gauges_are_described_as_lease_time_and_inactivity_not_lag() {
+        let app = router_with_config(source_managed());
+        bootstrap(&app, &["1"], &[]).await;
+        let text = send(&app, Method::GET, "/metrics", "").await.1;
+        for name in [LEASE, AGE] {
+            assert!(text.contains(&format!("# TYPE {name} gauge\n")), "{text}");
+        }
+        let help = text
+            .lines()
+            .find(|line| line.starts_with(&format!("# HELP {AGE} ")))
+            .unwrap();
+        assert!(help.contains("not source lag"), "{help}");
+    }
+
+    #[tokio::test]
+    async fn server_instances_report_their_own_feeder_activity() {
+        let first = router_with_config(source_managed());
+        let second = router_with_config(source_managed());
+        bootstrap(&first, &["1"], &[]).await;
+        assert_eq!(activity(&scrape(&first).await), [LEASE, AGE]);
+        assert!(activity(&scrape(&second).await).is_empty());
+    }
+}

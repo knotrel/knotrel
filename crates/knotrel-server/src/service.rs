@@ -1337,6 +1337,7 @@ impl GraphState {
                 });
                 newly_applied_count += 1;
                 count_feeder_event(telemetry, result);
+                mark_applied(telemetry);
             } else {
                 // Applied sequence counter is u64::MAX and cannot be incremented.
                 // Note: since seq is u64, any seq > u64::MAX is impossible on the wire.
@@ -1542,6 +1543,13 @@ impl Drop for WorkerPanicGuard {
 fn count_feeder_event(telemetry: Option<&ServiceTelemetry>, result: FeederEventResult) {
     if let Some(telemetry) = telemetry {
         telemetry.count_feeder_event(result);
+    }
+}
+
+/// Stamps the last-applied instant for an applied, non-duplicate event.
+fn mark_applied(telemetry: Option<&ServiceTelemetry>) {
+    if let Some(telemetry) = telemetry {
+        telemetry.mark_applied();
     }
 }
 
@@ -2057,6 +2065,7 @@ impl Service {
             let edge_count = state.graph.edge_count();
             if let Some(telemetry) = &telemetry {
                 telemetry.publish_graph_counts(node_count, edge_count);
+                telemetry.mark_applied();
             }
 
             Ok(ImportResponse {
@@ -4817,6 +4826,560 @@ mod tests {
                 assert!(excluded(lock_wait), "{lock_wait:?}");
                 assert!(excluded(execution), "{execution:?}");
             });
+        }
+    }
+
+    /// Lease-remaining and last-applied-age gauges, driven through the
+    /// production router. Tests that move the shared lease clock hold its lock
+    /// and reset it on entry and on drop, including after a failed assertion.
+    mod feeder_activity {
+        use super::*;
+        use axum::body::{Body, to_bytes};
+        use axum::http::{Request, StatusCode, header};
+        use serde_json::{Value, json};
+        use tower::ServiceExt;
+
+        const LEASE: &str = "knotrel_feeder_lease_remaining_seconds";
+        const AGE: &str = "knotrel_feeder_last_applied_age_seconds";
+        const STEP: Duration = Duration::from_secs(10);
+
+        struct Clock(#[allow(dead_code)] tokio::sync::MutexGuard<'static, ()>);
+
+        impl Clock {
+            async fn lock() -> Self {
+                let guard = lock_clock_for_test().await;
+                reset_clock();
+                Self(guard)
+            }
+        }
+
+        impl Drop for Clock {
+            fn drop(&mut self) {
+                reset_clock();
+            }
+        }
+
+        struct App {
+            service: Service,
+            lifecycle: Lifecycle,
+            router: axum::Router,
+            instance: String,
+        }
+
+        fn app_with(config: crate::ServerConfig) -> App {
+            let lifecycle = Lifecycle::ready();
+            let service =
+                Service::with_config(ConnectivityGraph::default(), 4, lifecycle.clone(), &config);
+            let router =
+                crate::build_router_from_service(service.clone(), config, lifecycle.clone());
+            let instance = service.instance_id().to_owned();
+            App {
+                service,
+                lifecycle,
+                router,
+                instance,
+            }
+        }
+
+        fn source_managed() -> crate::ServerConfig {
+            crate::ServerConfig::default()
+                .with_mode(ServerMode::SourceManaged)
+                .with_metrics_enabled(true)
+        }
+
+        impl App {
+            async fn post(&self, path: &str, if_match: Option<&str>, body: Value) -> StatusCode {
+                let mut request = Request::post(path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-knotrel-instance-id", &self.instance);
+                if let Some(etag) = if_match {
+                    request = request.header(header::IF_MATCH, etag);
+                }
+                self.router
+                    .clone()
+                    .oneshot(request.body(Body::from(body.to_string())).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            }
+
+            async fn get(&self, path: &str) -> (StatusCode, String) {
+                let response = self
+                    .router
+                    .clone()
+                    .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+                (status, String::from_utf8(bytes.to_vec()).unwrap())
+            }
+
+            /// `(lease remaining, last-applied age)` from one scrape.
+            async fn gauges(&self) -> (Option<f64>, Option<f64>) {
+                let (status, text) = self.get("/metrics").await;
+                assert_eq!(status, StatusCode::OK);
+                let sample = |name: &str| {
+                    text.lines()
+                        .find_map(|line| line.strip_prefix(&format!("{name} ")))
+                        .map(|value| value.parse().unwrap())
+                };
+                (sample(LEASE), sample(AGE))
+            }
+
+            async fn age(&self) -> f64 {
+                self.gauges().await.1.expect("age series present")
+            }
+
+            async fn lease(&self) -> f64 {
+                self.gauges().await.0.expect("lease series present")
+            }
+
+            async fn session(&self, id: &str, epoch: u64, lease_ms: u64) -> StatusCode {
+                let body = json!({
+                    "instance_id": self.instance,
+                    "feeder_session_id": id,
+                    "feeder_epoch": epoch,
+                    "lease_duration_ms": lease_ms,
+                });
+                self.post("/v1/feeder/session", None, body).await
+            }
+
+            async fn heartbeat(&self) -> StatusCode {
+                let body = json!({
+                    "instance_id": self.instance,
+                    "feeder_session_id": "s",
+                    "feeder_epoch": 1,
+                });
+                self.post("/v1/feeder/heartbeat", None, body).await
+            }
+
+            async fn import(&self, mode: &str, if_match: Option<&str>) -> StatusCode {
+                let body = json!({
+                    "mode": mode,
+                    "instance_id": self.instance,
+                    "graph_id": "default",
+                    "source_id": "pg-1",
+                    "source_epoch": "ep-1",
+                    "source_position": "p-0",
+                    "feeder_session_id": "s",
+                    "feeder_epoch": 1,
+                    "nodes": ["1", "2"],
+                    "edges": [],
+                });
+                self.post("/v1/feeder/import", if_match, body).await
+            }
+
+            async fn events(&self, events: Value) -> StatusCode {
+                let body = json!({
+                    "instance_id": self.instance,
+                    "graph_id": "default",
+                    "generation": 1,
+                    "feeder_session_id": "s",
+                    "feeder_epoch": 1,
+                    "source_id": "pg-1",
+                    "source_epoch": "ep-1",
+                    "events": events,
+                });
+                self.post("/v1/feeder/events", None, body).await
+            }
+
+            async fn bootstrap(&self) {
+                assert_eq!(self.session("s", 1, 60_000).await, StatusCode::OK);
+                assert_eq!(self.import("create_only", None).await, StatusCode::CREATED);
+            }
+
+            /// Renews the lease, then lets `STEP` pass.
+            async fn idle(&self) {
+                assert_eq!(self.heartbeat().await, StatusCode::OK);
+                advance_clock(STEP);
+            }
+
+            async fn wait_idle(&self) {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while self.lifecycle.outstanding_jobs() != 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+            }
+
+            /// Starts a real read-only job that holds the graph lock until
+            /// the returned sender is used or dropped.
+            async fn hold_graph_lock(
+                &self,
+            ) -> (
+                std::sync::mpsc::Sender<()>,
+                tokio::task::JoinHandle<Result<(), ServiceError>>,
+            ) {
+                let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+                let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+                let holder = tokio::spawn({
+                    let service = self.service.clone();
+                    async move {
+                        service
+                            .run(JobKind::Stats, JobEffect::ReadOnly, move |_| {
+                                locked_tx.send(()).unwrap();
+                                let _ = release_rx.recv();
+                            })
+                            .await
+                    }
+                });
+                locked_rx.await.unwrap();
+                assert!(self.service.graph.try_lock().is_none());
+                (release_tx, holder)
+            }
+        }
+
+        fn event(seq: u64, fields: Value) -> Value {
+            let mut event = json!({
+                "event_id": format!("e-{seq}"),
+                "delivery_sequence": seq,
+                "prev_delivery_sequence": seq - 1,
+                "source_position": format!("p-{seq}"),
+                "prev_source_position": format!("p-{}", seq - 1),
+            });
+            event
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            event
+        }
+
+        fn link(seq: u64, source: &str, target: &str) -> Value {
+            event(
+                seq,
+                json!({"op": "link", "source": source, "target": target}),
+            )
+        }
+
+        fn reset(age: f64) -> bool {
+            age < STEP.as_secs_f64()
+        }
+
+        fn kept(age: f64) -> bool {
+            age >= STEP.as_secs_f64()
+        }
+
+        /// Publishes `deadline` through the production readiness word, as
+        /// a feeder worker does under the graph lock, with status `Ready`
+        /// and an active session `s`/1.
+        fn publish_deadline(service: &Service, deadline: Instant) {
+            let mut state = service.graph.lock();
+            state.feeder_session_id = Some("s".into());
+            state.feeder_epoch = 1;
+            state.lease_deadline = Some(deadline);
+            state.sync_status = SyncStatus::Ready;
+            let word = state.current_readiness_word();
+            service.published_readiness.store(word, Ordering::Release);
+        }
+
+        /// Outside the deadline millisecond the gauge's sign agrees with
+        /// every expiry check: `/ready`, `Service::is_lease_expired` (both
+        /// on published whole milliseconds) and the worker's unrounded
+        /// `is_lease_expired_internal` and `validate_session_and_lease`.
+        #[tokio::test]
+        async fn lease_sign_matches_every_expiry_check_outside_the_deadline_millisecond() {
+            let _clock = Clock::lock().await;
+            let app = app_with(source_managed());
+
+            publish_deadline(&app.service, monotonic_now() + Duration::from_secs(60));
+            let lease = app.lease().await;
+            assert!(lease > 59.0 && lease <= 60.0, "{lease}");
+            assert_eq!(app.get("/ready").await.0, StatusCode::OK);
+            assert!(!app.service.is_lease_expired());
+            {
+                let mut state = app.service.graph.lock();
+                assert!(!state.is_lease_expired_internal());
+                assert!(state.validate_session_and_lease("s", 1).is_ok());
+            }
+
+            publish_deadline(&app.service, monotonic_now());
+            // Whole-millisecond steps: `now_millis` is at least
+            // `deadline_millis + 2` and the unrounded now is past the deadline.
+            advance_clock(Duration::from_millis(2));
+            let lease = app.lease().await;
+            assert!(lease <= -0.002 && lease > -1.0, "{lease}");
+            assert_eq!(app.get("/ready").await.0, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(app.service.is_lease_expired());
+            let mut state = app.service.graph.lock();
+            assert!(state.is_lease_expired_internal());
+            assert!(matches!(
+                state.validate_session_and_lease("s", 1),
+                Err(FeederError::LeaseExpired)
+            ));
+        }
+
+        /// The gauge reads `0` for the whole deadline millisecond
+        /// `[D, D + 1 ms)`, where `D` is the deadline truncated as
+        /// `current_readiness_word` publishes it. Published readiness still
+        /// treats the lease as live there; worker validation, which compares
+        /// unrounded instants (`monotonic_now() > deadline`), already
+        /// expires it after the exact deadline inside that millisecond.
+        #[test]
+        fn lease_reads_zero_throughout_the_deadline_millisecond() {
+            use crate::metrics::lease_remaining_seconds;
+            let at = |micros: u64| *START_INSTANT + Duration::from_micros(micros);
+            let deadline = at(5_000_600);
+            let deadline_ms = instant_to_millis(deadline);
+            assert_eq!(deadline_ms, 5_000);
+            assert_eq!(lease_remaining_seconds(0, 5_000), None);
+            // (now, gauge, published expiry, worker expiry)
+            let cases = [
+                (at(4_999_900), 0.001, false, false),
+                (at(5_000_000), 0.0, false, false),
+                (at(5_000_200), 0.0, false, false),
+                (at(5_000_800), 0.0, false, true),
+                (at(5_001_000), -0.001, true, true),
+                (at(65_000_000), -60.0, true, true),
+            ];
+            for (now, gauge, published, worker) in cases {
+                let now_ms = instant_to_millis(now);
+                assert_eq!(lease_remaining_seconds(deadline_ms, now_ms), Some(gauge));
+                assert_eq!(now_ms > deadline_ms, published, "{now_ms}");
+                assert_eq!(now > deadline, worker, "{now_ms}");
+            }
+        }
+
+        #[tokio::test]
+        async fn standalone_mode_exposes_neither_gauge() {
+            let app = app_with(crate::ServerConfig::default().with_metrics_enabled(true));
+            let (_, text) = app.get("/metrics").await;
+            assert!(!text.contains(LEASE), "{text}");
+            assert!(!text.contains(AGE), "{text}");
+        }
+
+        #[tokio::test]
+        async fn lease_follows_session_heartbeat_takeover_and_expiry_without_renewal() {
+            let _clock = Clock::lock().await;
+            let app = app_with(source_managed());
+            assert_eq!(app.gauges().await, (None, None));
+
+            assert_eq!(app.session("s", 1, 10_000).await, StatusCode::OK);
+            let lease = app.lease().await;
+            assert!(lease > 9.0 && lease <= 10.0, "{lease}");
+            assert_eq!(app.gauges().await.1, None, "a session applies nothing");
+
+            advance_clock(Duration::from_secs(4));
+            let lease = app.lease().await;
+            assert!(lease > 5.0 && lease <= 6.0, "{lease}");
+            assert_eq!(app.heartbeat().await, StatusCode::OK);
+            let lease = app.lease().await;
+            assert!(lease > 9.0 && lease <= 10.0, "{lease}");
+
+            assert_eq!(app.session("t", 2, 30_000).await, StatusCode::OK);
+            let lease = app.lease().await;
+            assert!(lease > 29.0 && lease <= 30.0, "{lease}");
+            // A fenced takeover leaves the published deadline alone.
+            assert_eq!(app.session("u", 1, 1_000).await, StatusCode::CONFLICT);
+            let lease = app.lease().await;
+            assert!(lease > 29.0 && lease <= 30.0, "{lease}");
+
+            advance_clock(Duration::from_secs(40));
+            let lease = app.lease().await;
+            assert!(lease > -11.0 && lease <= -10.0, "{lease}");
+            // Scraping neither renews the lease nor publishes staleness.
+            let again = app.lease().await;
+            assert!(again <= lease, "{again} > {lease}");
+        }
+
+        #[tokio::test]
+        async fn applied_events_and_publication_reset_age_and_nothing_else_does() {
+            let _clock = Clock::lock().await;
+            let app = app_with(source_managed());
+            assert_eq!(app.session("s", 1, 60_000).await, StatusCode::OK);
+            assert_eq!(app.gauges().await.1, None);
+            assert_eq!(app.import("create_only", None).await, StatusCode::CREATED);
+            assert!(reset(app.age().await));
+
+            app.idle().await;
+            assert_eq!(app.events(json!([link(1, "1", "2")])).await, StatusCode::OK);
+            assert!(reset(app.age().await), "effective event");
+
+            app.idle().await;
+            assert_eq!(app.events(json!([link(1, "1", "2")])).await, StatusCode::OK);
+            assert!(kept(app.age().await), "exact duplicate");
+            assert_eq!(
+                app.events(json!([link(3, "1", "2")])).await,
+                StatusCode::CONFLICT
+            );
+            assert!(kept(app.age().await), "out-of-order event");
+            assert_eq!(
+                app.events(json!([link(2, "1", "1")])).await,
+                StatusCode::UNPROCESSABLE_ENTITY
+            );
+            assert!(kept(app.age().await), "domain-rejected event");
+            let connected = r#"{"op":"connected","source":"1","target":"2"}"#;
+            let query = Request::post("/v1/operations")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(connected))
+                .unwrap();
+            let response = app.router.clone().oneshot(query).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(app.get("/v1/stats").await.0, StatusCode::OK);
+            assert_eq!(app.session("s", 1, 60_000).await, StatusCode::OK);
+            let barrier = json!({
+                "instance_id": app.instance,
+                "graph_id": "default",
+                "generation": 1,
+                "feeder_session_id": "s",
+                "feeder_epoch": 1,
+                "barrier_delivery_sequence": 1,
+                "barrier_source_position": "p-1",
+            });
+            assert_eq!(
+                app.post("/v1/feeder/barrier", None, barrier).await,
+                StatusCode::OK
+            );
+            assert!(kept(app.age().await), "query, stats, session, barrier");
+
+            assert_eq!(app.events(json!([link(2, "2", "1")])).await, StatusCode::OK);
+            assert!(reset(app.age().await), "no-op mutation");
+
+            app.idle().await;
+            let progress = event(3, json!({"op": "progress"}));
+            assert_eq!(app.events(json!([progress])).await, StatusCode::OK);
+            assert!(reset(app.age().await), "progress event");
+
+            app.idle().await;
+            let partial = json!([link(4, "3", "4"), link(5, "5", "5"), link(6, "6", "7")]);
+            assert_eq!(app.events(partial).await, StatusCode::UNPROCESSABLE_ENTITY);
+            assert!(
+                reset(app.age().await),
+                "applied prefix of a partial failure"
+            );
+
+            app.idle().await;
+            let gap = json!({
+                "instance_id": app.instance,
+                "graph_id": "default",
+                "generation": 1,
+                "feeder_session_id": "s",
+                "feeder_epoch": 1,
+                "failed_delivery_sequence": 5,
+            });
+            assert_eq!(app.post("/v1/feeder/gap", None, gap).await, StatusCode::OK);
+            assert!(kept(app.age().await), "declared gap");
+        }
+
+        #[tokio::test]
+        async fn only_a_published_import_resets_age() {
+            let _clock = Clock::lock().await;
+            let app = app_with(source_managed());
+            app.bootstrap().await;
+
+            app.idle().await;
+            assert_eq!(
+                app.import("create_only", None).await,
+                StatusCode::CONFLICT,
+                "already initialized"
+            );
+            assert_eq!(
+                app.import("replace", Some(r#""1.9.p-0""#)).await,
+                StatusCode::PRECONDITION_FAILED
+            );
+            assert!(kept(app.age().await), "rejected imports");
+            let before = app.lease().await;
+
+            assert_eq!(
+                app.import("replace", Some(r#""1.0.p-0""#)).await,
+                StatusCode::CREATED
+            );
+            assert!(reset(app.age().await), "published replacement");
+            let after = app.lease().await;
+            assert!(after <= before, "import does not renew the lease");
+        }
+
+        #[tokio::test]
+        async fn worker_application_after_caller_cancellation_resets_age() {
+            let _clock = Clock::lock().await;
+            let app = app_with(source_managed());
+            app.bootstrap().await;
+            app.idle().await;
+
+            let (release, holder) = app.hold_graph_lock().await;
+            let caller = tokio::spawn({
+                let router = app.router.clone();
+                let request = Request::post("/v1/feeder/events")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-knotrel-instance-id", &app.instance)
+                    .body(Body::from(
+                        json!({
+                            "instance_id": app.instance,
+                            "graph_id": "default",
+                            "generation": 1,
+                            "feeder_session_id": "s",
+                            "feeder_epoch": 1,
+                            "source_id": "pg-1",
+                            "source_epoch": "ep-1",
+                            "events": [link(1, "1", "2")],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap();
+                async move { router.oneshot(request).await }
+            });
+            // Holder plus the submitted events job.
+            while app.lifecycle.outstanding_jobs() != 2 {
+                tokio::task::yield_now().await;
+            }
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            assert!(kept(app.age().await), "scrape while the lock is held");
+
+            release.send(()).unwrap();
+            holder.await.unwrap().unwrap();
+            app.wait_idle().await;
+            assert!(reset(app.age().await), "worker applied after cancellation");
+        }
+
+        #[tokio::test]
+        async fn worker_application_after_caller_timeout_resets_age() {
+            let _clock = Clock::lock().await;
+            let app = app_with(
+                source_managed()
+                    .with_request_timeout(Duration::from_millis(50))
+                    .unwrap(),
+            );
+            app.bootstrap().await;
+            app.idle().await;
+
+            let (release, holder) = app.hold_graph_lock().await;
+            assert_eq!(
+                app.events(json!([link(1, "1", "2")])).await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert_eq!(app.lifecycle.outstanding_jobs(), 2);
+            assert!(kept(app.age().await));
+
+            release.send(()).unwrap();
+            holder.await.unwrap().unwrap();
+            app.wait_idle().await;
+            assert!(reset(app.age().await), "worker applied after timeout");
+        }
+
+        #[tokio::test]
+        async fn scrape_reads_both_gauges_while_a_worker_holds_the_graph_lock() {
+            let app = app_with(source_managed());
+            app.bootstrap().await;
+            let (release, holder) = app.hold_graph_lock().await;
+            let gauges = tokio::time::timeout(Duration::from_secs(5), app.gauges())
+                .await
+                .expect("scrape must not wait for the graph lock");
+            assert!(matches!(gauges, (Some(_), Some(_))), "{gauges:?}");
+            assert!(app.service.graph.try_lock().is_none());
+            release.send(()).unwrap();
+            holder.await.unwrap().unwrap();
+        }
+
+        #[tokio::test]
+        async fn disabled_telemetry_keeps_feeder_behavior() {
+            let app = app_with(crate::ServerConfig::default().with_mode(ServerMode::SourceManaged));
+            assert!(app.service.telemetry().is_none());
+            app.bootstrap().await;
+            assert_eq!(app.events(json!([link(1, "1", "2")])).await, StatusCode::OK);
+            assert_eq!(app.get("/metrics").await.0, StatusCode::NOT_FOUND);
         }
     }
 }

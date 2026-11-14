@@ -91,7 +91,8 @@ you need the exit code after stopping.
 exposes operational state: route counts, backlog, rejection and
 uncertain-outcome counts, graph node and edge counts, graph-job queue,
 lock-wait and execution times, graph-operation and feeder-event outcome
-counts, feeder rejection and desynchronization counts, readiness and build
+counts, feeder rejection and desynchronization counts, feeder lease time
+remaining, time since the last applied event or import, readiness and build
 version. Scrape it only from inside the same trusted boundary that may reach
 the API. Neither Knotrel nor this image adds authentication or TLS for it.
 A minimal Prometheus scrape job:
@@ -104,6 +105,11 @@ scrape_configs:
 ```
 
 `knotrel_readiness_state` mirrors `/ready`; it does not replace the probes.
+`knotrel_feeder_last_applied_age_seconds` measures how long the graph has
+been idle, not how far it lags the source: an idle source legitimately makes
+it large. `knotrel_feeder_lease_remaining_seconds` reads `0` in the lease's final
+millisecond, when feeder calls may already be refused, and goes negative once
+the lease has expired for every check, including `/ready`.
 Metrics reset on every restart, like the graph. Their overhead has not yet
 been qualified (see the
 [observability contract](observability-contract.md#6-m62-handoff)), so

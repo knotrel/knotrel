@@ -392,6 +392,27 @@ graph replacement, and workers count even after the caller timed out or was
 cancelled
 ([contract section 13](observability-contract.md#13-sixth-m62-increment-feeder-rejection-and-desynchronization-counters-implemented-unreleased)).
 
+`knotrel_feeder_lease_remaining_seconds` (source-managed mode only) is the
+current feeder lease deadline minus the server's monotonic clock, computed at
+scrape in whole milliseconds. It is positive while the lease is valid, `0`
+throughout the deadline millisecond (feeder calls may already fail with
+`lease_expired`, while `/ready` still reports the lease as live) and negative
+from the next millisecond, when every check, including `/ready`, reports it
+expired. Scraping never renews the lease. The series is absent until
+the first successful session registration; heartbeats and takeovers move the
+deadline, imports do not.
+
+`knotrel_feeder_last_applied_age_seconds` (source-managed mode only) is the
+monotonic time since the last applied non-duplicate event (including no-op
+mutations and `progress`) or published import. Duplicates, rejected events
+and imports, gaps, barriers, sessions, heartbeats and queries do not reset
+it; a partial failure keeps the time of its last applied prefix event. It is
+absent before the first application. It measures inactivity, **not source
+lag**: an idle source legitimately makes it large, and only `/ready` reports
+synchronization. Both gauges are sampled independently of each other and of
+the other gauges
+([contract section 14](observability-contract.md#14-seventh-m62-increment-feeder-lease-remaining-and-last-applied-age-implemented-unreleased)).
+
 ### Graceful shutdown
 
 On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:
