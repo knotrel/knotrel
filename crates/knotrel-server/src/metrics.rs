@@ -482,14 +482,19 @@ pub(crate) enum ImportResult {
     PublicationRejected,
     /// The import's worker panicked before publication.
     WorkerFailed,
+    /// Ownership ended before the worker started and before any other result:
+    /// the caller abandoned the body read, or the queued worker closure was
+    /// dropped without running.
+    Abandoned,
 }
 
 impl ImportResult {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Published,
         Self::PayloadRejected,
         Self::PublicationRejected,
         Self::WorkerFailed,
+        Self::Abandoned,
     ];
 
     fn label(self) -> &'static str {
@@ -498,6 +503,7 @@ impl ImportResult {
             Self::PayloadRejected => "payload_rejected",
             Self::PublicationRejected => "publication_rejected",
             Self::WorkerFailed => "worker_failed",
+            Self::Abandoned => "abandoned",
         }
     }
 }
@@ -532,7 +538,7 @@ impl ImportPhase {
 struct ImportMetrics {
     in_progress: Gauge,
     results_family: Family<OutcomeLabels, Counter>,
-    results: [Counter; 4],
+    results: [Counter; 5],
     durations_family: PhaseFamily,
     durations: [Histogram; 3],
 }
@@ -767,7 +773,7 @@ impl ServiceTelemetry {
             );
             registry.register(
                 "knotrel_imports",
-                "Imports that obtained the import permit, by terminal result, recorded by whichever of handler or worker owns the import when it ends, also after its caller has gone; classified by phase reached, not error code; a body receipt abandoned by its caller counts nothing; refusals before the permit count nothing",
+                "Imports that obtained the import permit, one per import by terminal result, recorded by whichever of handler or worker owns the import when it ends, also after its caller has gone; classified by phase reached, not error code; abandoned means ownership ended before the worker started, as when the caller abandons the body read; refusals before the permit count nothing",
                 imports.results_family.clone(),
             );
             registry.register(
@@ -866,6 +872,18 @@ impl ServiceTelemetry {
     }
 
     #[cfg(test)]
+    pub(crate) fn import_in_progress(&self) -> i64 {
+        self.imports.as_ref().map_or(0, |i| i.in_progress.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn import_result_count(&self, result: ImportResult) -> u64 {
+        self.imports
+            .as_ref()
+            .map_or(0, |i| i.results[result as usize].get())
+    }
+
+    #[cfg(test)]
     pub(crate) fn desynchronization_count(&self, cause: Desynchronization) -> u64 {
         self.feeder_failures
             .as_ref()
@@ -877,10 +895,10 @@ impl ServiceTelemetry {
 ///
 /// Exactly one owner, the HTTP handler during body receipt and then the
 /// worker, holds it, and it records everything when dropped: the open phase
-/// (unless unwinding), at most one terminal result, and then the end of
-/// in-progress. The permit holder drops it before releasing the permit, so
-/// `in_progress` never exceeds 1. Created only when import metrics exist;
-/// otherwise no clock is read.
+/// (unless unwinding or an unfinished `receive`), exactly one terminal
+/// result, and then the end of in-progress. The permit holder drops it
+/// before releasing the permit, so `in_progress` never exceeds 1. Created
+/// only when import metrics exist; otherwise no clock is read.
 #[derive(Debug)]
 pub(crate) struct ImportObservation {
     telemetry: Arc<ServiceTelemetry>,
@@ -961,14 +979,16 @@ impl Drop for ImportObservation {
         }
         self.close();
         let result = match self.pending {
-            Some(ImportResult::Published) => Some(ImportResult::Published),
-            _ if unwinding && self.in_worker => Some(ImportResult::WorkerFailed),
-            pending => pending,
+            Some(ImportResult::Published) => ImportResult::Published,
+            _ if unwinding && self.in_worker => ImportResult::WorkerFailed,
+            Some(result) => result,
+            None if !self.in_worker => ImportResult::Abandoned,
+            // The worker establishes a result before any non-panicking exit;
+            // never report its unclassified end as abandoned.
+            None => ImportResult::WorkerFailed,
         };
         let imports = self.imports();
-        if let Some(result) = result {
-            imports.results[result as usize].inc();
-        }
+        imports.results[result as usize].inc();
         imports.in_progress.dec();
     }
 }

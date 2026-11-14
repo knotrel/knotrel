@@ -112,7 +112,9 @@ millisecond, when feeder calls may already be refused, and goes negative once
 the lease has expired for every check, including `/ready`.
 `knotrel_imports_total{result="published"}` counts imports that became live,
 including those whose caller timed out; a `503` import response is not by
-itself a failed import.
+itself a failed import. `result="abandoned"` counts imports whose caller went
+away during the body upload, or whose worker never ran, before any worker
+outcome existed.
 Metrics reset on every restart, like the graph. Their overhead has not yet
 been qualified (see the
 [observability contract](observability-contract.md#6-m62-handoff)), so

@@ -80,11 +80,12 @@ const FEEDER_REJECTION_CODES: [&str; 19] = [
     "barrier_not_reached",
     "superseded_barrier",
 ];
-const IMPORT_RESULTS: [&str; 4] = [
+const IMPORT_RESULTS: [&str; 5] = [
     "published",
     "payload_rejected",
     "publication_rejected",
     "worker_failed",
+    "abandoned",
 ];
 const IMPORT_PHASES: [&str; 3] = ["receive", "prepare", "publish"];
 const DESYNC_CAUSES: [&str; 4] = [
@@ -2951,7 +2952,7 @@ mod imports {
             .collect()
     }
 
-    fn results(samples: &[Sample]) -> [f64; 4] {
+    fn results(samples: &[Sample]) -> [f64; 5] {
         IMPORT_RESULTS.map(|result| {
             value(samples, RESULTS, &[("result", result)])
                 .unwrap_or_else(|| panic!("missing {RESULTS}{{result={result}}}"))
@@ -2976,12 +2977,12 @@ mod imports {
         let series = import_series(&samples);
         assert_eq!(
             series.len(),
-            56,
-            "1 gauge, 4 results, 3 phases of 17 series"
+            57,
+            "1 gauge, 5 results, 3 phases of 17 series"
         );
         assert!(series.iter().all(|s| s.value == 0.0), "{series:?}");
         assert_eq!(value(&samples, IN_PROGRESS, &[]), Some(0.0));
-        assert_eq!(results(&samples), [0.0; 4]);
+        assert_eq!(results(&samples), [0.0; 5]);
         for phase in IMPORT_PHASES {
             let buckets = series
                 .iter()
@@ -3038,7 +3039,7 @@ mod imports {
 
         let samples = scrape(&app).await;
         assert_eq!(value(&samples, IN_PROGRESS, &[]), Some(0.0));
-        assert_eq!(results(&samples), [2.0, 1.0, 1.0, 0.0]);
+        assert_eq!(results(&samples), [2.0, 1.0, 1.0, 0.0, 0.0]);
         assert_eq!(phase_counts(&samples), [4.0, 4.0, 3.0]);
         assert_eq!(
             value(
@@ -3056,9 +3057,9 @@ mod imports {
         let second = router_with_config(source_managed());
         bootstrap(&first, &["1"], &[]).await;
         let _ = instance_id(&second).await;
-        assert_eq!(results(&scrape(&first).await), [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(results(&scrape(&first).await), [1.0, 0.0, 0.0, 0.0, 0.0]);
         let samples = scrape(&second).await;
-        assert_eq!(results(&samples), [0.0; 4]);
+        assert_eq!(results(&samples), [0.0; 5]);
         assert_eq!(phase_counts(&samples), [0.0; 3]);
     }
 }

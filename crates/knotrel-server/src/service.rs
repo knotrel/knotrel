@@ -1515,12 +1515,6 @@ pub(crate) enum JobEffect {
     MayChangeState,
 }
 
-/// Worker-owned RAII failure guard ensuring any panic during execution immediately
-/// marks the service unavailable, even if the awaiting async caller was cancelled.
-///
-/// It also records `worker_panic` for state-changing jobs. Counting here,
-/// on the worker, rather than in the caller's `JoinError` mapping keeps the
-/// observation when the caller is gone and avoids counting it twice.
 /// The single import permit, owned by the HTTP handler while it reads the
 /// body and then by the import worker.
 ///
@@ -1547,6 +1541,23 @@ impl ImportPermit {
     }
 }
 
+/// Everything the import worker closure owns for accounting.
+///
+/// Fields drop in declaration order, whether the closure runs or is dropped
+/// unrun: the import is recorded and its permit released before the job
+/// count falls, so shutdown cannot report the jobs drained while an import
+/// is still being recorded or still holds its permit.
+struct ImportJob {
+    import: ImportPermit,
+    _job_guard: crate::lifecycle::JobGuard,
+}
+
+/// Worker-owned RAII failure guard ensuring any panic during execution immediately
+/// marks the service unavailable, even if the awaiting async caller was cancelled.
+///
+/// It also records `worker_panic` for state-changing jobs. Counting here,
+/// on the worker, rather than in the caller's `JoinError` mapping keeps the
+/// observation when the caller is gone and avoids counting it twice.
 struct WorkerPanicGuard {
     unavailable: Arc<AtomicBool>,
     // Set only for state-changing jobs when metrics are enabled.
@@ -1923,14 +1934,18 @@ impl Service {
             published_atomic.store(loading_word, Ordering::Release);
         }
 
+        let job = ImportJob {
+            import: permit,
+            _job_guard: job_guard,
+        };
         let clock = JobClock::submit(self.telemetry.as_ref(), JobKind::ImportPublish);
         let handle = tokio::task::spawn_blocking(move || {
             JobClock::start(clock.as_ref());
             // Dropped last, after the lock and the request state, so the
-            // `publish` phase and the terminal result include them.
-            let mut import = permit;
-            import.observe(ImportObservation::enter_worker);
-            let _job_guard = job_guard;
+            // `publish` phase and the terminal result include them. Bound as
+            // a whole so the closure captures it as one value.
+            let mut job = job;
+            job.import.observe(ImportObservation::enter_worker);
             let mut panic_guard = WorkerPanicGuard {
                 unavailable: unavailable.clone(),
                 panic_telemetry,
@@ -1971,7 +1986,7 @@ impl Service {
             };
 
             lifecycle.check_worker_hook();
-            import.observe(ImportObservation::begin_prepare);
+            job.import.observe(ImportObservation::begin_prepare);
 
             // 1. Off-lock JSON parsing:
             let mut buffer = raw_bytes.to_vec();
@@ -2038,7 +2053,7 @@ impl Service {
             }
 
             // 3. Lock acquisition & atomic precondition verification
-            import.observe(ImportObservation::begin_publish);
+            job.import.observe(ImportObservation::begin_publish);
             let mut state = lock_timed(&graph, clock.as_ref(), &lifecycle);
             if state.failed || unavailable.load(Ordering::Acquire) {
                 panic_guard.unavailable.store(true, Ordering::Release);
@@ -2092,7 +2107,7 @@ impl Service {
 
             initial_guard.success = true;
             panic_guard.success = true;
-            import.observe(ImportObservation::published);
+            job.import.observe(ImportObservation::published);
             let word = state.current_readiness_word();
             published_atomic.store(word, Ordering::Release);
 
@@ -2103,7 +2118,7 @@ impl Service {
                 telemetry.mark_applied();
             }
 
-            Ok(ImportResponse {
+            let response = ImportResponse {
                 result: "published",
                 instance_id: req.instance_id,
                 graph_id: req.graph_id,
@@ -2113,7 +2128,10 @@ impl Service {
                 edge_count,
                 source_position: req.source_position,
                 status: "catching_up",
-            })
+            };
+            drop(state);
+            lifecycle.check_worker_post_lock_hook();
+            Ok(response)
         });
         let pending = PendingOutcome::arm(self.telemetry_for(JobEffect::MayChangeState));
         let joined = handle.await;
@@ -5420,7 +5438,7 @@ mod tests {
 
     mod import_metrics {
         use super::*;
-        use crate::metrics::advance_timing;
+        use crate::metrics::{ImportResult, advance_timing};
         use axum::body::{Body, Bytes, to_bytes};
         use axum::http::{Request, StatusCode, header};
         use serde_json::{Value, json};
@@ -5431,11 +5449,12 @@ mod tests {
         const IMPORT: &str = "/v1/feeder/import";
         const STEP: Duration = Duration::from_secs(5);
         const PHASES: [&str; 3] = ["receive", "prepare", "publish"];
-        const RESULTS: [&str; 4] = [
+        const RESULTS: [&str; 5] = [
             "published",
             "payload_rejected",
             "publication_rejected",
             "worker_failed",
+            "abandoned",
         ];
 
         /// Serializes the lease clock (so leases cannot expire mid-test) and
@@ -5494,7 +5513,7 @@ mod tests {
                 self.sample("knotrel_import_in_progress")
             }
 
-            fn results(&self) -> [u64; 4] {
+            fn results(&self) -> [u64; 5] {
                 RESULTS.map(|result| {
                     let series = format!("knotrel_imports_total{{result=\"{result}\"}}");
                     self.sample(&series)
@@ -5529,8 +5548,6 @@ mod tests {
 
         struct App {
             service: Service,
-            #[cfg_attr(not(feature = "test-support"), allow(dead_code))]
-            lifecycle: Lifecycle,
             router: axum::Router,
             instance: String,
         }
@@ -5544,7 +5561,6 @@ mod tests {
             let instance = service.instance_id().to_owned();
             App {
                 service,
-                lifecycle,
                 router,
                 instance,
             }
@@ -5596,12 +5612,6 @@ mod tests {
 
             async fn import(&self, mode: &str, if_match: Option<&str>) -> StatusCode {
                 self.send(if_match, self.import_body(mode)).await
-            }
-
-            #[cfg_attr(not(feature = "test-support"), allow(dead_code))]
-            fn spawn_import(&self) -> tokio::task::JoinHandle<StatusCode> {
-                let body = Body::from(self.import_body("create_only").to_string());
-                tokio::spawn(self.request(IMPORT, None, body))
             }
 
             /// Starts an import whose body the test feeds through the sender.
@@ -5659,7 +5669,7 @@ mod tests {
             app.session().await;
             let before = app.scrape().await;
             assert_eq!(before.in_progress(), Some(0.0));
-            assert_eq!(before.results(), [0; 4]);
+            assert_eq!(before.results(), [0; 5]);
             assert_eq!(before.counts(), [0; 3]);
 
             assert_eq!(app.import("create_only", None).await, StatusCode::CREATED);
@@ -5669,7 +5679,7 @@ mod tests {
             );
             let after = app.scrape().await;
             assert_eq!(after.in_progress(), Some(0.0));
-            assert_eq!(after.results(), [2, 0, 0, 0]);
+            assert_eq!(after.results(), [2, 0, 0, 0, 0]);
             assert_eq!(after.counts(), [2, 2, 2]);
         }
 
@@ -5693,7 +5703,7 @@ mod tests {
 
             let scrape = app.scrape().await;
             assert_eq!(scrape.in_progress(), Some(0.0));
-            assert_eq!(scrape.results(), [0, 3, 0, 0]);
+            assert_eq!(scrape.results(), [0, 3, 0, 0, 0]);
             assert_eq!(scrape.counts(), [3, 3, 0]);
         }
 
@@ -5708,7 +5718,7 @@ mod tests {
             );
             let scrape = app.scrape().await;
             assert_eq!(scrape.in_progress(), Some(0.0));
-            assert_eq!(scrape.results(), [0, 1, 0, 0]);
+            assert_eq!(scrape.results(), [0, 1, 0, 0, 0]);
             assert_eq!(scrape.counts(), [1, 0, 0]);
         }
 
@@ -5734,7 +5744,7 @@ mod tests {
 
             let scrape = app.scrape().await;
             assert_eq!(scrape.in_progress(), Some(0.0));
-            assert_eq!(scrape.results(), [1, 0, 3, 0]);
+            assert_eq!(scrape.results(), [1, 0, 3, 0, 0]);
             assert_eq!(scrape.counts(), [4, 4, 4]);
         }
 
@@ -5754,12 +5764,12 @@ mod tests {
             assert_eq!(telemetry.rejected_count(Rejection::ImportCapacity), 1);
             let scrape = app.scrape().await;
             assert_eq!(scrape.in_progress(), Some(1.0));
-            assert_eq!(scrape.results(), [0; 4]);
+            assert_eq!(scrape.results(), [0; 5]);
 
             drop(held);
             let scrape = app.scrape().await;
             assert_eq!(scrape.in_progress(), Some(0.0));
-            assert_eq!(scrape.results(), [0; 4], "a permit never used");
+            assert_eq!(scrape.results(), [0, 0, 0, 0, 1], "a permit never used");
             assert_eq!(scrape.counts(), [0; 3]);
         }
 
@@ -5778,14 +5788,14 @@ mod tests {
             assert_eq!(caller.await.unwrap(), StatusCode::CREATED);
 
             let scrape = app.scrape().await;
-            assert_eq!(scrape.results(), [1, 0, 0, 0]);
+            assert_eq!(scrape.results(), [1, 0, 0, 0, 0]);
             assert!(absorbed(scrape.phase("receive")), "{}", scrape.0);
             assert!(excluded(scrape.phase("prepare")), "{}", scrape.0);
             assert!(excluded(scrape.phase("publish")), "{}", scrape.0);
         }
 
         #[tokio::test]
-        async fn abandoned_body_receipt_releases_the_import_without_a_result() {
+        async fn abandoned_body_receipt_is_abandoned_without_phases() {
             let _clocks = Clocks::lock().await;
             let app = app_with(source_managed());
             app.session().await;
@@ -5797,137 +5807,196 @@ mod tests {
             assert!(caller.await.unwrap_err().is_cancelled());
             let scrape = app.scrape().await;
             assert_eq!(scrape.in_progress(), Some(0.0));
-            assert_eq!(scrape.results(), [0; 4]);
+            assert_eq!(scrape.results(), [0, 0, 0, 0, 1]);
             assert_eq!(scrape.counts(), [0; 3], "an unfinished receive");
 
             assert_eq!(app.import("create_only", None).await, StatusCode::CREATED);
-            assert_eq!(app.scrape().await.results(), [1, 0, 0, 0]);
+            assert_eq!(app.scrape().await.results(), [1, 0, 0, 0, 1]);
         }
 
+        /// Tests that pause the worker through the test-support hooks.
         #[cfg(feature = "test-support")]
-        #[tokio::test]
-        async fn in_progress_covers_a_paused_worker_whose_start_hook_is_untimed() {
-            let _clocks = Clocks::lock().await;
-            let app = app_with(source_managed());
-            app.session().await;
-            let mut pause = app.lifecycle.pause_next_worker();
-            let caller = app.spawn_import();
-            pause.wait_started().await;
-            assert_eq!(app.scrape().await.in_progress(), Some(1.0));
-            assert_eq!(app.scrape().await.results(), [0; 4]);
+        mod paused {
+            use super::*;
 
-            advance_timing(STEP);
-            pause.release();
-            assert_eq!(caller.await.unwrap(), StatusCode::CREATED);
-            let scrape = app.scrape().await;
-            assert_eq!(scrape.in_progress(), Some(0.0));
-            assert_eq!(scrape.results(), [1, 0, 0, 0]);
-            for phase in PHASES {
-                assert!(excluded(scrape.phase(phase)), "{phase}: {}", scrape.0);
+            impl App {
+                fn spawn_import(&self) -> tokio::task::JoinHandle<StatusCode> {
+                    let body = Body::from(self.import_body("create_only").to_string());
+                    tokio::spawn(self.request(IMPORT, None, body))
+                }
             }
-        }
 
-        #[cfg(feature = "test-support")]
-        #[tokio::test]
-        async fn publish_starts_at_the_graph_lock_request() {
-            let _clocks = Clocks::lock().await;
-            let app = app_with(source_managed());
-            app.session().await;
-            let mut pause = app.lifecycle.pause_next_lock_request();
-            let caller = app.spawn_import();
-            pause.wait_started().await;
+            #[tokio::test]
+            async fn in_progress_covers_a_paused_worker_whose_start_hook_is_untimed() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                app.session().await;
+                let mut pause = app.service.lifecycle.pause_next_worker();
+                let caller = app.spawn_import();
+                pause.wait_started().await;
+                assert_eq!(app.scrape().await.in_progress(), Some(1.0));
+                assert_eq!(app.scrape().await.results(), [0; 5]);
 
-            advance_timing(STEP);
-            pause.release();
-            assert_eq!(caller.await.unwrap(), StatusCode::CREATED);
-            let scrape = app.scrape().await;
-            assert!(excluded(scrape.phase("receive")), "{}", scrape.0);
-            assert!(excluded(scrape.phase("prepare")), "{}", scrape.0);
-            assert!(absorbed(scrape.phase("publish")), "{}", scrape.0);
-        }
+                advance_timing(STEP);
+                pause.release();
+                assert_eq!(caller.await.unwrap(), StatusCode::CREATED);
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.in_progress(), Some(0.0));
+                assert_eq!(scrape.results(), [1, 0, 0, 0, 0]);
+                for phase in PHASES {
+                    assert!(excluded(scrape.phase(phase)), "{phase}: {}", scrape.0);
+                }
+            }
 
-        #[cfg(feature = "test-support")]
-        #[tokio::test]
-        async fn worker_panic_at_start_is_worker_failed_without_worker_phases() {
-            let _clocks = Clocks::lock().await;
-            let app = app_with(source_managed());
-            app.session().await;
-            let mut pause = app.lifecycle.pause_next_worker();
-            let caller = app.spawn_import();
-            pause.wait_started().await;
-            pause.panic_on_release();
-            assert_eq!(caller.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+            #[tokio::test]
+            async fn publish_starts_at_the_graph_lock_request() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                app.session().await;
+                let mut pause = app.service.lifecycle.pause_next_lock_request();
+                let caller = app.spawn_import();
+                pause.wait_started().await;
 
-            let scrape = app.scrape().await;
-            assert_eq!(scrape.in_progress(), Some(0.0));
-            assert_eq!(scrape.results(), [0, 0, 0, 1]);
-            assert_eq!(scrape.counts(), [1, 0, 0]);
-        }
+                advance_timing(STEP);
+                pause.release();
+                assert_eq!(caller.await.unwrap(), StatusCode::CREATED);
+                let scrape = app.scrape().await;
+                assert!(excluded(scrape.phase("receive")), "{}", scrape.0);
+                assert!(excluded(scrape.phase("prepare")), "{}", scrape.0);
+                assert!(absorbed(scrape.phase("publish")), "{}", scrape.0);
+            }
 
-        #[cfg(feature = "test-support")]
-        #[tokio::test]
-        async fn worker_panic_at_the_lock_request_records_prepare_only() {
-            let _clocks = Clocks::lock().await;
-            let app = app_with(source_managed());
-            app.session().await;
-            let mut pause = app.lifecycle.pause_next_lock_request();
-            let caller = app.spawn_import();
-            pause.wait_started().await;
-            pause.panic_on_release();
-            assert_eq!(caller.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+            #[tokio::test]
+            async fn worker_panic_at_start_is_worker_failed_without_worker_phases() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                app.session().await;
+                let mut pause = app.service.lifecycle.pause_next_worker();
+                let caller = app.spawn_import();
+                pause.wait_started().await;
+                pause.panic_on_release();
+                assert_eq!(caller.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
 
-            let scrape = app.scrape().await;
-            assert_eq!(scrape.in_progress(), Some(0.0));
-            assert_eq!(scrape.results(), [0, 0, 0, 1]);
-            assert_eq!(scrape.counts(), [1, 1, 0], "an unwound publish");
-        }
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.in_progress(), Some(0.0));
+                assert_eq!(scrape.results(), [0, 0, 0, 1, 0]);
+                assert_eq!(scrape.counts(), [1, 0, 0]);
+            }
 
-        #[cfg(feature = "test-support")]
-        #[tokio::test]
-        async fn publication_after_caller_cancellation_counts_as_published() {
-            let _clocks = Clocks::lock().await;
-            let app = app_with(source_managed());
-            app.session().await;
-            let mut pause = app.lifecycle.pause_next_lock_request();
-            let caller = app.spawn_import();
-            pause.wait_started().await;
+            #[tokio::test]
+            async fn worker_panic_at_the_lock_request_records_prepare_only() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                app.session().await;
+                let mut pause = app.service.lifecycle.pause_next_lock_request();
+                let caller = app.spawn_import();
+                pause.wait_started().await;
+                pause.panic_on_release();
+                assert_eq!(caller.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
 
-            caller.abort();
-            assert!(caller.await.unwrap_err().is_cancelled());
-            let scrape = app.scrape().await;
-            assert_eq!(scrape.in_progress(), Some(1.0), "the worker owns it");
-            assert_eq!(scrape.results(), [0; 4]);
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.in_progress(), Some(0.0));
+                assert_eq!(scrape.results(), [0, 0, 0, 1, 0]);
+                assert_eq!(scrape.counts(), [1, 1, 0], "an unwound publish");
+            }
 
-            pause.release();
-            app.wait_for_in_progress(0.0).await;
-            let scrape = app.scrape().await;
-            assert_eq!(scrape.results(), [1, 0, 0, 0]);
-            assert_eq!(scrape.counts(), [1, 1, 1]);
-        }
+            #[tokio::test]
+            async fn publication_after_caller_cancellation_counts_as_published() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                app.session().await;
+                let mut pause = app.service.lifecycle.pause_next_lock_request();
+                let caller = app.spawn_import();
+                pause.wait_started().await;
 
-        #[cfg(feature = "test-support")]
-        #[tokio::test]
-        async fn publication_after_caller_timeout_counts_as_published() {
-            let _clocks = Clocks::lock().await;
-            let app = app_with(
-                source_managed()
-                    .with_request_timeout(Duration::from_millis(50))
-                    .unwrap(),
-            );
-            app.session().await;
-            let mut pause = app.lifecycle.pause_next_lock_request();
-            assert_eq!(
-                app.import("create_only", None).await,
-                StatusCode::SERVICE_UNAVAILABLE
-            );
-            pause.wait_started().await;
-            let scrape = app.scrape().await;
-            assert_eq!(scrape.in_progress(), Some(1.0));
-            assert_eq!(scrape.results(), [0; 4]);
+                caller.abort();
+                assert!(caller.await.unwrap_err().is_cancelled());
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.in_progress(), Some(1.0), "the worker owns it");
+                assert_eq!(scrape.results(), [0; 5]);
 
-            pause.release();
-            app.wait_for_in_progress(0.0).await;
-            assert_eq!(app.scrape().await.results(), [1, 0, 0, 0]);
+                pause.release();
+                app.wait_for_in_progress(0.0).await;
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.results(), [1, 0, 0, 0, 0]);
+                assert_eq!(scrape.counts(), [1, 1, 1]);
+            }
+
+            #[tokio::test]
+            async fn publication_after_caller_timeout_counts_as_published() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(
+                    source_managed()
+                        .with_request_timeout(Duration::from_millis(50))
+                        .unwrap(),
+                );
+                app.session().await;
+                let mut pause = app.service.lifecycle.pause_next_lock_request();
+                assert_eq!(
+                    app.import("create_only", None).await,
+                    StatusCode::SERVICE_UNAVAILABLE
+                );
+                pause.wait_started().await;
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.in_progress(), Some(1.0));
+                assert_eq!(scrape.results(), [0; 5]);
+
+                pause.release();
+                app.wait_for_in_progress(0.0).await;
+                assert_eq!(app.scrape().await.results(), [1, 0, 0, 0, 0]);
+            }
+
+            #[tokio::test]
+            async fn worker_panic_after_publication_stays_published() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                app.session().await;
+                let mut pause = app.service.lifecycle.pause_next_worker_after_lock();
+                let caller = app.spawn_import();
+                pause.wait_started().await;
+                pause.panic_on_release();
+                assert_eq!(caller.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+
+                let scrape = app.scrape().await;
+                assert_eq!(scrape.in_progress(), Some(0.0));
+                assert_eq!(scrape.results(), [1, 0, 0, 0, 0]);
+                assert_eq!(scrape.counts(), [1, 1, 0], "an unwound publish");
+            }
+
+            /// The job count falls only after the import is recorded and its
+            /// permit released, so a drain cannot finish before them.
+            #[tokio::test]
+            async fn import_is_recorded_before_its_job_ends() {
+                let _clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                app.session().await;
+                let telemetry = app.service.telemetry().unwrap().clone();
+                let lifecycle = app.service.lifecycle.clone();
+                let mut pause = lifecycle.pause_next_lock_request();
+                let caller = app.spawn_import();
+                pause.wait_started().await;
+
+                // Holding the count blocks the worker's job-guard update.
+                let jobs = lifecycle.jobs_receiver();
+                let held = jobs.borrow();
+                pause.release();
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let recorded = loop {
+                    let done = telemetry.import_in_progress() == 0
+                        && telemetry.import_result_count(ImportResult::Published) == 1
+                        && app.service.import_permits.available_permits() == 1;
+                    if done || std::time::Instant::now() >= deadline {
+                        break done;
+                    }
+                    std::thread::yield_now();
+                };
+                let outstanding = *held;
+                drop(held);
+                assert!(recorded, "import not recorded while its job was counted");
+                assert_eq!(outstanding, 1);
+                assert_eq!(caller.await.unwrap(), StatusCode::CREATED);
+                assert_eq!(lifecycle.outstanding_jobs(), 0);
+            }
         }
 
         #[tokio::test]
@@ -5959,6 +6028,68 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+
+        #[tokio::test]
+        async fn every_permitted_import_has_exactly_one_result() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            assert_eq!(app.import("create_only", None).await, StatusCode::CREATED);
+            assert_eq!(app.import("create_only", None).await, StatusCode::CONFLICT);
+            let malformed = app.request(IMPORT, None, Body::from("{")).await;
+            assert_eq!(malformed, StatusCode::BAD_REQUEST);
+            let (body, caller) = app.spawn_streamed_import();
+            app.wait_for_in_progress(1.0).await;
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            drop(body);
+            let held = app.service.acquire_import_permit().unwrap();
+            assert_eq!(
+                app.import("create_only", None).await,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "refused before the permit"
+            );
+            drop(held);
+
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(0.0));
+            assert_eq!(scrape.results(), [1, 1, 1, 0, 2]);
+            assert_eq!(scrape.results().iter().sum::<u64>(), 5);
+        }
+
+        /// A worker closure dropped without running, here because the
+        /// blocking pool has shut down, leaves its import abandoned.
+        #[test]
+        fn queued_import_dropped_before_running_is_abandoned() {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (_clocks, app, mut permit) = runtime.block_on(async {
+                let clocks = Clocks::lock().await;
+                let app = app_with(source_managed());
+                app.session().await;
+                let permit = app.service.acquire_import_permit().unwrap();
+                (clocks, app, permit)
+            });
+            permit.received(true);
+            let handle = runtime.handle().clone();
+            runtime.shutdown_background();
+
+            let body = Bytes::from(app.import_body("create_only").to_string());
+            let result = handle.block_on(app.service.import(permit, body, None));
+            assert!(
+                matches!(result, Err(FeederError::Unavailable)),
+                "{result:?}"
+            );
+
+            let telemetry = app.service.telemetry().unwrap();
+            assert_eq!(telemetry.import_in_progress(), 0);
+            assert_eq!(telemetry.import_result_count(ImportResult::Abandoned), 1);
+            assert_eq!(telemetry.import_result_count(ImportResult::WorkerFailed), 0);
+            assert_eq!(app.service.import_permits.available_permits(), 1);
+            assert_eq!(app.service.lifecycle.outstanding_jobs(), 0);
         }
     }
 }
