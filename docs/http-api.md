@@ -371,6 +371,27 @@ the caller timed out or was cancelled. A worker panic keeps the outcomes
 already counted and adds none for the interrupted item
 ([contract section 12](observability-contract.md#12-fifth-m62-increment-graph-operation-and-feeder-event-outcome-counters-implemented-unreleased)).
 
+`knotrel_feeder_rejections_total{code}` (source-managed mode only) counts
+each session, heartbeat, events, gap or barrier request the service rejects,
+once, under the underlying error code. A partial event failure counts its
+underlying code, not `partial_failure`, and any graph-domain event error
+counts as `event_failed`. The counter unit is a request, unlike
+`knotrel_feeder_events_total{result="rejected"}`, which counts events. It
+does not count admission refusals (including the `503 import_in_progress`
+returned when feeder capacity is exhausted), timeouts, cancellations,
+panics, refusals by the HTTP layer before the service is called (mode,
+instance ID, graph ID, malformed JSON) or imports.
+
+`knotrel_desynchronizations_total{cause}` (source-managed mode only) counts
+each transition into `desynchronized`: `gap_declared`,
+`source_epoch_mismatch`, `source_predecessor_mismatch` or
+`conflicting_duplicate`. Requests on an already desynchronized graph,
+including a repeated gap, add none. Out-of-order sequences and unverifiable
+duplicates are rejected without a transition. Neither counter resets on
+graph replacement, and workers count even after the caller timed out or was
+cancelled
+([contract section 13](observability-contract.md#13-sixth-m62-increment-feeder-rejection-and-desynchronization-counters-implemented-unreleased)).
+
 ### Graceful shutdown
 
 On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:

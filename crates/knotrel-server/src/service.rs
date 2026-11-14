@@ -9,8 +9,8 @@ use crate::{
         SessionRequest, SessionResponse,
     },
     metrics::{
-        FeederEventResult, GraphOp, JobClock, JobKind, PendingOutcome, Rejection, ServiceTelemetry,
-        Uncertainty, lock_timed,
+        Desynchronization, FeederEventResult, FeederRejection, GraphOp, JobClock, JobKind,
+        PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed,
     },
 };
 use knotrel_core::{ConnectivityGraph, EngineConfig, GraphError};
@@ -841,6 +841,8 @@ impl GraphState {
     ) -> Result<FeederEventsResult, FeederError> {
         count_feeder_event(telemetry, FeederEventResult::Rejected);
         if is_batch {
+            // The non-batch `Err` is counted where the worker's job returns.
+            count_feeder_rejection(telemetry, &single_err);
             Ok(FeederEventsResult::PartialFailure {
                 failure: PartialBatchFailure {
                     result: "partial_failure",
@@ -1009,7 +1011,11 @@ impl GraphState {
         if let Some(ref live_source_epoch) = self.source_epoch
             && live_source_epoch != &req.source_epoch
         {
-            self.sync_status = SyncStatus::Desynchronized;
+            desynchronize(
+                &mut self.sync_status,
+                Desynchronization::SourceEpochMismatch,
+                telemetry,
+            );
             return Err(FeederError::SourceEpochMismatch(format!(
                 "request source_epoch '{}' does not match server source_epoch '{}'",
                 req.source_epoch, live_source_epoch
@@ -1072,7 +1078,11 @@ impl GraphState {
                     }
                     DedupLookup::InWindow(retained) => {
                         if retained.event_id != event.event_id {
-                            self.sync_status = SyncStatus::Desynchronized;
+                            desynchronize(
+                                &mut self.sync_status,
+                                Desynchronization::ConflictingDuplicate,
+                                telemetry,
+                            );
                             let err_msg = format!(
                                 "retained sequence {seq} has event_id '{}', received '{}'",
                                 retained.event_id, event.event_id
@@ -1098,7 +1108,11 @@ impl GraphState {
                         let is_canonical_match = retained.source_position == event.source_position
                             && retained.canonical_op == canonical_op;
                         if !is_canonical_match {
-                            self.sync_status = SyncStatus::Desynchronized;
+                            desynchronize(
+                                &mut self.sync_status,
+                                Desynchronization::ConflictingDuplicate,
+                                telemetry,
+                            );
                             let err_msg = format!(
                                 "conflicting duplicate at sequence {seq}: canonical content or source position altered"
                             );
@@ -1151,7 +1165,11 @@ impl GraphState {
                 }
 
                 if event.prev_delivery_sequence != self.applied_delivery_sequence {
-                    self.sync_status = SyncStatus::Desynchronized;
+                    desynchronize(
+                        &mut self.sync_status,
+                        Desynchronization::SourcePredecessorMismatch,
+                        telemetry,
+                    );
                     let err_msg = format!(
                         "prev_delivery_sequence {} does not match applied sequence {}",
                         event.prev_delivery_sequence, self.applied_delivery_sequence
@@ -1176,7 +1194,11 @@ impl GraphState {
 
                 let live_pos = self.source_position.as_deref().unwrap_or("");
                 if event.prev_source_position != live_pos {
-                    self.sync_status = SyncStatus::Desynchronized;
+                    desynchronize(
+                        &mut self.sync_status,
+                        Desynchronization::SourcePredecessorMismatch,
+                        telemetry,
+                    );
                     let err_msg = format!(
                         "prev_source_position '{}' does not match applied source position '{}'",
                         event.prev_source_position, live_pos
@@ -1200,7 +1222,11 @@ impl GraphState {
                 }
 
                 if self.dedup_window.contains_event_id(&event.event_id) {
-                    self.sync_status = SyncStatus::Desynchronized;
+                    desynchronize(
+                        &mut self.sync_status,
+                        Desynchronization::ConflictingDuplicate,
+                        telemetry,
+                    );
                     let err_msg = format!(
                         "event_id '{}' is already present in retained deduplication window",
                         event.event_id
@@ -1362,6 +1388,7 @@ impl GraphState {
         req: GapRequest,
         mode: ServerMode,
         instance_id: &str,
+        telemetry: Option<&ServiceTelemetry>,
     ) -> Result<(GapResponse, ResponseMetadata), FeederError> {
         self.validate_session_and_lease(&req.feeder_session_id, req.feeder_epoch)?;
 
@@ -1380,7 +1407,11 @@ impl GraphState {
             reason = ?req.reason,
             "feeder declared unrecoverable source gap; transitioning graph to Desynchronized"
         );
-        self.sync_status = SyncStatus::Desynchronized;
+        desynchronize(
+            &mut self.sync_status,
+            Desynchronization::GapDeclared,
+            telemetry,
+        );
         let metadata = self.response_metadata(mode, instance_id);
         let res = GapResponse {
             result: "gap_acknowledged",
@@ -1511,6 +1542,32 @@ impl Drop for WorkerPanicGuard {
 fn count_feeder_event(telemetry: Option<&ServiceTelemetry>, result: FeederEventResult) {
     if let Some(telemetry) = telemetry {
         telemetry.count_feeder_event(result);
+    }
+}
+
+/// Moves the graph into `desynchronized`, counting the transition only when
+/// it was not already there. Takes the status field alone so callers may
+/// still borrow other graph-state fields.
+fn desynchronize(
+    status: &mut SyncStatus,
+    cause: Desynchronization,
+    telemetry: Option<&ServiceTelemetry>,
+) {
+    if *status != SyncStatus::Desynchronized
+        && let Some(telemetry) = telemetry
+    {
+        telemetry.count_desynchronization(cause);
+    }
+    *status = SyncStatus::Desynchronized;
+}
+
+/// Counts one rejected feeder request when telemetry is enabled and the
+/// error is a feeder-protocol rejection.
+fn count_feeder_rejection(telemetry: Option<&ServiceTelemetry>, error: &FeederError) {
+    if let Some(telemetry) = telemetry
+        && let Some(code) = FeederRejection::of(error)
+    {
+        telemetry.count_feeder_rejection(code);
     }
 }
 
@@ -1737,15 +1794,20 @@ impl Service {
             )));
         }
         if req.lease_duration_ms < 1000 || req.lease_duration_ms > 60000 {
-            return Err(FeederError::InvalidLeaseDuration);
+            let error = FeederError::InvalidLeaseDuration;
+            count_feeder_rejection(self.telemetry.as_deref(), &error);
+            return Err(error);
         }
         let published_atomic = self.published_readiness.clone();
         let instance_id = self.instance_id.clone();
+        let telemetry = self.telemetry.clone();
         self.run(
             JobKind::FeederSession,
             JobEffect::MayChangeState,
             move |state| {
-                let res = state.register_session(req, instance_id)?;
+                let res = state
+                    .register_session(req, instance_id)
+                    .inspect_err(|error| count_feeder_rejection(telemetry.as_deref(), error))?;
                 let word = state.current_readiness_word();
                 published_atomic.store(word, Ordering::Release);
                 Ok(res)
@@ -1771,11 +1833,14 @@ impl Service {
         }
         let published_atomic = self.published_readiness.clone();
         let instance_id = self.instance_id.clone();
+        let telemetry = self.telemetry.clone();
         self.run(
             JobKind::FeederHeartbeat,
             JobEffect::MayChangeState,
             move |state| {
-                let res = state.heartbeat(req, instance_id)?;
+                let res = state
+                    .heartbeat(req, instance_id)
+                    .inspect_err(|error| count_feeder_rejection(telemetry.as_deref(), error))?;
                 let word = state.current_readiness_word();
                 published_atomic.store(word, Ordering::Release);
                 Ok(res)
@@ -2195,6 +2260,9 @@ impl Service {
                 state.failed = true;
             }
             let result = op(&mut state, mode, &instance_id);
+            if let Err(error) = &result {
+                count_feeder_rejection(telemetry.as_deref(), error);
+            }
             let word = state.current_readiness_word();
             published_atomic.store(word, Ordering::Release);
             if mutate {
@@ -2240,8 +2308,9 @@ impl Service {
         &self,
         req: GapRequest,
     ) -> Result<(GapResponse, ResponseMetadata), FeederError> {
+        let telemetry = self.telemetry.clone();
         self.execute_feeder_worker("gap", JobKind::FeederGap, true, move |state, mode, inst| {
-            state.declare_gap(req, mode, inst)
+            state.declare_gap(req, mode, inst, telemetry.as_deref())
         })
         .await
     }
@@ -4406,6 +4475,80 @@ mod tests {
             release_tx.send(()).unwrap();
             worker.await.unwrap().unwrap();
             assert_eq!(scrape_counts(&app).await, counts("2", "1"));
+        }
+    }
+
+    /// Rejection and desynchronization accounting reached only through
+    /// direct state set-up: an expired lease and disabled telemetry.
+    mod feeder_rejection_counts {
+        use super::*;
+        use crate::metrics::{Desynchronization, FeederRejection};
+
+        fn seeded(metrics: bool, lease: Option<Instant>) -> Service {
+            let config = crate::ServerConfig::default()
+                .with_mode(ServerMode::SourceManaged)
+                .with_metrics_enabled(metrics);
+            let service =
+                Service::with_config(ConnectivityGraph::default(), 2, Lifecycle::ready(), &config);
+            {
+                let mut state = service.graph.lock();
+                state.generation = 1;
+                state.source_id = Some("pg-1".into());
+                state.source_epoch = Some("ep-1".into());
+                state.source_position = Some("p-0".into());
+                state.feeder_session_id = Some("s".into());
+                state.feeder_epoch = 1;
+                state.lease_deadline = lease;
+            }
+            service.set_sync_status_for_test(SyncStatus::CatchingUp);
+            service
+        }
+
+        fn gap(service: &Service) -> crate::api::GapRequest {
+            crate::api::GapRequest {
+                instance_id: service.instance_id().to_owned(),
+                graph_id: "default".into(),
+                generation: 1,
+                feeder_session_id: "s".into(),
+                feeder_epoch: 1,
+                failed_delivery_sequence: 1,
+                reason: None,
+            }
+        }
+
+        #[tokio::test]
+        async fn expired_lease_is_one_rejection_without_a_transition() {
+            let _clock = lock_clock_for_test().await;
+            let expired = monotonic_now()
+                .checked_sub(Duration::from_millis(1))
+                .unwrap();
+            let service = seeded(true, Some(expired));
+            let result = service.declare_gap(gap(&service)).await;
+            assert!(matches!(result, Err(FeederError::LeaseExpired)));
+            let telemetry = service.telemetry().unwrap();
+            for code in FeederRejection::ALL {
+                let expected = u64::from(code == FeederRejection::LeaseExpired);
+                assert_eq!(telemetry.feeder_rejection_count(code), expected, "{code:?}");
+            }
+            for cause in Desynchronization::ALL {
+                assert_eq!(telemetry.desynchronization_count(cause), 0, "{cause:?}");
+            }
+        }
+
+        /// Without telemetry nothing is counted and the gap still transitions.
+        #[tokio::test]
+        async fn disabled_telemetry_keeps_rejections_and_transitions() {
+            let lease = monotonic_now() + Duration::from_secs(60);
+            let service = seeded(false, Some(lease));
+            assert!(service.telemetry().is_none());
+            service.declare_gap(gap(&service)).await.unwrap();
+            assert_eq!(service.graph.lock().sync_status, SyncStatus::Desynchronized);
+            let result = service.declare_gap(crate::api::GapRequest {
+                generation: 7,
+                ..gap(&service)
+            });
+            assert!(matches!(result.await, Err(FeederError::StaleGeneration(_))));
+            assert!(service.telemetry().is_none());
         }
     }
 

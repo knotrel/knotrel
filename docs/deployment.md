@@ -91,7 +91,8 @@ you need the exit code after stopping.
 exposes operational state: route counts, backlog, rejection and
 uncertain-outcome counts, graph node and edge counts, graph-job queue,
 lock-wait and execution times, graph-operation and feeder-event outcome
-counts, readiness and build version. Scrape it only from inside the same trusted boundary that may reach
+counts, feeder rejection and desynchronization counts, readiness and build
+version. Scrape it only from inside the same trusted boundary that may reach
 the API. Neither Knotrel nor this image adds authentication or TLS for it.
 A minimal Prometheus scrape job:
 

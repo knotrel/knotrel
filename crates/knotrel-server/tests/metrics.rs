@@ -59,6 +59,33 @@ const JOB_KINDS: [&str; 9] = [
 const GRAPH_OPS: [&str; 4] = ["add_node", "link", "cut", "connected"];
 const OPERATION_OUTCOMES: [&str; 5] = ["changed", "unchanged", "true", "false", "error"];
 const EVENT_RESULTS: [&str; 4] = ["changed", "unchanged", "duplicate", "rejected"];
+const FEEDER_REJECTION_CODES: [&str; 19] = [
+    "session_required",
+    "fenced_feeder_session",
+    "lease_expired",
+    "invalid_lease_duration",
+    "graph_uninitialized",
+    "graph_desynchronized",
+    "stale_generation",
+    "source_mismatch",
+    "source_epoch_mismatch",
+    "out_of_order_sequence",
+    "source_predecessor_mismatch",
+    "conflicting_duplicate",
+    "unverifiable_duplicate",
+    "sequence_exhausted",
+    "invalid_request",
+    "event_failed",
+    "barrier_position_mismatch",
+    "barrier_not_reached",
+    "superseded_barrier",
+];
+const DESYNC_CAUSES: [&str; 4] = [
+    "gap_declared",
+    "source_epoch_mismatch",
+    "source_predecessor_mismatch",
+    "conflicting_duplicate",
+];
 
 fn config(capacity: usize) -> ServerConfig {
     ServerConfig::new(
@@ -261,7 +288,21 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
     send(&app, purge, "/no/such/route", "").await;
 
     let samples = scrape(&app).await;
-    for sample in &samples {
+    let mut feeder_samples = scrape(&router_with_config(
+        config(4).with_mode(knotrel_server::ServerMode::SourceManaged),
+    ))
+    .await;
+    feeder_samples.extend(scrape(&app).await);
+    const CAUSES: [&str; 7] = [
+        "request_timeout",
+        "cancelled",
+        "worker_panic",
+        "gap_declared",
+        "source_epoch_mismatch",
+        "source_predecessor_mismatch",
+        "conflicting_duplicate",
+    ];
+    for sample in &feeder_samples {
         for (key, label) in &sample.labels {
             let allowed: &[&str] = match key.as_str() {
                 "route" => &ROUTES,
@@ -269,7 +310,8 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
                 "status_class" => &STATUS_CLASSES,
                 "state" => &READINESS_STATES,
                 "reason" => &REJECTION_REASONS,
-                "cause" => &UNCERTAINTY_CAUSES,
+                "cause" => &CAUSES,
+                "code" => &FEEDER_REJECTION_CODES,
                 "kind" => &JOB_KINDS,
                 "op" => &GRAPH_OPS,
                 "outcome" => &OPERATION_OUTCOMES,
@@ -2056,6 +2098,751 @@ mod outcome_counters {
             assert_eq!(caller.await.unwrap().0, StatusCode::SERVICE_UNAVAILABLE);
             wait_idle(&lifecycle).await;
             assert_operations(&scrape(&app).await, &expected);
+        }
+    }
+}
+
+mod feeder_rejections {
+    use super::graph_counts::{bootstrap, event, events, feeder, import, instance_id};
+    use super::*;
+
+    const REJECTIONS: &str = "knotrel_feeder_rejections_total";
+    const DESYNCS: &str = "knotrel_desynchronizations_total";
+    const EVENTS: &str = "knotrel_feeder_events_total";
+
+    fn source_managed_with(capacity: usize) -> ServerConfig {
+        config(capacity).with_mode(knotrel_server::ServerMode::SourceManaged)
+    }
+
+    /// Nonzero series of `family` keyed by `label`, sorted.
+    fn nonzero(samples: &[Sample], family: &str, label: &str) -> Vec<(String, f64)> {
+        let mut series: Vec<_> = samples
+            .iter()
+            .filter(|s| s.name == family && s.value != 0.0)
+            .map(|s| (s.labels[label].clone(), s.value))
+            .collect();
+        series.sort_by(|a, b| a.0.cmp(&b.0));
+        series
+    }
+
+    fn expected(pairs: &[(&str, f64)]) -> Vec<(String, f64)> {
+        let mut pairs: Vec<_> = pairs.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        pairs
+    }
+
+    /// Asserts the exact nonzero rejection and desynchronization series.
+    async fn assert_counts(app: &Router, rejections: &[(&str, f64)], desyncs: &[(&str, f64)]) {
+        let samples = scrape(app).await;
+        assert_eq!(
+            nonzero(&samples, REJECTIONS, "code"),
+            expected(rejections),
+            "rejections"
+        );
+        assert_eq!(
+            nonzero(&samples, DESYNCS, "cause"),
+            expected(desyncs),
+            "desynchronizations"
+        );
+    }
+
+    fn session(instance: &str, id: &str, epoch: u64, lease_ms: u64) -> serde_json::Value {
+        serde_json::json!({
+            "instance_id": instance,
+            "feeder_session_id": id,
+            "feeder_epoch": epoch,
+            "lease_duration_ms": lease_ms,
+        })
+    }
+
+    fn heartbeat(instance: &str, epoch: u64) -> serde_json::Value {
+        serde_json::json!({
+            "instance_id": instance,
+            "feeder_session_id": "s",
+            "feeder_epoch": epoch,
+        })
+    }
+
+    fn gap(instance: &str, generation: u64) -> serde_json::Value {
+        serde_json::json!({
+            "instance_id": instance,
+            "graph_id": "default",
+            "generation": generation,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+            "failed_delivery_sequence": 7,
+        })
+    }
+
+    fn barrier(instance: &str, sequence: u64, position: &str) -> serde_json::Value {
+        serde_json::json!({
+            "instance_id": instance,
+            "graph_id": "default",
+            "generation": 1,
+            "feeder_session_id": "s",
+            "feeder_epoch": 1,
+            "barrier_delivery_sequence": sequence,
+            "barrier_source_position": position,
+        })
+    }
+
+    fn link(seq: u64, source: &str, target: &str) -> serde_json::Value {
+        event(
+            seq,
+            serde_json::json!({"op": "link", "source": source, "target": target}),
+        )
+    }
+
+    /// Posts `body` and checks the status and response `code` are unchanged.
+    async fn rejected(
+        app: &Router,
+        instance: &str,
+        path: &str,
+        body: serde_json::Value,
+        status: StatusCode,
+        code: &str,
+    ) {
+        let (actual, reply) = feeder(app, instance, path, None, body).await;
+        assert_eq!(actual, status, "{reply}");
+        assert_eq!(reply["code"], code, "{reply}");
+    }
+
+    async fn post_events(app: &Router, instance: &str, list: serde_json::Value) -> StatusCode {
+        feeder(
+            app,
+            instance,
+            "/v1/feeder/events",
+            None,
+            events(instance, 1, list),
+        )
+        .await
+        .0
+    }
+
+    #[tokio::test]
+    async fn series_exist_at_zero_only_in_source_managed_mode() {
+        let samples = scrape(&router_with_config(config(4))).await;
+        assert!(
+            !samples
+                .iter()
+                .any(|s| s.name == REJECTIONS || s.name == DESYNCS)
+        );
+
+        let samples = scrape(&router_with_config(source_managed_with(4))).await;
+        let series = |family: &str, label: &str| {
+            let mut series: Vec<_> = samples
+                .iter()
+                .filter(|s| s.name == family)
+                .map(|s| (s.labels[label].clone(), s.value))
+                .collect();
+            series.sort_by(|a, b| a.0.cmp(&b.0));
+            series
+        };
+        let zero =
+            |labels: &[&str]| expected(&labels.iter().map(|l| (*l, 0.0)).collect::<Vec<_>>());
+        assert_eq!(series(REJECTIONS, "code"), zero(&FEEDER_REJECTION_CODES));
+        assert_eq!(series(DESYNCS, "cause"), zero(&DESYNC_CAUSES));
+        for sample in samples
+            .iter()
+            .filter(|s| s.name == REJECTIONS || s.name == DESYNCS)
+        {
+            assert_eq!(sample.labels.len(), 1, "{sample:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn session_and_heartbeat_rejections_are_counted_once_by_code() {
+        let app = router_with_config(source_managed_with(4));
+        let instance = instance_id(&app).await;
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/heartbeat",
+            heartbeat(&instance, 1),
+            StatusCode::CONFLICT,
+            "session_required",
+        )
+        .await;
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/session",
+            session(&instance, "s", 1, 10),
+            StatusCode::BAD_REQUEST,
+            "invalid_lease_duration",
+        )
+        .await;
+        let (status, _) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/session",
+            None,
+            session(&instance, "s", 2, 60_000),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/session",
+            session(&instance, "other", 1, 60_000),
+            StatusCode::CONFLICT,
+            "fenced_feeder_session",
+        )
+        .await;
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/heartbeat",
+            heartbeat(&instance, 1),
+            StatusCode::CONFLICT,
+            "fenced_feeder_session",
+        )
+        .await;
+        assert_counts(
+            &app,
+            &[
+                ("session_required", 1.0),
+                ("invalid_lease_duration", 1.0),
+                ("fenced_feeder_session", 2.0),
+            ],
+            &[],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn whole_request_event_and_barrier_rejections_count_no_events() {
+        let app = router_with_config(source_managed_with(4));
+        let instance = instance_id(&app).await;
+        let (status, _) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/session",
+            None,
+            session(&instance, "s", 1, 60_000),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            events(&instance, 0, serde_json::json!([link(1, "1", "2")])),
+            StatusCode::CONFLICT,
+            "graph_uninitialized",
+        )
+        .await;
+
+        let body = import(&instance, "create_only", "p-0", &["1", "2"], &[]);
+        let (status, _) = feeder(&app, &instance, "/v1/feeder/import", None, body).await;
+        assert_eq!(status, StatusCode::CREATED);
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            events(&instance, 9, serde_json::json!([link(1, "1", "2")])),
+            StatusCode::CONFLICT,
+            "stale_generation",
+        )
+        .await;
+        let mut other_source = events(&instance, 1, serde_json::json!([link(1, "1", "2")]));
+        other_source["source_id"] = "pg-2".into();
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            other_source,
+            StatusCode::CONFLICT,
+            "source_mismatch",
+        )
+        .await;
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            events(&instance, 1, serde_json::json!([])),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_request",
+        )
+        .await;
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/barrier",
+            barrier(&instance, 5, "p-5"),
+            StatusCode::CONFLICT,
+            "barrier_not_reached",
+        )
+        .await;
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/barrier",
+            barrier(&instance, 0, "p-x"),
+            StatusCode::CONFLICT,
+            "barrier_position_mismatch",
+        )
+        .await;
+        assert_eq!(
+            post_events(&app, &instance, serde_json::json!([link(1, "1", "2")])).await,
+            StatusCode::OK
+        );
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/barrier",
+            barrier(&instance, 0, "p-0"),
+            StatusCode::CONFLICT,
+            "superseded_barrier",
+        )
+        .await;
+        assert_counts(
+            &app,
+            &[
+                ("graph_uninitialized", 1.0),
+                ("stale_generation", 1.0),
+                ("source_mismatch", 1.0),
+                ("invalid_request", 1.0),
+                ("barrier_not_reached", 1.0),
+                ("barrier_position_mismatch", 1.0),
+                ("superseded_barrier", 1.0),
+            ],
+            &[],
+        )
+        .await;
+        let samples = scrape(&app).await;
+        assert_eq!(
+            nonzero(&samples, EVENTS, "result"),
+            expected(&[("changed", 1.0)])
+        );
+    }
+
+    /// A rejected event is counted per event by the event counter and its
+    /// request once here, under the underlying code, never `partial_failure`.
+    #[tokio::test]
+    async fn event_failures_count_one_request_rejection_by_underlying_code() {
+        let app = router_with_config(source_managed_with(4));
+        let instance = bootstrap(&app, &["1", "2", "3"], &[]).await;
+        let (status, reply) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            None,
+            events(
+                &instance,
+                1,
+                serde_json::json!([link(1, "1", "2"), link(2, "3", "3"), link(3, "2", "3")]),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{reply}");
+        assert_eq!(reply["result"], "partial_failure");
+        assert_eq!(reply["code"], "event_failed");
+        assert_eq!(reply["error"]["code"], "self_loop");
+
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            events(&instance, 1, serde_json::json!([link(2, "3", "3")])),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "self_loop",
+        )
+        .await;
+        let (status, reply) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            None,
+            events(
+                &instance,
+                1,
+                serde_json::json!([link(2, "2", "3"), link(5, "1", "3")]),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+        assert_eq!(reply["code"], "out_of_order_sequence");
+
+        assert_counts(
+            &app,
+            &[("event_failed", 2.0), ("out_of_order_sequence", 1.0)],
+            &[],
+        )
+        .await;
+        let samples = scrape(&app).await;
+        assert_eq!(
+            nonzero(&samples, EVENTS, "result"),
+            expected(&[("changed", 2.0), ("rejected", 3.0)])
+        );
+    }
+
+    #[tokio::test]
+    async fn unverifiable_duplicates_are_rejected_without_desynchronizing() {
+        let config = source_managed_with(4).with_dedup_window_size(1).unwrap();
+        let app = router_with_config(config);
+        let instance = bootstrap(&app, &["1", "2", "3"], &[]).await;
+        assert_eq!(
+            post_events(
+                &app,
+                &instance,
+                serde_json::json!([link(1, "1", "2"), link(2, "2", "3")])
+            )
+            .await,
+            StatusCode::OK
+        );
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            events(&instance, 1, serde_json::json!([link(1, "1", "2")])),
+            StatusCode::CONFLICT,
+            "unverifiable_duplicate",
+        )
+        .await;
+        assert_counts(&app, &[("unverifiable_duplicate", 1.0)], &[]).await;
+    }
+
+    #[tokio::test]
+    async fn each_desynchronization_cause_is_counted_at_its_transition() {
+        let epoch = |instance: &str| {
+            let mut body = events(instance, 1, serde_json::json!([link(1, "1", "2")]));
+            body["source_epoch"] = "ep-2".into();
+            body
+        };
+        let mut wrong_prev_sequence = link(1, "1", "2");
+        wrong_prev_sequence["prev_delivery_sequence"] = 5.into();
+        let mut wrong_prev_position = link(1, "1", "2");
+        wrong_prev_position["prev_source_position"] = "p-x".into();
+        let mut renamed = link(1, "1", "2");
+        renamed["event_id"] = "e-other".into();
+        let mut altered = link(1, "1", "2");
+        altered["source_position"] = "p-other".into();
+        let mut reused_id = link(2, "2", "3");
+        reused_id["event_id"] = "e-1".into();
+
+        let cases: Vec<(Option<serde_json::Value>, &str, &str)> = vec![
+            (None, "source_epoch_mismatch", "source_epoch_mismatch"),
+            (
+                Some(serde_json::json!([wrong_prev_sequence])),
+                "source_predecessor_mismatch",
+                "source_predecessor_mismatch",
+            ),
+            (
+                Some(serde_json::json!([wrong_prev_position])),
+                "source_predecessor_mismatch",
+                "source_predecessor_mismatch",
+            ),
+            (
+                Some(serde_json::json!([link(1, "1", "2"), renamed])),
+                "conflicting_duplicate",
+                "conflicting_duplicate",
+            ),
+            (
+                Some(serde_json::json!([link(1, "1", "2"), altered])),
+                "conflicting_duplicate",
+                "conflicting_duplicate",
+            ),
+            (
+                Some(serde_json::json!([link(1, "1", "2"), reused_id])),
+                "conflicting_duplicate",
+                "conflicting_duplicate",
+            ),
+        ];
+        for (list, code, cause) in cases {
+            let app = router_with_config(source_managed_with(4));
+            let instance = bootstrap(&app, &["1", "2", "3"], &[]).await;
+            let body = match list {
+                Some(list) => events(&instance, 1, list),
+                None => epoch(&instance),
+            };
+            let (status, reply) = feeder(&app, &instance, "/v1/feeder/events", None, body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+            assert_eq!(reply["code"], code, "{reply}");
+            assert_counts(&app, &[(code, 1.0)], &[(cause, 1.0)]).await;
+        }
+
+        let app = router_with_config(source_managed_with(4));
+        let instance = bootstrap(&app, &["1", "2"], &[]).await;
+        let (status, reply) =
+            feeder(&app, &instance, "/v1/feeder/gap", None, gap(&instance, 1)).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_counts(&app, &[], &[("gap_declared", 1.0)]).await;
+    }
+
+    #[tokio::test]
+    async fn requests_while_desynchronized_add_no_transition() {
+        let app = router_with_config(source_managed_with(4));
+        let instance = bootstrap(&app, &["1", "2"], &[]).await;
+        for _ in 0..2 {
+            let (status, reply) =
+                feeder(&app, &instance, "/v1/feeder/gap", None, gap(&instance, 1)).await;
+            assert_eq!(status, StatusCode::OK, "{reply}");
+        }
+        let mut other_epoch = events(&instance, 1, serde_json::json!([link(1, "1", "2")]));
+        other_epoch["source_epoch"] = "ep-2".into();
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            other_epoch,
+            StatusCode::CONFLICT,
+            "graph_desynchronized",
+        )
+        .await;
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/barrier",
+            barrier(&instance, 0, "p-0"),
+            StatusCode::CONFLICT,
+            "graph_desynchronized",
+        )
+        .await;
+        assert_counts(
+            &app,
+            &[("graph_desynchronized", 2.0)],
+            &[("gap_declared", 1.0)],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn rebuild_then_new_desynchronization_counts_again_cumulatively() {
+        let app = router_with_config(source_managed_with(4));
+        let instance = bootstrap(&app, &["1", "2"], &[]).await;
+        let (status, _) = feeder(&app, &instance, "/v1/feeder/gap", None, gap(&instance, 1)).await;
+        assert_eq!(status, StatusCode::OK);
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            events(&instance, 1, serde_json::json!([link(1, "1", "2")])),
+            StatusCode::CONFLICT,
+            "graph_desynchronized",
+        )
+        .await;
+
+        let candidate = import(&instance, "replace", "p-0", &["1", "2"], &[]);
+        let (status, reply) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/import",
+            Some("\"1.0.p-0\""),
+            candidate,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{reply}");
+        assert_counts(
+            &app,
+            &[("graph_desynchronized", 1.0)],
+            &[("gap_declared", 1.0)],
+        )
+        .await;
+
+        let mut other_epoch = events(&instance, 2, serde_json::json!([link(1, "1", "2")]));
+        other_epoch["source_epoch"] = "ep-2".into();
+        rejected(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            other_epoch,
+            StatusCode::CONFLICT,
+            "source_epoch_mismatch",
+        )
+        .await;
+        assert_counts(
+            &app,
+            &[
+                ("graph_desynchronized", 1.0),
+                ("source_epoch_mismatch", 1.0),
+            ],
+            &[("gap_declared", 1.0), ("source_epoch_mismatch", 1.0)],
+        )
+        .await;
+    }
+
+    /// Refusals made by the HTTP adapter before the service is called never
+    /// reach a typed feeder rejection, and imports are outside this counter.
+    #[tokio::test]
+    async fn adapter_refusals_and_imports_count_no_feeder_rejection() {
+        let app = router_with_config(source_managed_with(4));
+        let instance = bootstrap(&app, &["1", "2"], &[]).await;
+        let (status, _) = feeder(
+            &app,
+            "wrong",
+            "/v1/feeder/heartbeat",
+            None,
+            heartbeat(&instance, 1),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let mut other_graph = gap(&instance, 1);
+        other_graph["graph_id"] = "other".into();
+        let (status, _) = feeder(&app, &instance, "/v1/feeder/gap", None, other_graph).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/feeder/events")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-knotrel-instance-id", instance.as_str())
+                    .body(Body::from("{"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let candidate = import(&instance, "replace", "p-9", &["1"], &[]);
+        let (status, _) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/import",
+            Some("\"1.0.wrong\""),
+            candidate,
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+        assert_counts(&app, &[], &[]).await;
+    }
+
+    #[tokio::test]
+    async fn server_instances_count_their_own_rejections() {
+        let first = router_with_config(source_managed_with(4));
+        let second = router_with_config(source_managed_with(4));
+        let instance = bootstrap(&first, &["1", "2"], &[]).await;
+        bootstrap(&second, &["1", "2"], &[]).await;
+        let (status, _) =
+            feeder(&first, &instance, "/v1/feeder/gap", None, gap(&instance, 1)).await;
+        assert_eq!(status, StatusCode::OK);
+        rejected(
+            &first,
+            &instance,
+            "/v1/feeder/events",
+            events(&instance, 1, serde_json::json!([link(1, "1", "2")])),
+            StatusCode::CONFLICT,
+            "graph_desynchronized",
+        )
+        .await;
+        assert_counts(
+            &first,
+            &[("graph_desynchronized", 1.0)],
+            &[("gap_declared", 1.0)],
+        )
+        .await;
+        assert_counts(&second, &[], &[]).await;
+    }
+
+    #[cfg(feature = "test-support")]
+    mod paused {
+        use super::*;
+        use std::time::Duration;
+
+        async fn wait_idle(lifecycle: &Lifecycle) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while lifecycle.outstanding_jobs() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        fn paused_app(config: ServerConfig) -> (Router, Lifecycle) {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            (router_with_lifecycle(config, lifecycle.clone()), lifecycle)
+        }
+
+        #[tokio::test]
+        async fn admission_saturation_keeps_import_in_progress_without_a_rejection() {
+            let (app, lifecycle) = paused_app(source_managed_with(1));
+            let instance = bootstrap(&app, &["1", "2"], &[]).await;
+            let mut pause = lifecycle.pause_next_worker();
+            let held = tokio::spawn({
+                let app = app.clone();
+                let instance = instance.clone();
+                async move {
+                    feeder(
+                        &app,
+                        &instance,
+                        "/v1/feeder/heartbeat",
+                        None,
+                        heartbeat(&instance, 1),
+                    )
+                    .await
+                }
+            });
+            pause.wait_started().await;
+            rejected(
+                &app,
+                &instance,
+                "/v1/feeder/gap",
+                gap(&instance, 1),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "import_in_progress",
+            )
+            .await;
+            pause.release();
+            assert_eq!(held.await.unwrap().0, StatusCode::OK);
+            let samples = scrape(&app).await;
+            assert_eq!(
+                value(
+                    &samples,
+                    "knotrel_requests_rejected_total",
+                    &[("reason", "busy")]
+                ),
+                Some(1.0)
+            );
+            assert_counts(&app, &[], &[]).await;
+        }
+
+        #[tokio::test]
+        async fn worker_finishing_after_its_caller_was_cancelled_counts_its_rejection() {
+            let (app, lifecycle) = paused_app(source_managed_with(4));
+            let instance = bootstrap(&app, &["1", "2"], &[]).await;
+            let mut pause = lifecycle.pause_next_worker();
+            let caller = tokio::spawn({
+                let app = app.clone();
+                let instance = instance.clone();
+                let mut body = events(&instance, 1, serde_json::json!([link(1, "1", "2")]));
+                body["source_epoch"] = "ep-2".into();
+                async move { feeder(&app, &instance, "/v1/feeder/events", None, body).await }
+            });
+            pause.wait_started().await;
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            assert_counts(&app, &[], &[]).await;
+
+            pause.release();
+            wait_idle(&lifecycle).await;
+            assert_counts(
+                &app,
+                &[("source_epoch_mismatch", 1.0)],
+                &[("source_epoch_mismatch", 1.0)],
+            )
+            .await;
+        }
+
+        #[tokio::test]
+        async fn worker_finishing_after_its_caller_timed_out_counts_its_transition() {
+            let timed = source_managed_with(4)
+                .with_request_timeout(Duration::from_millis(50))
+                .unwrap();
+            let (app, lifecycle) = paused_app(timed);
+            let instance = bootstrap(&app, &["1", "2"], &[]).await;
+            let mut pause = lifecycle.pause_next_worker();
+            let (status, reply) =
+                feeder(&app, &instance, "/v1/feeder/gap", None, gap(&instance, 1)).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{reply}");
+            assert_eq!(reply["code"], "request_timeout", "{reply}");
+            pause.wait_started().await;
+            assert_counts(&app, &[], &[]).await;
+
+            pause.release();
+            wait_idle(&lifecycle).await;
+            assert_counts(&app, &[], &[("gap_declared", 1.0)]).await;
         }
     }
 }

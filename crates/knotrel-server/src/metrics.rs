@@ -16,7 +16,7 @@ use crate::{
     Lifecycle, ServerMode,
     api::{Operation, Outcome},
     lifecycle,
-    service::Service,
+    service::{FeederError, Service},
 };
 use axum::{
     extract::{MatchedPath, Request, State},
@@ -320,6 +320,158 @@ struct FeederEventCounters {
     results: [Counter; 4],
 }
 
+/// Why the service rejected a feeder session, heartbeat, events, gap or
+/// barrier request: the `code` label of the feeder-rejection counter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FeederRejection {
+    SessionRequired,
+    FencedSession,
+    LeaseExpired,
+    InvalidLeaseDuration,
+    GraphUninitialized,
+    GraphDesynchronized,
+    StaleGeneration,
+    SourceMismatch,
+    SourceEpochMismatch,
+    OutOfOrderSequence,
+    SourcePredecessorMismatch,
+    ConflictingDuplicate,
+    UnverifiableDuplicate,
+    SequenceExhausted,
+    InvalidRequest,
+    /// Any graph-domain error of an event.
+    EventFailed,
+    BarrierPositionMismatch,
+    BarrierNotReached,
+    SupersededBarrier,
+}
+
+impl FeederRejection {
+    pub(crate) const ALL: [Self; 19] = [
+        Self::SessionRequired,
+        Self::FencedSession,
+        Self::LeaseExpired,
+        Self::InvalidLeaseDuration,
+        Self::GraphUninitialized,
+        Self::GraphDesynchronized,
+        Self::StaleGeneration,
+        Self::SourceMismatch,
+        Self::SourceEpochMismatch,
+        Self::OutOfOrderSequence,
+        Self::SourcePredecessorMismatch,
+        Self::ConflictingDuplicate,
+        Self::UnverifiableDuplicate,
+        Self::SequenceExhausted,
+        Self::InvalidRequest,
+        Self::EventFailed,
+        Self::BarrierPositionMismatch,
+        Self::BarrierNotReached,
+        Self::SupersededBarrier,
+    ];
+
+    /// Classifies a feeder error. `None` for admission refusals (counted by
+    /// the request-rejection counter), errors only the HTTP adapter or an
+    /// import can produce, and malformed input.
+    pub(crate) fn of(error: &FeederError) -> Option<Self> {
+        Some(match error {
+            FeederError::SessionRequired => Self::SessionRequired,
+            FeederError::FencedSession => Self::FencedSession,
+            FeederError::LeaseExpired => Self::LeaseExpired,
+            FeederError::InvalidLeaseDuration => Self::InvalidLeaseDuration,
+            FeederError::GraphUninitialized => Self::GraphUninitialized,
+            FeederError::GraphDesynchronized => Self::GraphDesynchronized,
+            FeederError::StaleGeneration(_) => Self::StaleGeneration,
+            FeederError::SourceMismatch(_) => Self::SourceMismatch,
+            FeederError::SourceEpochMismatch(_) => Self::SourceEpochMismatch,
+            FeederError::OutOfOrderSequence { .. } => Self::OutOfOrderSequence,
+            FeederError::SourcePredecessorMismatch(_) => Self::SourcePredecessorMismatch,
+            FeederError::ConflictingDuplicate(_) => Self::ConflictingDuplicate,
+            FeederError::UnverifiableDuplicate(_) => Self::UnverifiableDuplicate,
+            FeederError::SequenceExhausted => Self::SequenceExhausted,
+            FeederError::InvalidRequest(_) => Self::InvalidRequest,
+            FeederError::Domain(..) => Self::EventFailed,
+            FeederError::BarrierPositionMismatch { .. } => Self::BarrierPositionMismatch,
+            FeederError::BarrierNotReached { .. } => Self::BarrierNotReached,
+            FeederError::SupersededBarrier { .. } => Self::SupersededBarrier,
+            FeederError::ImportInProgress
+            | FeederError::Unavailable
+            | FeederError::ModeMismatch
+            | FeederError::StaleInstanceId(_)
+            | FeederError::InvalidInstanceId(_)
+            | FeederError::InvalidGraphId(_)
+            | FeederError::GraphAlreadyInitialized
+            | FeederError::GenerationExhausted
+            | FeederError::PreconditionFailed(_)
+            | FeederError::MalformedJson
+            | FeederError::UnprocessableJson(_)
+            | FeederError::PayloadTooLarge => return None,
+        })
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::SessionRequired => "session_required",
+            Self::FencedSession => "fenced_feeder_session",
+            Self::LeaseExpired => "lease_expired",
+            Self::InvalidLeaseDuration => "invalid_lease_duration",
+            Self::GraphUninitialized => "graph_uninitialized",
+            Self::GraphDesynchronized => "graph_desynchronized",
+            Self::StaleGeneration => "stale_generation",
+            Self::SourceMismatch => "source_mismatch",
+            Self::SourceEpochMismatch => "source_epoch_mismatch",
+            Self::OutOfOrderSequence => "out_of_order_sequence",
+            Self::SourcePredecessorMismatch => "source_predecessor_mismatch",
+            Self::ConflictingDuplicate => "conflicting_duplicate",
+            Self::UnverifiableDuplicate => "unverifiable_duplicate",
+            Self::SequenceExhausted => "sequence_exhausted",
+            Self::InvalidRequest => "invalid_request",
+            Self::EventFailed => "event_failed",
+            Self::BarrierPositionMismatch => "barrier_position_mismatch",
+            Self::BarrierNotReached => "barrier_not_reached",
+            Self::SupersededBarrier => "superseded_barrier",
+        }
+    }
+}
+
+/// What moved the graph into `desynchronized`: the `cause` label of the
+/// desynchronization counter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Desynchronization {
+    GapDeclared,
+    SourceEpochMismatch,
+    /// A `prev_delivery_sequence` or `prev_source_position` mismatch.
+    SourcePredecessorMismatch,
+    ConflictingDuplicate,
+}
+
+impl Desynchronization {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::GapDeclared,
+        Self::SourceEpochMismatch,
+        Self::SourcePredecessorMismatch,
+        Self::ConflictingDuplicate,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::GapDeclared => "gap_declared",
+            Self::SourceEpochMismatch => "source_epoch_mismatch",
+            Self::SourcePredecessorMismatch => "source_predecessor_mismatch",
+            Self::ConflictingDuplicate => "conflicting_duplicate",
+        }
+    }
+}
+
+/// Pre-created feeder-rejection and desynchronization counters; present
+/// only in source-managed mode.
+#[derive(Debug)]
+struct FeederFailureCounters {
+    rejections_family: Family<OutcomeLabels, Counter>,
+    rejections: [Counter; 19],
+    desyncs_family: Family<OutcomeLabels, Counter>,
+    desyncs: [Counter; 4],
+}
+
 fn job_phase_histogram() -> Histogram {
     Histogram::new(JOB_PHASE_BUCKETS)
 }
@@ -333,8 +485,9 @@ struct PhaseHistograms {
 }
 
 /// Rejection and uncertain-outcome counters, graph-size gauges,
-/// worker-phase histograms and graph-operation and feeder-event outcome
-/// counters for one service instance.
+/// worker-phase histograms, graph-operation and feeder-event outcome
+/// counters, and feeder-rejection and desynchronization counters for one
+/// service instance.
 ///
 /// Owned by `Service` only when metrics are enabled. Every series is created
 /// up front, so recording never takes a family lock: counters and gauges are
@@ -360,6 +513,7 @@ pub(crate) struct ServiceTelemetry {
     // cannot execute in this mode.
     operations: [Option<[Counter; 3]>; 4],
     feeder_events: Option<FeederEventCounters>,
+    feeder_failures: Option<FeederFailureCounters>,
 }
 
 impl ServiceTelemetry {
@@ -405,6 +559,26 @@ impl ServiceTelemetry {
                 .map(|result| family.get_or_create(&[("result", result.label())]).clone());
             FeederEventCounters { family, results }
         });
+        let feeder_failures = (mode == ServerMode::SourceManaged).then(|| {
+            let rejections_family = Family::<OutcomeLabels, Counter>::default();
+            let rejections = FeederRejection::ALL.map(|code| {
+                rejections_family
+                    .get_or_create(&[("code", code.label())])
+                    .clone()
+            });
+            let desyncs_family = Family::<OutcomeLabels, Counter>::default();
+            let desyncs = Desynchronization::ALL.map(|cause| {
+                desyncs_family
+                    .get_or_create(&[("cause", cause.label())])
+                    .clone()
+            });
+            FeederFailureCounters {
+                rejections_family,
+                rejections,
+                desyncs_family,
+                desyncs,
+            }
+        });
         Arc::new(Self {
             rejected_family,
             uncertain_family,
@@ -419,6 +593,7 @@ impl ServiceTelemetry {
             operations_family,
             operations,
             feeder_events,
+            feeder_failures,
         })
     }
 
@@ -470,6 +645,18 @@ impl ServiceTelemetry {
                 events.family.clone(),
             );
         }
+        if let Some(failures) = &self.feeder_failures {
+            registry.register(
+                "knotrel_feeder_rejections",
+                "Feeder session, heartbeat, events, gap and barrier requests the service rejected, one per request by the underlying error code (graph-domain event errors as event_failed); counted by the worker or service where the error is produced, also after its caller has gone; excludes admission refusals, HTTP-adapter checks, malformed bodies and imports",
+                failures.rejections_family.clone(),
+            );
+            registry.register(
+                "knotrel_desynchronizations",
+                "Transitions of the graph into desynchronized, by cause; counted under the graph lock where the state changes, also after its caller has gone; requests on an already desynchronized graph add none",
+                failures.desyncs_family.clone(),
+            );
+        }
     }
 
     /// Publishes the live graph's maintained counts. Callers hold the graph
@@ -504,6 +691,22 @@ impl ServiceTelemetry {
         }
     }
 
+    /// Counts one rejected feeder request. Atomic, so callers may hold the
+    /// graph lock.
+    pub(crate) fn count_feeder_rejection(&self, code: FeederRejection) {
+        if let Some(failures) = &self.feeder_failures {
+            failures.rejections[code as usize].inc();
+        }
+    }
+
+    /// Counts one transition into `desynchronized`. Atomic, so callers may
+    /// hold the graph lock.
+    pub(crate) fn count_desynchronization(&self, cause: Desynchronization) {
+        if let Some(failures) = &self.feeder_failures {
+            failures.desyncs[cause as usize].inc();
+        }
+    }
+
     pub(crate) fn reject(&self, reason: Rejection) {
         self.rejected[reason as usize].inc();
     }
@@ -520,6 +723,20 @@ impl ServiceTelemetry {
     #[cfg(test)]
     pub(crate) fn uncertain_count(&self, cause: Uncertainty) -> u64 {
         self.uncertain[cause as usize].get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn feeder_rejection_count(&self, code: FeederRejection) -> u64 {
+        self.feeder_failures
+            .as_ref()
+            .map_or(0, |f| f.rejections[code as usize].get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn desynchronization_count(&self, cause: Desynchronization) -> u64 {
+        self.feeder_failures
+            .as_ref()
+            .map_or(0, |f| f.desyncs[cause as usize].get())
     }
 }
 

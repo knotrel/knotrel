@@ -1390,6 +1390,115 @@ mod tests {
         }
     }
 
+    /// Every counted feeder rejection is labelled with the wire code its
+    /// response carries, except domain errors, which collapse to
+    /// `event_failed`; admission, adapter-only and import-only errors are
+    /// not counted.
+    #[tokio::test]
+    async fn feeder_rejection_labels_match_wire_codes() {
+        use crate::metrics::FeederRejection;
+        use crate::service::FeederError;
+        let s = || "x".to_owned();
+        let cases = [
+            (FeederError::ImportInProgress, None),
+            (FeederError::Unavailable, None),
+            (FeederError::ModeMismatch, None),
+            (FeederError::StaleInstanceId(s()), None),
+            (FeederError::InvalidInstanceId(s()), None),
+            (FeederError::InvalidGraphId(s()), None),
+            (FeederError::SessionRequired, Some("session_required")),
+            (FeederError::FencedSession, Some("fenced_feeder_session")),
+            (FeederError::LeaseExpired, Some("lease_expired")),
+            (FeederError::GraphAlreadyInitialized, None),
+            (FeederError::GraphUninitialized, Some("graph_uninitialized")),
+            (
+                FeederError::GraphDesynchronized,
+                Some("graph_desynchronized"),
+            ),
+            (FeederError::GenerationExhausted, None),
+            (FeederError::StaleGeneration(s()), Some("stale_generation")),
+            (FeederError::SourceMismatch(s()), Some("source_mismatch")),
+            (
+                FeederError::SourceEpochMismatch(s()),
+                Some("source_epoch_mismatch"),
+            ),
+            (
+                FeederError::OutOfOrderSequence {
+                    expected: 1,
+                    received: 2,
+                },
+                Some("out_of_order_sequence"),
+            ),
+            (
+                FeederError::SourcePredecessorMismatch(s()),
+                Some("source_predecessor_mismatch"),
+            ),
+            (
+                FeederError::ConflictingDuplicate(s()),
+                Some("conflicting_duplicate"),
+            ),
+            (
+                FeederError::UnverifiableDuplicate(s()),
+                Some("unverifiable_duplicate"),
+            ),
+            (FeederError::SequenceExhausted, Some("sequence_exhausted")),
+            (FeederError::PreconditionFailed(s()), None),
+            (
+                FeederError::InvalidLeaseDuration,
+                Some("invalid_lease_duration"),
+            ),
+            (FeederError::MalformedJson, None),
+            (FeederError::UnprocessableJson(s()), None),
+            (FeederError::PayloadTooLarge, None),
+            (FeederError::Domain("self_loop", s()), Some("event_failed")),
+            (FeederError::InvalidRequest(s()), Some("invalid_request")),
+            (
+                FeederError::BarrierPositionMismatch {
+                    expected: s(),
+                    received: s(),
+                },
+                Some("barrier_position_mismatch"),
+            ),
+            (
+                FeederError::BarrierNotReached {
+                    expected: 1,
+                    received: 2,
+                },
+                Some("barrier_not_reached"),
+            ),
+            (
+                FeederError::SupersededBarrier {
+                    expected: 1,
+                    received: 0,
+                },
+                Some("superseded_barrier"),
+            ),
+        ];
+        let mut labels = std::collections::BTreeSet::new();
+        for (err, expected) in cases {
+            let label = FeederRejection::of(&err).map(FeederRejection::label);
+            assert_eq!(label, expected, "{err:?}");
+            let is_domain = matches!(err, FeederError::Domain(..));
+            let response = feeder_error(err);
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if let Some(label) = label {
+                let wire = if is_domain {
+                    "event_failed"
+                } else {
+                    body["code"].as_str().unwrap()
+                };
+                assert_eq!(wire, label);
+                labels.insert(label);
+            }
+        }
+        let all: std::collections::BTreeSet<_> =
+            FeederRejection::ALL.iter().map(|r| r.label()).collect();
+        assert_eq!(labels, all);
+    }
+
     #[tokio::test]
     async fn test_feeder_checks_and_batch_handling() {
         use axum::extract::State;

@@ -1,7 +1,7 @@
 # Observability contract
 
-**Status:** Vocabulary for roadmap M6.1, plus five M6.2 increments
-(sections 7, 8, 10, 11 and 12), which are implemented but unreleased. M6 is deferred and is not
+**Status:** Vocabulary for roadmap M6.1, plus six M6.2 increments
+(sections 7, 8, 10, 11, 12 and 13), which are implemented but unreleased. M6 is deferred and is not
 part of v0.3.0. Neither M6.2 nor M6 is complete. Rows marked *pending* in
 section 4 are vocabulary only: no endpoint, metric or log field exists for
 them yet. The opt-in `/metrics` endpoint does not change any existing route,
@@ -40,10 +40,11 @@ the v0.3.0 release.
 | Graph-job queue, lock-wait and execution time | `JobClock` and `lock_timed` (`metrics.rs`), recorded by workers | Exposed when `KNOTREL_METRICS_ENABLED=true` | Fourth M6.2 increment; section 11. |
 | Rejections before execution, uncertain-outcome observations | `ServiceTelemetry` (`metrics.rs`), owned by `Service` | Exposed when `KNOTREL_METRICS_ENABLED=true` | Second M6.2 increment; section 8. |
 | Graph-operation and feeder-event outcomes | `ServiceTelemetry::count_operation`, `count_feeder_event` (`metrics.rs`), called by workers | Exposed when `KNOTREL_METRICS_ENABLED=true` | Fifth M6.2 increment; section 12. |
+| Feeder rejections and desynchronizations | `ServiceTelemetry::count_feeder_rejection`, `count_desynchronization` (`metrics.rs`), called where the error or transition is produced | Exposed when `KNOTREL_METRICS_ENABLED=true` (source-managed mode) | Sixth M6.2 increment; section 13. |
 
 ### Concrete operator gaps
 
-1. No cumulative counts for applied and duplicate events, gaps, conflicts and imports: they are visible only as individual log lines or response bodies. (Request counts by route and status class, pre-execution rejections by reason, and graph-operation and feeder-event outcomes are now available from the opt-in `/metrics`; section 12. Gaps, conflicts by code and imports remain uncounted.)
+1. No cumulative counts for applied and duplicate events, gaps, conflicts and imports: they are visible only as individual log lines or response bodies. (Request counts by route and status class, pre-execution rejections by reason, and graph-operation and feeder-event outcomes are now available from the opt-in `/metrics`; section 12. Feeder rejections by code and desynchronizations by cause, including gaps and conflicts, are counted too; section 13. Imports remain uncounted.)
 2. No backlog signal outside drain. (Now exported as `graph_jobs_outstanding` via the opt-in `/metrics`.)
 3. Graph counts are readable only through `/v1/stats`, which competes for the same admission permits and graph lock as the work being diagnosed. (The opt-in `/metrics` now exposes worker-published counts without either; section 10.)
 4. No breakdown of where time goes: caller latency cannot be split into queueing, lock wait and execution. (The opt-in `/metrics` now records worker queue, lock-wait and execution time per job kind; these intervals do not add up to HTTP latency; section 11.)
@@ -164,6 +165,8 @@ classifies by the internal cause (`busy`) and leaves the HTTP code unchanged.
 | Graph operation | operation in `/v1/operations` or `/v1/batch` that reached the graph | Every executed batch entry is counted once with its own outcome; a batch is never counted as a single failure. Operations rejected before execution (size limit, malformed request, admission, the source-managed synchronization gate) are not graph operations (section 12). |
 | Feeder event | event evaluated in `/v1/feeder/events` | Applied prefix: each event counted by outcome. A retained exact duplicate counts as `duplicate`. The first failing event counts as `rejected`. Events after it were never evaluated and are not counted. Whole-request rejections count zero events. |
 | Import | import request that obtained the import permit | Counted once with a terminal result. |
+| Rejected feeder request | session, heartbeat, events, gap or barrier request for which the service produced a feeder-protocol error | Once per request, under the underlying error code; a partial event failure is one rejection, not one per event and not `partial_failure` (section 13). Admission refusals, HTTP-adapter checks and imports are not feeder rejections. |
+| Desynchronization | transition of the graph into `desynchronized` | Once per transition; a request on a graph already `desynchronized` adds none (section 13). |
 | Rejected request | request refused before any graph job or import ran for it (`shutting_down` also covers requests that would not create one) | At most once, at the first refusing boundary (section 8). Partial batch or event failures are not rejections. |
 | Uncertain-outcome observation | caller abandonment of, or worker panic in, an admitted state-changing job | Not deduplicated per request: a timeout followed by a worker panic is two observations (section 8). |
 
@@ -191,8 +194,8 @@ durable state. "Replacement" means publication of a new generation by import.
 | `readiness_state` | gauge, one-hot | What would `/ready` say? | `lifecycle::readiness_state`: same precedence as `lifecycle::readiness`, computed read-only at scrape. Stale is derived from the published deadline, without the compare-and-swap. | `state` ∈ {`unavailable`, `draining`, `starting`, `ready`, and in source-managed mode `uninitialized`, `loading`, `catching_up`, `stale`, `desynchronized`} | follows state | **implemented** | E |
 | `feeder_lease_remaining_seconds` | gauge, s | Is the feeder alive? | Published lease deadline minus now at scrape. Negative once expired. Absent with no session or in standalone mode. | none | session kept | pending | E |
 | `feeder_events_total` | counter | Is the source making progress, and how much is redundant? | Per evaluated event (section 3) in `GraphState::apply_events`, under the graph lock (section 12). `unchanged` covers no-op mutations and `progress`. | `result` ∈ {`changed`, `unchanged`, `duplicate`, `rejected`} | continues | **implemented** | E |
-| `feeder_rejections_total` | counter | Why did a feeder call fail? | One per rejected feeder request, at the `FeederError` returned. Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Admission `busy` and `unavailable` are excluded (counted in `requests_rejected_total` or `requests_outcome_uncertain_total`). | `code` ∈ the static wire codes mapped in `api::feeder_error` (for example `stale_generation`, `fenced_feeder_session`, `lease_expired`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `graph_desynchronized`, `barrier_not_reached`, `superseded_barrier`) plus `event_failed` | continues | pending | E |
-| `desynchronizations_total` | counter | Why did the graph require a rebuild? | One per transition into `desynchronized`, at the sites in `GraphState::apply_events` and `declare_gap` that set it. A predecessor mismatch covers both `prev_delivery_sequence` and `prev_source_position`, which share one wire code. Out-of-order sequences and evicted duplicates do not desynchronize. | `cause` ∈ {`gap_declared`, `source_epoch_mismatch`, `source_predecessor_mismatch`, `conflicting_duplicate`} | continues | pending | E |
+| `feeder_rejections_total` | counter | Why did a feeder call fail? | One per session, heartbeat, events, gap or barrier request the service rejected, where the `FeederError` is produced (section 13). Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Excluded: admission `busy` (HTTP `import_in_progress`) and `unavailable` (counted in `requests_rejected_total`), timeouts, cancellations and panics (`requests_outcome_uncertain_total`), HTTP-adapter checks and malformed bodies, and imports (`imports_total`). Source-managed mode only. | `code` ∈ {`session_required`, `fenced_feeder_session`, `lease_expired`, `invalid_lease_duration`, `graph_uninitialized`, `graph_desynchronized`, `stale_generation`, `source_mismatch`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `sequence_exhausted`, `invalid_request`, `event_failed`, `barrier_position_mismatch`, `barrier_not_reached`, `superseded_barrier`} | continues | **implemented** | E |
+| `desynchronizations_total` | counter | Why did the graph require a rebuild? | One per transition into `desynchronized`, at the sites in `GraphState::apply_events` and `declare_gap` that set it. A predecessor mismatch covers both `prev_delivery_sequence` and `prev_source_position`, which share one wire code. Out-of-order sequences and evicted duplicates do not desynchronize. | `cause` ∈ {`gap_declared`, `source_epoch_mismatch`, `source_predecessor_mismatch`, `conflicting_duplicate`}. Source-managed mode only (section 13). | continues | **implemented** | E |
 | `feeder_last_applied_age_seconds` | gauge, s | When did the graph last move forward? | Now minus the monotonic instant of the last applied (non-duplicate) event or import publication. **Not lag** (section 2). | none | reset by publication | pending | E |
 | `import_in_progress` | gauge 0/1 | Is an import running? | Import permit held. | none | — | pending | E |
 | `imports_total` | counter | Do imports succeed? | One per permitted import, at its terminal result. | `result` ∈ {`published`, `payload_rejected` (size, parse, limits), `publication_rejected` (fencing, lease, precondition, mode, exhausted), `worker_failed`} | continues | pending | E |
@@ -242,8 +245,10 @@ execution histograms.
 **Fifth increment (done, section 12):** graph-operation and feeder-event
 outcome counters.
 
-**Remaining essential (`E`, pending):** feeder rejections, desynchronizations,
-lease remaining, last-applied age, import gauge/counter/durations
+**Sixth increment (done, section 13):** feeder rejection and
+desynchronization counters.
+
+**Remaining essential (`E`, pending):** lease remaining, last-applied age, import gauge/counter/durations
 and catch-up duration.
 
 **Instrumentation locations for the remaining rows:**
@@ -251,7 +256,6 @@ and catch-up duration.
 | Signal | Location |
 | --- | --- |
 | Operations | `GraphState::apply`, called per operation for single and batch requests. |
-| Events, rejections, desynchronizations | `GraphState::apply_events`, `declare_gap`, and feeder-error construction. |
 | Imports | `api::feeder_import` and `Service::import`. |
 | Catch-up | Start instant stored in `GraphState` at publication; observed in `declare_barrier` B2. |
 | Last-applied instant | Atomics updated by the worker under the lock (as graph counts are; section 10). |
@@ -362,8 +366,9 @@ The library adds no other series (no `_created`, process or runtime
 metrics). Most route/method combinations can only yield `405`, so real
 counts are far below the bound. The second increment adds 7 series and the
 third adds 2. The fourth adds 153 standalone and 459 source-managed
-(section 11). The fifth adds 12 standalone and 7 source-managed, for a
-current maximum of **1414 standalone, 1720 source-managed** (section 12).
+(section 11). The fifth adds 12 standalone and 7 source-managed (section
+12). The sixth adds 23 source-managed only, for a current maximum of
+**1414 standalone, 1743 source-managed** (section 13).
 
 **Dependency.** [`prometheus-client`](https://crates.io/crates/prometheus-client)
 0.26, the Prometheus project's Rust client, with default features disabled.
@@ -445,7 +450,8 @@ already disarmed its drop guard.
 
 **Not counted.** The following produce no observation:
 - validation and domain errors, and feeder protocol rejections (fencing,
-  lease, generation, sequence); these are pending under `feeder_rejections_total`;
+  lease, generation, sequence); these are counted by `feeder_rejections_total`
+  (section 13);
 - partial batch or event failures;
 - timeouts and cancellations before admission or while waiting for a
   read-only job;
@@ -569,7 +575,7 @@ metrics are disabled, `Service` holds `None`; nothing is registered,
 allocated or published.
 
 **Series.** 2 more series. The maximum became **1249 standalone, 1254
-source-managed** (now 1414 and 1720; section 12).
+source-managed** (now 1414 and 1743; section 13).
 
 **Tests.** In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)
 (module `graph_counts`) and `service.rs` (module `tests::graph_counts`):
@@ -687,7 +693,7 @@ is allocated; the lock helper only wraps the guard.
 - source-managed: 3 × 9 × 17 = 459.
 
 The maximum becomes **1402 standalone, 1713 source-managed** (now 1414
-and 1720; section 12). The test
+and 1743; section 13). The test
 `series_exist_only_for_kinds_reachable_in_the_mode` checks the per-mode
 timing series counts against actual exposition.
 
@@ -789,7 +795,8 @@ there is no ownership cycle.
 | standalone | 12: three mutations × {`changed`, `unchanged`, `error`}, plus `connected` × {`true`, `false`, `error`} | 0: family not registered (feeder endpoints refuse with `mode_conflict`) |
 | source-managed | 3: `connected` × {`true`, `false`, `error`}; direct mutations are refused before execution | 4 |
 
-The maximum becomes **1414 standalone, 1720 source-managed**. The test
+The maximum becomes **1414 standalone, 1720 source-managed** (now 1414 and
+1743; section 13). The test
 `series_exist_at_zero_only_for_reachable_combinations` checks these sets
 against actual exposition.
 
@@ -813,5 +820,133 @@ With `test-support`, further tests cover:
 
 `service.rs` (`tests::graph_counts`) checks that disabled telemetry counts
 nothing.
+
+**Overhead.** Not qualified. Section 6 applies unchanged.
+
+## 13. Sixth M6.2 increment: feeder rejection and desynchronization counters (implemented, unreleased)
+
+**Series.** Two counters, registered only in source-managed mode, with
+pre-created series and fixed labels:
+`knotrel_feeder_rejections_total{code}` and
+`knotrel_desynchronizations_total{cause}`. Labels come from
+`metrics::FeederRejection` and `metrics::Desynchronization`, never from
+session IDs, cursors, generations, event IDs, caller text or error messages.
+
+**Endpoint scope.** Session, heartbeat, events, gap and barrier. Import is
+excluded: its terminal results belong to the pending `imports_total`, whose
+taxonomy (`payload_rejected`, `publication_rejected`, `worker_failed`)
+differs.
+
+**Rejection accounting.** One count per rejected request, where the typed
+`FeederError` is produced, so it is never counted again as it propagates
+through `Service` and the HTTP adapter:
+
+| Request outcome | Counted at | Code |
+| --- | --- | --- |
+| Events, gap or barrier job returns `Err` | `Service::execute_feeder_worker`, in the worker under the graph lock, as soon as the job returns | underlying code |
+| Multi-event request stopped at a failing event (`partial_failure`, HTTP 409/422) | `GraphState::fail_batch_or_error`, batch branch | underlying code (`event_failed` for any domain error), never `partial_failure` |
+| Session or heartbeat state check returns `Err` | the worker closure in `Service::register_session` or `Service::heartbeat` | underlying code |
+| Lease duration outside 1000–60000 ms | `Service::register_session`, before admission | `invalid_lease_duration` |
+
+`fail_batch_or_error` counts only its batch branch. In the single-event
+branch it returns `Err`, which the worker counts instead. Each request is
+therefore counted once.
+
+Not counted:
+
+| Refusal | Where | Counted instead |
+| --- | --- | --- |
+| Admission `busy` (HTTP `503 import_in_progress`) and `unavailable`, including the worker's own pre-job check and the barrier's `failed` check | admission or worker | `requests_rejected_total` |
+| Request timeout, cancellation, worker panic | lifecycle, worker join | `requests_outcome_uncertain_total` |
+| `mode_conflict`, missing or invalid instance header (`invalid_instance_id`), header or body `stale_instance_id`, `invalid_graph_id`, malformed or unprocessable JSON | HTTP adapter, before the service is called; malformed bodies never become a typed `FeederError` | `http_requests_total` only |
+| Import, including its fencing and precondition failures | import path | pending `imports_total` |
+
+`FeederRejection::of` is total over `FeederError`. Variants produced only by
+the HTTP adapter, by imports or by admission map to `None`. The unit test
+`api::tests::feeder_rejection_labels_match_wire_codes` checks that every
+counted label equals the response `code` that `api::feeder_error` produces,
+except `Domain`, which collapses to `event_failed`.
+
+**Desynchronization accounting.** One count per transition, by the helper
+`desynchronize`, which counts only if the previous status was not
+`desynchronized`:
+
+| Cause | Sites |
+| --- | --- |
+| `source_epoch_mismatch` | `apply_events`, request epoch differs from the live source epoch |
+| `source_predecessor_mismatch` | `apply_events` loop, `prev_delivery_sequence` or `prev_source_position` mismatch |
+| `conflicting_duplicate` | `apply_events` loop: retained sequence with a different `event_id`, retained sequence with different content or position, or a new sequence reusing a retained `event_id` |
+| `gap_declared` | `declare_gap` |
+
+Out-of-order sequences and evicted (unverifiable) duplicates are rejected
+without desynchronizing. Event and barrier requests on a desynchronized graph
+fail with `graph_desynchronized`, a rejection, not a transition. A gap on a
+desynchronized graph is acknowledged again, but its transition was already
+counted, so it adds none. A replacement import restores `catching_up`; a later
+genuine desynchronization counts again. Neither counter is reset by graph
+replacement.
+
+**Units.** `feeder_events_total{result="rejected"}` counts events;
+`feeder_rejections_total` counts requests. A rejected single-event request
+or a partial failure advances both, once each. A whole-request rejection
+before the loop advances only the request counter. A desynchronizing event
+in the loop advances `rejected`, the request rejection and the transition
+counter; an epoch mismatch, checked before the loop, advances only the
+request rejection and the transition counter.
+
+**Cancellation and failure.** Every observation is made inside the worker
+(or, for `invalid_lease_duration`, synchronously before admission), so a
+worker that finishes after its caller timed out or was cancelled still
+counts its rejection and transition once. A panic keeps observations already
+made, including a transition counted before the panic. An interrupted job
+gets no rejection, because its result is unknown.
+
+**Disabled mode and ownership.** Without telemetry the helpers receive
+`None` and do nothing: no counting, no allocation and no registry lookup.
+The counters belong to the per-instance `ServiceTelemetry`, which holds no
+reference to the service. They are pre-created arrays indexed by enum, so
+counting is a single atomic increment.
+
+**Series.**
+
+| Mode | Rejections | Desynchronizations |
+| --- | --- | --- |
+| standalone | 0: family not registered (feeder endpoints refuse with `mode_conflict`) | 0 |
+| source-managed | 19 | 4 |
+
+The maximum becomes **1414 standalone, 1743 source-managed**. The test
+`feeder_rejections::series_exist_at_zero_only_in_source_managed_mode` checks
+these sets against actual exposition.
+
+**Tests.** In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)
+(module `feeder_rejections`):
+- per-mode series sets at zero;
+- session and heartbeat rejections (`session_required`,
+  `invalid_lease_duration`, `fenced_feeder_session`);
+- whole-request event and barrier rejections, counting no events;
+- partial and single-event domain failures and an out-of-order sequence
+  inside a batch, each one request rejection by underlying code, with event
+  outcomes unchanged;
+- an unverifiable duplicate without a transition;
+- each desynchronization cause, including both predecessor fields and all
+  three conflicting-duplicate sites;
+- repeated gap, events and barrier on a desynchronized graph without another
+  transition;
+- a replacement import followed by a new desynchronization, with cumulative
+  counts;
+- HTTP-adapter refusals and a rejected import counting nothing;
+- independent instances.
+
+With `test-support`, further tests cover:
+- admission saturation that keeps `503 import_in_progress` and counts only
+  `requests_rejected_total{reason="busy"}`;
+- a rejection and transition counted after caller cancellation;
+- a gap transition counted after caller timeout.
+
+In `src/service.rs` (`tests::feeder_rejection_counts`): an expired lease (one
+`lease_expired` rejection, no transition), and disabled telemetry with
+unchanged gap and rejection behavior. `sequence_exhausted` is a defensive
+variant that the u64 wire protocol cannot reach; it is covered only by the
+classification test.
 
 **Overhead.** Not qualified. Section 6 applies unchanged.
