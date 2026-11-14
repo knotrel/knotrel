@@ -4,7 +4,9 @@
 //! scrape time by [`HealthCollector`]. Rejection and uncertain-outcome
 //! counters, the worker-published graph-size gauges and the worker-phase
 //! histograms live in [`ServiceTelemetry`], owned by the `Service` they
-//! observe, as does the instant of the last feeder application. Nothing here acquires the graph mutex, a graph-job admission
+//! observe, as do the instant of the last feeder application and the import
+//! metrics, which an [`ImportObservation`] carried with the import permit
+//! records. Nothing here acquires the graph mutex, a graph-job admission
 //! permit or an import permit; graph counts are published by workers that
 //! already hold the graph lock, and phase timings are recorded by workers
 //! after they release it. Scrapes and request
@@ -465,6 +467,76 @@ impl Desynchronization {
     }
 }
 
+/// Terminal result of an import that obtained the import permit: the
+/// `result` label of the import counter. Classified by the phase the import
+/// reached, not by error code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImportResult {
+    /// The candidate became the live generation.
+    Published,
+    /// The body read failed, or parsing, request identity or candidate
+    /// construction rejected the payload before the lock request.
+    PayloadRejected,
+    /// Rejected after the lock request: unavailable service, session or lease
+    /// fencing, import mode, `If-Match` or generation exhaustion.
+    PublicationRejected,
+    /// The import's worker panicked before publication.
+    WorkerFailed,
+}
+
+impl ImportResult {
+    const ALL: [Self; 4] = [
+        Self::Published,
+        Self::PayloadRejected,
+        Self::PublicationRejected,
+        Self::WorkerFailed,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Published => "published",
+            Self::PayloadRejected => "payload_rejected",
+            Self::PublicationRejected => "publication_rejected",
+            Self::WorkerFailed => "worker_failed",
+        }
+    }
+}
+
+/// Timed import phase: the `phase` label of the import-duration histogram.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImportPhase {
+    /// From permit acquisition until the body read returns.
+    Receive,
+    /// In the worker, from after its start hook until the graph-lock request.
+    Prepare,
+    /// From the graph-lock request until the worker has released the lock and
+    /// dropped its request state.
+    Publish,
+}
+
+impl ImportPhase {
+    const ALL: [Self; 3] = [Self::Receive, Self::Prepare, Self::Publish];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Receive => "receive",
+            Self::Prepare => "prepare",
+            Self::Publish => "publish",
+        }
+    }
+}
+
+/// Pre-created import gauge, counters and histograms; present only in
+/// source-managed mode, the only mode whose router accepts imports.
+#[derive(Debug)]
+struct ImportMetrics {
+    in_progress: Gauge,
+    results_family: Family<OutcomeLabels, Counter>,
+    results: [Counter; 4],
+    durations_family: PhaseFamily,
+    durations: [Histogram; 3],
+}
+
 /// Pre-created feeder-rejection and desynchronization counters; present
 /// only in source-managed mode.
 #[derive(Debug)]
@@ -489,8 +561,8 @@ struct PhaseHistograms {
 
 /// Rejection and uncertain-outcome counters, graph-size gauges,
 /// worker-phase histograms, graph-operation and feeder-event outcome
-/// counters, and feeder-rejection and desynchronization counters for one
-/// service instance.
+/// counters, feeder-rejection and desynchronization counters, and the import
+/// gauge, counter and histograms for one service instance.
 ///
 /// Owned by `Service` only when metrics are enabled. Every series is created
 /// up front, so recording never takes a family lock: counters and gauges are
@@ -520,6 +592,7 @@ pub(crate) struct ServiceTelemetry {
     // Lease-clock milliseconds of the last feeder application plus one;
     // 0 means none yet.
     last_applied: AtomicU64,
+    imports: Option<ImportMetrics>,
 }
 
 impl ServiceTelemetry {
@@ -585,6 +658,27 @@ impl ServiceTelemetry {
                 desyncs,
             }
         });
+        let imports = (mode == ServerMode::SourceManaged).then(|| {
+            let results_family = Family::<OutcomeLabels, Counter>::default();
+            let results = ImportResult::ALL.map(|result| {
+                results_family
+                    .get_or_create(&[("result", result.label())])
+                    .clone()
+            });
+            let durations_family: PhaseFamily = Family::new_with_constructor(job_phase_histogram);
+            let durations = ImportPhase::ALL.map(|phase| {
+                durations_family
+                    .get_or_create(&[("phase", phase.label())])
+                    .clone()
+            });
+            ImportMetrics {
+                in_progress: Gauge::default(),
+                results_family,
+                results,
+                durations_family,
+                durations,
+            }
+        });
         Arc::new(Self {
             rejected_family,
             uncertain_family,
@@ -601,6 +695,7 @@ impl ServiceTelemetry {
             feeder_events,
             feeder_failures,
             last_applied: AtomicU64::new(0),
+            imports,
         })
     }
 
@@ -662,6 +757,23 @@ impl ServiceTelemetry {
                 "knotrel_desynchronizations",
                 "Transitions of the graph into desynchronized, by cause; counted under the graph lock where the state changes, also after its caller has gone; requests on an already desynchronized graph add none",
                 failures.desyncs_family.clone(),
+            );
+        }
+        if let Some(imports) = &self.imports {
+            registry.register(
+                "knotrel_import_in_progress",
+                "1 while an import holds the single import permit (body receipt, worker queue, preparation and publication, also after its caller has gone), else 0",
+                imports.in_progress.clone(),
+            );
+            registry.register(
+                "knotrel_imports",
+                "Imports that obtained the import permit, by terminal result, recorded by whichever of handler or worker owns the import when it ends, also after its caller has gone; classified by phase reached, not error code; a body receipt abandoned by its caller counts nothing; refusals before the permit count nothing",
+                imports.results_family.clone(),
+            );
+            registry.register(
+                "knotrel_import_duration_seconds",
+                "Import time by phase on the monotonic clock: receive (permit acquired to body read returned), prepare (worker parse and off-lock candidate build), publish (graph-lock request to the worker's end, including lock wait, validation and swap); disjoint, excluding the handler's pre-spawn work, the blocking-pool queue and the worker start; a failed phase is observed up to its error, a phase interrupted by a panic or an abandoned body read, or never reached, is not",
+                imports.durations_family.clone(),
             );
         }
     }
@@ -758,6 +870,106 @@ impl ServiceTelemetry {
         self.feeder_failures
             .as_ref()
             .map_or(0, |f| f.desyncs[cause as usize].get())
+    }
+}
+
+/// Import accounting carried by the import permit from its acquisition.
+///
+/// Exactly one owner, the HTTP handler during body receipt and then the
+/// worker, holds it, and it records everything when dropped: the open phase
+/// (unless unwinding), at most one terminal result, and then the end of
+/// in-progress. The permit holder drops it before releasing the permit, so
+/// `in_progress` never exceeds 1. Created only when import metrics exist;
+/// otherwise no clock is read.
+#[derive(Debug)]
+pub(crate) struct ImportObservation {
+    telemetry: Arc<ServiceTelemetry>,
+    open: Option<(ImportPhase, Instant)>,
+    pending: Option<ImportResult>,
+    in_worker: bool,
+}
+
+impl ImportObservation {
+    /// Marks the import in progress and starts `receive`; `None` without
+    /// source-managed telemetry.
+    pub(crate) fn acquired(telemetry: Option<&Arc<ServiceTelemetry>>) -> Option<Self> {
+        let telemetry = telemetry?;
+        telemetry.imports.as_ref()?.in_progress.inc();
+        Some(Self {
+            telemetry: Arc::clone(telemetry),
+            open: Some((ImportPhase::Receive, timing_now())),
+            pending: None,
+            in_worker: false,
+        })
+    }
+
+    fn imports(&self) -> &ImportMetrics {
+        self.telemetry
+            .imports
+            .as_ref()
+            .expect("created only with import metrics")
+    }
+
+    fn close(&mut self) {
+        if let Some((phase, started)) = self.open.take() {
+            let elapsed = timing_now().saturating_duration_since(started);
+            self.imports().durations[phase as usize].observe(elapsed.as_secs_f64());
+        }
+    }
+
+    /// Ends `receive`; an incomplete body is the import's terminal result.
+    pub(crate) fn received(&mut self, complete: bool) {
+        self.close();
+        if !complete {
+            self.pending = Some(ImportResult::PayloadRejected);
+        }
+    }
+
+    /// The worker now owns the import: a panic from here is `worker_failed`.
+    pub(crate) fn enter_worker(&mut self) {
+        self.in_worker = true;
+    }
+
+    /// Starts `prepare`; an error from here is a payload rejection.
+    pub(crate) fn begin_prepare(&mut self) {
+        self.close();
+        self.open = Some((ImportPhase::Prepare, timing_now()));
+        self.pending = Some(ImportResult::PayloadRejected);
+    }
+
+    /// Ends `prepare` and starts `publish` immediately before the graph-lock
+    /// request; an error from here is a publication rejection.
+    pub(crate) fn begin_publish(&mut self) {
+        self.close();
+        self.open = Some((ImportPhase::Publish, timing_now()));
+        self.pending = Some(ImportResult::PublicationRejected);
+    }
+
+    /// The candidate is live; a later panic does not undo that.
+    pub(crate) fn published(&mut self) {
+        self.pending = Some(ImportResult::Published);
+    }
+}
+
+impl Drop for ImportObservation {
+    fn drop(&mut self) {
+        let unwinding = std::thread::panicking();
+        // An unwound phase did not end, and an open `receive` means the
+        // caller abandoned the body read: neither is a completed phase.
+        if unwinding || matches!(self.open, Some((ImportPhase::Receive, _))) {
+            self.open = None;
+        }
+        self.close();
+        let result = match self.pending {
+            Some(ImportResult::Published) => Some(ImportResult::Published),
+            _ if unwinding && self.in_worker => Some(ImportResult::WorkerFailed),
+            pending => pending,
+        };
+        let imports = self.imports();
+        if let Some(result) = result {
+            imports.results[result as usize].inc();
+        }
+        imports.in_progress.dec();
     }
 }
 

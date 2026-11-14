@@ -413,6 +413,23 @@ synchronization. Both gauges are sampled independently of each other and of
 the other gauges
 ([contract section 14](observability-contract.md#14-seventh-m62-increment-feeder-lease-remaining-and-last-applied-age-implemented-unreleased)).
 
+`knotrel_import_in_progress` (source-managed mode only) is `1` while an import
+holds the single import permit (body read, worker queue, preparation and
+publication, also after its caller has gone) and `0` otherwise.
+`knotrel_imports_total{result}` counts each import that obtained the permit
+once, by the phase it reached: `published`; `payload_rejected` (failed body
+read, malformed or invalid payload, request identity, graph limits);
+`publication_rejected` (anything after the graph-lock request: unavailable,
+session or lease fencing, import mode, `If-Match`, generation exhaustion); or
+`worker_failed` (a panic before publication). An import that publishes after
+its caller timed out counts as `published`; a body read abandoned by the
+caller counts nothing. Imports refused before the permit, including
+`503 import_in_progress`, are not imports.
+`knotrel_import_duration_seconds{phase}` times the disjoint `receive` (permit
+acquired to body read returned), `prepare` (worker parse and candidate build)
+and `publish` (graph-lock request to the end of the worker) phases
+([contract section 15](observability-contract.md#15-eighth-m62-increment-import-gauge-results-and-phase-durations-implemented-unreleased)).
+
 ### Graceful shutdown
 
 On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:

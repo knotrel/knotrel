@@ -1,7 +1,7 @@
 # Observability contract
 
-**Status:** Vocabulary for roadmap M6.1, plus seven M6.2 increments
-(sections 7, 8, 10, 11, 12, 13 and 14), which are implemented but unreleased. M6 is deferred and is not
+**Status:** Vocabulary for roadmap M6.1, plus eight M6.2 increments
+(sections 7, 8, 10, 11, 12, 13, 14 and 15), which are implemented but unreleased. M6 is deferred and is not
 part of v0.3.0. Neither M6.2 nor M6 is complete. Rows marked *pending* in
 section 4 are vocabulary only: no endpoint, metric or log field exists for
 them yet. The opt-in `/metrics` endpoint does not change any existing route,
@@ -89,8 +89,9 @@ either accepted or rejected. Once accepted, time is split into:
 - **execution:** time holding the graph lock.
 
 Import preparation (parse and candidate construction) runs on the worker
-before its lock request and belongs to none of the three; its own timing is
-pending. Exact boundaries are in section 11.
+before its lock request and belongs to none of the three; it is timed by
+`import_duration_seconds{phase="prepare"}` (section 15). Exact boundaries are
+in section 11.
 
 **Not executed vs. outcome uncertain.** A status code alone does not say
 whether work executed; observations are classified at the boundary that
@@ -165,7 +166,7 @@ classifies by the internal cause (`busy`) and leaves the HTTP code unchanged.
 | Graph job | accepted worker job (operation, batch, stats, feeder call, import publication) | A batch is one job. |
 | Graph operation | operation in `/v1/operations` or `/v1/batch` that reached the graph | Every executed batch entry is counted once with its own outcome; a batch is never counted as a single failure. Operations rejected before execution (size limit, malformed request, admission, the source-managed synchronization gate) are not graph operations (section 12). |
 | Feeder event | event evaluated in `/v1/feeder/events` | Applied prefix: each event counted by outcome. A retained exact duplicate counts as `duplicate`. The first failing event counts as `rejected`. Events after it were never evaluated and are not counted. Whole-request rejections count zero events. |
-| Import | import request that obtained the import permit | Counted once with a terminal result. |
+| Import | import request that obtained the import permit | Counted at most once, with a terminal result, by whichever of handler or worker owns it when it ends. A body read abandoned by its caller, and an import whose worker never starts, count none (section 15). |
 | Rejected feeder request | session, heartbeat, events, gap or barrier request for which the service produced a feeder-protocol error | Once per request, under the underlying error code; a partial event failure is one rejection, not one per event and not `partial_failure` (section 13). Admission refusals, HTTP-adapter checks and imports are not feeder rejections. |
 | Desynchronization | transition of the graph into `desynchronized` | Once per transition; a request on a graph already `desynchronized` adds none (section 13). |
 | Rejected request | request refused before any graph job or import ran for it (`shutting_down` also covers requests that would not create one) | At most once, at the first refusing boundary (section 8). Partial batch or event failures are not rejections. |
@@ -198,9 +199,9 @@ durable state. "Replacement" means publication of a new generation by import.
 | `feeder_rejections_total` | counter | Why did a feeder call fail? | One per session, heartbeat, events, gap or barrier request the service rejected, where the `FeederError` is produced (section 13). Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Excluded: admission `busy` (HTTP `import_in_progress`) and `unavailable` (counted in `requests_rejected_total`), timeouts, cancellations and panics (`requests_outcome_uncertain_total`), HTTP-adapter checks and malformed bodies, and imports (`imports_total`). Source-managed mode only. | `code` ∈ {`session_required`, `fenced_feeder_session`, `lease_expired`, `invalid_lease_duration`, `graph_uninitialized`, `graph_desynchronized`, `stale_generation`, `source_mismatch`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `sequence_exhausted`, `invalid_request`, `event_failed`, `barrier_position_mismatch`, `barrier_not_reached`, `superseded_barrier`} | continues | **implemented** | E |
 | `desynchronizations_total` | counter | Why did the graph require a rebuild? | One per transition into `desynchronized`, at the sites in `GraphState::apply_events` and `declare_gap` that set it. A predecessor mismatch covers both `prev_delivery_sequence` and `prev_source_position`, which share one wire code. Out-of-order sequences and evicted duplicates do not desynchronize. | `cause` ∈ {`gap_declared`, `source_epoch_mismatch`, `source_predecessor_mismatch`, `conflicting_duplicate`}. Source-managed mode only (section 13). | continues | **implemented** | E |
 | `feeder_last_applied_age_seconds` | gauge, s | When did the graph last move forward? | Monotonic time since a worker, under the graph lock, last applied a non-duplicate event (including no-op mutations and `progress`) or published an import (section 14). Not reset by duplicates, rejected events or imports, gaps, barriers, sessions, heartbeats or queries. Absent before the first application and in standalone mode. **Not lag** (section 2). | none | reset by publication | **implemented** | E |
-| `import_in_progress` | gauge 0/1 | Is an import running? | Import permit held. | none | — | pending | E |
-| `imports_total` | counter | Do imports succeed? | One per permitted import, at its terminal result. | `result` ∈ {`published`, `payload_rejected` (size, parse, limits), `publication_rejected` (fencing, lease, precondition, mode, exhausted), `worker_failed`} | continues | pending | E |
-| `import_duration_seconds` | histogram, s | Where does import time go? | `receive` (body read after permit), `prepare` (parse and build, off-lock), `publish` (lock wait, validation, swap). Observed even when publication is rejected. | `phase` ∈ {`receive`, `prepare`, `publish`} | continues | pending | E |
+| `import_in_progress` | gauge 0/1 | Is an import running? | Import permit held: from acquisition, through body receipt, worker queue, preparation and publication, until the import is recorded, also after its caller has gone. Source-managed mode only (section 15). | none | — | **implemented** | E |
+| `imports_total` | counter | Do imports succeed? | One per permitted import that reaches a terminal result, classified by the phase reached (section 15). A body read abandoned by its caller records none (unresolved, section 15). Source-managed mode only. | `result` ∈ {`published`, `payload_rejected` (body read, parse, request identity, limits and candidate), `publication_rejected` (after the lock request: unavailable, fencing, lease, mode, precondition, exhausted), `worker_failed` (panic before publication)} | continues | **implemented** | E |
+| `import_duration_seconds` | histogram, s | Where does import time go? | `receive` (permit acquired to body read returned), `prepare` (worker parse and build, off-lock), `publish` (lock request to worker end: lock wait, validation, swap). Disjoint; a failed phase is observed up to its error, a phase interrupted by a panic or an abandoned body read is not (section 15). Source-managed mode only. | `phase` ∈ {`receive`, `prepare`, `publish`} | continues | **implemented** | E |
 | `catchup_duration_seconds` | histogram, s | How long did bootstrap or replacement take to become ready? | From import publication (entering `catching_up`) to the first `synchronized` barrier (B2) in that generation. Abandoned if the generation is replaced or desynchronized first. | `kind` ∈ {`initial`, `replacement`} | new interval starts | pending | E |
 | Recovery-from-stale duration | histogram | — | The start of `stale` is lazy (section 2); defining it needs a decision on lease-deadline anchoring. | — | — | none | D |
 | Session churn (`registered`, `takeover`, `renewed`) | counter | — | Fencing failures are already covered by `feeder_rejections_total`. | — | — | none | D |
@@ -252,15 +253,17 @@ desynchronization counters.
 **Seventh increment (done, section 14):** feeder lease remaining and
 last-applied age gauges.
 
-**Remaining essential (`E`, pending):** import gauge/counter/durations and
-catch-up duration.
+**Eighth increment (done, section 15):** import in-progress gauge, result
+counter and phase durations.
+
+**Remaining essential (`E`, pending):** catch-up duration.
 
 **Instrumentation locations for the remaining rows:**
 
 | Signal | Location |
 | --- | --- |
 | Operations | `GraphState::apply`, called per operation for single and batch requests. |
-| Imports | `api::feeder_import` and `Service::import`. |
+| Imports | `api::feeder_import` and `Service::import` (implemented, section 15). |
 | Catch-up | Start instant stored in `GraphState` at publication; observed in `declare_barrier` B2. |
 | `/metrics` reads | Atomics, the published readiness word, `outstanding_jobs` (a `watch` channel) and the registry. No graph lock, admission permit or import permit; registry and `watch` synchronization still applies. |
 
@@ -371,8 +374,9 @@ counts are far below the bound. The second increment adds 7 series and the
 third adds 2. The fourth adds 153 standalone and 459 source-managed
 (section 11). The fifth adds 12 standalone and 7 source-managed (section
 12). The sixth adds 23 source-managed only (section 13). The seventh adds
-at most 2 source-managed only, for a current maximum of
-**1414 standalone, 1745 source-managed** (section 14).
+at most 2 source-managed only (section 14). The eighth adds 56
+source-managed only, for a current maximum of
+**1414 standalone, 1801 source-managed** (section 15).
 
 **Dependency.** [`prometheus-client`](https://crates.io/crates/prometheus-client)
 0.26, the Prometheus project's Rust client, with default features disabled.
@@ -579,7 +583,7 @@ metrics are disabled, `Service` holds `None`; nothing is registered,
 allocated or published.
 
 **Series.** 2 more series. The maximum became **1249 standalone, 1254
-source-managed** (now 1414 and 1745; section 14).
+source-managed** (now 1414 and 1801; section 15).
 
 **Tests.** In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)
 (module `graph_counts`) and `service.rs` (module `tests::graph_counts`):
@@ -644,7 +648,8 @@ worker-side graph-job time. They exclude:
   release (post-lock steps and guard drops);
 - for imports, the import-permit acquisition, the body read and the caller's
   brief pre-spawn graph-lock read that decides whether the import is the
-  initial load. Import `receive`/`prepare` timing remains pending.
+  initial load. Import `receive` and `prepare` are timed separately by
+  `import_duration_seconds` (section 15).
 
 A caller that timed out stops its HTTP duration while the worker continues,
 so HTTP duration can be shorter than the sum of the phases.
@@ -697,7 +702,7 @@ is allocated; the lock helper only wraps the guard.
 - source-managed: 3 × 9 × 17 = 459.
 
 The maximum becomes **1402 standalone, 1713 source-managed** (now 1414
-and 1745; section 14). The test
+and 1801; section 15). The test
 `series_exist_only_for_kinds_reachable_in_the_mode` checks the per-mode
 timing series counts against actual exposition.
 
@@ -800,7 +805,7 @@ there is no ownership cycle.
 | source-managed | 3: `connected` × {`true`, `false`, `error`}; direct mutations are refused before execution | 4 |
 
 The maximum becomes **1414 standalone, 1720 source-managed** (now 1414 and
-1745; section 14). The test
+1801; section 15). The test
 `series_exist_at_zero_only_for_reachable_combinations` checks these sets
 against actual exposition.
 
@@ -837,7 +842,7 @@ pre-created series and fixed labels:
 session IDs, cursors, generations, event IDs, caller text or error messages.
 
 **Endpoint scope.** Session, heartbeat, events, gap and barrier. Import is
-excluded: its terminal results belong to the pending `imports_total`, whose
+excluded: its terminal results belong to `imports_total` (section 15), whose
 taxonomy (`payload_rejected`, `publication_rejected`, `worker_failed`)
 differs.
 
@@ -863,7 +868,7 @@ Not counted:
 | Admission `busy` (HTTP `503 import_in_progress`) and `unavailable`, including the worker's own pre-job check and the barrier's `failed` check | admission or worker | `requests_rejected_total` |
 | Request timeout, cancellation, worker panic | lifecycle, worker join | `requests_outcome_uncertain_total` |
 | `mode_conflict`, missing or invalid instance header (`invalid_instance_id`), header or body `stale_instance_id`, `invalid_graph_id`, malformed or unprocessable JSON | HTTP adapter, before the service is called; malformed bodies never become a typed `FeederError`. `Service::register_session` and `Service::heartbeat` also return `ModeMismatch` and `StaleInstanceId` from their entry checks (as `Service::import` does with `StaleInstanceId` and `InvalidGraphId`); these are not counted either | `http_requests_total` only |
-| Import, including its fencing and precondition failures | import path | pending `imports_total` |
+| Import, including its fencing and precondition failures | import path | `imports_total` (section 15) |
 
 `FeederRejection::of` is total over `FeederError`. Mode and request-identity
 variants (`ModeMismatch`, `StaleInstanceId`, `InvalidInstanceId`,
@@ -921,7 +926,7 @@ counting is a single atomic increment.
 | source-managed | 19 | 4 |
 
 The maximum becomes **1414 standalone, 1743 source-managed** (now 1414 and
-1745; section 14). The test
+1801; section 15). The test
 `feeder_rejections::series_exist_at_zero_only_in_source_managed_mode` checks
 these sets against actual exposition.
 
@@ -1026,9 +1031,11 @@ clock.
 | standalone | 0 | 0 |
 | source-managed | 0 or 1 | 0 or 1 |
 
-The maximum becomes **1414 standalone, 1745 source-managed**.
+The maximum becomes **1414 standalone, 1745 source-managed** (now 1414 and
+1801; section 15).
 `feeder_activity::series_appear_with_a_session_and_a_first_application`
-checks the exposed series against actual exposition.
+checks that exactly these two series appear in actual exposition; it does not
+verify the calculated total bound.
 
 **Tests.** In `src/service.rs` (`tests::feeder_activity`), through the
 production router, with the lease clock locked and reset on entry and drop:
@@ -1060,3 +1067,159 @@ lag, and independent instances.
 **Overhead.** Not qualified. Section 6 applies unchanged. With metrics
 enabled, each applied event adds one clock read and one atomic `fetch_max`
 under the graph lock.
+
+## 15. Eighth M6.2 increment: import gauge, results and phase durations (implemented, unreleased)
+
+**Series.** Source-managed mode only, the only mode whose router accepts
+imports. All are pre-created at zero:
+
+- `knotrel_import_in_progress`, an unlabelled gauge;
+- `knotrel_imports_total{result}`, a counter;
+- `knotrel_import_duration_seconds{phase}`, a histogram on the job-phase
+  buckets (14 bounds from 10 µs to 30 s; a longer phase lands only in
+  `+Inf`).
+
+Labels come only from the enums `metrics::ImportResult` and
+`metrics::ImportPhase`, never from identifiers, cursors, request bodies or
+error text.
+
+**Ownership.** `Service::acquire_import_permit` returns a
+`service::ImportPermit` that carries the semaphore permit together with a
+`metrics::ImportObservation` when import metrics exist. The HTTP handler owns
+it while it reads the body; `Service::import` moves it into the worker
+closure. The observation records everything when it is dropped, in this order:
+
+1. the open phase, unless the worker is unwinding or the phase is an
+   unfinished `receive`;
+2. at most one result;
+3. the end of `in_progress`.
+
+The observation is declared before the semaphore permit, so it is dropped
+first. `in_progress` therefore returns to 0 before the next import can
+acquire the permit, and it never exceeds 1. In the worker, the job guard is
+dropped before the observation, so `graph_jobs_outstanding` can reach 0 an
+instant before the import is recorded.
+
+**Lifecycle boundaries.**
+
+| Boundary | Where | Effect |
+| --- | --- | --- |
+| Refused before the permit (mode, instance header, content type, `unavailable`, import capacity) | `api::feeder_import`, `acquire_import_permit` | Nothing. Capacity and `unavailable` are counted by `requests_rejected_total` (section 8). |
+| Permit acquired | `acquire_import_permit` | `in_progress` 1; `receive` starts. |
+| Body read returns | `api::feeder_import`, after `to_bytes` | `receive` observed. A failed read (size limit or body I/O error, both returned as `413 payload_too_large`) is `payload_rejected`, and the import ends. |
+| Caller abandons the body read (request timeout, disconnect) | handler future dropped | `in_progress` 0. No `receive` observation and no result (see *Unresolved*). |
+| Worker starts | `Service::import` closure, after `JobClock::start` | The worker owns the import, and a panic from here is `worker_failed`. |
+| `prepare` starts | after the worker start hook | An error from here is `payload_rejected`. |
+| Graph-lock request | immediately before `lock_timed` | `prepare` observed; `publish` starts. An error from here is `publication_rejected`. |
+| Publication | under the lock, where the panic and initial-load guards are marked successful | The result is `published`, even if a later step panics. |
+| Worker ends | end of the closure: after the response is built and the lock released | The open phase is observed and the result is counted; then `in_progress` returns to 0 and the permit is released. |
+
+**Results.** Classified by the phase the import reached, not by error code:
+
+| Result | Produced by |
+| --- | --- |
+| `published` | The candidate became the live generation. |
+| `payload_rejected` | Failed body read, `malformed_json`, `unprocessable_json`, body `stale_instance_id`, `invalid_graph_id` and candidate construction (`node_limit_exceeded`, `invalid_node`, `self_loop`, `edge_limit_exceeded`, `invalid_edge`). |
+| `publication_rejected` | Anything after the lock request: `unavailable` found under the lock (also counted as `requests_rejected_total{reason="unavailable"}`), session and lease fencing, `graph_already_initialized`, `If-Match` precondition failures and generation exhaustion. |
+| `worker_failed` | A worker panic before publication, including one in the worker start hook. It is also counted as `requests_outcome_uncertain_total{cause="worker_panic"}` (section 8). |
+
+Imports never count in `feeder_rejections_total` (section 13), graph
+operations or feeder events (section 12).
+
+**Caller timeout and cancellation.** Once the worker has started, it records
+the result regardless of the caller. An import that publishes after its caller
+timed out (HTTP `503 request_timeout`) or was cancelled is counted as
+`published`. The HTTP response is not the import result.
+
+**Phases.** The three phases are disjoint, and they do not cover the whole
+request:
+
+| Phase | Start | End |
+| --- | --- | --- |
+| `receive` | permit acquired | `to_bytes` returns, successfully or not; includes waiting for the client's bytes |
+| `prepare` | after the worker start hook | the graph-lock request, or the end of the worker on a preparation error |
+| `publish` | the graph-lock request | the end of the worker, including lock wait, validation, swap, the publication of readiness, graph counts and age, response construction, lock release and the final drops |
+
+The phases exclude:
+
+- the handler's checks before the permit;
+- the caller's pre-spawn graph-lock read and `loading` store;
+- the blocking-pool queue, which is already in
+  `graph_job_queue_seconds{kind="import_publish"}`;
+- the worker start hook.
+
+`publish` overlaps the `import_publish` lock-wait and execution histograms
+(section 11). Those are separate metrics and must not be summed with it. A
+failed phase is observed up to its error. A phase interrupted by a panic is
+not observed, but phases that completed before the panic are kept.
+
+**Unresolved: abandoned body receipt.** The vocabulary says "one per
+permitted import", but a caller that abandons the import while the handler is
+still reading the body (request timeout, client disconnect) records no
+result, so results can be fewer than acquired permits. An import whose
+worker never runs (runtime shutdown) also records none. The alternatives,
+to be decided before M6.2 acceptance, are:
+
+| Option | Effect |
+| --- | --- |
+| Keep (implemented) | No vocabulary change; the gap is documented. |
+| Add `result="abandoned"` | Every permit gets a result; one more series and a vocabulary change. |
+| Fold into `payload_rejected` | No new series, but caller timeouts become indistinguishable from bad payloads. |
+
+**Scrape and disabled mode.** The gauge, counters and histograms are atomics
+in the per-instance `ServiceTelemetry`. Scraping takes no graph lock,
+admission permit or import permit. In standalone mode, and with metrics
+disabled, no `ImportObservation` is created, so no clock is read and nothing
+is recorded; the permit only carries an empty `Option`.
+
+**Series.**
+
+| Family | Series (source-managed) |
+| --- | --- |
+| `import_in_progress` | 1 |
+| `imports_total` | 4 |
+| `import_duration_seconds` | 3 × (14 buckets + `+Inf` + `_sum` + `_count`) = 51 |
+| **Total** | **56** |
+
+The maximum becomes **1414 standalone, 1801 source-managed**.
+`imports::series_exist_at_zero_only_in_source_managed_mode` checks these 56
+series against actual exposition; the total bound remains a calculation.
+
+**Tests.** In `src/service.rs` (`tests::import_metrics`), through the
+production router, with the lease and job-phase clocks locked:
+
+- create-only and replacement publication;
+- payload rejections (malformed JSON, self-loop, stale body instance ID)
+  timed through `prepare` without `publish`;
+- an oversized body observed in `receive` only;
+- publication rejections (`409`, `412`, a fenced session) timed through
+  `publish`;
+- a capacity refusal counting no import while the held permit shows
+  `in_progress` 1;
+- `receive` absorbing a streamed body's wait, and an abandoned streamed body
+  leaving `in_progress` 0 with no result and no phase, followed by a published
+  import.
+
+The following tests require `test-support`:
+
+- `in_progress` 1 while the worker is paused at its start hook, which no
+  phase absorbs;
+- `publish` starting at the lock request;
+- worker panics at the start hook and at the lock request (`worker_failed`,
+  with only the completed phases kept);
+- publication after caller cancellation and after a request timeout,
+  counting `published`.
+
+Standalone mode and disabled telemetry create no observation. In
+[`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs) (module
+`imports`):
+
+- series presence, absence, label sets and bucket counts;
+- types and HELP;
+- one result per permitted import through HTTP, without
+  `import_capacity` rejections;
+- independent instances.
+
+**Overhead.** Not qualified. Section 6 applies unchanged. With metrics
+enabled, each permitted import adds at most four clock reads and a few
+atomic updates, none in a per-node or per-edge loop.

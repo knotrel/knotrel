@@ -80,6 +80,13 @@ const FEEDER_REJECTION_CODES: [&str; 19] = [
     "barrier_not_reached",
     "superseded_barrier",
 ];
+const IMPORT_RESULTS: [&str; 4] = [
+    "published",
+    "payload_rejected",
+    "publication_rejected",
+    "worker_failed",
+];
+const IMPORT_PHASES: [&str; 3] = ["receive", "prepare", "publish"];
 const DESYNC_CAUSES: [&str; 4] = [
     "gap_declared",
     "source_epoch_mismatch",
@@ -315,7 +322,9 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
                 "kind" => &JOB_KINDS,
                 "op" => &GRAPH_OPS,
                 "outcome" => &OPERATION_OUTCOMES,
+                "result" if sample.name.starts_with("knotrel_imports") => &IMPORT_RESULTS,
                 "result" => &EVENT_RESULTS,
+                "phase" => &IMPORT_PHASES,
                 "le" => &[],
                 "version" | "engine" | "mode" => &[],
                 other => panic!("unexpected label {other}"),
@@ -2922,5 +2931,134 @@ mod feeder_activity {
         bootstrap(&first, &["1"], &[]).await;
         assert_eq!(activity(&scrape(&first).await), [LEASE, AGE]);
         assert!(activity(&scrape(&second).await).is_empty());
+    }
+}
+
+mod imports {
+    use super::graph_counts::{bootstrap, feeder, import, instance_id, source_managed};
+    use super::*;
+
+    const IN_PROGRESS: &str = "knotrel_import_in_progress";
+    const RESULTS: &str = "knotrel_imports_total";
+    const DURATION: &str = "knotrel_import_duration_seconds";
+
+    fn import_series(samples: &[Sample]) -> Vec<&Sample> {
+        samples
+            .iter()
+            .filter(|s| {
+                s.name.starts_with("knotrel_import_") || s.name.starts_with("knotrel_imports")
+            })
+            .collect()
+    }
+
+    fn results(samples: &[Sample]) -> [f64; 4] {
+        IMPORT_RESULTS.map(|result| {
+            value(samples, RESULTS, &[("result", result)])
+                .unwrap_or_else(|| panic!("missing {RESULTS}{{result={result}}}"))
+        })
+    }
+
+    fn phase_counts(samples: &[Sample]) -> [f64; 3] {
+        IMPORT_PHASES.map(|phase| {
+            value(samples, &format!("{DURATION}_count"), &[("phase", phase)])
+                .unwrap_or_else(|| panic!("missing {DURATION}_count{{phase={phase}}}"))
+        })
+    }
+
+    #[tokio::test]
+    async fn series_exist_at_zero_only_in_source_managed_mode() {
+        let standalone = router_with_config(config(4));
+        let (status, _) = send(&standalone, Method::POST, "/v1/feeder/import", "{}").await;
+        assert!(status.is_client_error());
+        assert!(import_series(&scrape(&standalone).await).is_empty());
+
+        let samples = scrape(&router_with_config(source_managed())).await;
+        let series = import_series(&samples);
+        assert_eq!(
+            series.len(),
+            56,
+            "1 gauge, 4 results, 3 phases of 17 series"
+        );
+        assert!(series.iter().all(|s| s.value == 0.0), "{series:?}");
+        assert_eq!(value(&samples, IN_PROGRESS, &[]), Some(0.0));
+        assert_eq!(results(&samples), [0.0; 4]);
+        for phase in IMPORT_PHASES {
+            let buckets = series
+                .iter()
+                .filter(|s| s.name == format!("{DURATION}_bucket") && s.labels["phase"] == phase)
+                .count();
+            assert_eq!(buckets, 15, "{phase}: 14 explicit buckets plus +Inf");
+        }
+    }
+
+    #[tokio::test]
+    async fn families_are_typed_and_described_as_permitted_imports() {
+        let text = send(
+            &router_with_config(source_managed()),
+            Method::GET,
+            "/metrics",
+            "",
+        )
+        .await
+        .1;
+        for (name, kind, phrase) in [
+            (IN_PROGRESS, "gauge", "import permit"),
+            (RESULTS, "counter", "import permit"),
+            (DURATION, "histogram", "monotonic clock"),
+        ] {
+            assert!(text.contains(&format!("# TYPE {name} {kind}\n")), "{text}");
+            let help = text
+                .lines()
+                .find(|line| line.starts_with(&format!("# HELP {name} ")))
+                .unwrap_or_else(|| panic!("no HELP for {name}"));
+            assert!(help.contains(phrase), "{help}");
+        }
+    }
+
+    #[tokio::test]
+    async fn each_permitted_import_has_one_result_and_refusals_none() {
+        let app = router_with_config(source_managed());
+        let instance = bootstrap(&app, &["1", "2"], &[]).await;
+        let body = import(&instance, "create_only", "p-0", &["1"], &[]);
+        let (status, _) = feeder(&app, &instance, "/v1/feeder/import", None, body).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let body = import(&instance, "create_only", "p-0", &["1"], &[("1", "1")]);
+        let (status, _) = feeder(&app, &instance, "/v1/feeder/import", None, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let body = import(&instance, "replace", "p-1", &["1"], &[]);
+        let (status, _) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/import",
+            Some("\"1.0.p-0\""),
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let samples = scrape(&app).await;
+        assert_eq!(value(&samples, IN_PROGRESS, &[]), Some(0.0));
+        assert_eq!(results(&samples), [2.0, 1.0, 1.0, 0.0]);
+        assert_eq!(phase_counts(&samples), [4.0, 4.0, 3.0]);
+        assert_eq!(
+            value(
+                &samples,
+                "knotrel_requests_rejected_total",
+                &[("reason", "import_capacity")]
+            ),
+            Some(0.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn server_instances_count_their_own_imports() {
+        let first = router_with_config(source_managed());
+        let second = router_with_config(source_managed());
+        bootstrap(&first, &["1"], &[]).await;
+        let _ = instance_id(&second).await;
+        assert_eq!(results(&scrape(&first).await), [1.0, 0.0, 0.0, 0.0]);
+        let samples = scrape(&second).await;
+        assert_eq!(results(&samples), [0.0; 4]);
+        assert_eq!(phase_counts(&samples), [0.0; 3]);
     }
 }

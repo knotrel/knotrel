@@ -654,14 +654,16 @@ pub(crate) async fn feeder_import(
         .map(|s| s.to_string());
 
     // 1. Acquire the single owned import permit BEFORE consuming body bytes!
-    let permit = match service.acquire_import_permit() {
+    let mut permit = match service.acquire_import_permit() {
         Ok(permit) => permit,
         Err(err) => return feeder_error(err),
     };
 
     // 2. Read body bytes with bounded limit under acquired permit
     let max_bytes = service.max_import_body_bytes();
-    let bytes = match axum::body::to_bytes(body, max_bytes).await {
+    let read = axum::body::to_bytes(body, max_bytes).await;
+    permit.received(read.is_ok());
+    let bytes = match read {
         Ok(bytes) => bytes,
         Err(_) => return feeder_error(crate::service::FeederError::PayloadTooLarge),
     };

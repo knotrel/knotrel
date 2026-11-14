@@ -9,8 +9,8 @@ use crate::{
         SessionRequest, SessionResponse,
     },
     metrics::{
-        Desynchronization, FeederEventResult, FeederRejection, GraphOp, JobClock, JobKind,
-        PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed,
+        Desynchronization, FeederEventResult, FeederRejection, GraphOp, ImportObservation,
+        JobClock, JobKind, PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed,
     },
 };
 use knotrel_core::{ConnectivityGraph, EngineConfig, GraphError};
@@ -1521,6 +1521,32 @@ pub(crate) enum JobEffect {
 /// It also records `worker_panic` for state-changing jobs. Counting here,
 /// on the worker, rather than in the caller's `JoinError` mapping keeps the
 /// observation when the caller is gone and avoids counting it twice.
+/// The single import permit, owned by the HTTP handler while it reads the
+/// body and then by the import worker.
+///
+/// Carries the import's [`ImportObservation`] when import metrics exist.
+/// Fields drop in declaration order, so the observation records the import
+/// and clears `in_progress` before the semaphore permit is released.
+pub(crate) struct ImportPermit {
+    observation: Option<ImportObservation>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl ImportPermit {
+    /// Ends the `receive` phase; `complete` is false when the body read failed.
+    pub(crate) fn received(&mut self, complete: bool) {
+        if let Some(observation) = &mut self.observation {
+            observation.received(complete);
+        }
+    }
+
+    fn observe(&mut self, step: fn(&mut ImportObservation)) {
+        if let Some(observation) = &mut self.observation {
+            step(observation);
+        }
+    }
+}
+
 struct WorkerPanicGuard {
     unavailable: Arc<AtomicBool>,
     // Set only for state-changing jobs when metrics are enabled.
@@ -1669,17 +1695,20 @@ impl Service {
     }
 
     /// Acquires the single import permit before reading request body.
-    pub(crate) fn acquire_import_permit(
-        &self,
-    ) -> Result<tokio::sync::OwnedSemaphorePermit, FeederError> {
-        self.import_permits
+    pub(crate) fn acquire_import_permit(&self) -> Result<ImportPermit, FeederError> {
+        let permit = self
+            .import_permits
             .clone()
             .try_acquire_owned()
             .map_err(|_| {
                 tracing::warn!("import capacity exhausted; rejecting with 503 import_in_progress");
                 self.count_rejection(Rejection::ImportCapacity);
                 FeederError::ImportInProgress
-            })
+            })?;
+        Ok(ImportPermit {
+            observation: ImportObservation::acquired(self.telemetry.as_ref()),
+            _permit: permit,
+        })
     }
 
     /// Returns the maximum allowed size in bytes for a graph import payload.
@@ -1861,7 +1890,7 @@ impl Service {
     /// Atomically constructs and publishes a new graph topology on a blocking worker.
     pub(crate) async fn import(
         &self,
-        permit: tokio::sync::OwnedSemaphorePermit,
+        permit: ImportPermit,
         raw_bytes: axum::body::Bytes,
         if_match: Option<String>,
     ) -> Result<ImportResponse, FeederError> {
@@ -1897,7 +1926,10 @@ impl Service {
         let clock = JobClock::submit(self.telemetry.as_ref(), JobKind::ImportPublish);
         let handle = tokio::task::spawn_blocking(move || {
             JobClock::start(clock.as_ref());
-            let _permit = permit;
+            // Dropped last, after the lock and the request state, so the
+            // `publish` phase and the terminal result include them.
+            let mut import = permit;
+            import.observe(ImportObservation::enter_worker);
             let _job_guard = job_guard;
             let mut panic_guard = WorkerPanicGuard {
                 unavailable: unavailable.clone(),
@@ -1939,6 +1971,7 @@ impl Service {
             };
 
             lifecycle.check_worker_hook();
+            import.observe(ImportObservation::begin_prepare);
 
             // 1. Off-lock JSON parsing:
             let mut buffer = raw_bytes.to_vec();
@@ -2005,6 +2038,7 @@ impl Service {
             }
 
             // 3. Lock acquisition & atomic precondition verification
+            import.observe(ImportObservation::begin_publish);
             let mut state = lock_timed(&graph, clock.as_ref(), &lifecycle);
             if state.failed || unavailable.load(Ordering::Acquire) {
                 panic_guard.unavailable.store(true, Ordering::Release);
@@ -2058,6 +2092,7 @@ impl Service {
 
             initial_guard.success = true;
             panic_guard.success = true;
+            import.observe(ImportObservation::published);
             let word = state.current_readiness_word();
             published_atomic.store(word, Ordering::Release);
 
@@ -4572,7 +4607,7 @@ mod tests {
         use tower::ServiceExt;
 
         /// Serializes tests that move the shared timing clock.
-        static CLOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        pub(super) static CLOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         const STEP: Duration = Duration::from_secs(5);
         const PHASES: [&str; 3] = [
             "knotrel_graph_job_queue_seconds",
@@ -5380,6 +5415,550 @@ mod tests {
             app.bootstrap().await;
             assert_eq!(app.events(json!([link(1, "1", "2")])).await, StatusCode::OK);
             assert_eq!(app.get("/metrics").await.0, StatusCode::NOT_FOUND);
+        }
+    }
+
+    mod import_metrics {
+        use super::*;
+        use crate::metrics::advance_timing;
+        use axum::body::{Body, Bytes, to_bytes};
+        use axum::http::{Request, StatusCode, header};
+        use serde_json::{Value, json};
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use tower::ServiceExt;
+
+        const IMPORT: &str = "/v1/feeder/import";
+        const STEP: Duration = Duration::from_secs(5);
+        const PHASES: [&str; 3] = ["receive", "prepare", "publish"];
+        const RESULTS: [&str; 4] = [
+            "published",
+            "payload_rejected",
+            "publication_rejected",
+            "worker_failed",
+        ];
+
+        /// Serializes the lease clock (so leases cannot expire mid-test) and
+        /// the job-phase clock (so phase sums are not disturbed).
+        struct Clocks {
+            _lease: tokio::sync::MutexGuard<'static, ()>,
+            _timing: tokio::sync::MutexGuard<'static, ()>,
+        }
+
+        impl Clocks {
+            async fn lock() -> Self {
+                let lease = lock_clock_for_test().await;
+                reset_clock();
+                let timing = super::job_timing::CLOCK.lock().await;
+                Self {
+                    _lease: lease,
+                    _timing: timing,
+                }
+            }
+        }
+
+        impl Drop for Clocks {
+            fn drop(&mut self) {
+                reset_clock();
+            }
+        }
+
+        /// Request body fed by the test, holding the handler in body receipt.
+        struct ChannelBody(tokio::sync::mpsc::UnboundedReceiver<Bytes>);
+
+        impl hyper::body::Body for ChannelBody {
+            type Data = Bytes;
+            type Error = std::convert::Infallible;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+                self.0
+                    .poll_recv(cx)
+                    .map(|chunk| chunk.map(|bytes| Ok(hyper::body::Frame::data(bytes))))
+            }
+        }
+
+        struct Scrape(String);
+
+        impl Scrape {
+            fn sample(&self, series: &str) -> Option<f64> {
+                self.0
+                    .lines()
+                    .find_map(|line| line.strip_prefix(series)?.strip_prefix(' '))
+                    .map(|value| value.parse().unwrap())
+            }
+
+            fn in_progress(&self) -> Option<f64> {
+                self.sample("knotrel_import_in_progress")
+            }
+
+            fn results(&self) -> [u64; 4] {
+                RESULTS.map(|result| {
+                    let series = format!("knotrel_imports_total{{result=\"{result}\"}}");
+                    self.sample(&series)
+                        .unwrap_or_else(|| panic!("missing {series} in {}", self.0))
+                        as u64
+                })
+            }
+
+            /// `(count, sum)` of one import-duration phase.
+            fn phase(&self, phase: &str) -> (u64, f64) {
+                let read = |suffix: &str| {
+                    let series =
+                        format!("knotrel_import_duration_seconds_{suffix}{{phase=\"{phase}\"}}");
+                    self.sample(&series)
+                        .unwrap_or_else(|| panic!("missing {series} in {}", self.0))
+                };
+                (read("count") as u64, read("sum"))
+            }
+
+            fn counts(&self) -> [u64; 3] {
+                PHASES.map(|phase| self.phase(phase).0)
+            }
+        }
+
+        fn absorbed((count, sum): (u64, f64)) -> bool {
+            count == 1 && sum >= STEP.as_secs_f64()
+        }
+
+        fn excluded((count, sum): (u64, f64)) -> bool {
+            count == 1 && sum < STEP.as_secs_f64()
+        }
+
+        struct App {
+            service: Service,
+            #[cfg_attr(not(feature = "test-support"), allow(dead_code))]
+            lifecycle: Lifecycle,
+            router: axum::Router,
+            instance: String,
+        }
+
+        fn app_with(config: crate::ServerConfig) -> App {
+            let lifecycle = Lifecycle::ready();
+            let service =
+                Service::with_config(ConnectivityGraph::default(), 4, lifecycle.clone(), &config);
+            let router =
+                crate::build_router_from_service(service.clone(), config, lifecycle.clone());
+            let instance = service.instance_id().to_owned();
+            App {
+                service,
+                lifecycle,
+                router,
+                instance,
+            }
+        }
+
+        fn source_managed() -> crate::ServerConfig {
+            crate::ServerConfig::default()
+                .with_mode(ServerMode::SourceManaged)
+                .with_metrics_enabled(true)
+        }
+
+        impl App {
+            fn request(
+                &self,
+                path: &str,
+                if_match: Option<&str>,
+                body: Body,
+            ) -> impl Future<Output = StatusCode> + Send + 'static {
+                let mut request = Request::post(path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-knotrel-instance-id", &self.instance);
+                if let Some(etag) = if_match {
+                    request = request.header(header::IF_MATCH, etag);
+                }
+                let request = request.body(body).unwrap();
+                let router = self.router.clone();
+                async move { router.oneshot(request).await.unwrap().status() }
+            }
+
+            fn import_body(&self, mode: &str) -> Value {
+                json!({
+                    "mode": mode,
+                    "instance_id": self.instance,
+                    "graph_id": "default",
+                    "source_id": "pg-1",
+                    "source_epoch": "ep-1",
+                    "source_position": "p-0",
+                    "feeder_session_id": "s",
+                    "feeder_epoch": 1,
+                    "nodes": ["1", "2"],
+                    "edges": [],
+                })
+            }
+
+            async fn send(&self, if_match: Option<&str>, body: Value) -> StatusCode {
+                self.request(IMPORT, if_match, Body::from(body.to_string()))
+                    .await
+            }
+
+            async fn import(&self, mode: &str, if_match: Option<&str>) -> StatusCode {
+                self.send(if_match, self.import_body(mode)).await
+            }
+
+            #[cfg_attr(not(feature = "test-support"), allow(dead_code))]
+            fn spawn_import(&self) -> tokio::task::JoinHandle<StatusCode> {
+                let body = Body::from(self.import_body("create_only").to_string());
+                tokio::spawn(self.request(IMPORT, None, body))
+            }
+
+            /// Starts an import whose body the test feeds through the sender.
+            fn spawn_streamed_import(
+                &self,
+            ) -> (
+                tokio::sync::mpsc::UnboundedSender<Bytes>,
+                tokio::task::JoinHandle<StatusCode>,
+            ) {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let body = Body::new(ChannelBody(rx));
+                (tx, tokio::spawn(self.request(IMPORT, None, body)))
+            }
+
+            async fn session(&self) {
+                let body = json!({
+                    "instance_id": self.instance,
+                    "feeder_session_id": "s",
+                    "feeder_epoch": 1,
+                    "lease_duration_ms": 60_000,
+                });
+                let status = self
+                    .request("/v1/feeder/session", None, Body::from(body.to_string()))
+                    .await;
+                assert_eq!(status, StatusCode::OK);
+            }
+
+            async fn scrape(&self) -> Scrape {
+                let response = self
+                    .router
+                    .clone()
+                    .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+                Scrape(String::from_utf8(bytes.to_vec()).unwrap())
+            }
+
+            async fn wait_for_in_progress(&self, value: f64) {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while self.scrape().await.in_progress() != Some(value) {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("import_in_progress never reached {value}"));
+            }
+        }
+
+        #[tokio::test]
+        async fn published_imports_count_once_and_time_every_phase() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            let before = app.scrape().await;
+            assert_eq!(before.in_progress(), Some(0.0));
+            assert_eq!(before.results(), [0; 4]);
+            assert_eq!(before.counts(), [0; 3]);
+
+            assert_eq!(app.import("create_only", None).await, StatusCode::CREATED);
+            assert_eq!(
+                app.import("replace", Some(r#""1.0.p-0""#)).await,
+                StatusCode::CREATED
+            );
+            let after = app.scrape().await;
+            assert_eq!(after.in_progress(), Some(0.0));
+            assert_eq!(after.results(), [2, 0, 0, 0]);
+            assert_eq!(after.counts(), [2, 2, 2]);
+        }
+
+        #[tokio::test]
+        async fn payload_rejections_end_in_prepare_without_publish() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+
+            let malformed = app.request(IMPORT, None, Body::from("{\"mode\":")).await;
+            assert_eq!(malformed, StatusCode::BAD_REQUEST);
+            let mut self_loop = app.import_body("create_only");
+            self_loop["edges"] = json!([{"source": "1", "target": "1"}]);
+            assert_eq!(
+                app.send(None, self_loop).await,
+                StatusCode::UNPROCESSABLE_ENTITY
+            );
+            let mut stale = app.import_body("create_only");
+            stale["instance_id"] = json!("other-instance");
+            assert!(app.send(None, stale).await.is_client_error());
+
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(0.0));
+            assert_eq!(scrape.results(), [0, 3, 0, 0]);
+            assert_eq!(scrape.counts(), [3, 3, 0]);
+        }
+
+        #[tokio::test]
+        async fn failed_body_read_is_a_payload_rejection_without_prepare() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed().with_max_import_body_bytes(16).unwrap());
+            app.session().await;
+            assert_eq!(
+                app.import("create_only", None).await,
+                StatusCode::PAYLOAD_TOO_LARGE
+            );
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(0.0));
+            assert_eq!(scrape.results(), [0, 1, 0, 0]);
+            assert_eq!(scrape.counts(), [1, 0, 0]);
+        }
+
+        #[tokio::test]
+        async fn publication_rejections_are_timed_through_publish() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            assert_eq!(app.import("create_only", None).await, StatusCode::CREATED);
+
+            assert_eq!(app.import("create_only", None).await, StatusCode::CONFLICT);
+            assert_eq!(
+                app.import("replace", Some(r#""1.9.p-0""#)).await,
+                StatusCode::PRECONDITION_FAILED
+            );
+            let mut fenced = app.import_body("replace");
+            fenced["feeder_session_id"] = json!("other-session");
+            assert!(
+                app.send(Some(r#""1.0.p-0""#), fenced)
+                    .await
+                    .is_client_error()
+            );
+
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(0.0));
+            assert_eq!(scrape.results(), [1, 0, 3, 0]);
+            assert_eq!(scrape.counts(), [4, 4, 4]);
+        }
+
+        #[tokio::test]
+        async fn capacity_refusal_is_not_an_import() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            let held = app.service.acquire_import_permit().unwrap();
+            assert_eq!(app.scrape().await.in_progress(), Some(1.0));
+
+            assert_eq!(
+                app.import("create_only", None).await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            let telemetry = app.service.telemetry().unwrap();
+            assert_eq!(telemetry.rejected_count(Rejection::ImportCapacity), 1);
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(1.0));
+            assert_eq!(scrape.results(), [0; 4]);
+
+            drop(held);
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(0.0));
+            assert_eq!(scrape.results(), [0; 4], "a permit never used");
+            assert_eq!(scrape.counts(), [0; 3]);
+        }
+
+        #[tokio::test]
+        async fn receive_spans_the_body_read() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            let (body, caller) = app.spawn_streamed_import();
+            app.wait_for_in_progress(1.0).await;
+
+            advance_timing(STEP);
+            body.send(Bytes::from(app.import_body("create_only").to_string()))
+                .unwrap();
+            drop(body);
+            assert_eq!(caller.await.unwrap(), StatusCode::CREATED);
+
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.results(), [1, 0, 0, 0]);
+            assert!(absorbed(scrape.phase("receive")), "{}", scrape.0);
+            assert!(excluded(scrape.phase("prepare")), "{}", scrape.0);
+            assert!(excluded(scrape.phase("publish")), "{}", scrape.0);
+        }
+
+        #[tokio::test]
+        async fn abandoned_body_receipt_releases_the_import_without_a_result() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            let (body, caller) = app.spawn_streamed_import();
+            app.wait_for_in_progress(1.0).await;
+            body.send(Bytes::from_static(b"{\"mode\":")).unwrap();
+
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(0.0));
+            assert_eq!(scrape.results(), [0; 4]);
+            assert_eq!(scrape.counts(), [0; 3], "an unfinished receive");
+
+            assert_eq!(app.import("create_only", None).await, StatusCode::CREATED);
+            assert_eq!(app.scrape().await.results(), [1, 0, 0, 0]);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn in_progress_covers_a_paused_worker_whose_start_hook_is_untimed() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            let mut pause = app.lifecycle.pause_next_worker();
+            let caller = app.spawn_import();
+            pause.wait_started().await;
+            assert_eq!(app.scrape().await.in_progress(), Some(1.0));
+            assert_eq!(app.scrape().await.results(), [0; 4]);
+
+            advance_timing(STEP);
+            pause.release();
+            assert_eq!(caller.await.unwrap(), StatusCode::CREATED);
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(0.0));
+            assert_eq!(scrape.results(), [1, 0, 0, 0]);
+            for phase in PHASES {
+                assert!(excluded(scrape.phase(phase)), "{phase}: {}", scrape.0);
+            }
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn publish_starts_at_the_graph_lock_request() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            let mut pause = app.lifecycle.pause_next_lock_request();
+            let caller = app.spawn_import();
+            pause.wait_started().await;
+
+            advance_timing(STEP);
+            pause.release();
+            assert_eq!(caller.await.unwrap(), StatusCode::CREATED);
+            let scrape = app.scrape().await;
+            assert!(excluded(scrape.phase("receive")), "{}", scrape.0);
+            assert!(excluded(scrape.phase("prepare")), "{}", scrape.0);
+            assert!(absorbed(scrape.phase("publish")), "{}", scrape.0);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn worker_panic_at_start_is_worker_failed_without_worker_phases() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            let mut pause = app.lifecycle.pause_next_worker();
+            let caller = app.spawn_import();
+            pause.wait_started().await;
+            pause.panic_on_release();
+            assert_eq!(caller.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(0.0));
+            assert_eq!(scrape.results(), [0, 0, 0, 1]);
+            assert_eq!(scrape.counts(), [1, 0, 0]);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn worker_panic_at_the_lock_request_records_prepare_only() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            let mut pause = app.lifecycle.pause_next_lock_request();
+            let caller = app.spawn_import();
+            pause.wait_started().await;
+            pause.panic_on_release();
+            assert_eq!(caller.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(0.0));
+            assert_eq!(scrape.results(), [0, 0, 0, 1]);
+            assert_eq!(scrape.counts(), [1, 1, 0], "an unwound publish");
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn publication_after_caller_cancellation_counts_as_published() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(source_managed());
+            app.session().await;
+            let mut pause = app.lifecycle.pause_next_lock_request();
+            let caller = app.spawn_import();
+            pause.wait_started().await;
+
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(1.0), "the worker owns it");
+            assert_eq!(scrape.results(), [0; 4]);
+
+            pause.release();
+            app.wait_for_in_progress(0.0).await;
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.results(), [1, 0, 0, 0]);
+            assert_eq!(scrape.counts(), [1, 1, 1]);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn publication_after_caller_timeout_counts_as_published() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(
+                source_managed()
+                    .with_request_timeout(Duration::from_millis(50))
+                    .unwrap(),
+            );
+            app.session().await;
+            let mut pause = app.lifecycle.pause_next_lock_request();
+            assert_eq!(
+                app.import("create_only", None).await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            pause.wait_started().await;
+            let scrape = app.scrape().await;
+            assert_eq!(scrape.in_progress(), Some(1.0));
+            assert_eq!(scrape.results(), [0; 4]);
+
+            pause.release();
+            app.wait_for_in_progress(0.0).await;
+            assert_eq!(app.scrape().await.results(), [1, 0, 0, 0]);
+        }
+
+        #[tokio::test]
+        async fn standalone_mode_has_no_import_accounting() {
+            let app = app_with(crate::ServerConfig::default().with_metrics_enabled(true));
+            assert!(!app.scrape().await.0.contains("knotrel_import"));
+            let permit = app.service.acquire_import_permit().unwrap();
+            assert!(permit.observation.is_none());
+        }
+
+        #[tokio::test]
+        async fn disabled_telemetry_keeps_import_behavior() {
+            let _clocks = Clocks::lock().await;
+            let app = app_with(crate::ServerConfig::default().with_mode(ServerMode::SourceManaged));
+            assert!(app.service.telemetry().is_none());
+            assert!(
+                app.service
+                    .acquire_import_permit()
+                    .unwrap()
+                    .observation
+                    .is_none()
+            );
+            app.session().await;
+            assert_eq!(app.import("create_only", None).await, StatusCode::CREATED);
+            let response = app
+                .router
+                .clone()
+                .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
     }
 }
