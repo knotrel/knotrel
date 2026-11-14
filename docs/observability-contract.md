@@ -1,7 +1,7 @@
 # Observability contract
 
-**Status:** Vocabulary for roadmap M6.1, plus three M6.2 increments
-(sections 7, 8 and 10), which are implemented but unreleased. M6 is deferred and is not
+**Status:** Vocabulary for roadmap M6.1, plus five M6.2 increments
+(sections 7, 8, 10, 11 and 12), which are implemented but unreleased. M6 is deferred and is not
 part of v0.3.0. Neither M6.2 nor M6 is complete. Rows marked *pending* in
 section 4 are vocabulary only: no endpoint, metric or log field exists for
 them yet. The opt-in `/metrics` endpoint does not change any existing route,
@@ -34,15 +34,16 @@ the v0.3.0 release.
 | Admission capacity | `Service` permit semaphore (`max_pending_jobs`), import semaphore (1) | Exposed via opt-in `/metrics` | Rejections are logged and counted by `requests_rejected_total` (section 8). |
 | Lifecycle phase, worker failure | `Phase`, `unavailable` flag | Exposed via `/ready` and opt-in `/metrics` | `readiness_state` and `service_unavailable` gauges. |
 | Synchronization state | `GraphState` (`generation`, `version`, `sync_status`, `applied_delivery_sequence`, `source_position`, session, epoch, `lease_deadline`) | Internal | Partly visible through `/v1/stats`, headers and `/ready`. |
-| Event outcome counts | `FeederEventsResponse.events_applied` | Exposed per response | No cumulative count anywhere. |
+| Event outcome counts | `FeederEventsResponse.events_applied` | Exposed per response; cumulative via opt-in `/metrics` | Fifth M6.2 increment; section 12. |
 | Import preparation and catch-up timing | none | **Needs instrumentation** | Only whole-request server-side latency exists, in logs and (opt-in) `/metrics`. |
 | HTTP counts, duration, backlog, capacity, unavailable flag, readiness, build, graph node and edge counts | `GET /metrics` (`metrics.rs`) | Exposed when `KNOTREL_METRICS_ENABLED=true` | M6.2 increments; sections 7, 8 and 10. |
 | Graph-job queue, lock-wait and execution time | `JobClock` and `lock_timed` (`metrics.rs`), recorded by workers | Exposed when `KNOTREL_METRICS_ENABLED=true` | Fourth M6.2 increment; section 11. |
 | Rejections before execution, uncertain-outcome observations | `ServiceTelemetry` (`metrics.rs`), owned by `Service` | Exposed when `KNOTREL_METRICS_ENABLED=true` | Second M6.2 increment; section 8. |
+| Graph-operation and feeder-event outcomes | `ServiceTelemetry::count_operation`, `count_feeder_event` (`metrics.rs`), called by workers | Exposed when `KNOTREL_METRICS_ENABLED=true` | Fifth M6.2 increment; section 12. |
 
 ### Concrete operator gaps
 
-1. No cumulative counts for applied and duplicate events, gaps, conflicts and imports: they are visible only as individual log lines or response bodies. (Request counts by route and status class, and pre-execution rejections by reason, are now available from the opt-in `/metrics`.)
+1. No cumulative counts for applied and duplicate events, gaps, conflicts and imports: they are visible only as individual log lines or response bodies. (Request counts by route and status class, pre-execution rejections by reason, and graph-operation and feeder-event outcomes are now available from the opt-in `/metrics`; section 12. Gaps, conflicts by code and imports remain uncounted.)
 2. No backlog signal outside drain. (Now exported as `graph_jobs_outstanding` via the opt-in `/metrics`.)
 3. Graph counts are readable only through `/v1/stats`, which competes for the same admission permits and graph lock as the work being diagnosed. (The opt-in `/metrics` now exposes worker-published counts without either; section 10.)
 4. No breakdown of where time goes: caller latency cannot be split into queueing, lock wait and execution. (The opt-in `/metrics` now records worker queue, lock-wait and execution time per job kind; these intervals do not add up to HTTP latency; section 11.)
@@ -160,7 +161,7 @@ classifies by the internal cause (`busy`) and leaves the HTTP code unchanged.
 | --- | --- | --- |
 | HTTP request | request that reached the router and either produced a response or was cancelled | A batch counts as one request regardless of size or per-operation errors. Each request is counted exactly once. A scrape of `/metrics` counts itself after it completes, so it appears in the next scrape. Requests refused by the connection limit or malformed before routing never reach the router and are not counted. |
 | Graph job | accepted worker job (operation, batch, stats, feeder call, import publication) | A batch is one job. |
-| Graph operation | operation in `/v1/operations` or `/v1/batch` that reached the graph | Every executed batch entry is counted once with its own outcome; a batch is never counted as a single failure. Operations rejected before execution (size limit, malformed request) are not graph operations. |
+| Graph operation | operation in `/v1/operations` or `/v1/batch` that reached the graph | Every executed batch entry is counted once with its own outcome; a batch is never counted as a single failure. Operations rejected before execution (size limit, malformed request, admission, the source-managed synchronization gate) are not graph operations (section 12). |
 | Feeder event | event evaluated in `/v1/feeder/events` | Applied prefix: each event counted by outcome. A retained exact duplicate counts as `duplicate`. The first failing event counts as `rejected`. Events after it were never evaluated and are not counted. Whole-request rejections count zero events. |
 | Import | import request that obtained the import permit | Counted once with a terminal result. |
 | Rejected request | request refused before any graph job or import ran for it (`shutting_down` also covers requests that would not create one) | At most once, at the first refusing boundary (section 8). Partial batch or event failures are not rejections. |
@@ -184,12 +185,12 @@ durable state. "Replacement" means publication of a new generation by import.
 | `graph_jobs_outstanding` | gauge, jobs | How deep is the backlog? | `Lifecycle::outstanding_jobs` read at scrape: queued plus running, including import, and including jobs whose caller timed out or was cancelled. Not bounded by `max_pending_jobs`: an import can add one, and a finishing worker releases its admission permit just before its `JobGuard` (drop order in `Service::run` and `execute_feeder_worker`), so a newly admitted job can briefly be counted alongside it. Do not alert on `outstanding / capacity > 1`. | none | unaffected | **implemented** | E |
 | `graph_job_capacity` | gauge, jobs | What is the admission limit? | Graph-job admission permit limit (`max_pending_jobs`), constant after startup. Not a bound on `graph_jobs_outstanding`: imports and worker teardown can make outstanding jobs exceed it (see that row). | none | constant | **implemented** | E |
 | `graph_job_queue_seconds`, `graph_lock_wait_seconds`, `graph_job_execution_seconds` | histograms, s | Is latency queueing, contention or work? | Section 2 split, recorded inside the worker closure, so it is observed even when the caller has gone. Exact boundaries in section 11. | `kind` ∈ {`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`, `feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`} | continues | **implemented** | E |
-| `graph_operations_total` | counter | What mix of operations runs, and how many change the graph? | One per executed operation (section 3), counted at `Operation::apply`. | `op` ∈ {`add_node`, `link`, `cut`, `connected`}; `outcome` ∈ {`changed`, `unchanged`, `true`, `false`, `error`} | continues | pending | E |
+| `graph_operations_total` | counter | What mix of operations runs, and how many change the graph? | One per executed operation (section 3), counted by the worker when `GraphState::apply` returns, under the graph lock (section 12). Feeder events and imports are never counted here. | `op` ∈ {`add_node`, `link`, `cut`, `connected`}; `outcome` ∈ {`changed`, `unchanged`, `error`} for mutations, {`true`, `false`, `error`} for `connected` | continues | **implemented** | E |
 | `graph_nodes`, `graph_edges` | gauges | How big is the graph? | Published by the worker, under the graph lock, when a state-changing job's graph work returns and at import publication; initialized at construction. Retains the last published values; not rolled back by a later worker panic. Read at scrape without the graph lock. Not a coherent pair (section 10). | none | jump to published import counts | **implemented** | E |
 | `service_unavailable` | gauge 0/1 | Has a worker failure disabled the service? | The `unavailable` flag. Becomes 1 after a worker panic and stays 1 until process restart. | none | unaffected | **implemented** | E |
 | `readiness_state` | gauge, one-hot | What would `/ready` say? | `lifecycle::readiness_state`: same precedence as `lifecycle::readiness`, computed read-only at scrape. Stale is derived from the published deadline, without the compare-and-swap. | `state` ∈ {`unavailable`, `draining`, `starting`, `ready`, and in source-managed mode `uninitialized`, `loading`, `catching_up`, `stale`, `desynchronized`} | follows state | **implemented** | E |
 | `feeder_lease_remaining_seconds` | gauge, s | Is the feeder alive? | Published lease deadline minus now at scrape. Negative once expired. Absent with no session or in standalone mode. | none | session kept | pending | E |
-| `feeder_events_total` | counter | Is the source making progress, and how much is redundant? | Per evaluated event (section 3) in `apply_events`. `unchanged` covers no-op mutations and `progress`. | `result` ∈ {`changed`, `unchanged`, `duplicate`, `rejected`} | continues | pending | E |
+| `feeder_events_total` | counter | Is the source making progress, and how much is redundant? | Per evaluated event (section 3) in `GraphState::apply_events`, under the graph lock (section 12). `unchanged` covers no-op mutations and `progress`. | `result` ∈ {`changed`, `unchanged`, `duplicate`, `rejected`} | continues | **implemented** | E |
 | `feeder_rejections_total` | counter | Why did a feeder call fail? | One per rejected feeder request, at the `FeederError` returned. Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Admission `busy` and `unavailable` are excluded (counted in `requests_rejected_total` or `requests_outcome_uncertain_total`). | `code` ∈ the static wire codes mapped in `api::feeder_error` (for example `stale_generation`, `fenced_feeder_session`, `lease_expired`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `graph_desynchronized`, `barrier_not_reached`, `superseded_barrier`) plus `event_failed` | continues | pending | E |
 | `desynchronizations_total` | counter | Why did the graph require a rebuild? | One per transition into `desynchronized`, at the sites in `GraphState::apply_events` and `declare_gap` that set it. A predecessor mismatch covers both `prev_delivery_sequence` and `prev_source_position`, which share one wire code. Out-of-order sequences and evicted duplicates do not desynchronize. | `cause` ∈ {`gap_declared`, `source_epoch_mismatch`, `source_predecessor_mismatch`, `conflicting_duplicate`} | continues | pending | E |
 | `feeder_last_applied_age_seconds` | gauge, s | When did the graph last move forward? | Now minus the monotonic instant of the last applied (non-duplicate) event or import publication. **Not lag** (section 2). | none | reset by publication | pending | E |
@@ -238,7 +239,10 @@ counters.
 **Fourth increment (done, section 11):** graph-job queue, lock-wait and
 execution histograms.
 
-**Remaining essential (`E`, pending):** operation and feeder-event counters, feeder rejections, desynchronizations,
+**Fifth increment (done, section 12):** graph-operation and feeder-event
+outcome counters.
+
+**Remaining essential (`E`, pending):** feeder rejections, desynchronizations,
 lease remaining, last-applied age, import gauge/counter/durations
 and catch-up duration.
 
@@ -357,8 +361,9 @@ only on process restart; graph replacement does not affect them.
 The library adds no other series (no `_created`, process or runtime
 metrics). Most route/method combinations can only yield `405`, so real
 counts are far below the bound. The second increment adds 7 series and the
-third adds 2. The fourth adds 153 standalone and 459 source-managed, for a
-current maximum of **1402 standalone, 1713 source-managed** (section 11).
+third adds 2. The fourth adds 153 standalone and 459 source-managed
+(section 11). The fifth adds 12 standalone and 7 source-managed, for a
+current maximum of **1414 standalone, 1720 source-managed** (section 12).
 
 **Dependency.** [`prometheus-client`](https://crates.io/crates/prometheus-client)
 0.26, the Prometheus project's Rust client, with default features disabled.
@@ -564,7 +569,7 @@ metrics are disabled, `Service` holds `None`; nothing is registered,
 allocated or published.
 
 **Series.** 2 more series. The maximum became **1249 standalone, 1254
-source-managed** (now 1402 and 1713; section 11).
+source-managed** (now 1414 and 1720; section 12).
 
 **Tests.** In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)
 (module `graph_counts`) and `service.rs` (module `tests::graph_counts`):
@@ -681,7 +686,8 @@ is allocated; the lock helper only wraps the guard.
 - standalone: 3 families × 3 kinds × 17 = 153;
 - source-managed: 3 × 9 × 17 = 459.
 
-The maximum becomes **1402 standalone, 1713 source-managed**. The test
+The maximum becomes **1402 standalone, 1713 source-managed** (now 1414
+and 1720; section 12). The test
 `series_exist_only_for_kinds_reachable_in_the_mode` checks the per-mode
 timing series counts against actual exposition.
 
@@ -714,5 +720,98 @@ which sits inside the lock-wait interval by design. Like the other worker
 hooks, it exists only with the `test-support` feature: default builds have
 no such method, and its internal call site compiles to an empty inline
 function. Dropping its handle releases the worker.
+
+**Overhead.** Not qualified. Section 6 applies unchanged.
+
+## 12. Fifth M6.2 increment: graph-operation and feeder-event outcome counters (implemented, unreleased)
+
+**Series.** Two counters, with pre-created series and fixed labels:
+`knotrel_graph_operations_total{op,outcome}` and
+`knotrel_feeder_events_total{result}`. The unit is one operation or one
+event, never a request. Labels come from the operation variant and the
+evaluated outcome (`metrics::GraphOp`, `metrics::FeederEventResult`), never
+from node IDs, event IDs or caller text.
+
+**Accounting.** All counts are taken by the worker, under the graph lock,
+when an operation or event outcome is known:
+
+| Population | Counted when | Value |
+| --- | --- | --- |
+| Direct operation (`/v1/operations`, each `/v1/batch` entry) | `GraphState::apply` returns, in `Service::execute_with` | `add_node`, `link`, `cut`: `changed` or `unchanged` when applied, `error` for a domain error. `connected`: `true`, `false` or `error`. |
+| Feeder event (`/v1/feeder/events`) | the event loop in `GraphState::apply_events` reaches a decision for that event | `changed`: applied and changed the graph. `unchanged`: applied no-op mutation or `progress` event. `duplicate`: exact retained duplicate, skipped. `rejected`: the event at which evaluation stopped the request (`fail_batch_or_error`, or the defensive `SequenceExhausted`). |
+
+Zero counts:
+
+| Refused before evaluation | Where |
+| --- | --- |
+| Malformed body, invalid node ID, empty or oversized batch | HTTP handler, before admission |
+| Direct mutation in source-managed mode (`direct_mutation_disabled`) | HTTP handler, before admission |
+| Admission rejection (`busy`, `unavailable`, `shutting_down`) | admission; counted by `requests_rejected_total` |
+| Source-managed synchronization gate (`uninitialized`, `loading`, `desynchronized`) | `execute_with`, before any entry is applied; every entry fails without evaluation |
+| Event request checks before the loop: empty or oversized, session and lease, `graph_uninitialized`, `stale_generation`, `graph_desynchronized`, source and epoch mismatch, event-field validation (`invalid_request`) | `GraphState::apply_events`, before the loop |
+| Events after the first rejected event | never reached |
+| Gap, barrier, session, heartbeat, stats and import | not operations or events |
+
+The same HTTP status can therefore count differently. A `409` for an
+out-of-order sequence comes from the loop and counts one `rejected` event. A
+`409 stale_generation` comes from the checks before it and counts nothing.
+
+**Separation.** Feeder events mutate the graph through `CanonicalOp` inside
+`apply_events`, never through `GraphState::apply`. They therefore cannot reach the
+operation counter. Import publication swaps the prepared graph and calls
+neither path. Counts are never inferred from revisions, response summaries or
+HTTP completion.
+
+**Partial success.** A batch counts every entry, including entries after a
+domain error (continue-after-error is unchanged). A partial feeder failure
+counts its applied prefix by result, the failing event as `rejected`, and
+the untouched suffix not at all.
+
+**Cancellation and failure.** Counting happens in the worker, so a worker
+that finishes after its caller timed out or was cancelled still counts every
+outcome once. A panic keeps the outcomes already counted. The interrupted
+operation or event gets no outcome, because its effect is unknown.
+
+**Coherence.** Each increment is an independent atomic. A scrape during a
+job can see part of that job's outcomes. Counters do not form a coherent
+tuple with revisions, graph gauges or other series.
+
+**Disabled mode and ownership.** Without telemetry, the worker clones a `None`,
+calls `GraphState::apply` directly and does not count. Nothing is allocated,
+and the event loop does no counting work. Counters belong to the
+per-instance `ServiceTelemetry`, which holds no reference to the service, so
+there is no ownership cycle.
+
+**Series.**
+
+| Mode | Operations | Events |
+| --- | --- | --- |
+| standalone | 12: three mutations × {`changed`, `unchanged`, `error`}, plus `connected` × {`true`, `false`, `error`} | 0: family not registered (feeder endpoints refuse with `mode_conflict`) |
+| source-managed | 3: `connected` × {`true`, `false`, `error`}; direct mutations are refused before execution | 4 |
+
+The maximum becomes **1414 standalone, 1720 source-managed**. The test
+`series_exist_at_zero_only_for_reachable_combinations` checks these sets
+against actual exposition.
+
+**Tests.** In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)
+(module `outcome_counters`):
+- per-mode series sets at zero;
+- every operation and outcome combination, including a batch with entries
+  before and after a domain error;
+- zero counts for malformed requests, invalid nodes, empty batches, the
+  source-managed gate and refused direct mutations;
+- feeder changed and no-op mutations, `progress`, exact duplicates, a partial
+  failure with an untouched suffix, in-loop rejections versus checks before
+  the loop, and no operation counts from events;
+- import publication counting nothing;
+- independent instances.
+
+With `test-support`, further tests cover:
+- admission rejection;
+- completion after caller timeout and after cancellation;
+- a worker panic after counting.
+
+`service.rs` (`tests::graph_counts`) checks that disabled telemetry counts
+nothing.
 
 **Overhead.** Not qualified. Section 6 applies unchanged.

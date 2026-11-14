@@ -9,7 +9,8 @@ use crate::{
         SessionRequest, SessionResponse,
     },
     metrics::{
-        JobClock, JobKind, PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed,
+        FeederEventResult, GraphOp, JobClock, JobKind, PendingOutcome, Rejection, ServiceTelemetry,
+        Uncertainty, lock_timed,
     },
 };
 use knotrel_core::{ConnectivityGraph, EngineConfig, GraphError};
@@ -823,6 +824,7 @@ impl GraphState {
     #[allow(clippy::too_many_arguments)]
     fn fail_batch_or_error(
         &self,
+        telemetry: Option<&ServiceTelemetry>,
         is_batch: bool,
         mode: ServerMode,
         instance_id: &str,
@@ -837,6 +839,7 @@ impl GraphState {
         status: axum::http::StatusCode,
         single_err: FeederError,
     ) -> Result<FeederEventsResult, FeederError> {
+        count_feeder_event(telemetry, FeederEventResult::Rejected);
         if is_batch {
             Ok(FeederEventsResult::PartialFailure {
                 failure: PartialBatchFailure {
@@ -957,11 +960,15 @@ impl GraphState {
         Ok((res, metadata))
     }
 
+    /// Evaluates events in order. Each event the loop reaches is counted
+    /// once in `telemetry` when its evaluation finishes; whole-request checks
+    /// before the loop and events after the first failure count nothing.
     fn apply_events(
         &mut self,
         req: FeederEventsRequest,
         mode: ServerMode,
         instance_id: &str,
+        telemetry: Option<&ServiceTelemetry>,
     ) -> Result<FeederEventsResult, FeederError> {
         if req.events.is_empty() {
             return Err(FeederError::InvalidRequest(
@@ -1047,6 +1054,7 @@ impl GraphState {
                             "delivery sequence {seq} was evicted from deduplication window"
                         );
                         return self.fail_batch_or_error(
+                            telemetry,
                             is_batch,
                             mode,
                             instance_id,
@@ -1070,6 +1078,7 @@ impl GraphState {
                                 retained.event_id, event.event_id
                             );
                             return self.fail_batch_or_error(
+                                telemetry,
                                 is_batch,
                                 mode,
                                 instance_id,
@@ -1094,6 +1103,7 @@ impl GraphState {
                                 "conflicting duplicate at sequence {seq}: canonical content or source position altered"
                             );
                             return self.fail_batch_or_error(
+                                telemetry,
                                 is_batch,
                                 mode,
                                 instance_id,
@@ -1111,6 +1121,7 @@ impl GraphState {
                         }
 
                         last_duplicate_entry = Some(retained.clone());
+                        count_feeder_event(telemetry, FeederEventResult::Duplicate);
                         continue;
                     }
                     DedupLookup::Future => unreachable!(),
@@ -1119,6 +1130,7 @@ impl GraphState {
                 if seq != expected_seq {
                     let expected = expected_seq;
                     return self.fail_batch_or_error(
+                        telemetry,
                         is_batch,
                         mode,
                         instance_id,
@@ -1145,6 +1157,7 @@ impl GraphState {
                         event.prev_delivery_sequence, self.applied_delivery_sequence
                     );
                     return self.fail_batch_or_error(
+                        telemetry,
                         is_batch,
                         mode,
                         instance_id,
@@ -1169,6 +1182,7 @@ impl GraphState {
                         event.prev_source_position, live_pos
                     );
                     return self.fail_batch_or_error(
+                        telemetry,
                         is_batch,
                         mode,
                         instance_id,
@@ -1192,6 +1206,7 @@ impl GraphState {
                         event.event_id
                     );
                     return self.fail_batch_or_error(
+                        telemetry,
                         is_batch,
                         mode,
                         instance_id,
@@ -1259,6 +1274,7 @@ impl GraphState {
                     Ok(ch) => ch,
                     Err((err_code, err_msg)) => {
                         return self.fail_batch_or_error(
+                            telemetry,
                             is_batch,
                             mode,
                             instance_id,
@@ -1276,6 +1292,11 @@ impl GraphState {
                     }
                 };
 
+                let result = if changed && !matches!(canonical_op, CanonicalOp::Progress) {
+                    FeederEventResult::Changed
+                } else {
+                    FeederEventResult::Unchanged
+                };
                 if changed && !matches!(canonical_op, CanonicalOp::Progress) {
                     self.increment_version();
                 }
@@ -1289,10 +1310,12 @@ impl GraphState {
                     changed,
                 });
                 newly_applied_count += 1;
+                count_feeder_event(telemetry, result);
             } else {
                 // Applied sequence counter is u64::MAX and cannot be incremented.
                 // Note: since seq is u64, any seq > u64::MAX is impossible on the wire.
                 // This branch serves as an internal defensive guard against sequence overflow.
+                count_feeder_event(telemetry, FeederEventResult::Rejected);
                 return Err(FeederError::SequenceExhausted);
             }
         }
@@ -1481,6 +1504,13 @@ impl Drop for WorkerPanicGuard {
                 telemetry.uncertain(Uncertainty::WorkerPanic);
             }
         }
+    }
+}
+
+/// Counts one evaluated feeder event when telemetry is enabled.
+fn count_feeder_event(telemetry: Option<&ServiceTelemetry>, result: FeederEventResult) {
+    if let Some(telemetry) = telemetry {
+        telemetry.count_feeder_event(result);
     }
 }
 
@@ -2018,6 +2048,7 @@ impl Service {
     ) -> Result<ExecutionResult, ServiceError> {
         let mode = self.mode;
         let instance_id = self.instance_id.clone();
+        let telemetry = self.telemetry.clone();
         let effect = if operations
             .iter()
             .all(|operation| matches!(operation, Operation::Connected { .. }))
@@ -2065,9 +2096,19 @@ impl Service {
                     return ExecutionResult { outcomes, metadata };
                 }
             }
+            // Each operation is counted once when it returns, so a panic keeps
+            // earlier counts and invents no outcome for the interrupted one.
             let outcomes = operations
                 .into_iter()
-                .map(|operation| state.apply(operation))
+                .map(|operation| match telemetry.as_deref() {
+                    None => state.apply(operation),
+                    Some(telemetry) => {
+                        let op = GraphOp::of(&operation);
+                        let outcome = state.apply(operation);
+                        telemetry.count_operation(op, &outcome);
+                        outcome
+                    }
+                })
                 .collect();
             let metadata = state.response_metadata(mode, &instance_id);
             ExecutionResult { outcomes, metadata }
@@ -2184,11 +2225,12 @@ impl Service {
         &self,
         req: FeederEventsRequest,
     ) -> Result<FeederEventsResult, FeederError> {
+        let telemetry = self.telemetry.clone();
         self.execute_feeder_worker(
             "events",
             JobKind::FeederEvents,
             true,
-            move |state, mode, inst| state.apply_events(req, mode, inst),
+            move |state, mode, inst| state.apply_events(req, mode, inst, telemetry.as_deref()),
         )
         .await
     }
@@ -4292,6 +4334,34 @@ mod tests {
                 &crate::ServerConfig::default(),
             );
             service.execute(vec![link(1, 2)]).await.unwrap();
+            assert!(service.telemetry().is_none());
+        }
+
+        /// Without telemetry the counting branch is skipped and every entry,
+        /// including those after a domain error, keeps its outcome.
+        #[tokio::test]
+        async fn disabled_telemetry_counts_no_outcomes() {
+            let service = Service::with_config(
+                ConnectivityGraph::default(),
+                2,
+                Lifecycle::ready(),
+                &crate::ServerConfig::default(),
+            );
+            let result = service
+                .execute(vec![link(1, 2), link(3, 3), link(1, 2)])
+                .await
+                .unwrap();
+            assert!(matches!(
+                result.outcomes[..],
+                [
+                    Outcome::Changed { changed: true },
+                    Outcome::Error {
+                        code: "self_loop",
+                        ..
+                    },
+                    Outcome::Changed { changed: false },
+                ]
+            ));
             assert!(service.telemetry().is_none());
         }
 

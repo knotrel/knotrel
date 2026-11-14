@@ -56,6 +56,9 @@ const JOB_KINDS: [&str; 9] = [
     "feeder_barrier",
     "import_publish",
 ];
+const GRAPH_OPS: [&str; 4] = ["add_node", "link", "cut", "connected"];
+const OPERATION_OUTCOMES: [&str; 5] = ["changed", "unchanged", "true", "false", "error"];
+const EVENT_RESULTS: [&str; 4] = ["changed", "unchanged", "duplicate", "rejected"];
 
 fn config(capacity: usize) -> ServerConfig {
     ServerConfig::new(
@@ -268,6 +271,9 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
                 "reason" => &REJECTION_REASONS,
                 "cause" => &UNCERTAINTY_CAUSES,
                 "kind" => &JOB_KINDS,
+                "op" => &GRAPH_OPS,
+                "outcome" => &OPERATION_OUTCOMES,
+                "result" => &EVENT_RESULTS,
                 "le" => &[],
                 "version" | "engine" | "mode" => &[],
                 other => panic!("unexpected label {other}"),
@@ -1623,6 +1629,433 @@ mod job_timing {
             assert_eq!(caller.await.unwrap().0, StatusCode::SERVICE_UNAVAILABLE);
             wait_idle(&lifecycle).await;
             assert_eq!(phases(&scrape(&app).await, "stats"), all(1.0));
+        }
+    }
+}
+
+mod outcome_counters {
+    use super::graph_counts::{bootstrap, event, events, feeder, import, source_managed};
+    use super::*;
+
+    const OPERATIONS: &str = "knotrel_graph_operations_total";
+    const EVENTS: &str = "knotrel_feeder_events_total";
+
+    /// Every `(op, outcome)` series of the operation counter, sorted by labels.
+    fn operation_series(samples: &[Sample]) -> Vec<(String, String, f64)> {
+        let mut series: Vec<_> = samples
+            .iter()
+            .filter(|s| s.name == OPERATIONS)
+            .map(|s| (s.labels["op"].clone(), s.labels["outcome"].clone(), s.value))
+            .collect();
+        series.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        series
+    }
+
+    /// Asserts the nonzero operation series; every other existing series is zero.
+    fn assert_operations(samples: &[Sample], expected: &[(&str, &str, f64)]) {
+        let actual: Vec<_> = operation_series(samples)
+            .into_iter()
+            .filter(|(_, _, value)| *value != 0.0)
+            .collect();
+        let mut expected: Vec<_> = expected
+            .iter()
+            .map(|(op, outcome, value)| ((*op).to_owned(), (*outcome).to_owned(), *value))
+            .collect();
+        expected.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        assert_eq!(actual, expected);
+    }
+
+    /// Asserts the nonzero event series; every other existing series is zero.
+    fn assert_events(samples: &[Sample], expected: &[(&str, f64)]) {
+        let mut actual: Vec<_> = samples
+            .iter()
+            .filter(|s| s.name == EVENTS && s.value != 0.0)
+            .map(|s| (s.labels["result"].clone(), s.value))
+            .collect();
+        actual.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut expected: Vec<_> = expected
+            .iter()
+            .map(|(result, value)| ((*result).to_owned(), *value))
+            .collect();
+        expected.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn series_exist_at_zero_only_for_reachable_combinations() {
+        let samples = scrape(&router_with_config(config(4))).await;
+        let mut expected = Vec::new();
+        for op in ["add_node", "link", "cut"] {
+            for outcome in ["changed", "unchanged", "error"] {
+                expected.push((op.to_owned(), outcome.to_owned(), 0.0));
+            }
+        }
+        for outcome in ["true", "false", "error"] {
+            expected.push(("connected".to_owned(), outcome.to_owned(), 0.0));
+        }
+        let connected = expected.split_off(9);
+        let sorted = |mut series: Vec<(String, String, f64)>| {
+            series.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+            series
+        };
+        let all = sorted([expected, connected.clone()].concat());
+        assert_eq!(operation_series(&samples), all);
+        assert!(!samples.iter().any(|s| s.name == EVENTS));
+
+        let samples = scrape(&router_with_config(source_managed())).await;
+        assert_eq!(operation_series(&samples), sorted(connected));
+        let mut results: Vec<_> = samples
+            .iter()
+            .filter(|s| s.name == EVENTS)
+            .map(|s| (s.labels["result"].as_str(), s.value))
+            .collect();
+        results.sort_by(|a, b| a.0.cmp(b.0));
+        let mut zero: Vec<_> = EVENT_RESULTS.iter().map(|r| (*r, 0.0)).collect();
+        zero.sort_by(|a, b| a.0.cmp(b.0));
+        assert_eq!(results, zero);
+    }
+
+    #[tokio::test]
+    async fn every_executed_operation_is_counted_once_by_outcome() {
+        let app = router_with_config(config(4));
+        let singles = [
+            (r#"{"op":"add_node","node":"1"}"#, StatusCode::OK),
+            (r#"{"op":"add_node","node":"1"}"#, StatusCode::OK),
+            (LINK, StatusCode::OK),
+            (LINK, StatusCode::OK),
+            (r#"{"op":"cut","source":"1","target":"2"}"#, StatusCode::OK),
+            (r#"{"op":"cut","source":"1","target":"2"}"#, StatusCode::OK),
+            (
+                r#"{"op":"connected","source":"1","target":"2"}"#,
+                StatusCode::OK,
+            ),
+            (LINK, StatusCode::OK),
+            (
+                r#"{"op":"connected","source":"1","target":"2"}"#,
+                StatusCode::OK,
+            ),
+            (
+                r#"{"op":"connected","source":"1","target":"99"}"#,
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                r#"{"op":"link","source":"3","target":"3"}"#,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ];
+        for (body, status) in singles {
+            assert_eq!(
+                send(&app, Method::POST, "/v1/operations", body).await.0,
+                status,
+                "{body}"
+            );
+        }
+        // Execution continues after the domain error at index 1.
+        let batch = r#"{"operations":[
+            {"op":"link","source":"3","target":"4"},
+            {"op":"link","source":"5","target":"5"},
+            {"op":"connected","source":"3","target":"4"},
+            {"op":"add_node","node":"3"}
+        ]}"#;
+        let (status, body) = send(&app, Method::POST, "/v1/batch", batch).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("self_loop"), "{body}");
+
+        assert_operations(
+            &scrape(&app).await,
+            &[
+                ("add_node", "changed", 1.0),
+                ("add_node", "unchanged", 2.0),
+                ("link", "changed", 3.0),
+                ("link", "unchanged", 1.0),
+                ("link", "error", 2.0),
+                ("cut", "changed", 1.0),
+                ("cut", "unchanged", 1.0),
+                ("connected", "true", 2.0),
+                ("connected", "false", 1.0),
+                ("connected", "error", 1.0),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn requests_rejected_before_execution_count_no_operations() {
+        let app = router_with_config(config(4));
+        for (path, body, status) in [
+            ("/v1/operations", "{", StatusCode::BAD_REQUEST),
+            (
+                "/v1/operations",
+                r#"{"op":"link","source":"x","target":"2"}"#,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                "/v1/batch",
+                r#"{"operations":[]}"#,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ] {
+            assert_eq!(
+                send(&app, Method::POST, path, body).await.0,
+                status,
+                "{body}"
+            );
+        }
+        assert_operations(&scrape(&app).await, &[]);
+
+        // Source-managed: direct mutations are refused before admission, and
+        // queries are refused per entry by the worker's sync-status gate
+        // before any is evaluated.
+        let app = router_with_config(source_managed());
+        let connected = r#"{"op":"connected","source":"1","target":"2"}"#;
+        let (status, body) = send(&app, Method::POST, "/v1/operations", connected).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(body.contains("uninitialized"), "{body}");
+        let (status, body) = send(&app, Method::POST, "/v1/operations", LINK).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_operations(&scrape(&app).await, &[]);
+    }
+
+    #[tokio::test]
+    async fn feeder_events_are_counted_per_evaluated_event_without_operations() {
+        let app = router_with_config(source_managed());
+        let instance = bootstrap(&app, &["1", "2", "3"], &[("1", "2")]).await;
+        let samples = scrape(&app).await;
+        assert_events(&samples, &[]);
+        assert_operations(&samples, &[]);
+
+        let link = |seq, s: &str, t: &str| {
+            event(
+                seq,
+                serde_json::json!({"op": "link", "source": s, "target": t}),
+            )
+        };
+        let cut = |seq, s: &str, t: &str| {
+            event(
+                seq,
+                serde_json::json!({"op": "cut", "source": s, "target": t}),
+            )
+        };
+        let add = |seq, n: &str| event(seq, serde_json::json!({"op": "add_node", "node": n}));
+        let post = |body: serde_json::Value| {
+            let app = app.clone();
+            let instance = instance.clone();
+            async move { feeder(&app, &instance, "/v1/feeder/events", None, body).await }
+        };
+
+        let first = serde_json::json!([
+            link(1, "2", "3"),
+            event(2, serde_json::json!({"op": "progress"})),
+            link(3, "1", "2"),
+            add(4, "1"),
+            cut(5, "2", "3"),
+        ]);
+        let (status, reply) = post(events(&instance, 1, first)).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_events(&scrape(&app).await, &[("changed", 2.0), ("unchanged", 3.0)]);
+
+        // A retry of retained events followed by a new one.
+        let retry = serde_json::json!([add(4, "1"), cut(5, "2", "3"), add(6, "7")]);
+        let (status, reply) = post(events(&instance, 1, retry)).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        let (status, reply) = post(events(&instance, 1, serde_json::json!([add(6, "7")]))).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_eq!(reply["result"], "duplicate", "{reply}");
+
+        // Applied prefix, failing event, untouched suffix.
+        let partial = serde_json::json!([cut(7, "1", "2"), link(8, "3", "3"), add(9, "8")]);
+        let (status, reply) = post(events(&instance, 1, partial)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{reply}");
+        assert_eq!(reply["applied_delivery_sequence"], 7, "{reply}");
+
+        // A continuity error found while evaluating the event is counted;
+        // the same status from whole-request fencing is not.
+        let (status, reply) = post(events(&instance, 1, serde_json::json!([add(9, "8")]))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+        assert_eq!(reply["code"], "out_of_order_sequence", "{reply}");
+        let (status, reply) = post(events(&instance, 2, serde_json::json!([add(8, "8")]))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+        assert_eq!(reply["code"], "stale_generation", "{reply}");
+        let mut long_id = add(8, "8");
+        long_id["event_id"] = serde_json::json!("x".repeat(65));
+        let (status, reply) = post(events(
+            &instance,
+            1,
+            serde_json::json!([add(8, "8"), long_id]),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{reply}");
+        assert_eq!(reply["code"], "invalid_request", "{reply}");
+
+        let samples = scrape(&app).await;
+        assert_events(
+            &samples,
+            &[
+                ("changed", 4.0),
+                ("unchanged", 3.0),
+                ("duplicate", 3.0),
+                ("rejected", 2.0),
+            ],
+        );
+        assert_operations(&samples, &[]);
+
+        let connected = r#"{"op":"connected","source":"1","target":"7"}"#;
+        assert_eq!(
+            send(&app, Method::POST, "/v1/operations", connected)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let samples = scrape(&app).await;
+        assert_operations(&samples, &[("connected", "false", 1.0)]);
+        assert_eq!(
+            samples
+                .iter()
+                .filter(|s| s.name == EVENTS)
+                .map(|s| s.value)
+                .sum::<f64>(),
+            12.0
+        );
+    }
+
+    #[tokio::test]
+    async fn import_publication_counts_no_operations_or_events() {
+        let app = router_with_config(source_managed());
+        let instance = bootstrap(&app, &["1", "2"], &[("1", "2")]).await;
+        let body = import(&instance, "replace", "p-9", &["5", "6"], &[("5", "6")]);
+        let (status, reply) = feeder(
+            &app,
+            &instance,
+            "/v1/feeder/import",
+            Some("\"1.0.p-0\""),
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{reply}");
+        let samples = scrape(&app).await;
+        assert_operations(&samples, &[]);
+        assert_events(&samples, &[]);
+    }
+
+    #[tokio::test]
+    async fn server_instances_count_their_own_outcomes() {
+        let first = router_with_config(config(4));
+        let second = router_with_config(config(4));
+        assert_eq!(
+            send(&first, Method::POST, "/v1/operations", LINK).await.0,
+            StatusCode::OK
+        );
+        assert_operations(&scrape(&first).await, &[("link", "changed", 1.0)]);
+        assert_operations(&scrape(&second).await, &[]);
+    }
+
+    #[cfg(feature = "test-support")]
+    mod paused {
+        use super::*;
+        use std::time::Duration;
+
+        async fn wait_idle(lifecycle: &Lifecycle) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while lifecycle.outstanding_jobs() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        fn paused_app(config: ServerConfig) -> (Router, Lifecycle) {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            (router_with_lifecycle(config, lifecycle.clone()), lifecycle)
+        }
+
+        #[tokio::test]
+        async fn admission_rejection_counts_no_operations() {
+            let (app, lifecycle) = paused_app(config(1));
+            let mut pause = lifecycle.pause_next_worker();
+            let held = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::POST, "/v1/operations", LINK).await }
+            });
+            pause.wait_started().await;
+            let batch = format!(r#"{{"operations":[{LINK},{LINK}]}}"#);
+            let (status, body) = send(&app, Method::POST, "/v1/batch", &batch).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("\"busy\""), "{body}");
+            pause.release();
+            assert_eq!(held.await.unwrap().0, StatusCode::OK);
+            assert_operations(&scrape(&app).await, &[("link", "changed", 1.0)]);
+        }
+
+        #[tokio::test]
+        async fn worker_finishing_after_its_caller_timed_out_counts_its_operations() {
+            let timed = config(4)
+                .with_request_timeout(Duration::from_millis(50))
+                .unwrap();
+            let (app, lifecycle) = paused_app(timed);
+            let mut pause = lifecycle.pause_next_worker();
+            let batch = format!(r#"{{"operations":[{LINK},{LINK}]}}"#);
+            let (status, body) = send(&app, Method::POST, "/v1/batch", &batch).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(body.contains("request_timeout"), "{body}");
+            pause.wait_started().await;
+            assert_operations(&scrape(&app).await, &[]);
+
+            pause.release();
+            wait_idle(&lifecycle).await;
+            assert_operations(
+                &scrape(&app).await,
+                &[("link", "changed", 1.0), ("link", "unchanged", 1.0)],
+            );
+        }
+
+        #[tokio::test]
+        async fn worker_finishing_after_its_caller_was_cancelled_counts_its_events() {
+            let (app, lifecycle) = paused_app(source_managed());
+            let instance = bootstrap(&app, &["1", "2"], &[]).await;
+            let mut pause = lifecycle.pause_next_worker();
+            let caller = tokio::spawn({
+                let app = app.clone();
+                let instance = instance.clone();
+                let body = events(
+                    &instance,
+                    1,
+                    serde_json::json!([event(
+                        1,
+                        serde_json::json!({"op": "link", "source": "1", "target": "2"})
+                    )]),
+                );
+                async move { feeder(&app, &instance, "/v1/feeder/events", None, body).await }
+            });
+            pause.wait_started().await;
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            assert_events(&scrape(&app).await, &[]);
+
+            pause.release();
+            wait_idle(&lifecycle).await;
+            assert_events(&scrape(&app).await, &[("changed", 1.0)]);
+        }
+
+        /// The batch completes under the lock and the worker then panics in
+        /// the post-lock hook: completed outcomes stay counted, nothing more.
+        #[tokio::test]
+        async fn outcomes_recorded_before_a_worker_panic_are_kept() {
+            let (app, lifecycle) = paused_app(config(4));
+            let mut pause = lifecycle.pause_next_worker_after_lock();
+            let caller = tokio::spawn({
+                let app = app.clone();
+                let batch = format!(r#"{{"operations":[{LINK},{LINK}]}}"#);
+                async move { send(&app, Method::POST, "/v1/batch", &batch).await }
+            });
+            pause.wait_started().await;
+            let expected = [("link", "changed", 1.0), ("link", "unchanged", 1.0)];
+            assert_operations(&scrape(&app).await, &expected);
+
+            pause.panic_on_release();
+            assert_eq!(caller.await.unwrap().0, StatusCode::SERVICE_UNAVAILABLE);
+            wait_idle(&lifecycle).await;
+            assert_operations(&scrape(&app).await, &expected);
         }
     }
 }

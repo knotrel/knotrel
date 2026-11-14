@@ -338,9 +338,38 @@ They cover:
 - **execution:** the time it holds the lock.
 
 Workers record them even after the caller timed out or was cancelled.
-Rejected requests add none, and a worker records only the phases it reaches.
+Requests rejected before admission produce no timing observations. An
+admitted worker records each phase it reaches, including when it later
+rejects an import or other work.
 They exclude HTTP parsing and serialization and, for imports, the body read,
 parsing and candidate construction, so they do not add up to HTTP latency.
+
+`knotrel_graph_operations_total{op,outcome}` counts each operation from
+`/v1/operations` and each `/v1/batch` entry once, when the worker has
+applied it. `op` is `add_node`, `link`, `cut` or `connected`. `outcome` is
+`changed`, `unchanged` or `error` for mutations and `true`, `false` or
+`error` for `connected`. A batch counts every entry, including entries after
+a domain error.
+`knotrel_feeder_events_total{result}` (source-managed mode only) counts each
+event the event loop evaluates:
+- `changed`: applied and changed the graph;
+- `unchanged`: an applied no-op mutation or `progress` event;
+- `duplicate`: an exact retained duplicate;
+- `rejected`: the event at which the request stopped.
+
+Events after a rejected event are not counted.
+
+Both counters count nothing for:
+- requests refused before evaluation, such as a malformed or empty body,
+  admission rejection, `direct_mutation_disabled`, the source-managed
+  `uninitialized`, `loading` and `desynchronized` gate for operations, and
+  event-request checks such as `stale_generation` that run before any event;
+- gap, barrier and import calls.
+
+Feeder events never count as operations. Workers count outcomes even after
+the caller timed out or was cancelled. A worker panic keeps the outcomes
+already counted and adds none for the interrupted item
+([contract section 12](observability-contract.md#12-fifth-m62-increment-graph-operation-and-feeder-event-outcome-counters-implemented-unreleased)).
 
 ### Graceful shutdown
 

@@ -12,7 +12,12 @@
 //! registry (metric-family maps and histogram state) and the outstanding-job
 //! `watch` channel. Semantics are specified in `docs/observability-contract.md`.
 
-use crate::{Lifecycle, ServerMode, lifecycle, service::Service};
+use crate::{
+    Lifecycle, ServerMode,
+    api::{Operation, Outcome},
+    lifecycle,
+    service::Service,
+};
 use axum::{
     extract::{MatchedPath, Request, State},
     http::{HeaderValue, Method, StatusCode, header},
@@ -88,6 +93,7 @@ const SOURCE_MANAGED_STATES: [&str; 9] = [
 type RequestLabels = [(&'static str, &'static str); 3];
 type RouteLabels = [(&'static str, &'static str); 1];
 type OutcomeLabels = [(&'static str, &'static str); 1];
+type OperationLabels = [(&'static str, &'static str); 2];
 type DurationFamily = Family<RouteLabels, Histogram, fn() -> Histogram>;
 type PhaseFamily = Family<OutcomeLabels, Histogram, fn() -> Histogram>;
 
@@ -223,6 +229,97 @@ impl JobKind {
     }
 }
 
+/// Direct-client graph operation, the `op` label of the operation counter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GraphOp {
+    AddNode,
+    Link,
+    Cut,
+    Connected,
+}
+
+impl GraphOp {
+    const ALL: [Self; 4] = [Self::AddNode, Self::Link, Self::Cut, Self::Connected];
+
+    pub(crate) fn of(operation: &Operation) -> Self {
+        match operation {
+            Operation::AddNode { .. } => Self::AddNode,
+            Operation::Link { .. } => Self::Link,
+            Operation::Cut { .. } => Self::Cut,
+            Operation::Connected { .. } => Self::Connected,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::AddNode => "add_node",
+            Self::Link => "link",
+            Self::Cut => "cut",
+            Self::Connected => "connected",
+        }
+    }
+
+    /// `outcome` labels, indexed by [`outcome_index`].
+    fn outcomes(self) -> [&'static str; 3] {
+        match self {
+            Self::Connected => ["true", "false", "error"],
+            _ => ["changed", "unchanged", "error"],
+        }
+    }
+
+    /// Whether HTTP can execute this operation in `mode`; source-managed
+    /// mode refuses direct mutations with `direct_mutation_disabled` before
+    /// admission.
+    fn reachable_in(self, mode: ServerMode) -> bool {
+        mode == ServerMode::Standalone || self == Self::Connected
+    }
+}
+
+/// Index into [`GraphOp::outcomes`]: changed or `true`, unchanged or `false`, error.
+fn outcome_index(outcome: &Outcome) -> usize {
+    match outcome {
+        Outcome::Changed { changed: true } | Outcome::Connected { connected: true } => 0,
+        Outcome::Changed { changed: false } | Outcome::Connected { connected: false } => 1,
+        Outcome::Error { .. } => 2,
+    }
+}
+
+/// How the event loop finished evaluating one feeder event, the `result`
+/// label of the feeder-event counter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FeederEventResult {
+    Changed,
+    /// An applied no-op mutation or `progress` event.
+    Unchanged,
+    Duplicate,
+    Rejected,
+}
+
+impl FeederEventResult {
+    const ALL: [Self; 4] = [
+        Self::Changed,
+        Self::Unchanged,
+        Self::Duplicate,
+        Self::Rejected,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Changed => "changed",
+            Self::Unchanged => "unchanged",
+            Self::Duplicate => "duplicate",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+/// Pre-created feeder-event counters; present only in source-managed mode.
+#[derive(Debug)]
+struct FeederEventCounters {
+    family: Family<OutcomeLabels, Counter>,
+    results: [Counter; 4],
+}
+
 fn job_phase_histogram() -> Histogram {
     Histogram::new(JOB_PHASE_BUCKETS)
 }
@@ -235,8 +332,9 @@ struct PhaseHistograms {
     execution: Histogram,
 }
 
-/// Rejection and uncertain-outcome counters, graph-size gauges and
-/// worker-phase histograms for one service instance.
+/// Rejection and uncertain-outcome counters, graph-size gauges,
+/// worker-phase histograms and graph-operation and feeder-event outcome
+/// counters for one service instance.
 ///
 /// Owned by `Service` only when metrics are enabled. Every series is created
 /// up front, so recording never takes a family lock: counters and gauges are
@@ -257,6 +355,11 @@ pub(crate) struct ServiceTelemetry {
     // Indexed by `JobKind`; `None` for kinds HTTP cannot reach in this mode,
     // whose observations (possible only through direct service calls) are dropped.
     phases: [Option<PhaseHistograms>; 9],
+    operations_family: Family<OperationLabels, Counter>,
+    // Indexed by `GraphOp`, then `outcome_index`; `None` for operations HTTP
+    // cannot execute in this mode.
+    operations: [Option<[Counter; 3]>; 4],
+    feeder_events: Option<FeederEventCounters>,
 }
 
 impl ServiceTelemetry {
@@ -286,6 +389,22 @@ impl ServiceTelemetry {
                 }
             })
         });
+        let operations_family = Family::<OperationLabels, Counter>::default();
+        let operations = GraphOp::ALL.map(|op| {
+            op.reachable_in(mode).then(|| {
+                op.outcomes().map(|outcome| {
+                    operations_family
+                        .get_or_create(&[("op", op.label()), ("outcome", outcome)])
+                        .clone()
+                })
+            })
+        });
+        let feeder_events = (mode == ServerMode::SourceManaged).then(|| {
+            let family = Family::<OutcomeLabels, Counter>::default();
+            let results = FeederEventResult::ALL
+                .map(|result| family.get_or_create(&[("result", result.label())]).clone());
+            FeederEventCounters { family, results }
+        });
         Arc::new(Self {
             rejected_family,
             uncertain_family,
@@ -297,6 +416,9 @@ impl ServiceTelemetry {
             lock_wait_family,
             execution_family,
             phases,
+            operations_family,
+            operations,
+            feeder_events,
         })
     }
 
@@ -336,6 +458,18 @@ impl ServiceTelemetry {
             "Time a graph job's worker held the graph lock, including validation, graph work and publication under it, until release or unwinding; recorded after release, also after its caller has gone",
             self.execution_family.clone(),
         );
+        registry.register(
+            "knotrel_graph_operations",
+            "Direct-client graph operations from /v1/operations and /v1/batch evaluated by a worker, by operation and outcome; counted when each operation returns, also after its caller has gone; excludes feeder events and imports",
+            self.operations_family.clone(),
+        );
+        if let Some(events) = &self.feeder_events {
+            registry.register(
+                "knotrel_feeder_events",
+                "Feeder events evaluated by the event loop, by result: changed or unchanged (no-op mutation or progress) when applied, duplicate when an exact retained duplicate, rejected when evaluation stopped the request at that event; events never reached count nothing",
+                events.family.clone(),
+            );
+        }
     }
 
     /// Publishes the live graph's maintained counts. Callers hold the graph
@@ -352,6 +486,22 @@ impl ServiceTelemetry {
 
     fn phases(&self, kind: JobKind) -> Option<&PhaseHistograms> {
         self.phases[kind as usize].as_ref()
+    }
+
+    /// Counts one evaluated direct-client operation. Atomic, so callers may
+    /// hold the graph lock.
+    pub(crate) fn count_operation(&self, op: GraphOp, outcome: &Outcome) {
+        if let Some(counters) = &self.operations[op as usize] {
+            counters[outcome_index(outcome)].inc();
+        }
+    }
+
+    /// Counts one evaluated feeder event. Atomic, so callers may hold the
+    /// graph lock.
+    pub(crate) fn count_feeder_event(&self, result: FeederEventResult) {
+        if let Some(events) = &self.feeder_events {
+            events.results[result as usize].inc();
+        }
     }
 
     pub(crate) fn reject(&self, reason: Rejection) {

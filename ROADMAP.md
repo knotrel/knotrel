@@ -56,6 +56,10 @@ Checks reflect verified implementation and acceptance gates. Features 0.2.5+ rem
 - [ ] **Feature M6:** Integration-aware observability — deferred to a later release (reduced v0.3.0 scope, approved 2026-11-12)
 - [ ] **Feature M5:** Measured contention, query concurrency and isolation — deferred to a later release (reduced v0.3.0 scope, approved 2026-11-12)
 
+### Post-M6 — Node and edge lifecycle (release unassigned)
+
+- [ ] **Feature M10:** Reversible node/edge activation and permanent node removal — scheduled after Acceptance M6; [implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md).
+
 ### v0.4.0 — Optional Local Persistence & Fast Recovery
 
 - [ ] **Feature P1:** Persistence value, strategy and support decision
@@ -454,6 +458,20 @@ Evidence: [container example](examples/container/Dockerfile) and [deployment run
 - [ ] **M6.5 Budgets:** Verify instrumentation overhead and bounded series counts under churn, rebuilds and repeated source sessions.
 - [ ] **Acceptance M6:** Operators can explain synchronization and performance failures from bounded telemetry, without inferring freshness solely from process health.
 
+### M10 — Node and edge lifecycle (planned after M6; release unassigned)
+
+**Sequencing decision (2026-11-13):** Start after **Acceptance M6**, including its instrumentation-overhead and cardinality checks. This adds no work to the current M6 increments or the released v0.3.0 scope and does not assign or replace the v0.4.0 persistence milestone.
+
+[Design and implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). The plan distinguishes registered topology from effective connectivity: an edge participates only when enabled and both endpoints are active. Deactivating a node preserves independently configured edge flags; removing a node cascades to its incident registered edges. Detailed API and compatibility decisions require M10.1 acceptance before coding.
+
+- [ ] **M10.1 Contract:** Freeze activation/removal, missing-object, query, revision, count/limit and import/event semantics; assess safe deletion on each engine.
+- [ ] **M10.2 Reversible activation:** Shared core node-active and edge-enabled state with filtered-topology oracle tests and compatibility when disabled.
+- [ ] **M10.3 Node removal:** Cascade removal, safe ID reuse, storage reclamation and explicit degree/rebuild costs.
+- [ ] **M10.4 Standalone service:** Atomic per-command visibility, existing batch behavior, coherent revisions and cancellation semantics.
+- [ ] **M10.5 Source integration:** Ordered lifecycle events, deduplication and complete atomic imports including inactive topology; external authority unchanged.
+- [ ] **M10.6 Evidence and operations:** M6 telemetry updates, power-grid tutorial, bounded resource and before/after performance qualification under separately approved criteria.
+- [ ] **Acceptance M10:** Correct core/service behavior across supported engines, preserved source and lifecycle contracts, explicit resource semantics and accepted qualification evidence. No persistence or electrical-simulation guarantee is introduced.
+
 ### M5 — Measured contention, query concurrency and isolation (P1) — Deferred to a later release (not part of v0.3.0)
 
 - [ ] **M5.1 Instrument:** Separate parse/serialize, queue, lock, graph work, candidate build and publication costs. Optional storage I/O is not a prerequisite.
@@ -563,6 +581,7 @@ The recovery principle is mandatory for any selected local persistence strategy:
 2. **First handoff: Feature 0.2.1 — External source-of-truth integration contract.** Produce the contract/ADR, API examples, state machine and deterministic acceptance-test specification; no import or persistence implementation in that handoff. Resolve D1–D6 before dependent coding.
 3. Implement 0.2.2 using the identity/precondition design from 0.2.1; complete shared metadata in 0.2.3, ordered events in 0.2.4, bootstrap/readiness in 0.2.5 and feeder/evidence in 0.2.6. Keep incomplete source-managed functionality experimental/unready until the release gate passes.
 4. v0.3.0 builds operational controls and measurements on that contract; it does not depend on a local WAL.
+   - **Next functional milestone after Acceptance M6: M10**, node/edge activation and node removal, per the [plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). Release assignment remains open; M5 concurrency redesign is not a prerequisite.
 5. v0.4.0 first evaluates value using the source/rebuild contract and operational evidence. Implement only approved persistence strategies; full external rebuild remains the fallback.
 6. Move security forward whenever exposure requires it. Multi-graph and concurrency redesign remain demand/evidence-gated.
 
