@@ -5,11 +5,226 @@ use axum::{
     Json,
     body::Bytes,
     extract::{FromRequest, Request, State},
-    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
+    http::{HeaderMap, HeaderName, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
 use knotrel_core::{ConnectivityGraph, GraphError};
 use serde::{Deserialize, Serialize};
+
+/// Registered HTTP route templates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Route {
+    Health,
+    Ready,
+    Metrics,
+    Info,
+    Stats,
+    Operations,
+    Batch,
+    FeederSession,
+    FeederHeartbeat,
+    FeederImport,
+    FeederEvents,
+    FeederGap,
+    FeederBarrier,
+}
+
+impl Route {
+    pub(crate) const ALL: [Self; 13] = [
+        Self::Health,
+        Self::Ready,
+        Self::Metrics,
+        Self::Info,
+        Self::Stats,
+        Self::Operations,
+        Self::Batch,
+        Self::FeederSession,
+        Self::FeederHeartbeat,
+        Self::FeederImport,
+        Self::FeederEvents,
+        Self::FeederGap,
+        Self::FeederBarrier,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Health => "/health",
+            Self::Ready => "/ready",
+            Self::Metrics => "/metrics",
+            Self::Info => "/v1/info",
+            Self::Stats => "/v1/stats",
+            Self::Operations => "/v1/operations",
+            Self::Batch => "/v1/batch",
+            Self::FeederSession => "/v1/feeder/session",
+            Self::FeederHeartbeat => "/v1/feeder/heartbeat",
+            Self::FeederImport => "/v1/feeder/import",
+            Self::FeederEvents => "/v1/feeder/events",
+            Self::FeederGap => "/v1/feeder/gap",
+            Self::FeederBarrier => "/v1/feeder/barrier",
+        }
+    }
+}
+
+pub(crate) const INSTANCE_ID_HEADER: HeaderName = HeaderName::from_static("x-knotrel-instance-id");
+pub(crate) const GRAPH_ID_HEADER: HeaderName = HeaderName::from_static("x-knotrel-graph-id");
+pub(crate) const GENERATION_HEADER: HeaderName = HeaderName::from_static("x-knotrel-generation");
+pub(crate) const STATE_VERSION_HEADER: HeaderName =
+    HeaderName::from_static("x-knotrel-state-version");
+pub(crate) const SOURCE_POSITION_HEADER: HeaderName =
+    HeaderName::from_static("x-knotrel-source-position");
+pub(crate) const SYNC_STATUS_HEADER: HeaderName = HeaderName::from_static("x-knotrel-sync-status");
+
+pub(crate) const DEFAULT_GRAPH_ID: &str = "default";
+pub(crate) const MIN_LEASE_DURATION_MS: u64 = 1_000;
+pub(crate) const MAX_LEASE_DURATION_MS: u64 = 60_000;
+pub(crate) const MAX_EVENT_ID_BYTES: usize = 64;
+pub(crate) const MAX_SOURCE_POSITION_BYTES: usize = 256;
+
+/// Stable error identifiers serialized by the HTTP API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ErrorCode {
+    BarrierNotReached,
+    BarrierPositionMismatch,
+    Busy,
+    ConflictingDuplicate,
+    Desynchronized,
+    DirectMutationDisabled,
+    EdgeLimitExceeded,
+    EventFailed,
+    FencedFeederSession,
+    GenerationExhausted,
+    GraphAlreadyInitialized,
+    GraphDesynchronized,
+    GraphUninitialized,
+    ImportInProgress,
+    InvalidBatchSize,
+    InvalidEdge,
+    InvalidGraphId,
+    InvalidInstanceId,
+    InvalidLeaseDuration,
+    InvalidNode,
+    InvalidRequest,
+    LeaseExpired,
+    Loading,
+    ModeConflict,
+    NodeLimitExceeded,
+    OutOfOrderSequence,
+    PayloadTooLarge,
+    PreconditionFailed,
+    RequestTimeout,
+    SelfLoop,
+    SequenceExhausted,
+    SessionRequired,
+    ShuttingDown,
+    SourceEpochMismatch,
+    SourceMismatch,
+    SourcePredecessorMismatch,
+    StaleGeneration,
+    StaleInstanceId,
+    SupersededBarrier,
+    Unavailable,
+    Uninitialized,
+    UnknownNode,
+    UnverifiableDuplicate,
+}
+
+impl ErrorCode {
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 43] = [
+        Self::BarrierNotReached,
+        Self::BarrierPositionMismatch,
+        Self::Busy,
+        Self::ConflictingDuplicate,
+        Self::Desynchronized,
+        Self::DirectMutationDisabled,
+        Self::EdgeLimitExceeded,
+        Self::EventFailed,
+        Self::FencedFeederSession,
+        Self::GenerationExhausted,
+        Self::GraphAlreadyInitialized,
+        Self::GraphDesynchronized,
+        Self::GraphUninitialized,
+        Self::ImportInProgress,
+        Self::InvalidBatchSize,
+        Self::InvalidEdge,
+        Self::InvalidGraphId,
+        Self::InvalidInstanceId,
+        Self::InvalidLeaseDuration,
+        Self::InvalidNode,
+        Self::InvalidRequest,
+        Self::LeaseExpired,
+        Self::Loading,
+        Self::ModeConflict,
+        Self::NodeLimitExceeded,
+        Self::OutOfOrderSequence,
+        Self::PayloadTooLarge,
+        Self::PreconditionFailed,
+        Self::RequestTimeout,
+        Self::SelfLoop,
+        Self::SequenceExhausted,
+        Self::SessionRequired,
+        Self::ShuttingDown,
+        Self::SourceEpochMismatch,
+        Self::SourceMismatch,
+        Self::SourcePredecessorMismatch,
+        Self::StaleGeneration,
+        Self::StaleInstanceId,
+        Self::SupersededBarrier,
+        Self::Unavailable,
+        Self::Uninitialized,
+        Self::UnknownNode,
+        Self::UnverifiableDuplicate,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::BarrierNotReached => "barrier_not_reached",
+            Self::BarrierPositionMismatch => "barrier_position_mismatch",
+            Self::Busy => "busy",
+            Self::ConflictingDuplicate => "conflicting_duplicate",
+            Self::Desynchronized => "desynchronized",
+            Self::DirectMutationDisabled => "direct_mutation_disabled",
+            Self::EdgeLimitExceeded => "edge_limit_exceeded",
+            Self::EventFailed => "event_failed",
+            Self::FencedFeederSession => "fenced_feeder_session",
+            Self::GenerationExhausted => "generation_exhausted",
+            Self::GraphAlreadyInitialized => "graph_already_initialized",
+            Self::GraphDesynchronized => "graph_desynchronized",
+            Self::GraphUninitialized => "graph_uninitialized",
+            Self::ImportInProgress => "import_in_progress",
+            Self::InvalidBatchSize => "invalid_batch_size",
+            Self::InvalidEdge => "invalid_edge",
+            Self::InvalidGraphId => "invalid_graph_id",
+            Self::InvalidInstanceId => "invalid_instance_id",
+            Self::InvalidLeaseDuration => "invalid_lease_duration",
+            Self::InvalidNode => "invalid_node",
+            Self::InvalidRequest => "invalid_request",
+            Self::LeaseExpired => "lease_expired",
+            Self::Loading => "loading",
+            Self::ModeConflict => "mode_conflict",
+            Self::NodeLimitExceeded => "node_limit_exceeded",
+            Self::OutOfOrderSequence => "out_of_order_sequence",
+            Self::PayloadTooLarge => "payload_too_large",
+            Self::PreconditionFailed => "precondition_failed",
+            Self::RequestTimeout => "request_timeout",
+            Self::SelfLoop => "self_loop",
+            Self::SequenceExhausted => "sequence_exhausted",
+            Self::SessionRequired => "session_required",
+            Self::ShuttingDown => "shutting_down",
+            Self::SourceEpochMismatch => "source_epoch_mismatch",
+            Self::SourceMismatch => "source_mismatch",
+            Self::SourcePredecessorMismatch => "source_predecessor_mismatch",
+            Self::StaleGeneration => "stale_generation",
+            Self::StaleInstanceId => "stale_instance_id",
+            Self::SupersededBarrier => "superseded_barrier",
+            Self::Unavailable => "unavailable",
+            Self::Uninitialized => "uninitialized",
+            Self::UnknownNode => "unknown_node",
+            Self::UnverifiableDuplicate => "unverifiable_duplicate",
+        }
+    }
+}
 
 /// A decimal-string node identifier with lossless JSON representation.
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -42,6 +257,50 @@ pub(crate) enum ImportMode {
     Replace,
 }
 
+/// Stable result values returned by successful feeder operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FeederResult {
+    Published,
+    SessionAcquired,
+    HeartbeatAcknowledged,
+    Applied,
+    Duplicate,
+    PartialFailure,
+    GapAcknowledged,
+    AlreadySynchronized,
+    Synchronized,
+}
+
+impl FeederResult {
+    #[cfg(test)]
+    const ALL: [Self; 9] = [
+        Self::Published,
+        Self::SessionAcquired,
+        Self::HeartbeatAcknowledged,
+        Self::Applied,
+        Self::Duplicate,
+        Self::PartialFailure,
+        Self::GapAcknowledged,
+        Self::AlreadySynchronized,
+        Self::Synchronized,
+    ];
+}
+
+/// Status returned for an exactly duplicated feeder event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DuplicateStatus {
+    AlreadyApplied,
+}
+
+/// Recovery action requested after a declared source gap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RequiredAction {
+    FullRebuildRequired,
+}
+
 /// Request payload for atomic graph import.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,7 +320,7 @@ pub(crate) struct ImportRequest {
 /// Response payload for successful atomic graph import.
 #[derive(Debug, Serialize)]
 pub(crate) struct ImportResponse {
-    pub(crate) result: &'static str,
+    pub(crate) result: FeederResult,
     pub(crate) instance_id: String,
     pub(crate) graph_id: String,
     pub(crate) generation: u64,
@@ -69,7 +328,7 @@ pub(crate) struct ImportResponse {
     pub(crate) node_count: usize,
     pub(crate) edge_count: usize,
     pub(crate) source_position: String,
-    pub(crate) status: &'static str,
+    pub(crate) status: crate::service::SyncStatus,
 }
 
 /// Request payload for feeder session registration.
@@ -85,7 +344,7 @@ pub(crate) struct SessionRequest {
 /// Response payload for successful feeder session registration.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionResponse {
-    pub(crate) result: &'static str,
+    pub(crate) result: FeederResult,
     pub(crate) instance_id: String,
     pub(crate) feeder_session_id: String,
     pub(crate) feeder_epoch: u64,
@@ -108,12 +367,46 @@ pub(crate) struct HeartbeatRequest {
 /// Response payload for successful feeder heartbeat.
 #[derive(Debug, Serialize)]
 pub(crate) struct HeartbeatResponse {
-    pub(crate) result: &'static str,
+    pub(crate) result: FeederResult,
     pub(crate) instance_id: String,
     pub(crate) feeder_session_id: String,
     pub(crate) feeder_epoch: u64,
     pub(crate) lease_expires_in_ms: u64,
     pub(crate) status: crate::service::SyncStatus,
+}
+
+/// A feeder event operation descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FeederOperation {
+    Link,
+    Cut,
+    AddNode,
+    Progress,
+}
+
+impl FeederOperation {
+    #[cfg(test)]
+    const ALL: [Self; 4] = [Self::Link, Self::Cut, Self::AddNode, Self::Progress];
+
+    #[cfg(test)]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Link => "link",
+            Self::Cut => "cut",
+            Self::AddNode => "add_node",
+            Self::Progress => "progress",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "link" => Self::Link,
+            "cut" => Self::Cut,
+            "add_node" => Self::AddNode,
+            "progress" => Self::Progress,
+            _ => return None,
+        })
+    }
 }
 
 /// A feeder event operation descriptor.
@@ -151,7 +444,7 @@ pub(crate) struct FeederEventsRequest {
 /// Response payload for successfully applied feeder incremental events.
 #[derive(Debug, Serialize)]
 pub(crate) struct FeederEventsResponse {
-    pub(crate) result: &'static str,
+    pub(crate) result: FeederResult,
     pub(crate) instance_id: String,
     pub(crate) generation: u64,
     pub(crate) applied_delivery_sequence: u64,
@@ -163,8 +456,8 @@ pub(crate) struct FeederEventsResponse {
 /// Response payload for an exact duplicate retry.
 #[derive(Debug, Serialize)]
 pub(crate) struct FeederDuplicateResponse {
-    pub(crate) result: &'static str,
-    pub(crate) status: &'static str,
+    pub(crate) result: FeederResult,
+    pub(crate) status: DuplicateStatus,
     pub(crate) instance_id: String,
     pub(crate) generation: u64,
     pub(crate) event_id: String,
@@ -183,15 +476,15 @@ pub(crate) struct HistoricalOutcome {
 /// Error detail inside a partial batch failure.
 #[derive(Debug, Serialize)]
 pub(crate) struct BatchItemError {
-    pub(crate) code: &'static str,
+    pub(crate) code: ErrorCode,
     pub(crate) message: String,
 }
 
 /// Response payload for a feeder batch stopped on error.
 #[derive(Debug, Serialize)]
 pub(crate) struct PartialBatchFailure {
-    pub(crate) result: &'static str,
-    pub(crate) code: &'static str,
+    pub(crate) result: FeederResult,
+    pub(crate) code: ErrorCode,
     pub(crate) message: String,
     pub(crate) instance_id: String,
     pub(crate) generation: u64,
@@ -221,11 +514,11 @@ pub(crate) struct GapRequest {
 /// Response payload for acknowledging a declared source gap.
 #[derive(Debug, Serialize)]
 pub(crate) struct GapResponse {
-    pub(crate) result: &'static str,
+    pub(crate) result: FeederResult,
     pub(crate) instance_id: String,
     pub(crate) generation: u64,
     pub(crate) status: crate::service::SyncStatus,
-    pub(crate) action_required: &'static str,
+    pub(crate) action_required: RequiredAction,
 }
 
 /// One operation, deserialized completely before graph execution.
@@ -273,7 +566,7 @@ pub(crate) enum Outcome {
         connected: bool,
     },
     Error {
-        code: &'static str,
+        code: ErrorCode,
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         expected_sequence: Option<u64>,
@@ -283,10 +576,10 @@ pub(crate) enum Outcome {
 impl From<GraphError> for Outcome {
     fn from(error: GraphError) -> Self {
         let code = match error {
-            GraphError::NodeLimitExceeded { .. } => "node_limit_exceeded",
-            GraphError::EdgeLimitExceeded { .. } => "edge_limit_exceeded",
-            GraphError::SelfLoop { .. } => "self_loop",
-            GraphError::UnknownNode { .. } => "unknown_node",
+            GraphError::NodeLimitExceeded { .. } => ErrorCode::NodeLimitExceeded,
+            GraphError::EdgeLimitExceeded { .. } => ErrorCode::EdgeLimitExceeded,
+            GraphError::SelfLoop { .. } => ErrorCode::SelfLoop,
+            GraphError::UnknownNode { .. } => ErrorCode::UnknownNode,
         };
         Self::Error {
             code,
@@ -300,11 +593,11 @@ impl IntoResponse for Outcome {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::Error {
-                code: "unknown_node",
+                code: ErrorCode::UnknownNode,
                 ..
             } => StatusCode::NOT_FOUND,
             Self::Error {
-                code: "desynchronized" | "uninitialized" | "loading",
+                code: ErrorCode::Desynchronized | ErrorCode::Uninitialized | ErrorCode::Loading,
                 ..
             } => StatusCode::SERVICE_UNAVAILABLE,
             Self::Error { .. } => StatusCode::UNPROCESSABLE_ENTITY,
@@ -346,7 +639,7 @@ where
             .await
             .map_err(|err| {
                 tracing::warn!(status = %err.status(), "failed to read request body bytes");
-                error_response(err.status(), "invalid_request", err.body_text())
+                error_response(err.status(), ErrorCode::InvalidRequest, err.body_text())
             })?;
         let mut buffer = bytes.to_vec();
         let value = simd_json::from_slice(&mut buffer).map_err(|err| {
@@ -356,7 +649,7 @@ where
                 StatusCode::BAD_REQUEST
             };
             tracing::debug!(%err, is_data = err.is_data(), "failed to parse request JSON with simd-json");
-            error_response(status, "invalid_request", request_error_message(&err))
+            error_response(status, ErrorCode::InvalidRequest, request_error_message(&err))
         })?;
         Ok(Self(value))
     }
@@ -396,7 +689,7 @@ pub(crate) fn check_json_content_type(headers: &HeaderMap) -> Option<Response> {
     } else {
         Some(error_response(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "invalid_request",
+            ErrorCode::InvalidRequest,
             "Expected request with `Content-Type: application/json`".into(),
         ))
     }
@@ -418,7 +711,7 @@ pub(crate) async fn logging_middleware(
     let status = response.status().as_u16();
 
     // Log probes at trace level to avoid log pollution in orchestration environments.
-    if uri == "/health" || uri == "/ready" || scrape {
+    if uri == Route::Health.as_str() || uri == Route::Ready.as_str() || scrape {
         tracing::trace!(
             method = %method,
             uri = %uri,
@@ -453,7 +746,7 @@ pub(crate) async fn single(
     {
         return error_response(
             StatusCode::CONFLICT,
-            "direct_mutation_disabled",
+            ErrorCode::DirectMutationDisabled,
             "direct graph mutations are disabled in source-managed mode; use feeder endpoints"
                 .into(),
         );
@@ -486,7 +779,7 @@ pub(crate) async fn batch(
         if has_mutation {
             return error_response(
                 StatusCode::CONFLICT,
-                "direct_mutation_disabled",
+                ErrorCode::DirectMutationDisabled,
                 "direct graph mutations are disabled in source-managed mode; use feeder endpoints"
                     .into(),
             );
@@ -500,7 +793,7 @@ pub(crate) async fn batch(
         );
         return error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "invalid_batch_size",
+            ErrorCode::InvalidBatchSize,
             format!(
                 "batches must contain 1 to {} operations",
                 crate::MAX_BATCH_OPERATIONS
@@ -525,11 +818,11 @@ fn check_feeder_headers(service: &Service, headers: &HeaderMap) -> Option<Respon
     if service.mode() != crate::ServerMode::SourceManaged {
         return Some(error_response(
             StatusCode::CONFLICT,
-            "mode_conflict",
+            ErrorCode::ModeConflict,
             "feeder endpoints are only available in source_managed mode".into(),
         ));
     }
-    let Some(instance_id_header) = headers.get("x-knotrel-instance-id") else {
+    let Some(instance_id_header) = headers.get(&INSTANCE_ID_HEADER) else {
         return Some(feeder_error(
             crate::service::FeederError::InvalidInstanceId(
                 "missing header X-Knotrel-Instance-Id".into(),
@@ -546,7 +839,7 @@ fn check_feeder_headers(service: &Service, headers: &HeaderMap) -> Option<Respon
     if header_val != service.instance_id() {
         return Some(error_response(
             StatusCode::CONFLICT,
-            "stale_instance_id",
+            ErrorCode::StaleInstanceId,
             "header X-Knotrel-Instance-Id must match server instance ID".into(),
         ));
     }
@@ -557,7 +850,7 @@ fn check_body_instance_id(service: &Service, body_instance_id: &str) -> Option<R
     if body_instance_id != service.instance_id() {
         return Some(error_response(
             StatusCode::CONFLICT,
-            "stale_instance_id",
+            ErrorCode::StaleInstanceId,
             "body instance_id must match server instance ID".into(),
         ));
     }
@@ -565,11 +858,11 @@ fn check_body_instance_id(service: &Service, body_instance_id: &str) -> Option<R
 }
 
 fn check_default_graph_id(graph_id: &str) -> Option<Response> {
-    if graph_id != "default" {
+    if graph_id != DEFAULT_GRAPH_ID {
         return Some(error_response(
             StatusCode::BAD_REQUEST,
-            "invalid_graph_id",
-            format!("unsupported graph ID '{graph_id}'; only 'default' is supported"),
+            ErrorCode::InvalidGraphId,
+            format!("unsupported graph ID '{graph_id}'; only '{DEFAULT_GRAPH_ID}' is supported"),
         ));
     }
     None
@@ -580,7 +873,7 @@ fn check_service_available(service: &Service) -> Option<Response> {
         service.count_rejection(crate::metrics::Rejection::Unavailable);
         return Some(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
+            ErrorCode::Unavailable,
             "graph worker unavailable".into(),
         ));
     }
@@ -673,7 +966,7 @@ pub(crate) async fn feeder_import(
         Ok(res) => {
             let metadata = crate::service::ResponseMetadata {
                 instance_id: res.instance_id.clone(),
-                graph_id: "default",
+                graph_id: DEFAULT_GRAPH_ID,
                 generation: res.generation,
                 state_version: res.state_version.clone(),
                 source_position: Some(res.source_position.clone()),
@@ -802,76 +1095,76 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
     match err {
         FeederError::ImportInProgress => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            "import_in_progress",
+            ErrorCode::ImportInProgress,
             "import capacity exhausted; another import is in progress".into(),
         ),
         FeederError::Unavailable => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
+            ErrorCode::Unavailable,
             "graph worker unavailable".into(),
         ),
         FeederError::ModeMismatch => error_response(
             StatusCode::CONFLICT,
-            "mode_conflict",
+            ErrorCode::ModeConflict,
             "feeder endpoints are only available in source_managed mode".into(),
         ),
         FeederError::StaleInstanceId(msg) => {
-            error_response(StatusCode::CONFLICT, "stale_instance_id", msg)
+            error_response(StatusCode::CONFLICT, ErrorCode::StaleInstanceId, msg)
         }
         FeederError::InvalidInstanceId(msg) => {
-            error_response(StatusCode::BAD_REQUEST, "invalid_instance_id", msg)
+            error_response(StatusCode::BAD_REQUEST, ErrorCode::InvalidInstanceId, msg)
         }
         FeederError::InvalidGraphId(msg) => {
-            error_response(StatusCode::BAD_REQUEST, "invalid_graph_id", msg)
+            error_response(StatusCode::BAD_REQUEST, ErrorCode::InvalidGraphId, msg)
         }
         FeederError::SessionRequired => error_response(
             StatusCode::CONFLICT,
-            "session_required",
+            ErrorCode::SessionRequired,
             "active feeder session required; register via POST /v1/feeder/session".into(),
         ),
         FeederError::FencedSession => error_response(
             StatusCode::CONFLICT,
-            "fenced_feeder_session",
+            ErrorCode::FencedFeederSession,
             "feeder session or epoch is stale/fenced".into(),
         ),
         FeederError::LeaseExpired => error_response(
             StatusCode::CONFLICT,
-            "lease_expired",
+            ErrorCode::LeaseExpired,
             "feeder lease expired; renew lease or register new session".into(),
         ),
         FeederError::GraphAlreadyInitialized => error_response(
             StatusCode::CONFLICT,
-            "graph_already_initialized",
+            ErrorCode::GraphAlreadyInitialized,
             "create_only requires uninitialized graph (generation 0)".into(),
         ),
         FeederError::GraphUninitialized => error_response(
             StatusCode::CONFLICT,
-            "graph_uninitialized",
+            ErrorCode::GraphUninitialized,
             "graph is uninitialized; baseline import required".into(),
         ),
         FeederError::GraphDesynchronized => error_response(
             StatusCode::CONFLICT,
-            "graph_desynchronized",
+            ErrorCode::GraphDesynchronized,
             "graph is desynchronized; full rebuild required".into(),
         ),
         FeederError::GenerationExhausted => error_response(
             StatusCode::CONFLICT,
-            "generation_exhausted",
+            ErrorCode::GenerationExhausted,
             "generation counter exhausted; server restart required".into(),
         ),
         FeederError::StaleGeneration(msg) => {
-            error_response(StatusCode::CONFLICT, "stale_generation", msg)
+            error_response(StatusCode::CONFLICT, ErrorCode::StaleGeneration, msg)
         }
         FeederError::SourceMismatch(msg) => {
-            error_response(StatusCode::CONFLICT, "source_mismatch", msg)
+            error_response(StatusCode::CONFLICT, ErrorCode::SourceMismatch, msg)
         }
         FeederError::SourceEpochMismatch(msg) => {
-            error_response(StatusCode::CONFLICT, "source_epoch_mismatch", msg)
+            error_response(StatusCode::CONFLICT, ErrorCode::SourceEpochMismatch, msg)
         }
         FeederError::OutOfOrderSequence { expected, received } => (
             StatusCode::CONFLICT,
             Json(Outcome::Error {
-                code: "out_of_order_sequence",
+                code: ErrorCode::OutOfOrderSequence,
                 message: format!(
                     "expected delivery sequence {}, received {}",
                     expected, received
@@ -880,26 +1173,30 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
             }),
         )
             .into_response(),
-        FeederError::SourcePredecessorMismatch(msg) => {
-            error_response(StatusCode::CONFLICT, "source_predecessor_mismatch", msg)
-        }
+        FeederError::SourcePredecessorMismatch(msg) => error_response(
+            StatusCode::CONFLICT,
+            ErrorCode::SourcePredecessorMismatch,
+            msg,
+        ),
         FeederError::ConflictingDuplicate(msg) => {
-            error_response(StatusCode::CONFLICT, "conflicting_duplicate", msg)
+            error_response(StatusCode::CONFLICT, ErrorCode::ConflictingDuplicate, msg)
         }
         FeederError::UnverifiableDuplicate(msg) => {
-            error_response(StatusCode::CONFLICT, "unverifiable_duplicate", msg)
+            error_response(StatusCode::CONFLICT, ErrorCode::UnverifiableDuplicate, msg)
         }
         FeederError::SequenceExhausted => error_response(
             StatusCode::CONFLICT,
-            "sequence_exhausted",
+            ErrorCode::SequenceExhausted,
             "delivery sequence counter exhausted; server restart required".into(),
         ),
-        FeederError::PreconditionFailed(msg) => {
-            error_response(StatusCode::PRECONDITION_FAILED, "precondition_failed", msg)
-        }
+        FeederError::PreconditionFailed(msg) => error_response(
+            StatusCode::PRECONDITION_FAILED,
+            ErrorCode::PreconditionFailed,
+            msg,
+        ),
         FeederError::BarrierPositionMismatch { expected, received } => error_response(
             StatusCode::CONFLICT,
-            "barrier_position_mismatch",
+            ErrorCode::BarrierPositionMismatch,
             format!(
                 "barrier source position '{}' does not match applied position '{}'",
                 received, expected
@@ -907,7 +1204,7 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
         ),
         FeederError::BarrierNotReached { expected, received } => error_response(
             StatusCode::CONFLICT,
-            "barrier_not_reached",
+            ErrorCode::BarrierNotReached,
             format!(
                 "barrier delivery sequence {} has not been reached; currently at {}",
                 received, expected
@@ -915,7 +1212,7 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
         ),
         FeederError::SupersededBarrier { expected, received } => error_response(
             StatusCode::CONFLICT,
-            "superseded_barrier",
+            ErrorCode::SupersededBarrier,
             format!(
                 "barrier delivery sequence {} is superseded by applied delivery sequence {}",
                 received, expected
@@ -923,43 +1220,49 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
         ),
         FeederError::InvalidLeaseDuration => error_response(
             StatusCode::BAD_REQUEST,
-            "invalid_lease_duration",
-            "lease_duration_ms must be between 1000 and 60000".into(),
+            ErrorCode::InvalidLeaseDuration,
+            format!(
+                "lease_duration_ms must be between {MIN_LEASE_DURATION_MS} and {MAX_LEASE_DURATION_MS}"
+            ),
         ),
         FeederError::MalformedJson => error_response(
             StatusCode::BAD_REQUEST,
-            "invalid_request",
+            ErrorCode::InvalidRequest,
             "request body is not valid JSON".into(),
         ),
-        FeederError::UnprocessableJson(msg) => {
-            error_response(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request", msg)
-        }
+        FeederError::UnprocessableJson(msg) => error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::InvalidRequest,
+            msg,
+        ),
         FeederError::PayloadTooLarge => error_response(
             StatusCode::PAYLOAD_TOO_LARGE,
-            "payload_too_large",
+            ErrorCode::PayloadTooLarge,
             "import payload exceeds size limit".into(),
         ),
         FeederError::Domain(code, msg) => {
             error_response(StatusCode::UNPROCESSABLE_ENTITY, code, msg)
         }
-        FeederError::InvalidRequest(msg) => {
-            error_response(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request", msg)
-        }
+        FeederError::InvalidRequest(msg) => error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::InvalidRequest,
+            msg,
+        ),
     }
 }
 
 fn service_error(error: ServiceError) -> Response {
     let (code, message) = match error {
-        ServiceError::Busy => ("busy", "request capacity exhausted; retry later"),
+        ServiceError::Busy => (ErrorCode::Busy, "request capacity exhausted; retry later"),
         ServiceError::Unavailable => {
             tracing::error!("graph worker unavailable while handling request");
-            ("unavailable", "graph worker unavailable")
+            (ErrorCode::Unavailable, "graph worker unavailable")
         }
     };
     error_response(StatusCode::SERVICE_UNAVAILABLE, code, message.into())
 }
 
-pub(crate) fn error_response(status: StatusCode, code: &'static str, message: String) -> Response {
+pub(crate) fn error_response(status: StatusCode, code: ErrorCode, message: String) -> Response {
     (
         status,
         Json(Outcome::Error {
@@ -1003,39 +1306,27 @@ pub(crate) fn inject_metadata_headers(
         headers.insert(axum::http::header::ETAG, val);
     }
     if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.instance_id) {
-        headers.insert(
-            axum::http::HeaderName::from_static("x-knotrel-instance-id"),
-            val,
-        );
+        headers.insert(INSTANCE_ID_HEADER, val);
     }
     headers.insert(
-        axum::http::HeaderName::from_static("x-knotrel-graph-id"),
-        axum::http::HeaderValue::from_static("default"),
+        GRAPH_ID_HEADER,
+        axum::http::HeaderValue::from_static(DEFAULT_GRAPH_ID),
     );
     if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.generation.to_string()) {
-        headers.insert(
-            axum::http::HeaderName::from_static("x-knotrel-generation"),
-            val,
-        );
+        headers.insert(GENERATION_HEADER, val);
     }
     if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.state_version) {
-        headers.insert(
-            axum::http::HeaderName::from_static("x-knotrel-state-version"),
-            val,
-        );
+        headers.insert(STATE_VERSION_HEADER, val);
     }
     if let Some(ref pos) = metadata.source_position {
         let encoded = crate::service::percent_encode_position(pos);
         if let Ok(val) = axum::http::HeaderValue::from_str(&encoded) {
-            headers.insert(
-                axum::http::HeaderName::from_static("x-knotrel-source-position"),
-                val,
-            );
+            headers.insert(SOURCE_POSITION_HEADER, val);
         }
     }
     if let Some(status) = metadata.sync_status {
         headers.insert(
-            axum::http::HeaderName::from_static("x-knotrel-sync-status"),
+            SYNC_STATUS_HEADER,
             axum::http::HeaderValue::from_static(status.as_str()),
         );
     }
@@ -1046,6 +1337,119 @@ mod tests {
     use super::*;
     use crate::{Lifecycle, ServerConfig, ServerMode};
     use axum::http::HeaderValue;
+
+    #[test]
+    fn typed_wire_vocabulary_matches_the_http_contract() {
+        assert_eq!(
+            Route::ALL.map(Route::as_str),
+            [
+                "/health",
+                "/ready",
+                "/metrics",
+                "/v1/info",
+                "/v1/stats",
+                "/v1/operations",
+                "/v1/batch",
+                "/v1/feeder/session",
+                "/v1/feeder/heartbeat",
+                "/v1/feeder/import",
+                "/v1/feeder/events",
+                "/v1/feeder/gap",
+                "/v1/feeder/barrier",
+            ]
+        );
+        assert_eq!(INSTANCE_ID_HEADER.as_str(), "x-knotrel-instance-id");
+        assert_eq!(GRAPH_ID_HEADER.as_str(), "x-knotrel-graph-id");
+        assert_eq!(GENERATION_HEADER.as_str(), "x-knotrel-generation");
+        assert_eq!(STATE_VERSION_HEADER.as_str(), "x-knotrel-state-version");
+        assert_eq!(SOURCE_POSITION_HEADER.as_str(), "x-knotrel-source-position");
+        assert_eq!(SYNC_STATUS_HEADER.as_str(), "x-knotrel-sync-status");
+        assert_eq!(DEFAULT_GRAPH_ID, "default");
+        assert_eq!(MIN_LEASE_DURATION_MS, 1_000);
+        assert_eq!(MAX_LEASE_DURATION_MS, 60_000);
+        assert_eq!(MAX_EVENT_ID_BYTES, 64);
+        assert_eq!(MAX_SOURCE_POSITION_BYTES, 256);
+
+        assert_eq!(
+            FeederOperation::ALL.map(FeederOperation::as_str),
+            ["link", "cut", "add_node", "progress"]
+        );
+        for operation in FeederOperation::ALL {
+            assert_eq!(FeederOperation::parse(operation.as_str()), Some(operation));
+        }
+        assert_eq!(FeederOperation::parse("unknown"), None);
+        assert_eq!(
+            FeederResult::ALL.map(|result| serde_json::to_string(&result).unwrap()),
+            [
+                "\"published\"",
+                "\"session_acquired\"",
+                "\"heartbeat_acknowledged\"",
+                "\"applied\"",
+                "\"duplicate\"",
+                "\"partial_failure\"",
+                "\"gap_acknowledged\"",
+                "\"already_synchronized\"",
+                "\"synchronized\"",
+            ]
+        );
+        assert_eq!(
+            serde_json::to_string(&DuplicateStatus::AlreadyApplied).unwrap(),
+            "\"already_applied\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RequiredAction::FullRebuildRequired).unwrap(),
+            "\"full_rebuild_required\""
+        );
+
+        assert_eq!(
+            ErrorCode::ALL.map(ErrorCode::as_str),
+            [
+                "barrier_not_reached",
+                "barrier_position_mismatch",
+                "busy",
+                "conflicting_duplicate",
+                "desynchronized",
+                "direct_mutation_disabled",
+                "edge_limit_exceeded",
+                "event_failed",
+                "fenced_feeder_session",
+                "generation_exhausted",
+                "graph_already_initialized",
+                "graph_desynchronized",
+                "graph_uninitialized",
+                "import_in_progress",
+                "invalid_batch_size",
+                "invalid_edge",
+                "invalid_graph_id",
+                "invalid_instance_id",
+                "invalid_lease_duration",
+                "invalid_node",
+                "invalid_request",
+                "lease_expired",
+                "loading",
+                "mode_conflict",
+                "node_limit_exceeded",
+                "out_of_order_sequence",
+                "payload_too_large",
+                "precondition_failed",
+                "request_timeout",
+                "self_loop",
+                "sequence_exhausted",
+                "session_required",
+                "shutting_down",
+                "source_epoch_mismatch",
+                "source_mismatch",
+                "source_predecessor_mismatch",
+                "stale_generation",
+                "stale_instance_id",
+                "superseded_barrier",
+                "unavailable",
+                "uninitialized",
+                "unknown_node",
+                "unverifiable_duplicate",
+            ]
+        );
+    }
 
     fn make_service(mode: ServerMode) -> Service {
         let config = ServerConfig::default().with_mode(mode);
@@ -1371,7 +1775,7 @@ mod tests {
             ),
             (FeederError::PayloadTooLarge, StatusCode::PAYLOAD_TOO_LARGE),
             (
-                FeederError::Domain("err_code", "err_msg".into()),
+                FeederError::Domain(ErrorCode::InvalidEdge, "err_msg".into()),
                 StatusCode::UNPROCESSABLE_ENTITY,
             ),
             (
@@ -1452,7 +1856,10 @@ mod tests {
             (FeederError::MalformedJson, None),
             (FeederError::UnprocessableJson(s()), None),
             (FeederError::PayloadTooLarge, None),
-            (FeederError::Domain("self_loop", s()), Some("event_failed")),
+            (
+                FeederError::Domain(ErrorCode::SelfLoop, s()),
+                Some("event_failed"),
+            ),
             (FeederError::InvalidRequest(s()), Some("invalid_request")),
             (
                 FeederError::BarrierPositionMismatch {
@@ -1543,7 +1950,11 @@ mod tests {
         let resp = batch(State(standalone_service), Ok(SimdJson(oversized_batch))).await;
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-        let err_resp = error_response(StatusCode::BAD_REQUEST, "bad", "bad".into());
+        let err_resp = error_response(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::InvalidRequest,
+            "bad".into(),
+        );
         let resp = batch(State(make_service(ServerMode::Standalone)), Err(err_resp)).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
@@ -1573,7 +1984,7 @@ mod tests {
         let make_err = || {
             error_response(
                 StatusCode::BAD_REQUEST,
-                "invalid_json",
+                ErrorCode::InvalidRequest,
                 "syntax error".into(),
             )
         };

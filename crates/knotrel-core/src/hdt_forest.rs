@@ -10,6 +10,9 @@
 
 use crate::index::Token as GenericToken;
 
+const NON_TREE_EDGE_FLAG: u8 = 1;
+const TREE_EDGE_FLAG: u8 = 2;
+
 type Token = GenericToken<u8>;
 
 pub(crate) type Forest = crate::index::GenericForest<u8>;
@@ -31,14 +34,18 @@ impl Forest {
     /// Cost O(log V), with early exit if an aggregate remains unchanged.
     #[inline]
     pub(crate) fn set_marks(&mut self, vertex: usize, tree: bool, non_tree: bool) {
-        let value = (u8::from(tree) << 1) | u8::from(non_tree);
+        let value = (u8::from(tree) * TREE_EDGE_FLAG) | (u8::from(non_tree) * NON_TREE_EDGE_FLAG);
         self.update_candidate_flag(vertex, value);
     }
 
     /// Return one exact-level incidence-bearing vertex in this component.
     /// Descends one marked AVL path, O(log V) worst case, no scratch allocation.
     pub(crate) fn marked_vertex(&self, vertex: usize, tree: bool) -> Option<usize> {
-        let mask = if tree { 2 } else { 1 };
+        let mask = if tree {
+            TREE_EDGE_FLAG
+        } else {
+            NON_TREE_EDGE_FLAG
+        };
         let mut current = self.root(self.vertex_tokens[vertex]);
         if self.tokens[current].has_candidates & mask == 0 {
             return None;
@@ -65,7 +72,7 @@ impl Forest {
     #[cfg(test)]
     pub(crate) fn marks(&self, vertex: usize) -> (bool, bool) {
         let flags = self.tokens[self.vertex_tokens[vertex]].candidate;
-        (flags & 2 != 0, flags & 1 != 0)
+        (flags & TREE_EDGE_FLAG != 0, flags & NON_TREE_EDGE_FLAG != 0)
     }
 
     #[cfg(test)]

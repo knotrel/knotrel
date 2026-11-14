@@ -15,6 +15,84 @@ pub enum ServerMode {
     SourceManaged,
 }
 
+impl ServerMode {
+    /// Returns the stable external label for this operating mode.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standalone => "standalone",
+            Self::SourceManaged => "source_managed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Setting {
+    Address,
+    Engine,
+    MaxPendingJobs,
+    MaxNodes,
+    MaxEdges,
+    AllowNonLoopback,
+    MaxConnections,
+    HeaderReadTimeoutMs,
+    RequestTimeoutMs,
+    ShutdownTimeoutMs,
+    Mode,
+    MaxImportBodyBytes,
+    DedupWindowSize,
+    MetricsEnabled,
+}
+
+impl Setting {
+    const ALL: [Self; 14] = [
+        Self::Address,
+        Self::Engine,
+        Self::MaxPendingJobs,
+        Self::MaxNodes,
+        Self::MaxEdges,
+        Self::AllowNonLoopback,
+        Self::MaxConnections,
+        Self::HeaderReadTimeoutMs,
+        Self::RequestTimeoutMs,
+        Self::ShutdownTimeoutMs,
+        Self::Mode,
+        Self::MaxImportBodyBytes,
+        Self::DedupWindowSize,
+        Self::MetricsEnabled,
+    ];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Address => "KNOTREL_ADDR",
+            Self::Engine => "KNOTREL_ENGINE",
+            Self::MaxPendingJobs => "KNOTREL_MAX_PENDING_JOBS",
+            Self::MaxNodes => "KNOTREL_MAX_NODES",
+            Self::MaxEdges => "KNOTREL_MAX_EDGES",
+            Self::AllowNonLoopback => "KNOTREL_ALLOW_NON_LOOPBACK",
+            Self::MaxConnections => "KNOTREL_MAX_CONNECTIONS",
+            Self::HeaderReadTimeoutMs => "KNOTREL_HEADER_READ_TIMEOUT_MS",
+            Self::RequestTimeoutMs => "KNOTREL_REQUEST_TIMEOUT_MS",
+            Self::ShutdownTimeoutMs => "KNOTREL_SHUTDOWN_TIMEOUT_MS",
+            Self::Mode => "KNOTREL_MODE",
+            Self::MaxImportBodyBytes => "KNOTREL_MAX_IMPORT_BODY_BYTES",
+            Self::DedupWindowSize => "KNOTREL_DEDUP_WINDOW_SIZE",
+            Self::MetricsEnabled => "KNOTREL_METRICS_ENABLED",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|setting| setting.as_str() == name)
+    }
+}
+
+impl fmt::Display for Setting {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// Validated standalone server settings.
 ///
 /// The environment is read only by [`Self::from_env`]. Embedded callers can use
@@ -51,9 +129,9 @@ impl Error for ConfigError {}
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            address: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            address: Self::DEFAULT_ADDRESS,
             engine: EngineConfig::default(),
-            max_pending_jobs: 32,
+            max_pending_jobs: Self::DEFAULT_MAX_PENDING_JOBS,
             graph_limits: Self::DEFAULT_GRAPH_LIMITS,
             max_connections: Self::DEFAULT_MAX_CONNECTIONS,
             header_read_timeout: Self::DEFAULT_HEADER_READ_TIMEOUT,
@@ -68,6 +146,11 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// Default loopback listener address.
+    pub const DEFAULT_ADDRESS: SocketAddr =
+        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 8080);
+    /// Default maximum number of admitted queued plus running graph jobs.
+    pub const DEFAULT_MAX_PENDING_JOBS: usize = 32;
     /// Default ceiling on registered vertices for configured servers.
     pub const DEFAULT_MAX_NODES: usize = 100_000;
     /// Default ceiling on live edges for configured servers.
@@ -138,14 +221,16 @@ impl ServerConfig {
         max_pending_jobs: usize,
     ) -> Result<Self, ConfigError> {
         if !allow_non_loopback && !address.ip().is_loopback() {
-            return Err(ConfigError(
-                "KNOTREL_ADDR must be a loopback address unless KNOTREL_ALLOW_NON_LOOPBACK=true"
-                    .into(),
-            ));
+            return Err(ConfigError(format!(
+                "{} must be a loopback address unless {}=true",
+                Setting::Address,
+                Setting::AllowNonLoopback
+            )));
         }
         if max_pending_jobs == 0 || max_pending_jobs > tokio::sync::Semaphore::MAX_PERMITS {
             return Err(ConfigError(format!(
-                "KNOTREL_MAX_PENDING_JOBS must be between 1 and {}",
+                "{} must be between 1 and {}",
+                Setting::MaxPendingJobs,
                 tokio::sync::Semaphore::MAX_PERMITS
             )));
         }
@@ -226,7 +311,7 @@ impl ServerConfig {
     ///
     /// Returns [`ConfigError`] unless the value is positive and at most [`Self::MAX_TIMEOUT`].
     pub fn with_header_read_timeout(mut self, timeout: Duration) -> Result<Self, ConfigError> {
-        self.header_read_timeout = check_timeout("KNOTREL_HEADER_READ_TIMEOUT_MS", timeout)?;
+        self.header_read_timeout = check_timeout(Setting::HeaderReadTimeoutMs, timeout)?;
         Ok(self)
     }
 
@@ -234,7 +319,7 @@ impl ServerConfig {
     ///
     /// Returns [`ConfigError`] unless the value is positive and at most [`Self::MAX_TIMEOUT`].
     pub fn with_request_timeout(mut self, timeout: Duration) -> Result<Self, ConfigError> {
-        self.request_timeout = check_timeout("KNOTREL_REQUEST_TIMEOUT_MS", timeout)?;
+        self.request_timeout = check_timeout(Setting::RequestTimeoutMs, timeout)?;
         Ok(self)
     }
 
@@ -242,7 +327,7 @@ impl ServerConfig {
     ///
     /// Returns [`ConfigError`] unless the value is positive and at most [`Self::MAX_TIMEOUT`].
     pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Result<Self, ConfigError> {
-        self.shutdown_timeout = check_timeout("KNOTREL_SHUTDOWN_TIMEOUT_MS", timeout)?;
+        self.shutdown_timeout = check_timeout(Setting::ShutdownTimeoutMs, timeout)?;
         Ok(self)
     }
 
@@ -326,103 +411,91 @@ impl ServerConfig {
             let name = name
                 .into_string()
                 .map_err(|_| ConfigError("KNOTREL_ setting name must be valid Unicode".into()))?;
-            if !matches!(
-                name.as_str(),
-                "KNOTREL_ADDR"
-                    | "KNOTREL_ENGINE"
-                    | "KNOTREL_MAX_PENDING_JOBS"
-                    | "KNOTREL_MAX_NODES"
-                    | "KNOTREL_MAX_EDGES"
-                    | "KNOTREL_ALLOW_NON_LOOPBACK"
-                    | "KNOTREL_MAX_CONNECTIONS"
-                    | "KNOTREL_HEADER_READ_TIMEOUT_MS"
-                    | "KNOTREL_REQUEST_TIMEOUT_MS"
-                    | "KNOTREL_SHUTDOWN_TIMEOUT_MS"
-                    | "KNOTREL_MODE"
-                    | "KNOTREL_MAX_IMPORT_BODY_BYTES"
-                    | "KNOTREL_DEDUP_WINDOW_SIZE"
-                    | "KNOTREL_METRICS_ENABLED"
-            ) {
+            let Some(setting) = Setting::parse(&name) else {
                 return Err(ConfigError(format!("unknown setting: {name}")));
-            }
+            };
             let value = value
                 .into_string()
                 .map_err(|_| ConfigError(format!("{name} must be valid Unicode")))?;
-            settings.insert(name, value);
+            settings.insert(setting, value);
         }
         let defaults = Self::default();
-        let address = match settings.get("KNOTREL_ADDR") {
+        let address = match settings.get(&Setting::Address) {
             Some(value) => value.parse().map_err(|_| {
-                ConfigError(
-                    "KNOTREL_ADDR must be an IP socket address such as 127.0.0.1:8080".into(),
-                )
+                ConfigError(format!(
+                    "{} must be an IP socket address such as 127.0.0.1:8080",
+                    Setting::Address
+                ))
             })?,
             None => defaults.address,
         };
-        let allow_non_loopback = match settings
-            .get("KNOTREL_ALLOW_NON_LOOPBACK")
-            .map(String::as_str)
+        let allow_non_loopback = match settings.get(&Setting::AllowNonLoopback).map(String::as_str)
         {
             None | Some("false") => false,
             Some("true") => true,
             Some(_) => {
-                return Err(ConfigError(
-                    "KNOTREL_ALLOW_NON_LOOPBACK must be true or false".into(),
-                ));
+                return Err(ConfigError(format!(
+                    "{} must be true or false",
+                    Setting::AllowNonLoopback
+                )));
             }
         };
-        let metrics_enabled = match settings.get("KNOTREL_METRICS_ENABLED").map(String::as_str) {
+        let metrics_enabled = match settings.get(&Setting::MetricsEnabled).map(String::as_str) {
             None | Some("false") => false,
             Some("true") => true,
             Some(_) => {
-                return Err(ConfigError(
-                    "KNOTREL_METRICS_ENABLED must be true or false".into(),
-                ));
+                return Err(ConfigError(format!(
+                    "{} must be true or false",
+                    Setting::MetricsEnabled
+                )));
             }
         };
-        let engine = match settings.get("KNOTREL_ENGINE").map(String::as_str) {
+        let engine = match settings.get(&Setting::Engine).map(String::as_str) {
             None | Some("compact-bfs") => EngineConfig::CompactBfs,
             Some("ett") => EngineConfig::EulerTour,
             Some("hdt") => EngineConfig::Hdt,
             Some(_) => {
-                return Err(ConfigError(
-                    "KNOTREL_ENGINE must be compact-bfs, ett or hdt".into(),
-                ));
+                return Err(ConfigError(format!(
+                    "{} must be compact-bfs, ett or hdt",
+                    Setting::Engine
+                )));
             }
         };
-        let mode = match settings.get("KNOTREL_MODE").map(String::as_str) {
+        let mode = match settings.get(&Setting::Mode).map(String::as_str) {
             None | Some("standalone") => ServerMode::Standalone,
             Some("source_managed") | Some("source-managed") => ServerMode::SourceManaged,
             Some(_) => {
-                return Err(ConfigError(
-                    "KNOTREL_MODE must be standalone or source_managed".into(),
-                ));
+                return Err(ConfigError(format!(
+                    "{} must be standalone or source_managed",
+                    Setting::Mode
+                )));
             }
         };
-        let max_import_body_bytes = match settings.get("KNOTREL_MAX_IMPORT_BODY_BYTES") {
-            Some(value) => parse_decimal("KNOTREL_MAX_IMPORT_BODY_BYTES", value)?,
+        let max_import_body_bytes = match settings.get(&Setting::MaxImportBodyBytes) {
+            Some(value) => parse_decimal(Setting::MaxImportBodyBytes, value)?,
             None => defaults.max_import_body_bytes,
         };
-        let dedup_window_size = match settings.get("KNOTREL_DEDUP_WINDOW_SIZE") {
-            Some(value) => parse_decimal("KNOTREL_DEDUP_WINDOW_SIZE", value)?,
+        let dedup_window_size = match settings.get(&Setting::DedupWindowSize) {
+            Some(value) => parse_decimal(Setting::DedupWindowSize, value)?,
             None => defaults.dedup_window_size,
         };
-        let max_pending_jobs = match settings.get("KNOTREL_MAX_PENDING_JOBS") {
+        let max_pending_jobs = match settings.get(&Setting::MaxPendingJobs) {
             Some(value) => {
                 if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                    return Err(ConfigError(
-                        "KNOTREL_MAX_PENDING_JOBS must be a positive decimal integer".into(),
-                    ));
+                    return Err(ConfigError(format!(
+                        "{} must be a positive decimal integer",
+                        Setting::MaxPendingJobs
+                    )));
                 }
-                value
-                    .parse()
-                    .map_err(|_| ConfigError("KNOTREL_MAX_PENDING_JOBS is out of range".into()))?
+                value.parse().map_err(|_| {
+                    ConfigError(format!("{} is out of range", Setting::MaxPendingJobs))
+                })?
             }
             None => defaults.max_pending_jobs,
         };
         let parse_limit =
-            |key: &str, default: Option<usize>| -> Result<Option<usize>, ConfigError> {
-                settings.get(key).map_or(Ok(default), |value| {
+            |key: Setting, default: Option<usize>| -> Result<Option<usize>, ConfigError> {
+                settings.get(&key).map_or(Ok(default), |value| {
                     if value == "unlimited" {
                         return Ok(None);
                     }
@@ -438,15 +511,15 @@ impl ServerConfig {
                 })
             };
         let limits = GraphLimits {
-            max_nodes: parse_limit("KNOTREL_MAX_NODES", Self::DEFAULT_GRAPH_LIMITS.max_nodes)?,
-            max_edges: parse_limit("KNOTREL_MAX_EDGES", Self::DEFAULT_GRAPH_LIMITS.max_edges)?,
+            max_nodes: parse_limit(Setting::MaxNodes, Self::DEFAULT_GRAPH_LIMITS.max_nodes)?,
+            max_edges: parse_limit(Setting::MaxEdges, Self::DEFAULT_GRAPH_LIMITS.max_edges)?,
         };
-        let max_connections = match settings.get("KNOTREL_MAX_CONNECTIONS") {
-            Some(value) => parse_decimal("KNOTREL_MAX_CONNECTIONS", value)?,
+        let max_connections = match settings.get(&Setting::MaxConnections) {
+            Some(value) => parse_decimal(Setting::MaxConnections, value)?,
             None => defaults.max_connections,
         };
-        let timeout = |key: &str, default: Duration| -> Result<Duration, ConfigError> {
-            match settings.get(key) {
+        let timeout = |key: Setting, default: Duration| -> Result<Duration, ConfigError> {
+            match settings.get(&key) {
                 Some(value) => Ok(Duration::from_millis(
                     parse_decimal(key, value)?
                         .try_into()
@@ -463,22 +536,22 @@ impl ServerConfig {
             .with_graph_limits(limits)
             .with_max_connections(max_connections)?
             .with_header_read_timeout(timeout(
-                "KNOTREL_HEADER_READ_TIMEOUT_MS",
+                Setting::HeaderReadTimeoutMs,
                 defaults.header_read_timeout,
             )?)?
             .with_request_timeout(timeout(
-                "KNOTREL_REQUEST_TIMEOUT_MS",
+                Setting::RequestTimeoutMs,
                 defaults.request_timeout,
             )?)?
             .with_shutdown_timeout(timeout(
-                "KNOTREL_SHUTDOWN_TIMEOUT_MS",
+                Setting::ShutdownTimeoutMs,
                 defaults.shutdown_timeout,
             )?)
     }
 }
 
 // Strict ASCII decimal: no sign, whitespace, separators or empty strings.
-fn parse_decimal(key: &str, value: &str) -> Result<usize, ConfigError> {
+fn parse_decimal(key: Setting, value: &str) -> Result<usize, ConfigError> {
     if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
         return Err(ConfigError(format!(
             "{key} must be a positive decimal integer"
@@ -492,7 +565,8 @@ fn parse_decimal(key: &str, value: &str) -> Result<usize, ConfigError> {
 fn check_connections(limit: usize) -> Result<usize, ConfigError> {
     if limit == 0 || limit > ServerConfig::MAX_CONNECTIONS_LIMIT {
         return Err(ConfigError(format!(
-            "KNOTREL_MAX_CONNECTIONS must be between 1 and {}",
+            "{} must be between 1 and {}",
+            Setting::MaxConnections,
             ServerConfig::MAX_CONNECTIONS_LIMIT
         )));
     }
@@ -502,7 +576,8 @@ fn check_connections(limit: usize) -> Result<usize, ConfigError> {
 fn check_import_body_bytes(bytes: usize) -> Result<usize, ConfigError> {
     if bytes == 0 || bytes > ServerConfig::MAX_IMPORT_BODY_LIMIT {
         return Err(ConfigError(format!(
-            "KNOTREL_MAX_IMPORT_BODY_BYTES must be between 1 and {}",
+            "{} must be between 1 and {}",
+            Setting::MaxImportBodyBytes,
             ServerConfig::MAX_IMPORT_BODY_LIMIT
         )));
     }
@@ -512,14 +587,15 @@ fn check_import_body_bytes(bytes: usize) -> Result<usize, ConfigError> {
 fn check_dedup_window_size(size: usize) -> Result<usize, ConfigError> {
     if size == 0 || size > ServerConfig::MAX_DEDUP_WINDOW_SIZE {
         return Err(ConfigError(format!(
-            "KNOTREL_DEDUP_WINDOW_SIZE must be between 1 and {}",
+            "{} must be between 1 and {}",
+            Setting::DedupWindowSize,
             ServerConfig::MAX_DEDUP_WINDOW_SIZE
         )));
     }
     Ok(size)
 }
 
-fn check_timeout(key: &str, timeout: Duration) -> Result<Duration, ConfigError> {
+fn check_timeout(key: Setting, timeout: Duration) -> Result<Duration, ConfigError> {
     if timeout.is_zero() || timeout > ServerConfig::MAX_TIMEOUT {
         return Err(ConfigError(format!(
             "{key} must be between 1 and {} milliseconds",
@@ -532,6 +608,34 @@ fn check_timeout(key: &str, timeout: Duration) -> Result<Duration, ConfigError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setting_names_form_one_exhaustive_configuration_domain() {
+        let names = Setting::ALL.map(Setting::as_str);
+        assert_eq!(
+            names,
+            [
+                "KNOTREL_ADDR",
+                "KNOTREL_ENGINE",
+                "KNOTREL_MAX_PENDING_JOBS",
+                "KNOTREL_MAX_NODES",
+                "KNOTREL_MAX_EDGES",
+                "KNOTREL_ALLOW_NON_LOOPBACK",
+                "KNOTREL_MAX_CONNECTIONS",
+                "KNOTREL_HEADER_READ_TIMEOUT_MS",
+                "KNOTREL_REQUEST_TIMEOUT_MS",
+                "KNOTREL_SHUTDOWN_TIMEOUT_MS",
+                "KNOTREL_MODE",
+                "KNOTREL_MAX_IMPORT_BODY_BYTES",
+                "KNOTREL_DEDUP_WINDOW_SIZE",
+                "KNOTREL_METRICS_ENABLED",
+            ]
+        );
+        for (setting, name) in Setting::ALL.into_iter().zip(names) {
+            assert_eq!(Setting::parse(name), Some(setting));
+        }
+        assert_eq!(Setting::parse("KNOTREL_UNKNOWN"), None);
+    }
 
     #[test]
     fn metrics_exposure_is_disabled_by_default_and_strictly_validated() {

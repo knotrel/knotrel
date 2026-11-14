@@ -10,6 +10,8 @@ use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
 use std::collections::BTreeSet;
 
+const LEVEL_ARCS_INLINE_CAPACITY: usize = 4;
+
 type Key = (usize, usize);
 type Arcs = (usize, usize);
 
@@ -34,7 +36,7 @@ pub struct HdtStats {
 struct Edge {
     level: usize,
     // Empty for non-tree edges; otherwise one handle pair for each F_0..F_level.
-    arcs: tinyvec::TinyVec<[Arcs; 4]>,
+    arcs: tinyvec::TinyVec<[Arcs; LEVEL_ARCS_INLINE_CAPACITY]>,
 }
 
 // F_0 is dense to keep queries free of an extra translation. Higher levels
@@ -213,7 +215,7 @@ impl HdtGraph {
         }
         let tree = !self.levels[0].forest.connected(a, b);
         let arcs = if tree {
-            tinyvec::tiny_vec!([Arcs; 4] => self.levels[0].forest.link(a, b))
+            tinyvec::tiny_vec!([Arcs; LEVEL_ARCS_INLINE_CAPACITY] => self.levels[0].forest.link(a, b))
         } else {
             tinyvec::TinyVec::new()
         };

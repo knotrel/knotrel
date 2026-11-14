@@ -3,10 +3,12 @@
 use crate::{
     Lifecycle, ServerMode,
     api::{
-        BatchItemError, FeederDuplicateResponse, FeederEventsRequest, FeederEventsResponse,
-        GapRequest, GapResponse, HeartbeatRequest, HeartbeatResponse, HistoricalOutcome,
-        ImportMode, ImportRequest, ImportResponse, Operation, Outcome, PartialBatchFailure,
-        SessionRequest, SessionResponse,
+        BatchItemError, DEFAULT_GRAPH_ID, DuplicateStatus, ErrorCode, FeederDuplicateResponse,
+        FeederEventsRequest, FeederEventsResponse, FeederOperation, FeederResult, GapRequest,
+        GapResponse, HeartbeatRequest, HeartbeatResponse, HistoricalOutcome, ImportMode,
+        ImportRequest, ImportResponse, MAX_EVENT_ID_BYTES, MAX_LEASE_DURATION_MS,
+        MAX_SOURCE_POSITION_BYTES, MIN_LEASE_DURATION_MS, Operation, Outcome, PartialBatchFailure,
+        RequiredAction, SessionRequest, SessionResponse,
     },
     metrics::{
         CatchupInterval, CatchupKind, CatchupRecorder, CompletedCatchup, Desynchronization,
@@ -24,6 +26,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Semaphore;
+
+const DEFAULT_FEEDER_LEASE_DURATION: Duration = Duration::from_secs(10);
+const IMPORT_PERMIT_CAPACITY: usize = 1;
 
 static START_INSTANT: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
 
@@ -43,6 +48,14 @@ pub(crate) fn monotonic_now() -> Instant {
 
 fn instant_to_millis(instant: Instant) -> u64 {
     instant.duration_since(*START_INSTANT).as_millis() as u64
+}
+
+fn engine_from_label(label: &str) -> EngineConfig {
+    match label {
+        value if value == EngineConfig::EulerTour.as_str() => EngineConfig::EulerTour,
+        value if value == EngineConfig::Hdt.as_str() => EngineConfig::Hdt,
+        _ => EngineConfig::CompactBfs,
+    }
 }
 
 pub(crate) fn now_to_millis() -> u64 {
@@ -80,17 +93,18 @@ pub async fn lock_clock_for_test() -> tokio::sync::MutexGuard<'static, ()> {
 /// Feeder synchronization status for integration mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+#[repr(u8)]
 pub(crate) enum SyncStatus {
-    Uninitialized,
-    Loading,
-    CatchingUp,
-    Ready,
-    Stale,
-    Desynchronized,
+    Uninitialized = 0,
+    Loading = 1,
+    CatchingUp = 2,
+    Ready = 3,
+    Stale = 4,
+    Desynchronized = 5,
 }
 
 impl SyncStatus {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Uninitialized => "uninitialized",
             Self::Loading => "loading",
@@ -102,27 +116,29 @@ impl SyncStatus {
     }
 
     pub(crate) const fn to_code(self) -> u8 {
-        match self {
-            Self::Uninitialized => 0,
-            Self::Loading => 1,
-            Self::CatchingUp => 2,
-            Self::Ready => 3,
-            Self::Stale => 4,
-            Self::Desynchronized => 5,
-        }
+        self as u8
     }
 
     pub(crate) const fn from_code(code: u8) -> Self {
         match code {
-            1 => Self::Loading,
-            2 => Self::CatchingUp,
-            3 => Self::Ready,
-            4 => Self::Stale,
-            5 => Self::Desynchronized,
+            code if code == Self::Loading as u8 => Self::Loading,
+            code if code == Self::CatchingUp as u8 => Self::CatchingUp,
+            code if code == Self::Ready as u8 => Self::Ready,
+            code if code == Self::Stale as u8 => Self::Stale,
+            code if code == Self::Desynchronized as u8 => Self::Desynchronized,
             _ => Self::Uninitialized,
         }
     }
 }
+
+const STATUS_BITS: u32 = 4;
+const SEQUENCE_BITS: u32 = u16::BITS;
+const DEADLINE_BITS: u32 = u64::BITS - STATUS_BITS - SEQUENCE_BITS;
+const SEQUENCE_SHIFT: u32 = STATUS_BITS;
+const DEADLINE_SHIFT: u32 = STATUS_BITS + SEQUENCE_BITS;
+const STATUS_MASK: u64 = (1_u64 << STATUS_BITS) - 1;
+const SEQUENCE_MASK: u64 = (1_u64 << SEQUENCE_BITS) - 1;
+const DEADLINE_MASK: u64 = (1_u64 << DEADLINE_BITS) - 1;
 
 /// Packed atomic readiness publication holding status (4 bits), publication sequence (16 bits),
 /// and lease deadline in monotonic milliseconds (44 bits, up to 557 years).
@@ -135,16 +151,16 @@ pub(crate) struct PublishedReadiness {
 
 impl PublishedReadiness {
     pub(crate) const fn pack(status: SyncStatus, seq: u16, deadline_millis: u64) -> u64 {
-        let status_bits = (status.to_code() as u64) & 0x0F;
-        let seq_bits = ((seq as u64) & 0xFFFF) << 4;
-        let deadline_bits = (deadline_millis & 0x0FFF_FFFF_FFFF) << 20;
+        let status_bits = (status.to_code() as u64) & STATUS_MASK;
+        let seq_bits = ((seq as u64) & SEQUENCE_MASK) << SEQUENCE_SHIFT;
+        let deadline_bits = (deadline_millis & DEADLINE_MASK) << DEADLINE_SHIFT;
         status_bits | seq_bits | deadline_bits
     }
 
     pub(crate) const fn unpack(word: u64) -> Self {
-        let status_code = (word & 0x0F) as u8;
-        let seq = ((word >> 4) & 0xFFFF) as u16;
-        let deadline_millis = (word >> 20) & 0x0FFF_FFFF_FFFF;
+        let status_code = (word & STATUS_MASK) as u8;
+        let seq = ((word >> SEQUENCE_SHIFT) & SEQUENCE_MASK) as u16;
+        let deadline_millis = (word >> DEADLINE_SHIFT) & DEADLINE_MASK;
         Self {
             status: SyncStatus::from_code(status_code),
             seq,
@@ -164,8 +180,14 @@ pub(crate) enum CanonicalOp {
 
 impl CanonicalOp {
     pub(crate) fn from_feeder_event(event: &crate::api::FeederEvent) -> Result<Self, FeederError> {
-        match event.op.as_str() {
-            "link" => {
+        let Some(operation) = FeederOperation::parse(&event.op) else {
+            return Err(FeederError::InvalidRequest(format!(
+                "unsupported operation '{}'; must be link, cut, add_node, or progress",
+                event.op
+            )));
+        };
+        match operation {
+            FeederOperation::Link => {
                 let (Some(source), Some(target), None) = (event.source, event.target, event.node)
                 else {
                     return Err(FeederError::InvalidRequest(
@@ -177,7 +199,7 @@ impl CanonicalOp {
                     target: source.0.max(target.0),
                 })
             }
-            "cut" => {
+            FeederOperation::Cut => {
                 let (Some(source), Some(target), None) = (event.source, event.target, event.node)
                 else {
                     return Err(FeederError::InvalidRequest(
@@ -189,7 +211,7 @@ impl CanonicalOp {
                     target: source.0.max(target.0),
                 })
             }
-            "add_node" => {
+            FeederOperation::AddNode => {
                 let (Some(node), None, None) = (event.node, event.source, event.target) else {
                     return Err(FeederError::InvalidRequest(
                         "add_node operation requires node, and must not have source or target"
@@ -198,7 +220,7 @@ impl CanonicalOp {
                 };
                 Ok(Self::AddNode { node: node.0 })
             }
-            "progress" => {
+            FeederOperation::Progress => {
                 if event.node.is_some() || event.source.is_some() || event.target.is_some() {
                     return Err(FeederError::InvalidRequest(
                         "progress operation must not have node, source, or target".into(),
@@ -206,10 +228,6 @@ impl CanonicalOp {
                 }
                 Ok(Self::Progress)
             }
-            _ => Err(FeederError::InvalidRequest(format!(
-                "unsupported operation '{}'; must be link, cut, add_node, or progress",
-                event.op
-            ))),
         }
     }
 }
@@ -470,7 +488,7 @@ pub(crate) enum FeederError {
     MalformedJson,
     UnprocessableJson(String),
     PayloadTooLarge,
-    Domain(&'static str, String),
+    Domain(ErrorCode, String),
     InvalidRequest(String),
     BarrierPositionMismatch { expected: String, received: String },
     BarrierNotReached { expected: u64, received: u64 },
@@ -494,13 +512,13 @@ pub(crate) struct BarrierRequest {
 /// Feeder barrier declaration success response payload.
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct BarrierResponse {
-    pub(crate) result: &'static str,
+    pub(crate) result: FeederResult,
     pub(crate) instance_id: String,
     pub(crate) graph_id: &'static str,
     pub(crate) generation: u64,
     pub(crate) state_version: String,
     pub(crate) applied_source_position: String,
-    pub(crate) status: &'static str,
+    pub(crate) status: SyncStatus,
 }
 
 #[derive(Debug)]
@@ -596,7 +614,7 @@ impl GraphState {
             applied_delivery_sequence: 0,
             feeder_session_id: None,
             feeder_epoch: 0,
-            lease_duration: Duration::from_secs(10),
+            lease_duration: DEFAULT_FEEDER_LEASE_DURATION,
             lease_deadline: None,
             sync_status: SyncStatus::Uninitialized,
             publication_seq: 0,
@@ -711,7 +729,7 @@ impl GraphState {
         };
         ResponseMetadata {
             instance_id: instance_id.to_string(),
-            graph_id: "default",
+            graph_id: DEFAULT_GRAPH_ID,
             generation,
             state_version,
             source_position,
@@ -763,7 +781,7 @@ impl GraphState {
         }
 
         Ok(SessionResponse {
-            result: "session_acquired",
+            result: FeederResult::SessionAcquired,
             instance_id,
             feeder_session_id: req.feeder_session_id,
             feeder_epoch: req.feeder_epoch,
@@ -793,7 +811,7 @@ impl GraphState {
         self.lease_deadline = Some(now + self.lease_duration);
 
         Ok(HeartbeatResponse {
-            result: "heartbeat_acknowledged",
+            result: FeederResult::HeartbeatAcknowledged,
             instance_id,
             feeder_session_id: req.feeder_session_id,
             feeder_epoch: req.feeder_epoch,
@@ -843,9 +861,9 @@ impl GraphState {
         idx: usize,
         seq: u64,
         event_id: &str,
-        code: &'static str,
+        code: ErrorCode,
         reason: &str,
-        err_code: &'static str,
+        err_code: ErrorCode,
         err_msg: String,
         status: axum::http::StatusCode,
         single_err: FeederError,
@@ -856,7 +874,7 @@ impl GraphState {
             count_feeder_rejection(telemetry, &single_err);
             Ok(FeederEventsResult::PartialFailure {
                 failure: PartialBatchFailure {
-                    result: "partial_failure",
+                    result: FeederResult::PartialFailure,
                     code,
                     message: format!(
                         "batch stopped at batch index {idx} (global sequence {seq}) due to {reason}"
@@ -951,7 +969,7 @@ impl GraphState {
 
         // Exact match: B1 and B2
         let result_str = match self.sync_status {
-            SyncStatus::Ready => "already_synchronized",
+            SyncStatus::Ready => FeederResult::AlreadySynchronized,
             SyncStatus::CatchingUp | SyncStatus::Stale => {
                 self.sync_status = SyncStatus::Ready;
                 // The first synchronized barrier of a generation completes
@@ -961,7 +979,7 @@ impl GraphState {
                 if let Some(interval) = self.catchup.take() {
                     self.completed_catchup = Some(interval.complete());
                 }
-                "synchronized"
+                FeederResult::Synchronized
             }
             _ => unreachable!(),
         };
@@ -971,11 +989,11 @@ impl GraphState {
         let res = BarrierResponse {
             result: result_str,
             instance_id: req.instance_id,
-            graph_id: "default",
+            graph_id: DEFAULT_GRAPH_ID,
             generation: self.generation,
             state_version: self.version_string(),
             applied_source_position: self.source_position.clone().unwrap_or_default(),
-            status: "ready",
+            status: SyncStatus::Ready,
         };
         Ok((res, metadata))
     }
@@ -1041,20 +1059,20 @@ impl GraphState {
         }
 
         for event in &req.events {
-            if event.event_id.len() > 64 {
-                return Err(FeederError::InvalidRequest(
-                    "event_id must not exceed 64 bytes".into(),
-                ));
+            if event.event_id.len() > MAX_EVENT_ID_BYTES {
+                return Err(FeederError::InvalidRequest(format!(
+                    "event_id must not exceed {MAX_EVENT_ID_BYTES} bytes"
+                )));
             }
-            if event.source_position.len() > 256 {
-                return Err(FeederError::InvalidRequest(
-                    "source_position must not exceed 256 bytes".into(),
-                ));
+            if event.source_position.len() > MAX_SOURCE_POSITION_BYTES {
+                return Err(FeederError::InvalidRequest(format!(
+                    "source_position must not exceed {MAX_SOURCE_POSITION_BYTES} bytes"
+                )));
             }
-            if event.prev_source_position.len() > 256 {
-                return Err(FeederError::InvalidRequest(
-                    "prev_source_position must not exceed 256 bytes".into(),
-                ));
+            if event.prev_source_position.len() > MAX_SOURCE_POSITION_BYTES {
+                return Err(FeederError::InvalidRequest(format!(
+                    "prev_source_position must not exceed {MAX_SOURCE_POSITION_BYTES} bytes"
+                )));
             }
             let _ = CanonicalOp::from_feeder_event(event)?;
         }
@@ -1086,9 +1104,9 @@ impl GraphState {
                             idx,
                             seq,
                             &event.event_id,
-                            "unverifiable_duplicate",
+                            ErrorCode::UnverifiableDuplicate,
                             "evicted duplicate",
-                            "unverifiable_duplicate",
+                            ErrorCode::UnverifiableDuplicate,
                             err_msg.clone(),
                             axum::http::StatusCode::CONFLICT,
                             FeederError::UnverifiableDuplicate(err_msg),
@@ -1114,9 +1132,9 @@ impl GraphState {
                                 idx,
                                 seq,
                                 &event.event_id,
-                                "conflicting_duplicate",
+                                ErrorCode::ConflictingDuplicate,
                                 "conflicting event ID",
-                                "conflicting_duplicate",
+                                ErrorCode::ConflictingDuplicate,
                                 err_msg.clone(),
                                 axum::http::StatusCode::CONFLICT,
                                 FeederError::ConflictingDuplicate(err_msg),
@@ -1143,9 +1161,9 @@ impl GraphState {
                                 idx,
                                 seq,
                                 &event.event_id,
-                                "conflicting_duplicate",
+                                ErrorCode::ConflictingDuplicate,
                                 "canonical conflict",
-                                "conflicting_duplicate",
+                                ErrorCode::ConflictingDuplicate,
                                 err_msg.clone(),
                                 axum::http::StatusCode::CONFLICT,
                                 FeederError::ConflictingDuplicate(err_msg),
@@ -1170,9 +1188,9 @@ impl GraphState {
                         idx,
                         seq,
                         &event.event_id,
-                        "out_of_order_sequence",
+                        ErrorCode::OutOfOrderSequence,
                         "out-of-order sequence",
-                        "out_of_order_sequence",
+                        ErrorCode::OutOfOrderSequence,
                         format!("expected delivery sequence {expected}, received {seq}"),
                         axum::http::StatusCode::CONFLICT,
                         FeederError::OutOfOrderSequence {
@@ -1201,9 +1219,9 @@ impl GraphState {
                         idx,
                         seq,
                         &event.event_id,
-                        "source_predecessor_mismatch",
+                        ErrorCode::SourcePredecessorMismatch,
                         "predecessor sequence mismatch",
-                        "source_predecessor_mismatch",
+                        ErrorCode::SourcePredecessorMismatch,
                         err_msg.clone(),
                         axum::http::StatusCode::CONFLICT,
                         FeederError::SourcePredecessorMismatch(err_msg),
@@ -1230,9 +1248,9 @@ impl GraphState {
                         idx,
                         seq,
                         &event.event_id,
-                        "source_predecessor_mismatch",
+                        ErrorCode::SourcePredecessorMismatch,
                         "source predecessor mismatch",
-                        "source_predecessor_mismatch",
+                        ErrorCode::SourcePredecessorMismatch,
                         err_msg.clone(),
                         axum::http::StatusCode::CONFLICT,
                         FeederError::SourcePredecessorMismatch(err_msg),
@@ -1258,9 +1276,9 @@ impl GraphState {
                         idx,
                         seq,
                         &event.event_id,
-                        "conflicting_duplicate",
+                        ErrorCode::ConflictingDuplicate,
                         "duplicate event ID",
-                        "conflicting_duplicate",
+                        ErrorCode::ConflictingDuplicate,
                         err_msg.clone(),
                         axum::http::StatusCode::CONFLICT,
                         FeederError::ConflictingDuplicate(err_msg),
@@ -1273,42 +1291,42 @@ impl GraphState {
                     CanonicalOp::AddNode { node } => {
                         self.graph.add_node(*node).map_err(|err| match err {
                             GraphError::NodeLimitExceeded { limit } => (
-                                "node_limit_exceeded",
+                                ErrorCode::NodeLimitExceeded,
                                 format!("node limit {limit} exceeded"),
                             ),
-                            _ => ("invalid_node", err.to_string()),
+                            _ => (ErrorCode::InvalidNode, err.to_string()),
                         })
                     }
                     CanonicalOp::Link { source, target } => {
                         if source == target {
                             Err((
-                                "self_loop",
+                                ErrorCode::SelfLoop,
                                 "self-loops are forbidden in simple undirected graphs".to_string(),
                             ))
                         } else {
                             self.graph.link(*source, *target).map_err(|err| match err {
                                 GraphError::EdgeLimitExceeded { limit } => (
-                                    "edge_limit_exceeded",
+                                    ErrorCode::EdgeLimitExceeded,
                                     format!("edge limit {limit} exceeded"),
                                 ),
                                 GraphError::NodeLimitExceeded { limit } => (
-                                    "node_limit_exceeded",
+                                    ErrorCode::NodeLimitExceeded,
                                     format!("node limit {limit} exceeded"),
                                 ),
-                                _ => ("invalid_edge", err.to_string()),
+                                _ => (ErrorCode::InvalidEdge, err.to_string()),
                             })
                         }
                     }
                     CanonicalOp::Cut { source, target } => {
                         if source == target {
                             Err((
-                                "self_loop",
+                                ErrorCode::SelfLoop,
                                 "self-loops are forbidden in simple undirected graphs".to_string(),
                             ))
                         } else {
                             self.graph
                                 .cut(*source, *target)
-                                .map_err(|err| ("invalid_edge", err.to_string()))
+                                .map_err(|err| (ErrorCode::InvalidEdge, err.to_string()))
                         }
                     }
                     CanonicalOp::Progress => Ok(false),
@@ -1326,7 +1344,7 @@ impl GraphState {
                             idx,
                             seq,
                             &event.event_id,
-                            "event_failed",
+                            ErrorCode::EventFailed,
                             "domain error",
                             err_code,
                             err_msg.clone(),
@@ -1368,8 +1386,8 @@ impl GraphState {
         if total_events == 1 && newly_applied_count == 0 {
             let dup = last_duplicate_entry.expect("retained duplicate entry");
             let response = FeederDuplicateResponse {
-                result: "duplicate",
-                status: "already_applied",
+                result: FeederResult::Duplicate,
+                status: DuplicateStatus::AlreadyApplied,
                 instance_id: req.instance_id,
                 generation: self.generation,
                 event_id: dup.event_id,
@@ -1388,7 +1406,7 @@ impl GraphState {
         }
 
         let response = FeederEventsResponse {
-            result: "applied",
+            result: FeederResult::Applied,
             instance_id: req.instance_id,
             generation: self.generation,
             applied_delivery_sequence: self.applied_delivery_sequence,
@@ -1433,11 +1451,11 @@ impl GraphState {
         );
         let metadata = self.response_metadata(mode, instance_id);
         let res = GapResponse {
-            result: "gap_acknowledged",
+            result: FeederResult::GapAcknowledged,
             instance_id: req.instance_id,
             generation: self.generation,
             status: SyncStatus::Desynchronized,
-            action_required: "full_rebuild_required",
+            action_required: RequiredAction::FullRebuildRequired,
         };
         Ok((res, metadata))
     }
@@ -1669,7 +1687,7 @@ impl Service {
 
         let (mode_str, inst_id_opt) = match mode {
             ServerMode::Standalone => (None, None),
-            ServerMode::SourceManaged => (Some("source_managed"), Some(instance_id.clone())),
+            ServerMode::SourceManaged => (Some(mode.as_str()), Some(instance_id.clone())),
         };
 
         Self {
@@ -1689,7 +1707,7 @@ impl Service {
                 config.dedup_window_size(),
             ))),
             permits: Arc::new(Semaphore::new(capacity)),
-            import_permits: Arc::new(Semaphore::new(1)),
+            import_permits: Arc::new(Semaphore::new(IMPORT_PERMIT_CAPACITY)),
             unavailable: Arc::new(AtomicBool::new(false)),
             published_readiness: Arc::new(AtomicU64::new(PublishedReadiness::pack(
                 SyncStatus::Uninitialized,
@@ -1859,7 +1877,7 @@ impl Service {
                 req.instance_id, self.instance_id
             )));
         }
-        if req.lease_duration_ms < 1000 || req.lease_duration_ms > 60000 {
+        if !(MIN_LEASE_DURATION_MS..=MAX_LEASE_DURATION_MS).contains(&req.lease_duration_ms) {
             let error = FeederError::InvalidLeaseDuration;
             count_feeder_rejection(self.telemetry.as_deref(), &error);
             return Err(error);
@@ -2023,35 +2041,31 @@ impl Service {
                 )));
             }
 
-            if req.graph_id != "default" {
+            if req.graph_id != DEFAULT_GRAPH_ID {
                 return Err(FeederError::InvalidGraphId(format!(
-                    "unsupported graph_id '{}'; only 'default' is supported",
-                    req.graph_id
+                    "unsupported graph_id '{}'; only '{DEFAULT_GRAPH_ID}' is supported",
+                    req.graph_id,
                 )));
             }
 
             // 2. Off-lock candidate building
-            let engine_config = match engine {
-                "euler-tour" => EngineConfig::EulerTour,
-                "hdt" => EngineConfig::Hdt,
-                _ => EngineConfig::CompactBfs,
-            };
+            let engine_config = engine_from_label(engine);
             let mut candidate = ConnectivityGraph::with_limits(engine_config, limits);
 
             for node in req.nodes {
                 candidate.add_node(node.0).map_err(|err| match err {
                     GraphError::NodeLimitExceeded { limit } => FeederError::Domain(
-                        "node_limit_exceeded",
+                        ErrorCode::NodeLimitExceeded,
                         format!("node limit {limit} exceeded"),
                     ),
-                    _ => FeederError::Domain("invalid_node", err.to_string()),
+                    _ => FeederError::Domain(ErrorCode::InvalidNode, err.to_string()),
                 })?;
             }
 
             for edge in req.edges {
                 if edge.source.0 == edge.target.0 {
                     return Err(FeederError::Domain(
-                        "self_loop",
+                        ErrorCode::SelfLoop,
                         "self-loops are forbidden in simple undirected graphs".into(),
                     ));
                 }
@@ -2059,14 +2073,14 @@ impl Service {
                     .link(edge.source.0, edge.target.0)
                     .map_err(|err| match err {
                         GraphError::EdgeLimitExceeded { limit } => FeederError::Domain(
-                            "edge_limit_exceeded",
+                            ErrorCode::EdgeLimitExceeded,
                             format!("edge limit {limit} exceeded"),
                         ),
                         GraphError::NodeLimitExceeded { limit } => FeederError::Domain(
-                            "node_limit_exceeded",
+                            ErrorCode::NodeLimitExceeded,
                             format!("node limit {limit} exceeded"),
                         ),
-                        _ => FeederError::Domain("invalid_edge", err.to_string()),
+                        _ => FeederError::Domain(ErrorCode::InvalidEdge, err.to_string()),
                     })?;
             }
 
@@ -2145,7 +2159,7 @@ impl Service {
             }
 
             let response = ImportResponse {
-                result: "published",
+                result: FeederResult::Published,
                 instance_id: req.instance_id,
                 graph_id: req.graph_id,
                 generation: state.generation,
@@ -2153,7 +2167,7 @@ impl Service {
                 node_count,
                 edge_count,
                 source_position: req.source_position,
-                status: "catching_up",
+                status: SyncStatus::CatchingUp,
             };
             drop(state);
             lifecycle.check_worker_post_lock_hook();
@@ -2216,7 +2230,7 @@ impl Service {
                     let outcomes = operations
                         .into_iter()
                         .map(|_| Outcome::Error {
-                            code: "uninitialized",
+                            code: ErrorCode::Uninitialized,
                             message: "graph is uninitialized; baseline import required".into(),
                             expected_sequence: None,
                         })
@@ -2228,7 +2242,7 @@ impl Service {
                     let outcomes = operations
                         .into_iter()
                         .map(|_| Outcome::Error {
-                            code: "loading",
+                            code: ErrorCode::Loading,
                             message: "graph baseline import is in progress".into(),
                             expected_sequence: None,
                         })
@@ -2240,7 +2254,7 @@ impl Service {
                     let outcomes = operations
                         .into_iter()
                         .map(|_| Outcome::Error {
-                            code: "desynchronized",
+                            code: ErrorCode::Desynchronized,
                             message: "graph is desynchronized; full rebuild required".into(),
                             expected_sequence: None,
                         })
@@ -3203,7 +3217,7 @@ mod tests {
         assert!(matches!(
             res_rejected.outcomes[0],
             Outcome::Error {
-                code: "self_loop",
+                code: ErrorCode::SelfLoop,
                 ..
             }
         ));
@@ -3240,7 +3254,7 @@ mod tests {
             })
             .await
             .expect("session");
-        assert_eq!(session_res.result, "session_acquired");
+        assert_eq!(session_res.result, FeederResult::SessionAcquired);
 
         let import_bytes = format!(
             r#"{{"mode":"create_only","instance_id":"{instance_id}","graph_id":"default","source_id":"pg-1","source_epoch":"ep-1","source_position":"pos-0","feeder_session_id":"f-1","feeder_epoch":1,"nodes":["1","2"],"edges":[]}}"#
@@ -3343,8 +3357,8 @@ mod tests {
             FeederEventsResult::Duplicate { response, .. } => {
                 assert_eq!(response.current_applied_delivery_sequence, u64::MAX);
                 assert_eq!(response.delivery_sequence, u64::MAX);
-                assert_eq!(response.result, "duplicate");
-                assert_eq!(response.status, "already_applied");
+                assert_eq!(response.result, FeederResult::Duplicate);
+                assert_eq!(response.status, DuplicateStatus::AlreadyApplied);
             }
             _ => panic!("expected duplicate for retained retry at u64::MAX"),
         }
@@ -3413,7 +3427,7 @@ mod tests {
             })
             .await
             .expect("session");
-        assert_eq!(session_res.result, "session_acquired");
+        assert_eq!(session_res.result, FeederResult::SessionAcquired);
 
         let import_bytes = format!(
             r#"{{"mode":"create_only","instance_id":"{instance_id}","graph_id":"default","source_id":"pg-1","source_epoch":"ep-1","source_position":"pos-0","feeder_session_id":"f-1","feeder_epoch":1,"nodes":["1","2"],"edges":[]}}"#
@@ -3631,8 +3645,8 @@ mod tests {
                 instance_id,
             )
             .unwrap();
-        assert_eq!(b1_res.result, "synchronized");
-        assert_eq!(b1_res.status, "ready");
+        assert_eq!(b1_res.result, FeederResult::Synchronized);
+        assert_eq!(b1_res.status, SyncStatus::Ready);
         assert_eq!(state.sync_status, SyncStatus::Ready);
 
         // Case B2: Exact match from Ready (idempotent)
@@ -3643,8 +3657,8 @@ mod tests {
                 instance_id,
             )
             .unwrap();
-        assert_eq!(b2_res.result, "already_synchronized");
-        assert_eq!(b2_res.status, "ready");
+        assert_eq!(b2_res.result, FeederResult::AlreadySynchronized);
+        assert_eq!(b2_res.status, SyncStatus::Ready);
         assert_eq!(state.sync_status, SyncStatus::Ready);
 
         // Case B5: Desynchronized
@@ -3786,8 +3800,8 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(barrier_res.result, "synchronized");
-        assert_eq!(barrier_res.status, "ready");
+        assert_eq!(barrier_res.result, FeederResult::Synchronized);
+        assert_eq!(barrier_res.status, SyncStatus::Ready);
         assert_eq!(service.sync_status(), SyncStatus::Ready);
 
         reset_clock();
@@ -3812,6 +3826,33 @@ mod tests {
                     assert_eq!(unpacked.deadline_millis, deadline_ms);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn published_readiness_bit_fields_cover_the_word_without_overlap() {
+        assert_eq!(STATUS_BITS + SEQUENCE_BITS + DEADLINE_BITS, u64::BITS);
+        assert_eq!(SEQUENCE_SHIFT, STATUS_BITS);
+        assert_eq!(DEADLINE_SHIFT, STATUS_BITS + SEQUENCE_BITS);
+        let packed = PublishedReadiness::pack(SyncStatus::Desynchronized, u16::MAX, DEADLINE_MASK);
+        assert_eq!(
+            PublishedReadiness::unpack(packed),
+            PublishedReadiness {
+                status: SyncStatus::Desynchronized,
+                seq: u16::MAX,
+                deadline_millis: DEADLINE_MASK,
+            }
+        );
+    }
+
+    #[test]
+    fn engine_labels_round_trip_for_import_candidates() {
+        for engine in [
+            EngineConfig::CompactBfs,
+            EngineConfig::EulerTour,
+            EngineConfig::Hdt,
+        ] {
+            assert_eq!(engine_from_label(engine.as_str()), engine);
         }
     }
 
@@ -4161,7 +4202,10 @@ mod tests {
             .import(permit, Bytes::from(body_nodes), None)
             .await
             .unwrap_err();
-        assert!(matches!(err, FeederError::Domain("node_limit_exceeded", _)));
+        assert!(matches!(
+            err,
+            FeederError::Domain(ErrorCode::NodeLimitExceeded, _)
+        ));
 
         // 4. Edge self loop in candidate
         let permit = service.acquire_import_permit().unwrap();
@@ -4175,7 +4219,7 @@ mod tests {
             .import(permit, Bytes::from(body_self_loop), None)
             .await
             .unwrap_err();
-        assert!(matches!(err, FeederError::Domain("self_loop", _)));
+        assert!(matches!(err, FeederError::Domain(ErrorCode::SelfLoop, _)));
 
         // 5. Edge limit exceeded in candidate
         let permit = service.acquire_import_permit().unwrap();
@@ -4189,7 +4233,10 @@ mod tests {
             .import(permit, Bytes::from(body_edges), None)
             .await
             .unwrap_err();
-        assert!(matches!(err, FeederError::Domain("edge_limit_exceeded", _)));
+        assert!(matches!(
+            err,
+            FeederError::Domain(ErrorCode::EdgeLimitExceeded, _)
+        ));
     }
 
     #[tokio::test]
@@ -4324,7 +4371,7 @@ mod tests {
         assert!(matches!(
             exec_res.outcomes[0],
             Outcome::Error {
-                code: "loading",
+                code: ErrorCode::Loading,
                 ..
             }
         ));
@@ -4340,7 +4387,7 @@ mod tests {
         assert!(matches!(
             exec_res.outcomes[0],
             Outcome::Error {
-                code: "desynchronized",
+                code: ErrorCode::Desynchronized,
                 ..
             }
         ));
@@ -4406,7 +4453,7 @@ mod tests {
             .await;
         assert!(matches!(
             single_err,
-            Err(FeederError::Domain("self_loop", _))
+            Err(FeederError::Domain(ErrorCode::SelfLoop, _))
         ));
 
         // Batch returns PartialFailure
@@ -4432,7 +4479,7 @@ mod tests {
             .unwrap();
         match batch_res {
             crate::service::FeederEventsResult::PartialFailure { failure, .. } => {
-                assert_eq!(failure.error.code, "self_loop");
+                assert_eq!(failure.error.code, ErrorCode::SelfLoop);
             }
             _ => panic!("expected partial failure for self-loop cut in batch"),
         }
@@ -4517,7 +4564,7 @@ mod tests {
                 [
                     Outcome::Changed { changed: true },
                     Outcome::Error {
-                        code: "self_loop",
+                        code: ErrorCode::SelfLoop,
                         ..
                     },
                     Outcome::Changed { changed: false },
