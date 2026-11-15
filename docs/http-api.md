@@ -1,6 +1,6 @@
 # HTTP API v1
 
-This document is the current HTTP API contract (v0.4.0; first published as the
+This document is the current HTTP API contract (v0.5.0; first published as the
 v0.1.0 preview). Every statement here is backed by
 an automated test (`crates/knotrel-server/tests/`) or is explicitly labeled a
 non-guarantee. A machine-readable standard definition is available in the
@@ -95,8 +95,9 @@ the response, and nothing is executed unless every step passes:
 | 2 | `Content-Type` is a JSON media type | 415 `invalid_request` |
 | 3 | Body is at most 1 MiB | 413 `invalid_request` |
 | 4 | Body is syntactically valid JSON | 400 `invalid_request` |
-| 5 | Shape: known `op`, required fields, no unknown or duplicate fields, valid node IDs (the whole batch) | 422 `invalid_request` |
-| 6 | Source-managed mode only: no operation is a mutation (`add_node`, `link`, `cut`) | 409 `direct_mutation_disabled` |
+| 5 | Shape: known `op`, required fields, no unknown or duplicate fields, valid node IDs (the whole batch). The five [lifecycle operations](#node-and-edge-lifecycle-opt-in) always parse, whatever the setting; `active` or `enabled` on a legacy operation is an unknown field | 422 `invalid_request` |
+| 5a | Lifecycle support off (`KNOTREL_TOPOLOGY_LIFECYCLE=false`): no operation is `set_node_active`, `set_edge_enabled`, `remove_node`, `node_state` or `edge_state` | 409 `topology_lifecycle_disabled` |
+| 6 | Source-managed mode only: no operation is a mutation (`add_node`, `link`, `cut`, `set_node_active`, `set_edge_enabled`, `remove_node`) | 409 `direct_mutation_disabled` |
 | 7 | Batch length is 1–1024 | 422 `invalid_batch_size` |
 | 8 | A graph job slot is available | 503 `busy` / `unavailable` |
 | 9 | Operations run in order under the graph lock | per-operation outcome |
@@ -105,7 +106,9 @@ Steps 2–7 never touch the graph, so a rejected request changes nothing. Step 8
 happens after parsing; `busy` means no operation was admitted. Because the mode
 check precedes the size check, a source-managed batch that contains a mutation
 returns 409 even when it exceeds 1024 operations, while an empty or oversized
-query-only batch returns 422 `invalid_batch_size`.
+query-only batch returns 422 `invalid_batch_size`. Step 5a rejects the whole
+request, including any legacy operations in the same batch; a malformed
+operation anywhere in the batch still returns 422 first.
 
 ## Single operations
 
@@ -122,6 +125,14 @@ does not make another media type JSON.
 | Insert undirected edge | `{"op":"link","source":"1","target":"2"}` | `{"result":"changed","changed":true}` |
 | Remove undirected edge | `{"op":"cut","source":"1","target":"2"}` | `{"result":"changed","changed":true}` |
 | Query connectivity | `{"op":"connected","source":"1","target":"2"}` | `{"result":"connected","connected":true}` |
+| Set node flag (lifecycle) | `{"op":"set_node_active","node":"2","active":false}` | `{"result":"changed","changed":true}` |
+| Set edge flag (lifecycle) | `{"op":"set_edge_enabled","source":"1","target":"2","enabled":false}` | `{"result":"changed","changed":true}` |
+| Remove node and incident edges (lifecycle) | `{"op":"remove_node","node":"2"}` | `{"result":"changed","changed":true}` |
+| Query node state (lifecycle) | `{"op":"node_state","node":"2"}` | `{"result":"node_state","registered":true,"active":false}` |
+| Query edge state (lifecycle) | `{"op":"edge_state","source":"1","target":"2"}` | `{"result":"edge_state","registered":true,"enabled":false,"effective":false}` |
+
+The five lifecycle operations require `KNOTREL_TOPOLOGY_LIFECYCLE=true`; see
+[Node and edge lifecycle](#node-and-edge-lifecycle-opt-in).
 
 Node IDs are strings of ASCII decimal digits representing `0` through
 `18446744073709551615`. Leading zeroes are accepted and normalized numerically.
@@ -142,11 +153,11 @@ Successful operations return 200. A graph error has this shape:
 | Status | Meaning / error code |
 | --- | --- |
 | 400 | Malformed JSON (`invalid_request`) |
-| 404 | Unknown query vertex (`unknown_node`) |
-| 409 | Mutation sent in source-managed mode (`direct_mutation_disabled`) |
+| 404 | Unknown query vertex, or unknown node of `set_node_active` / `set_edge_enabled` (`unknown_node`); unregistered edge of `set_edge_enabled` (`unknown_edge`) |
+| 409 | Mutation sent in source-managed mode (`direct_mutation_disabled`); lifecycle operation while lifecycle support is off (`topology_lifecycle_disabled`) |
 | 413 | Body exceeds 1 MiB (`invalid_request`) |
 | 415 | Missing/unsupported JSON content type (`invalid_request`) |
-| 422 | Invalid fields/IDs (`invalid_request`), self-loop (`self_loop`), batch size (`invalid_batch_size`), or graph capacity (`node_limit_exceeded`, `edge_limit_exceeded`) |
+| 422 | Invalid fields/IDs (`invalid_request`), self-loop (`self_loop`, also for `set_edge_enabled` and `edge_state`), batch size (`invalid_batch_size`), or graph capacity (`node_limit_exceeded`, `edge_limit_exceeded`) |
 | 503 | Graph job capacity exhausted (`busy`) or worker unavailable (`unavailable`) |
 
 Clients should branch on `code`, not human-readable message text. The message of
@@ -203,6 +214,9 @@ can compute the exact revision progression directly from the `results` array:
 
 Operations resulting in `changed: false` (idempotent duplicates or missing cuts),
 connectivity queries (`connected`), and domain errors never advance the revision.
+Lifecycle commands follow the same rule: one `changed: true` is one increment,
+whatever the number of incident edges a `set_node_active` or `remove_node`
+affects; `node_state` and `edge_state` never advance it.
 
 ### Mode rules
 
@@ -210,8 +224,103 @@ In standalone mode (`KNOTREL_MODE=standalone`), `/v1/batch` accepts arbitrary
 combinations of mutations and queries. In source-managed mode
 (`KNOTREL_MODE=source_managed`), direct client mutations are rejected with HTTP 409
 `direct_mutation_disabled`; `/v1/batch` is permitted only if every operation is a
-query (`connected`). This check runs before the batch size check (see
-[Request validation order](#request-validation-order)).
+query (`connected`, and with lifecycle support `node_state` and `edge_state`,
+which follow the same readiness rules as `connected`). This check runs before
+the batch size check (see [Request validation order](#request-validation-order)).
+
+## Node and edge lifecycle (opt-in)
+
+With `KNOTREL_TOPOLOGY_LIFECYCLE=true` the server keeps **registered
+topology** with one flag per node (`active`) and per edge (`enabled`), and
+answers connectivity over the **effective graph**: the active nodes and the
+edges that are enabled and whose two endpoints are both active. Flags describe
+intended state supplied by the client or source, not measured availability.
+The frozen contract is [topology-lifecycle.md](topology-lifecycle.md). With the
+default `false`, the server holds the plain graph as before, every response
+keeps its previous shape, and the five operations below are rejected with 409
+`topology_lifecycle_disabled` (validation step 5a).
+
+| Operation | Effect | `changed: false` when | Errors, in precedence order |
+| --- | --- | --- | --- |
+| `set_node_active` | Sets the node flag. Incident edges and their `enabled` flags are kept. | Flag already has that value | `unknown_node` (404) |
+| `set_edge_enabled` | Sets the edge flag, also while an endpoint is inactive. | Flag already has that value | `self_loop` (422); `unknown_node` (404, `source` before `target`); `unknown_edge` (404) |
+| `remove_node` | Removes the node and every incident registered edge, including disabled edges and edges to inactive neighbors. | Node not registered | none |
+| `node_state` | Query: `registered`, `active`. | — | none |
+| `edge_state` | Query: `registered`, `enabled`, `effective`. | — | `self_loop` (422) when `source == target` |
+
+All fields shown in the request examples above are required and no others are
+allowed. An absent node or edge in `node_state` or `edge_state` is not an
+error: it reports `registered: false` with `false` flags. Errors use the usual
+error envelope; in a batch they are per-item results and processing
+continues.
+
+Legacy operations keep their behavior on registered topology: `add_node` of a
+registered node is a no-op and does not reactivate it; `link` of a registered
+edge is a no-op and does not re-enable it; `link` registers missing endpoints
+active and the new edge enabled; `cut` removes the registered edge, effective
+or not. Reactivating a node restores exactly its incident edges that are
+enabled and whose other endpoint is active. After `remove_node`, a new
+`add_node` or `link` of the same ID creates a fresh active node with no edges;
+removed edges never return implicitly.
+
+**`connected`.** Both endpoints are first checked for registration (`source`,
+then `target`): an unregistered endpoint is 404 `unknown_node`, before any
+flag check. Only then is the answer `true` iff a path exists in the effective
+graph. An inactive endpoint gives `false`, including `connected(n, n)`; an
+active registered `n` gives `connected(n, n) = true`.
+
+**Counts and limits.** `node_count` and `edge_count` are registered counts,
+whatever the flags. `GET /v1/stats` and the import response add
+`active_node_count` (registered nodes whose flag is active),
+`enabled_edge_count` (registered edges whose flag is enabled, effective or
+not) and `effective_edge_count` (edges in the effective graph). These three
+fields are present only with lifecycle support. `max_nodes`, `max_edges` and
+`remaining_*` use registered counts: deactivating or disabling never frees
+capacity; only `remove_node` and `cut` do.
+
+**Revisions.** Each lifecycle command is one indivisible step under the graph
+lock; no query observes a partly deactivated or partly removed node. A command
+returning `changed: true` advances `state_version` by exactly one, also when
+connectivity does not change (for example disabling an edge whose endpoint is
+inactive). No-ops, queries and errors do not advance it. `generation` changes
+only on import publication.
+
+**Cost.** Deactivating or removing a node costs work proportional to its
+registered degree, and a removal can trigger a whole-graph engine rebuild
+while holding the graph lock (amortized; see
+[topology-lifecycle.md, section 5](topology-lifecycle.md#5-engines-complexity-and-storage)).
+None of these operations is logarithmic in general.
+
+### Import with lifecycle flags
+
+`POST /v1/feeder/import` accepts flags only with lifecycle support:
+
+```json
+{
+  "nodes": ["201", {"node": "202", "active": false}, "900"],
+  "edges": [
+    {"source": "201", "target": "202"},
+    {"source": "202", "target": "203", "enabled": false}
+  ]
+}
+```
+
+(other import fields omitted). A `nodes` entry is a node ID string (active) or
+an object `{"node", "active"}` with both members required. An `edges` entry
+accepts an optional `enabled` (default `true`). Edge endpoints missing from
+`nodes` are registered active. The import must carry the complete registered
+topology: every node and edge with its flags, including isolated nodes,
+inactive nodes and disabled edges. Repeated entries must agree; a node or edge
+repeated with a different flag is 422 `invalid_node` or `invalid_edge` (edges
+compare as unordered pairs). Legacy payloads are unchanged and mean all
+active, all enabled.
+
+With lifecycle support off, any node object or any `enabled` member rejects
+the import with 409 `topology_lifecycle_disabled`, even when the value is the
+default. The check runs in the payload phase, after JSON parsing and the
+`instance_id` and `graph_id` checks, before the candidate is built and before
+the graph lock is requested; `knotrel_imports_total` classifies it as
+`payload_rejected`.
 
 ## Concurrency and order
 
@@ -318,6 +427,11 @@ from response codes ([contract section 8](observability-contract.md#8-second-m62
 `knotrel_graph_nodes` and `knotrel_graph_edges` report the live graph's
 size without taking the graph lock or an admission permit, unlike
 `/v1/stats` ([contract section 10](observability-contract.md#10-third-m62-increment-graph-node-and-edge-gauges-implemented-unreleased)).
+With lifecycle support they are registered counts, and
+`knotrel_graph_active_nodes`, `knotrel_graph_enabled_edges` and
+`knotrel_graph_effective_edges` are published with them at the same
+boundaries; these three gauges exist only with lifecycle support
+([contract section 19](observability-contract.md#19-m10-node-and-edge-lifecycle-metrics)).
 The worker publishes them under the graph lock when a state-changing job's
 graph work returns or an import is published, so they keep the previous
 values while a batch, event request or import is in flight. They always hold
@@ -346,10 +460,13 @@ parsing and candidate construction, so they do not add up to HTTP latency.
 
 `knotrel_graph_operations_total{op,outcome}` counts each operation from
 `/v1/operations` and each `/v1/batch` entry once, when the worker has
-applied it. `op` is `add_node`, `link`, `cut` or `connected`. `outcome` is
-`changed`, `unchanged` or `error` for mutations and `true`, `false` or
-`error` for `connected`. A batch counts every entry, including entries after
-a domain error.
+applied it. `op` is `add_node`, `link`, `cut` or `connected`, and with
+lifecycle support also `set_node_active`, `set_edge_enabled`, `remove_node`,
+`node_state` and `edge_state`. `outcome` is `changed`, `unchanged` or `error`
+for mutations, `true`, `false` or `error` for `connected`, and `registered`,
+`unregistered` or `error` for `node_state` and `edge_state`. Series exist only
+for operations the mode can execute (no mutations in source-managed mode). A
+batch counts every entry, including entries after a domain error.
 `knotrel_feeder_events_total{result}` (source-managed mode only) counts each
 event the event loop evaluates:
 - `changed`: applied and changed the graph;
@@ -375,7 +492,9 @@ already counted and adds none for the interrupted item
 each session, heartbeat, events, gap or barrier request the service rejects,
 once, under the underlying error code. A partial event failure counts its
 underlying code, not `partial_failure`, and any graph-domain event error
-counts as `event_failed`. The counter unit is a request, unlike
+counts as `event_failed`. A lifecycle event refused because lifecycle
+support is off counts as `topology_lifecycle_disabled`. The counter unit is a
+request, unlike
 `knotrel_feeder_events_total{result="rejected"}`, which counts events. It
 does not count admission refusals (including the `503 import_in_progress`
 returned when feeder capacity is exhausted), timeouts, cancellations,
@@ -503,6 +622,7 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_MAX_IMPORT_BODY_BYTES` | ASCII decimal integer from 1 through 1073741824 | `67108864` (64 MiB) |
 | `KNOTREL_DEDUP_WINDOW_SIZE` | ASCII decimal integer from 1 through 1000000 | `10000` |
 | `KNOTREL_METRICS_ENABLED` | Exactly `true` or `false`; `true` serves [`GET /metrics`](#metrics-opt-in) | `false` |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | Exactly `true` or `false`; `true` enables [node and edge lifecycle](#node-and-edge-lifecycle-opt-in) support | `false` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
 | `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
 | `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |
@@ -549,7 +669,9 @@ size (1 MiB) and batch size (1–1024) are fixed in this version.
 ```
 
 The endpoint does not acquire the graph mutex or an admission permit, and
-contains no graph data. It does not report the lifecycle phase; use `/ready`. Engine and
+contains no graph data. It does not report the lifecycle phase; use `/ready`.
+With `KNOTREL_TOPOLOGY_LIFECYCLE=true` it adds `"topology_lifecycle": true`;
+the field is absent when lifecycle support is off. Engine and
 limit fields describe the actual service instance, including embedded routers.
 The default response has `engine: "compact-bfs"`, `experimental: false` and
 `max_pending_jobs: 32`.
@@ -619,6 +741,11 @@ share one instance. No hierarchy or typed-node model is introduced.
 }
 ```
 
+With lifecycle support the object also contains `active_node_count`,
+`enabled_edge_count` and `effective_edge_count`, captured under the same lock;
+`node_count` and `edge_count` are then registered counts (see
+[Node and edge lifecycle](#node-and-edge-lifecycle-opt-in)).
+
 Counts are integers; each maximum and remaining capacity is an integer or
 `null` (unlimited). The two limits are repeated to make this snapshot usable
 without a second request. Zero capacity is reported as zero, not null.
@@ -639,7 +766,8 @@ lock is released. Responses carry `Cache-Control: no-store`, including errors.
   are not counted. Cloned routers share state and revision; distinct instances
   have independent revisions.
 - Each operation returning `changed: true` increments it once. A link creating
-  two endpoints still increments once. A batch increments once per effective
+  two endpoints still increments once, and so does a `set_node_active` or
+  `remove_node` affecting many incident edges. A batch increments once per effective
   operation, not once per request. Removing and then reinserting an edge advances
   it twice even if the final topology equals the original topology.
 - Duplicates, missing-edge cuts, queries, rejected operations, malformed requests
@@ -796,6 +924,27 @@ Each event specifies exactly one graph operation or progress marker:
 - `cut`: removes an undirected edge between `source` and `target`.
 - `progress`: non-mutating source progress checkpoint (`{"op": "progress"}`).
 
+With lifecycle support, three further operations are accepted. Every event
+keeps the envelope fields above:
+
+| `op` | Required | Forbidden |
+| --- | --- | --- |
+| `set_node_active` | `node`, `active` | `source`, `target`, `enabled` |
+| `set_edge_enabled` | `source`, `target`, `enabled` | `node`, `active` |
+| `remove_node` | `node` | `source`, `target`, `active`, `enabled` |
+
+`add_node`, `link`, `cut` and `progress` must not carry `active` or `enabled`:
+422 `invalid_request`, whatever the setting. With lifecycle support off, an
+event using one of the three new operations rejects the whole request with 409
+`topology_lifecycle_disabled` before any event is applied. The check runs in
+the per-event prevalidation under the graph lock, after the session,
+generation and source checks, in event order together with `invalid_request`
+(the first failing event decides). Domain errors of lifecycle events
+(`unknown_node`, `unknown_edge`, `self_loop`) follow invariant 6 below: 422
+with the domain code for a single-event request, `partial_failure` with outer
+code `event_failed` for a multi-event request. `remove_node` of an absent node
+is an applied no-op.
+
 #### Invariants and validation
 
 1. **Standalone rejection:** Standalone servers reject feeder endpoints with HTTP 409 `mode_conflict`.
@@ -803,11 +952,11 @@ Each event specifies exactly one graph operation or progress marker:
 3. **Source lineage binding:** `source_id` and `source_epoch` must match the baseline established at import. A `source_id` mismatch returns 409 `source_mismatch` without changing state; a `source_epoch` mismatch returns 409 `source_epoch_mismatch` and transitions the service to `desynchronized`.
 4. **Sequence continuity and gaps:** Batch events must be contiguously ordered ($D_i = D_{prev} + 1$). The first event must satisfy $D_{prev} == D_{applied}$. A future sequence returns HTTP 409 `out_of_order_sequence` without changing state; a wrong `prev_source_position` returns 409 `source_predecessor_mismatch` and transitions the service to `desynchronized`.
 5. **Bounded deduplication:** A dual-index ring buffer (default 10,000 entries, configurable via `KNOTREL_DEDUP_WINDOW_SIZE` from 1 to 1,000,000) provides deterministic retry protection:
-   - **Exact duplicate retry:** Resending a retained sequence with identical `event_id` and canonical payload returns HTTP 200 `already_applied` (`result: "duplicate"`). Local revision and topology are untouched.
+   - **Exact duplicate retry:** Resending a retained sequence with identical `event_id` and canonical payload returns HTTP 200 `already_applied` (`result: "duplicate"`). Local revision and topology are untouched. The canonical payload is the operation type, the normalized endpoints and, for lifecycle events, the flag value; a retry that changes the operation or the flag is a conflicting duplicate.
    - **Conflicting duplicate:** Resending a retained sequence with different payload or `event_id`, or reusing an active `event_id` at a new sequence, returns HTTP 409 `conflicting_duplicate` and permanently transitions sync status to `desynchronized`.
    - **Evicted duplicate:** Retrying an event evicted from the window ($D \le D_{applied} - W$) returns HTTP 409 `unverifiable_duplicate`. State is preserved without desynchronization.
    - **Evicted event ID reuse:** An event ID evicted from the window can be reused fresh at $D_{applied} + 1$.
-6. **Fail-fast batch semantics:** Processing stops at the first failing event (e.g. self-loop or capacity limit 422, or a sequence/duplicate 409). Feeder events have no query operation and no 404 outcome. Whole-request checks (fencing, generation, source lineage, and every event's shape and bounds) run before any event is applied. The already committed prefix remains applied in memory (not durably); a multi-event partial failure reports `failed_batch_index`, `failed_delivery_sequence`, `failed_event_id`, and current applied frontier. Uncommitted events are not recorded in the deduplication window and may be retried at $D_{applied} + 1$ with corrected payload. The full failure matrix, including timeout and capacity outcomes, is in `integration-contract.md` §9.3.
+6. **Fail-fast batch semantics:** Processing stops at the first failing event (e.g. self-loop, capacity limit, `unknown_node` or `unknown_edge` 422, or a sequence/duplicate 409). Feeder events have no query operation and no 404 outcome. Whole-request checks (fencing, generation, source lineage, and every event's shape and bounds) run before any event is applied. The already committed prefix remains applied in memory (not durably); a multi-event partial failure reports `failed_batch_index`, `failed_delivery_sequence`, `failed_event_id`, and current applied frontier. Uncommitted events are not recorded in the deduplication window and may be retried at $D_{applied} + 1$ with corrected payload. The full failure matrix, including timeout and capacity outcomes, is in `integration-contract.md` §9.3.
 7. **Sequence boundary behavior and checked arithmetic:** Delivery sequences are represented as unsigned 64-bit integers (`u64`). When $D_{applied} = \text{u64::MAX}$, checked arithmetic (`checked_add(1)`) prevents integer overflow panics. Because the wire protocol bounds delivery sequence to `u64`, no wire event can supply a sequence strictly greater than `u64::MAX` ($2^{64}$ is unrepresentable). Consequently, valid retained retries of sequence `u64::MAX` within the deduplication window return HTTP 200 `already_applied` (`result: "duplicate"`), while wrapped sequences ($D = 0$) or older evicted sequences are rejected with HTTP 409 `unverifiable_duplicate` without state mutation. The internal `SequenceExhausted` error variant acts as a defensive guard for checked sequence increments and is unreachable over the wire without protocol extensions beyond `u64`.
 8. **No-op & progress tracking:** No-op mutations (e.g. linking existing edges) and `progress` events advance `applied_source_position` and delivery sequence without incrementing `state_version`.
 9. **Desynchronized state event rejection:** If the graph transitions to `desynchronized` (due to declared gap, conflicting duplicate, predecessor mismatch, or source epoch mismatch), subsequent event submissions are rejected under lock with HTTP 409 `graph_desynchronized` without mutating topology, revision, delivery sequence, source position, or deduplication state. Diagnostic `/stats` remains available. Recovery requires an atomic rebuild via `POST /v1/feeder/import` (mode `replace`).
@@ -908,7 +1057,7 @@ Operators and feeder processes monitor Knotrel instances through four primary HT
 1. **Liveness (`GET /health`):** Returns HTTP 200 `OK` as long as the HTTP listener and background worker threads are running. Liveness probes should not restart instances merely because synchronization is in progress.
 2. **Readiness (`GET /ready`):** Returns HTTP 200 when `status == "ready"` (or standalone server is initialized). Returns HTTP 503 during `uninitialized`, `loading`, `catching_up`, `stale`, `desynchronized`, `draining`, or `unavailable`. Load balancers and service meshes must direct query traffic only to ready instances.
 3. **Instance Discovery (`GET /v1/info`):** Returns `instance_id`, `mode`, and server version. Feeders poll `/v1/info` to discover ephemeral server instance IDs and detect process restarts.
-4. **Live Statistics (`GET /v1/stats`):** Returns live topology cardinality (`node_count`, `edge_count`), graph limits, and current synchronization metadata (`generation`, `state_version`, `source_position`, `sync_status`). The `ETag` header exposes the exact `<generation>.<state_version>.<percent_encoded_source_position>` token required for optimistic concurrency on replacement imports (`mode: "replace"`).
+4. **Live Statistics (`GET /v1/stats`):** Returns live topology cardinality (`node_count`, `edge_count`, and with lifecycle support `active_node_count`, `enabled_edge_count`, `effective_edge_count`), graph limits, and current synchronization metadata (`generation`, `state_version`, `source_position`, `sync_status`). The `ETag` header exposes the exact `<generation>.<state_version>.<percent_encoded_source_position>` token required for optimistic concurrency on replacement imports (`mode: "replace"`).
 
 ### Standard synchronization lifecycle
 

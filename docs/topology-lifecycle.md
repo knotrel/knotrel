@@ -255,7 +255,9 @@ rejects the whole request with 409 `topology_lifecycle_disabled`. The check
 runs in the existing per-event prevalidation slot, under the graph lock after
 session, generation and source checks and before any event is applied, in
 event order together with `invalid_request` (the first failing event
-decides). It is counted in `knotrel_feeder_rejections_total` with
+decides). Within one event, a known lifecycle `op` without lifecycle support
+is rejected with 409 before its fields are checked; an unknown `op` is still
+422 `invalid_request`. It is counted in `knotrel_feeder_rejections_total` with
 `code="topology_lifecycle_disabled"`, a new value of that closed label set.
 
 The canonical operation used for duplicate detection includes the operation
@@ -306,8 +308,8 @@ No event can resurrect removed topology except a new in-order `add_node` or
   `error`), `node_state` and `edge_state` (outcomes `registered`,
   `unregistered`, `error`). Their series exist only with lifecycle support
   and, as for other mutations, only in standalone mode for the mutations.
-- `node_state` cannot fail, so its `error` series exists for uniformity but
-  never increments.
+- `node_state` and `remove_node` cannot fail, so their `error` series exist
+  for uniformity but never increment.
 - The three new counts are maintained in `O(1)` per mutation by the core and
   read only when metrics are enabled, at the existing per-job publication
   boundary (observability contract section 10). With metrics disabled, or

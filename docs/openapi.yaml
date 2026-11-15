@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Knotrel HTTP API
-  version: 0.1.0-preview
+  version: 0.5.0
   description: |
     REST API for Knotrel, an in-memory dynamic graph connectivity service.
 
@@ -187,6 +187,10 @@ paths:
       description: |
         Executes a single graph mutation (`add_node`, `link`, `cut`) or query (`connected`)
         under exclusive graph lock. Request body must be valid JSON within 1 MiB.
+        With `KNOTREL_TOPOLOGY_LIFECYCLE=true`, the lifecycle mutations `set_node_active`,
+        `set_edge_enabled` and `remove_node` and the queries `node_state` and `edge_state`
+        are also executed; without it they always parse but are rejected with 409
+        `topology_lifecycle_disabled` before execution.
       tags:
         - Operations
       requestBody:
@@ -219,6 +223,35 @@ paths:
                   op: connected
                   source: "1"
                   target: "2"
+              set_node_active:
+                summary: Set a node flag (lifecycle support only)
+                value:
+                  op: set_node_active
+                  node: "2"
+                  active: false
+              set_edge_enabled:
+                summary: Set an edge flag (lifecycle support only)
+                value:
+                  op: set_edge_enabled
+                  source: "1"
+                  target: "2"
+                  enabled: false
+              remove_node:
+                summary: Remove a node and its incident edges (lifecycle support only)
+                value:
+                  op: remove_node
+                  node: "2"
+              node_state:
+                summary: Query a node's registration and flag (lifecycle support only)
+                value:
+                  op: node_state
+                  node: "2"
+              edge_state:
+                summary: Query an edge's registration and flags (lifecycle support only)
+                value:
+                  op: edge_state
+                  source: "1"
+                  target: "2"
       responses:
         '200':
           description: Operation completed successfully
@@ -228,6 +261,8 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/ChangedOutcome'
                   - $ref: '#/components/schemas/ConnectedOutcome'
+                  - $ref: '#/components/schemas/NodeStateOutcome'
+                  - $ref: '#/components/schemas/EdgeStateOutcome'
               examples:
                 mutation_changed:
                   summary: Mutation applied (topology changed)
@@ -249,6 +284,19 @@ paths:
                   value:
                     result: connected
                     connected: false
+                node_state:
+                  summary: Registered inactive node
+                  value:
+                    result: node_state
+                    registered: true
+                    active: false
+                edge_state:
+                  summary: Registered enabled edge that is not effective
+                  value:
+                    result: edge_state
+                    registered: true
+                    enabled: true
+                    effective: false
         '400':
           description: Malformed JSON syntax
           content:
@@ -260,15 +308,47 @@ paths:
                 code: invalid_request
                 message: "request body is not valid JSON"
         '404':
-          description: Unknown query vertex
+          description: |
+            Unknown query vertex, or unknown node of `set_node_active` / `set_edge_enabled`
+            (`unknown_node`); unregistered edge of `set_edge_enabled` (`unknown_edge`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
-              example:
-                result: error
-                code: unknown_node
-                message: "unknown node: 3"
+              examples:
+                unknown_node:
+                  summary: Unknown vertex
+                  value:
+                    result: error
+                    code: unknown_node
+                    message: "unknown node: 3"
+                unknown_edge:
+                  summary: Edge not registered (lifecycle support only)
+                  value:
+                    result: error
+                    code: unknown_edge
+                    message: "unknown edge: 1-3"
+        '409':
+          description: |
+            Mutation sent in source-managed mode (`direct_mutation_disabled`), or lifecycle
+            operation while lifecycle support is off (`topology_lifecycle_disabled`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+              examples:
+                direct_mutation_disabled:
+                  summary: Source-managed mode
+                  value:
+                    result: error
+                    code: direct_mutation_disabled
+                    message: "direct graph mutations are disabled in source-managed mode; use feeder endpoints"
+                topology_lifecycle_disabled:
+                  summary: Lifecycle support is off
+                  value:
+                    result: error
+                    code: topology_lifecycle_disabled
+                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true"
         '413':
           description: Request body exceeds 1 MiB limit
           content:
@@ -356,7 +436,9 @@ paths:
         Version headers on a 200 response are captured under the same lock acquisition and
         describe the state after the whole batch. Error responses carry no version headers.
         In source-managed mode, a batch containing any mutation is rejected with 409 before
-        the batch size is checked.
+        the batch size is checked. Without lifecycle support, a batch containing any
+        lifecycle operation is rejected with 409 `topology_lifecycle_disabled` before the
+        mode and size checks.
       tags:
         - Operations
       requestBody:
@@ -437,15 +519,27 @@ paths:
                 code: invalid_request
                 message: "Expected request with `Content-Type: application/json`"
         '409':
-          description: Source-managed mode and the batch contains a mutation
+          description: |
+            Source-managed mode and the batch contains a mutation (`direct_mutation_disabled`),
+            or lifecycle support is off and the batch contains a lifecycle operation
+            (`topology_lifecycle_disabled`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
-              example:
-                result: error
-                code: direct_mutation_disabled
-                message: "direct graph mutations are disabled in source-managed mode; use feeder endpoints"
+              examples:
+                direct_mutation_disabled:
+                  summary: Source-managed mode
+                  value:
+                    result: error
+                    code: direct_mutation_disabled
+                    message: "direct graph mutations are disabled in source-managed mode; use feeder endpoints"
+                topology_lifecycle_disabled:
+                  summary: Lifecycle support is off
+                  value:
+                    result: error
+                    code: topology_lifecycle_disabled
+                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true"
         '422':
           description: Invalid batch size (not 1–1024) or invalid operation shape in batch
           content:
@@ -609,12 +703,101 @@ components:
         target:
           $ref: '#/components/schemas/NodeId'
 
+    SetNodeActiveOperation:
+      type: object
+      description: Lifecycle support only. Sets the node's `active` flag.
+      required:
+        - op
+        - node
+        - active
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [set_node_active]
+        node:
+          $ref: '#/components/schemas/NodeId'
+        active:
+          type: boolean
+
+    SetEdgeEnabledOperation:
+      type: object
+      description: Lifecycle support only. Sets the registered edge's `enabled` flag.
+      required:
+        - op
+        - source
+        - target
+        - enabled
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [set_edge_enabled]
+        source:
+          $ref: '#/components/schemas/NodeId'
+        target:
+          $ref: '#/components/schemas/NodeId'
+        enabled:
+          type: boolean
+
+    RemoveNodeOperation:
+      type: object
+      description: Lifecycle support only. Removes the node and every incident registered edge.
+      required:
+        - op
+        - node
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [remove_node]
+        node:
+          $ref: '#/components/schemas/NodeId'
+
+    NodeStateOperation:
+      type: object
+      description: Lifecycle support only. Query; an absent node is not an error.
+      required:
+        - op
+        - node
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [node_state]
+        node:
+          $ref: '#/components/schemas/NodeId'
+
+    EdgeStateOperation:
+      type: object
+      description: |
+        Lifecycle support only. Query; an absent edge is not an error. `source == target`
+        returns `self_loop`.
+      required:
+        - op
+        - source
+        - target
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [edge_state]
+        source:
+          $ref: '#/components/schemas/NodeId'
+        target:
+          $ref: '#/components/schemas/NodeId'
+
     Operation:
       oneOf:
         - $ref: '#/components/schemas/AddNodeOperation'
         - $ref: '#/components/schemas/LinkOperation'
         - $ref: '#/components/schemas/CutOperation'
         - $ref: '#/components/schemas/ConnectedOperation'
+        - $ref: '#/components/schemas/SetNodeActiveOperation'
+        - $ref: '#/components/schemas/SetEdgeEnabledOperation'
+        - $ref: '#/components/schemas/RemoveNodeOperation'
+        - $ref: '#/components/schemas/NodeStateOperation'
+        - $ref: '#/components/schemas/EdgeStateOperation'
       discriminator:
         propertyName: op
 
@@ -644,6 +827,95 @@ components:
           type: boolean
           description: True if both vertices belong to the same connected component.
 
+    NodeStateOutcome:
+      type: object
+      description: |
+        Result of `node_state`. An absent node reports `registered: false` and
+        `active: false`.
+      required:
+        - result
+        - registered
+        - active
+      properties:
+        result:
+          type: string
+          enum: [node_state]
+        registered:
+          type: boolean
+        active:
+          type: boolean
+
+    EdgeStateOutcome:
+      type: object
+      description: |
+        Result of `edge_state`. `effective` means enabled with both endpoints active. An
+        absent edge reports `registered: false` and `false` flags.
+      required:
+        - result
+        - registered
+        - enabled
+        - effective
+      properties:
+        result:
+          type: string
+          enum: [edge_state]
+        registered:
+          type: boolean
+        enabled:
+          type: boolean
+        effective:
+          type: boolean
+
+    ErrorCode:
+      type: string
+      description: Machine-readable error code. Clients should branch on it, not on the message.
+      enum:
+        - barrier_not_reached
+        - barrier_position_mismatch
+        - busy
+        - conflicting_duplicate
+        - desynchronized
+        - direct_mutation_disabled
+        - edge_limit_exceeded
+        - event_failed
+        - fenced_feeder_session
+        - generation_exhausted
+        - graph_already_initialized
+        - graph_desynchronized
+        - graph_uninitialized
+        - import_in_progress
+        - invalid_batch_size
+        - invalid_edge
+        - invalid_graph_id
+        - invalid_instance_id
+        - invalid_lease_duration
+        - invalid_node
+        - invalid_request
+        - lease_expired
+        - loading
+        - mode_conflict
+        - node_limit_exceeded
+        - out_of_order_sequence
+        - payload_too_large
+        - precondition_failed
+        - request_timeout
+        - self_loop
+        - sequence_exhausted
+        - session_required
+        - shutting_down
+        - source_epoch_mismatch
+        - source_mismatch
+        - source_predecessor_mismatch
+        - stale_generation
+        - stale_instance_id
+        - superseded_barrier
+        - topology_lifecycle_disabled
+        - unavailable
+        - uninitialized
+        - unknown_edge
+        - unknown_node
+        - unverifiable_duplicate
+
     ErrorOutcome:
       type: object
       required:
@@ -655,9 +927,7 @@ components:
           type: string
           enum: [error]
         code:
-          type: string
-          description: Machine-readable error code.
-          example: unknown_node
+          $ref: '#/components/schemas/ErrorCode'
         message:
           type: string
           description: Human-readable error description.
@@ -667,6 +937,8 @@ components:
       oneOf:
         - $ref: '#/components/schemas/ChangedOutcome'
         - $ref: '#/components/schemas/ConnectedOutcome'
+        - $ref: '#/components/schemas/NodeStateOutcome'
+        - $ref: '#/components/schemas/EdgeStateOutcome'
         - $ref: '#/components/schemas/ErrorOutcome'
       discriminator:
         propertyName: result
@@ -754,6 +1026,12 @@ components:
         max_edges:
           type: [integer, "null"]
           description: Maximum edge capacity bound, or null if unlimited.
+        topology_lifecycle:
+          type: boolean
+          const: true
+          description: |
+            Present, and `true`, only when node and edge lifecycle support is enabled
+            (`KNOTREL_TOPOLOGY_LIFECYCLE=true`); absent otherwise.
 
     GraphSnapshot:
       type: object
@@ -769,11 +1047,17 @@ components:
         node_count:
           type: integer
           minimum: 0
-          description: Current count of registered vertices.
+          description: Current count of registered vertices, active or inactive.
         edge_count:
           type: integer
           minimum: 0
-          description: Current count of undirected edges.
+          description: Current count of registered undirected edges, enabled or disabled.
+        active_node_count:
+          $ref: '#/components/schemas/ActiveNodeCount'
+        enabled_edge_count:
+          $ref: '#/components/schemas/EnabledEdgeCount'
+        effective_edge_count:
+          $ref: '#/components/schemas/EffectiveEdgeCount'
         max_nodes:
           type: [integer, "null"]
           description: Configured node limit ceiling, or null if unlimited.
@@ -789,3 +1073,204 @@ components:
         state_version:
           type: string
           description: Decimal string monotonic version counter incremented on effective mutations.
+
+    ActiveNodeCount:
+      type: integer
+      minimum: 0
+      description: Lifecycle support only. Registered nodes whose flag is active.
+
+    EnabledEdgeCount:
+      type: integer
+      minimum: 0
+      description: Lifecycle support only. Registered edges whose flag is enabled, effective or not.
+
+    EffectiveEdgeCount:
+      type: integer
+      minimum: 0
+      description: Lifecycle support only. Edges that are enabled and whose endpoints are both active.
+
+    # Feeder payloads. The feeder routes (`/v1/feeder/*`) are specified in http-api.md and
+    # integration-contract.md; the schemas below describe the lifecycle-relevant payloads.
+
+    ImportNode:
+      description: |
+        One `nodes` entry of `POST /v1/feeder/import`: a node ID string (active), or an
+        object with both members required. The object form requires lifecycle support even
+        when `active` is `true`; otherwise the import is rejected with 409
+        `topology_lifecycle_disabled`.
+      oneOf:
+        - $ref: '#/components/schemas/NodeId'
+        - type: object
+          required:
+            - node
+            - active
+          additionalProperties: false
+          properties:
+            node:
+              $ref: '#/components/schemas/NodeId'
+            active:
+              type: boolean
+
+    ImportEdge:
+      type: object
+      description: |
+        One `edges` entry of `POST /v1/feeder/import`. Missing endpoints are registered
+        active. `enabled` (default `true`) requires lifecycle support even when `true`.
+      required:
+        - source
+        - target
+      additionalProperties: false
+      properties:
+        source:
+          $ref: '#/components/schemas/NodeId'
+        target:
+          $ref: '#/components/schemas/NodeId'
+        enabled:
+          type: boolean
+          default: true
+
+    ImportRequest:
+      type: object
+      description: |
+        Body of `POST /v1/feeder/import`. It must carry the complete registered topology,
+        including isolated and inactive nodes and disabled edges. Repeated entries must
+        agree; a conflicting flag is 422 `invalid_node` or `invalid_edge`.
+      required:
+        - mode
+        - instance_id
+        - graph_id
+        - source_id
+        - source_epoch
+        - source_position
+        - feeder_session_id
+        - feeder_epoch
+        - nodes
+        - edges
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [create_only, replace]
+        instance_id:
+          type: string
+        graph_id:
+          type: string
+          const: default
+        source_id:
+          type: string
+        source_epoch:
+          type: string
+        source_position:
+          type: string
+        feeder_session_id:
+          type: string
+        feeder_epoch:
+          type: integer
+          minimum: 0
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportEdge'
+
+    ImportResponse:
+      type: object
+      description: Successful import publication (`201 Created`).
+      required:
+        - result
+        - instance_id
+        - graph_id
+        - generation
+        - state_version
+        - node_count
+        - edge_count
+        - source_position
+        - status
+      properties:
+        result:
+          type: string
+          enum: [published]
+        instance_id:
+          type: string
+        graph_id:
+          type: string
+          const: default
+        generation:
+          type: integer
+          minimum: 1
+        state_version:
+          type: string
+          pattern: '^[0-9]+$'
+        node_count:
+          type: integer
+          minimum: 0
+          description: Registered nodes.
+        edge_count:
+          type: integer
+          minimum: 0
+          description: Registered edges.
+        active_node_count:
+          $ref: '#/components/schemas/ActiveNodeCount'
+        enabled_edge_count:
+          $ref: '#/components/schemas/EnabledEdgeCount'
+        effective_edge_count:
+          $ref: '#/components/schemas/EffectiveEdgeCount'
+        source_position:
+          type: string
+        status:
+          type: string
+          enum: [uninitialized, loading, catching_up, ready, stale, desynchronized]
+
+    FeederEvent:
+      type: object
+      description: |
+        One event of `POST /v1/feeder/events`. Required and forbidden operands by `op`:
+        `add_node` needs `node`; `link` and `cut` need `source` and `target`; `progress`
+        has no operand; `set_node_active` needs `node` and `active`; `set_edge_enabled`
+        needs `source`, `target` and `enabled`; `remove_node` needs `node`. Any other
+        operand is forbidden (422 `invalid_request`), so `active` and `enabled` are
+        rejected on `add_node`, `link`, `cut` and `progress` whatever the setting. The three
+        lifecycle operations require lifecycle support; otherwise the whole request is
+        rejected with 409 `topology_lifecycle_disabled`.
+      required:
+        - event_id
+        - delivery_sequence
+        - prev_delivery_sequence
+        - source_position
+        - prev_source_position
+        - op
+      additionalProperties: false
+      properties:
+        event_id:
+          type: string
+          description: At most 64 bytes of UTF-8.
+        delivery_sequence:
+          type: integer
+          minimum: 0
+        prev_delivery_sequence:
+          type: integer
+          minimum: 0
+        source_position:
+          type: string
+          description: At most 256 bytes of UTF-8.
+        prev_source_position:
+          type: string
+          description: At most 256 bytes of UTF-8.
+        op:
+          type: string
+          enum: [add_node, link, cut, progress, set_node_active, set_edge_enabled, remove_node]
+        node:
+          $ref: '#/components/schemas/NodeId'
+        source:
+          $ref: '#/components/schemas/NodeId'
+        target:
+          $ref: '#/components/schemas/NodeId'
+        active:
+          type: boolean
+          description: Required on `set_node_active`; forbidden on every other operation.
+        enabled:
+          type: boolean
+          description: Required on `set_edge_enabled`; forbidden on every other operation.

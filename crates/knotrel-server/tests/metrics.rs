@@ -3475,7 +3475,9 @@ async fn series_count_is_constant_under_sustained_churn() {
         (response.status(), etag)
     }
 
-    const CALCULATED_MAX: usize = 1834;
+    // Source-managed maximum without lifecycle support (observability
+    // contract section 4); 1835 since v0.5.0 added `topology_lifecycle_disabled`.
+    const CALCULATED_MAX: usize = 1835;
     let app = router_with_config(graph_counts::source_managed());
     let instance = graph_counts::instance_id(&app).await;
     let mut epoch = 0_u64;
