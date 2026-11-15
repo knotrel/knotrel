@@ -12,7 +12,9 @@ publish = true
 
 [workspace.dependencies]
 knotrel-core = { path = "crates/knotrel-core", version = "0.4.0" }
-axum = "0.8.9"
+# Default features without "tower-log": the server always installs a tracing
+# subscriber, so the `log` fallback in every tracing macro would be dead code.
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "service"] }
 serde = { version = "1", features = ["derive"] }
