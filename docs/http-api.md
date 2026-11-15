@@ -1,6 +1,6 @@
 # HTTP API v1
 
-This document is the current HTTP API contract (v0.3.0; first published as the
+This document is the current HTTP API contract (v0.4.0; first published as the
 v0.1.0 preview). Every statement here is backed by
 an automated test (`crates/knotrel-server/tests/`) or is explicitly labeled a
 non-guarantee. A machine-readable standard definition is available in the
@@ -515,7 +515,10 @@ Unknown variables in the reserved `KNOTREL_` namespace, empty or non-Unicode
 values, unsupported engines and invalid addresses/limits fail startup. Values
 are not trimmed; engine names are case-sensitive. Unrelated environment
 variables are ignored by this loader. `RUST_LOG` is handled separately by the
-logging subscriber (falling back to `info` if its filter is missing or invalid).
+logging subscriber (falling back to `info` if its filter is missing or invalid),
+and `LOG_FORMAT=json` selects one JSON object per log line. Log fields, request
+correlation and redaction are described in the
+[observability contract, section 17](observability-contract.md#17-m63-structured-logs-implemented-unreleased).
 No configuration file or implicit engine fallback is used.
 
 `compact-bfs` uses the existing compact-adjacency `Graph`. `ett` opts into
