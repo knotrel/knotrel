@@ -21,6 +21,7 @@
 
 mod api;
 mod configuration;
+mod graph;
 mod lifecycle;
 mod logging;
 mod metrics;
@@ -57,7 +58,11 @@ const MAX_BATCH_OPERATIONS: usize = 1024;
 /// callers own their listener. A request that takes longer than the default
 /// request timeout receives HTTP 503. See `docs/http-api.md` for retry semantics.
 pub fn router(graph: knotrel_core::Graph) -> axum::Router {
-    build_router(graph.into(), ServerConfig::default(), Lifecycle::ready())
+    build_router(
+        knotrel_core::ConnectivityGraph::from(graph).into(),
+        ServerConfig::default(),
+        Lifecycle::ready(),
+    )
 }
 
 /// Builds the HTTP API around an empty graph using validated startup settings.
@@ -76,15 +81,20 @@ pub fn router_with_config(config: ServerConfig) -> axum::Router {
 /// Like [`router_with_config`], but readiness and shutdown rejection follow
 /// the supplied [`Lifecycle`], which [`serve()`] drives.
 pub fn router_with_lifecycle(config: ServerConfig, lifecycle: Lifecycle) -> axum::Router {
-    build_router(
-        knotrel_core::ConnectivityGraph::with_limits(config.engine(), config.graph_limits()),
-        config,
-        lifecycle,
+    build_router(empty_graph(&config), config, lifecycle)
+}
+
+/// An empty graph for the configured engine, limits and lifecycle support.
+fn empty_graph(config: &ServerConfig) -> graph::ServiceGraph {
+    graph::ServiceGraph::empty(
+        config.engine(),
+        config.graph_limits(),
+        config.topology_lifecycle(),
     )
 }
 
 fn build_router(
-    graph: knotrel_core::ConnectivityGraph,
+    graph: graph::ServiceGraph,
     config: ServerConfig,
     lifecycle: Lifecycle,
 ) -> axum::Router {
@@ -102,8 +112,7 @@ pub fn router_with_seeded_version(
     lifecycle: Lifecycle,
     version_str: &str,
 ) -> axum::Router {
-    let graph =
-        knotrel_core::ConnectivityGraph::with_limits(config.engine(), config.graph_limits());
+    let graph = empty_graph(&config);
     let service =
         service::Service::with_config(graph, config.max_pending_jobs(), lifecycle.clone(), &config);
     service.seed_version_for_test(version_str);
@@ -120,8 +129,7 @@ pub fn router_with_seeded_state(
     version_str: Option<&str>,
     delivery_sequence: Option<u64>,
 ) -> axum::Router {
-    let graph =
-        knotrel_core::ConnectivityGraph::with_limits(config.engine(), config.graph_limits());
+    let graph = empty_graph(&config);
     let service =
         service::Service::with_config(graph, config.max_pending_jobs(), lifecycle.clone(), &config);
     if let Some(v) = version_str {
@@ -243,6 +251,9 @@ pub(crate) struct ServerInfo {
     mode: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     instance_id: Option<String>,
+    /// Serialized only when node and edge lifecycle support is enabled.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    topology_lifecycle: bool,
 }
 
 #[cfg(test)]

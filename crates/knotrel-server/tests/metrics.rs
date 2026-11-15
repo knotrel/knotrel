@@ -59,7 +59,7 @@ const JOB_KINDS: [&str; 9] = [
 const GRAPH_OPS: [&str; 4] = ["add_node", "link", "cut", "connected"];
 const OPERATION_OUTCOMES: [&str; 5] = ["changed", "unchanged", "true", "false", "error"];
 const EVENT_RESULTS: [&str; 4] = ["changed", "unchanged", "duplicate", "rejected"];
-const FEEDER_REJECTION_CODES: [&str; 19] = [
+const FEEDER_REJECTION_CODES: [&str; 20] = [
     "session_required",
     "fenced_feeder_session",
     "lease_expired",
@@ -75,6 +75,7 @@ const FEEDER_REJECTION_CODES: [&str; 19] = [
     "unverifiable_duplicate",
     "sequence_exhausted",
     "invalid_request",
+    "topology_lifecycle_disabled",
     "event_failed",
     "barrier_position_mismatch",
     "barrier_not_reached",
