@@ -80,3 +80,38 @@ fn zero_capacity_preserves_validation_and_never_creates_endpoints() {
         assert_eq!(g.add_node(u64::MAX), Ok(true));
     }
 }
+
+#[test]
+fn generous_limits_never_change_outcomes_of_mixed_updates() {
+    // Limit checks use ID-map membership; with ceilings that are never reached
+    // every outcome must equal the unlimited graph's, for mixed new/known IDs.
+    for engine in [
+        EngineConfig::CompactBfs,
+        EngineConfig::EulerTour,
+        EngineConfig::Hdt,
+    ] {
+        let mut limited = ConnectivityGraph::with_limits(
+            engine,
+            GraphLimits {
+                max_nodes: Some(1_000),
+                max_edges: Some(1_000),
+            },
+        );
+        let mut unlimited = ConnectivityGraph::new(engine);
+        let mut seed = 7_u64;
+        for step in 0..4_000 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let a = (seed >> 33) % 60;
+            let b = (seed >> 45) % 60;
+            let (left, right) = match step % 4 {
+                0 => (limited.add_node(a), unlimited.add_node(a)),
+                1 | 2 => (limited.link(a, b), unlimited.link(a, b)),
+                _ => (limited.cut(a, b), unlimited.cut(a, b)),
+            };
+            assert_eq!(left, right, "{engine:?} step {step}");
+            assert_eq!(limited.connected(a, b), unlimited.connected(a, b));
+        }
+        assert_eq!(limited.node_count(), unlimited.node_count());
+        assert_eq!(limited.edge_count(), unlimited.edge_count());
+    }
+}

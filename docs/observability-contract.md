@@ -267,7 +267,7 @@ counter and phase durations.
 | Operations | `GraphState::apply`, called per operation for single and batch requests. |
 | Imports | `api::feeder_import` and `Service::import` (implemented, section 15). |
 | Catch-up | Start instant stored in `GraphState` at publication; observed in `declare_barrier` B2 and recorded on worker drop (implemented, section 16). |
-| `/metrics` reads | Atomics, the published readiness word, `outstanding_jobs` (a `watch` channel) and the registry. No graph lock, admission permit or import permit; registry and `watch` synchronization still applies. |
+| `/metrics` reads | Atomics (including `outstanding_jobs`), the published readiness word and the registry. No graph lock, admission permit or import permit; registry synchronization still applies. |
 
 These can reuse the per-instance `ServiceTelemetry` handle that `Service`
 now owns (section 8).
@@ -317,12 +317,12 @@ so no timing or accounting work runs.
 boundary as the API and **without authentication** (see
 [deployment](deployment.md)). Response: `200`,
 `Content-Type: text/plain; version=0.0.4; charset=utf-8`,
-`Cache-Control: no-store`. A scrape reads atomics, the published readiness
-word, the outstanding-jobs `watch` channel and the in-memory registry. It
-takes no graph lock and no admission or import permit. It is not lock-free:
-it uses synchronization internal to the `prometheus-client` registry (the
-metric-family maps and histogram state, which request accounting also
-updates) and to the outstanding-job `watch` channel. The readiness gauge
+`Cache-Control: no-store`. A scrape reads atomics (including the
+outstanding-job count), the published readiness word and the in-memory
+registry. It takes no graph lock and no admission or import permit. It is
+not lock-free: it uses synchronization internal to the `prometheus-client`
+registry (the metric-family maps and histogram state, which request
+accounting also updates). The readiness gauge
 itself is computed from atomics and the clock, like `/ready`. While draining it is
 served like the probes, with `Connection: close`.
 

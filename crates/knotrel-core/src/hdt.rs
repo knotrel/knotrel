@@ -8,7 +8,7 @@
 use crate::{GraphError, NodeId, hdt_forest::Forest};
 use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, hash_map::Entry};
 
 const LEVEL_ARCS_INLINE_CAPACITY: usize = 4;
 
@@ -166,6 +166,11 @@ pub struct HdtGraph {
 }
 
 impl HdtGraph {
+    /// Reports whether `node` is registered; expected O(1) ID-map lookup.
+    pub(crate) fn contains_node(&self, node: NodeId) -> bool {
+        self.ids.contains_key(&node)
+    }
+
     pub(crate) fn contains_edge(&self, source: NodeId, target: NodeId) -> bool {
         let (Some(&a), Some(&b)) = (self.ids.get(&source), self.ids.get(&target)) else {
             return false;
@@ -184,19 +189,29 @@ impl HdtGraph {
     /// Registers only in the base forest. Growing the universe relaxes upper
     /// level size bounds; implicit isolated vertices need no upper records.
     pub fn add_node(&mut self, node: NodeId) -> bool {
-        if self.ids.contains_key(&node) {
-            return false;
-        }
+        self.index_or_insert(node).1
+    }
+
+    /// Returns `node`'s dense index and whether this call registered it.
+    ///
+    /// One ID-map probe through the entry API; registration appends the
+    /// vertex to the base level. Expected O(1), amortized for arena growth.
+    fn index_or_insert(&mut self, node: NodeId) -> (usize, bool) {
         let index = self.ids.len();
-        if self.levels.is_empty() {
-            self.levels.push(Level {
-                dense: true,
-                ..Default::default()
-            });
+        match self.ids.entry(node) {
+            Entry::Occupied(entry) => (*entry.get(), false),
+            Entry::Vacant(entry) => {
+                if self.levels.is_empty() {
+                    self.levels.push(Level {
+                        dense: true,
+                        ..Default::default()
+                    });
+                }
+                self.levels[0].ensure(index);
+                entry.insert(index);
+                (index, true)
+            }
         }
-        self.levels[0].ensure(index);
-        self.ids.insert(node, index);
-        true
     }
 
     /// Inserts an edge at level zero, creating absent endpoints.
@@ -206,13 +221,11 @@ impl HdtGraph {
     /// Rejects self-loops before creating any vertex.
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
         GraphError::check_distinct(source, target)?;
-        self.add_node(source);
-        self.add_node(target);
-        let (a, b) = (self.ids[&source], self.ids[&target]);
-        let key = Self::key(a, b);
-        if self.edges.contains_key(&key) {
+        let (a, _) = self.index_or_insert(source);
+        let (b, _) = self.index_or_insert(target);
+        let Entry::Vacant(slot) = self.edges.entry(Self::key(a, b)) else {
             return Ok(false);
-        }
+        };
         let tree = !self.levels[0].forest.connected(a, b);
         let arcs = if tree {
             tinyvec::tiny_vec!([Arcs; LEVEL_ARCS_INLINE_CAPACITY] => self.levels[0].forest.link(a, b))
@@ -220,7 +233,7 @@ impl HdtGraph {
             tinyvec::TinyVec::new()
         };
         self.levels[0].incidence(a, b, tree, true);
-        self.edges.insert(key, Edge { level: 0, arcs });
+        slot.insert(Edge { level: 0, arcs });
         Ok(true)
     }
 

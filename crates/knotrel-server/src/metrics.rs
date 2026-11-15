@@ -11,8 +11,8 @@
 //! already hold the graph lock, and phase timings are recorded by workers
 //! after they release it. Scrapes and request
 //! accounting do use synchronization internal to the `prometheus-client`
-//! registry (metric-family maps and histogram state) and the outstanding-job
-//! `watch` channel. Semantics are specified in `docs/observability-contract.md`.
+//! registry (metric-family maps and histogram state). Semantics are specified
+//! in `docs/observability-contract.md`.
 
 use crate::{
     Lifecycle, ServerMode,
@@ -1325,7 +1325,7 @@ pub(crate) fn lease_remaining_seconds(deadline_millis: u64, now_millis: u64) -> 
 }
 
 /// Service-health gauges sampled at encode time, without the graph mutex or
-/// any permit. The outstanding-job count is read through its `watch` channel.
+/// any permit. The outstanding-job count is a single atomic load.
 struct HealthCollector {
     service: Service,
     lifecycle: Lifecycle,
