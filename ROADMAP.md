@@ -524,7 +524,7 @@ Tasks and acceptance as listed in [M6](#m6--integration-aware-observability-p1--
 ### Feature 0.4.2 — Release candidate, qualification and publication (REQUIRED)
 
 - [ ] **0.4.2.1 Release candidate:** Freeze a candidate commit after Acceptance M6 and Feature 0.4.1; later code changes require a new candidate.
-  - Prepared 2026-11-15: version 0.4.0 in the workspace, core dependency and lockfile; release notes and procedure updated. The RC differs from the M6.5-measured tree only by version metadata. Awaiting the commit.
+  - Prepared 2026-11-15: version 0.4.0 in the workspace, core dependency and lockfile; release notes and procedure updated. Committed on `chore/release-v0.4.0` (PR knotrel/knotrel#34). Relative to the M6.5-measured tree, the RC differs by version metadata, tests, and the removal of axum's `tower-log` feature. That feature only added tracing's `log`-crate fallback, which never runs when a tracing subscriber is installed; the server always installs one. The RC is the head of that branch at merge.
 - [ ] **0.4.2.2 Verification:** Formatting, Clippy with warnings denied, workspace tests/doctests and Rustdoc with warnings denied on Rust 1.100.0; `knotrel-core` MSRV 1.98.1; release build and smoke test; CI green.
   - Pre-commit status (2026-11-15, uncommitted candidate tree `6ec5f564…ae65c3c`): all local checks pass (330 default and 459 all-features tests, MSRV 60 tests and Clippy, release build and smoke test). To be repeated on the committed RC, plus CI.
 - [ ] **0.4.2.3 Performance gate:** Regression qualification of the candidate against v0.3.0 under rules approved before execution, following the v0.3.0 protocol. No speedup is claimed without a confirmed cell-level improvement.
