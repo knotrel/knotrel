@@ -11,7 +11,9 @@ section 4 are vocabulary only: no endpoint, metric or log field exists for
 them yet. The opt-in `/metrics` endpoint does not change any existing route,
 status code or body of the [HTTP API](http-api.md), the
 [integration contract](integration-contract.md) or the
-[deployment runbook](deployment.md).
+[deployment runbook](deployment.md). Section 19 adds the metrics of the M10
+node and edge lifecycle support (v0.5.0), which exist only when
+`KNOTREL_TOPOLOGY_LIFECYCLE=true`.
 
 Scope: service health, workload pressure and feeder synchronization of one
 `knotrel-server` process, including structured logs (section 17) and the
@@ -195,13 +197,14 @@ durable state. "Replacement" means publication of a new generation by import.
 | `graph_jobs_outstanding` | gauge, jobs | How deep is the backlog? | `Lifecycle::outstanding_jobs` read at scrape: queued plus running, including import, and including jobs whose caller timed out or was cancelled. Not bounded by `max_pending_jobs`: an import can add one, and a finishing worker releases its admission permit just before its `JobGuard` (drop order in `Service::run` and `execute_feeder_worker`), so a newly admitted job can briefly be counted alongside it. Do not alert on `outstanding / capacity > 1`. | none | unaffected | **implemented** | E |
 | `graph_job_capacity` | gauge, jobs | What is the admission limit? | Graph-job admission permit limit (`max_pending_jobs`), constant after startup. Not a bound on `graph_jobs_outstanding`: imports and worker teardown can make outstanding jobs exceed it (see that row). | none | constant | **implemented** | E |
 | `graph_job_queue_seconds`, `graph_lock_wait_seconds`, `graph_job_execution_seconds` | histograms, s | Is latency queueing, contention or work? | Section 2 split, recorded inside the worker closure, so it is observed even when the caller has gone. Exact boundaries in section 11. | `kind` ∈ {`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`, `feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`} | continues | **implemented** | E |
-| `graph_operations_total` | counter | What mix of operations runs, and how many change the graph? | One per executed operation (section 3), counted by the worker when `GraphState::apply` returns, under the graph lock (section 12). Feeder events and imports are never counted here. | `op` ∈ {`add_node`, `link`, `cut`, `connected`}; `outcome` ∈ {`changed`, `unchanged`, `error`} for mutations, {`true`, `false`, `error`} for `connected` | continues | **implemented** | E |
-| `graph_nodes`, `graph_edges` | gauges | How big is the graph? | Published by the worker, under the graph lock, when a state-changing job's graph work returns and at import publication; initialized at construction. Retains the last published values; not rolled back by a later worker panic. Read at scrape without the graph lock. Not a coherent pair (section 10). | none | jump to published import counts | **implemented** | E |
+| `graph_operations_total` | counter | What mix of operations runs, and how many change the graph? | One per executed operation (section 3), counted by the worker when `GraphState::apply` returns, under the graph lock (section 12). Feeder events and imports are never counted here. | `op` ∈ {`add_node`, `link`, `cut`, `connected`, and with lifecycle support `set_node_active`, `set_edge_enabled`, `remove_node`, `node_state`, `edge_state`}; `outcome` ∈ {`changed`, `unchanged`, `error`} for mutations, {`true`, `false`, `error`} for `connected`, {`registered`, `unregistered`, `error`} for `node_state` and `edge_state` (section 19) | continues | **implemented** | E |
+| `graph_nodes`, `graph_edges` | gauges | How big is the graph? | Published by the worker, under the graph lock, when a state-changing job's graph work returns and at import publication; initialized at construction. Retains the last published values; not rolled back by a later worker panic. Read at scrape without the graph lock. Not a coherent pair (section 10). With lifecycle support they are registered counts, whatever the flags (section 19). | none | jump to published import counts | **implemented** | E |
+| `graph_active_nodes`, `graph_enabled_edges`, `graph_effective_edges` | gauges | How much of the registered topology takes part in connectivity? | Registered nodes whose flag is active; registered edges whose flag is enabled; edges in the effective graph (enabled, both endpoints active). Published together with `graph_nodes` and `graph_edges` at the same boundaries; same failure and coherence rules. Lifecycle support only (section 19). | none | jump to published import counts | **implemented** | E |
 | `service_unavailable` | gauge 0/1 | Has a worker failure disabled the service? | The `unavailable` flag. Becomes 1 after a worker panic and stays 1 until process restart. | none | unaffected | **implemented** | E |
 | `readiness_state` | gauge, one-hot | What would `/ready` say? | `lifecycle::readiness_state`: same precedence as `lifecycle::readiness`, computed read-only at scrape. Stale is derived from the published deadline, without the compare-and-swap. | `state` ∈ {`unavailable`, `draining`, `starting`, `ready`, and in source-managed mode `uninitialized`, `loading`, `catching_up`, `stale`, `desynchronized`} | follows state | **implemented** | E |
 | `feeder_lease_remaining_seconds` | gauge, s | Is the feeder alive? | Lease deadline from the published readiness word minus the monotonic clock, derived at scrape (section 14). Positive while no check reports the lease expired; zero throughout the deadline millisecond, when feeder calls may already fail with `lease_expired`; negative once every check, including `/ready`, reports it expired. Scraping never renews the lease or publishes staleness. Absent before the first session and in standalone mode. | none | session kept | **implemented** | E |
 | `feeder_events_total` | counter | Is the source making progress, and how much is redundant? | Per evaluated event (section 3) in `GraphState::apply_events`, under the graph lock (section 12). `unchanged` covers no-op mutations and `progress`. | `result` ∈ {`changed`, `unchanged`, `duplicate`, `rejected`} | continues | **implemented** | E |
-| `feeder_rejections_total` | counter | Why did a feeder call fail? | One per session, heartbeat, events, gap or barrier request the service rejected, where the `FeederError` is produced (section 13). Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Excluded: admission `busy` (HTTP `import_in_progress`) and `unavailable` (counted in `requests_rejected_total`), timeouts, cancellations and panics (`requests_outcome_uncertain_total`), HTTP-adapter checks and malformed bodies, and imports (`imports_total`). Source-managed mode only. | `code` ∈ {`session_required`, `fenced_feeder_session`, `lease_expired`, `invalid_lease_duration`, `graph_uninitialized`, `graph_desynchronized`, `stale_generation`, `source_mismatch`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `sequence_exhausted`, `invalid_request`, `event_failed`, `barrier_position_mismatch`, `barrier_not_reached`, `superseded_barrier`} | continues | **implemented** | E |
+| `feeder_rejections_total` | counter | Why did a feeder call fail? | One per session, heartbeat, events, gap or barrier request the service rejected, where the `FeederError` is produced (section 13). Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Excluded: admission `busy` (HTTP `import_in_progress`) and `unavailable` (counted in `requests_rejected_total`), timeouts, cancellations and panics (`requests_outcome_uncertain_total`), HTTP-adapter checks and malformed bodies, and imports (`imports_total`). Source-managed mode only. | `code` ∈ {`session_required`, `fenced_feeder_session`, `lease_expired`, `invalid_lease_duration`, `graph_uninitialized`, `graph_desynchronized`, `stale_generation`, `source_mismatch`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `sequence_exhausted`, `invalid_request`, `topology_lifecycle_disabled`, `event_failed`, `barrier_position_mismatch`, `barrier_not_reached`, `superseded_barrier`} | continues | **implemented** | E |
 | `desynchronizations_total` | counter | Why did the graph require a rebuild? | One per transition into `desynchronized`, at the sites in `GraphState::apply_events` and `declare_gap` that set it. A predecessor mismatch covers both `prev_delivery_sequence` and `prev_source_position`, which share one wire code. Out-of-order sequences and evicted duplicates do not desynchronize. | `cause` ∈ {`gap_declared`, `source_epoch_mismatch`, `source_predecessor_mismatch`, `conflicting_duplicate`}. Source-managed mode only (section 13). | continues | **implemented** | E |
 | `feeder_last_applied_age_seconds` | gauge, s | When did the graph last move forward? | Monotonic time since a worker, under the graph lock, last applied a non-duplicate event (including no-op mutations and `progress`) or published an import (section 14). Not reset by duplicates, rejected events or imports, gaps, barriers, sessions, heartbeats or queries. Absent before the first application and in standalone mode. **Not lag** (section 2). | none | reset by publication | **implemented** | E |
 | `import_in_progress` | gauge 0/1 | Is an import running? | Import permit held: from acquisition, through body receipt, worker queue, preparation and publication, until the import is recorded, also after its caller has gone. Source-managed mode only (section 15). | none | — | **implemented** | E |
@@ -397,7 +400,10 @@ third adds 2. The fourth adds 153 standalone and 459 source-managed
 12). The sixth adds 23 source-managed only (section 13). The seventh adds
 at most 2 source-managed only (section 14). The eighth adds 57
 source-managed only (section 15). The ninth adds 32 source-managed only, for a
-current maximum of **1414 standalone, 1834 source-managed** (section 16).
+maximum of **1414 standalone, 1834 source-managed** (section 16). The M10
+lifecycle metrics raise the current maximum to **1414 standalone and 1835
+source-managed without lifecycle support, 1432 standalone and 1844
+source-managed with it** (section 19).
 
 **Dependency.** [`prometheus-client`](https://crates.io/crates/prometheus-client)
 0.26, the Prometheus project's Rust client, with default features disabled.
@@ -827,6 +833,9 @@ there is no ownership cycle.
 | standalone | 12: three mutations × {`changed`, `unchanged`, `error`}, plus `connected` × {`true`, `false`, `error`} | 0: family not registered (feeder endpoints refuse with `mode_conflict`) |
 | source-managed | 3: `connected` × {`true`, `false`, `error`}; direct mutations are refused before execution | 4 |
 
+With lifecycle support these become 27 standalone and 9 source-managed
+(section 19).
+
 The maximum becomes **1414 standalone, 1720 source-managed** (now 1414 and 1834; section 16). The test
 `series_exist_at_zero_only_for_reachable_combinations` checks these sets
 against actual exposition.
@@ -945,7 +954,7 @@ counting is a single atomic increment.
 | Mode | Rejections | Desynchronizations |
 | --- | --- | --- |
 | standalone | 0: family not registered (feeder endpoints refuse with `mode_conflict`) | 0 |
-| source-managed | 19 | 4 |
+| source-managed | 19 (20 since M10, section 19) | 4 |
 
 The maximum becomes **1414 standalone, 1743 source-managed** (now 1414 and 1834; section 16). The test
 `feeder_rejections::series_exist_at_zero_only_in_source_managed_mode` checks
@@ -1506,3 +1515,80 @@ calculated maximum of 1,834 source-managed series. Together with invariant 3
 
 **Status.** M6.5 is accepted on this evidence. With M6.1 to M6.4, M6 was
 accepted by the owner on 2026-11-15.
+
+## 19. M10 node and edge lifecycle metrics
+
+**Scope.** Metrics added by node and edge lifecycle support
+([topology-lifecycle.md](topology-lifecycle.md), v0.5.0). Without
+`KNOTREL_TOPOLOGY_LIFECYCLE=true` nothing in this section exists except the
+new `feeder_rejections_total` code, and `graph_nodes` and `graph_edges` keep
+their meaning. No label carries a node ID, edge, source cursor or event ID.
+
+**Operation counter.** `knotrel_graph_operations_total{op,outcome}` gains:
+
+| `op` | `outcome` | Error series increments on |
+| --- | --- | --- |
+| `set_node_active` | `changed`, `unchanged`, `error` | `unknown_node` |
+| `set_edge_enabled` | `changed`, `unchanged`, `error` | `self_loop`, `unknown_node`, `unknown_edge` |
+| `remove_node` | `changed`, `unchanged`, `error` | never (`remove_node` cannot fail) |
+| `node_state` | `registered`, `unregistered`, `error` | never (`node_state` cannot fail) |
+| `edge_state` | `registered`, `unregistered`, `error` | `self_loop` |
+
+The `error` series that never increment exist for a uniform label set.
+Series exist only with lifecycle support, and the three mutations only in
+standalone mode (`metrics::GraphOp::reachable_in`): source-managed mode
+refuses them with `direct_mutation_disabled` before admission. Lifecycle
+operations refused with `topology_lifecycle_disabled` (validation step 5a)
+are never admitted and count nothing, like the other refusals of section 12.
+Accounting, cancellation and coherence follow section 12 unchanged; feeder
+lifecycle events never count here.
+
+**Gauges.** `knotrel_graph_active_nodes`, `knotrel_graph_enabled_edges` and
+`knotrel_graph_effective_edges`, unlabelled, registered only with lifecycle
+support. `ServiceTelemetry::publish_graph_counts` sets them together with
+`knotrel_graph_nodes` and `knotrel_graph_edges`, at the same publication
+boundaries (section 10: construction, state-changing jobs, mutating feeder
+calls, import publication), under the graph lock. Each count is maintained by
+the core in `O(1)` per mutation and read in `O(1)`; no traversal is done for
+telemetry. The five gauges are independent atomic stores, not a coherent
+tuple, and keep the last published values after a worker failure, exactly as
+in section 10. With lifecycle support, `knotrel_graph_nodes` and
+`knotrel_graph_edges` report registered counts (active or inactive, enabled or
+disabled, effective or not). With metrics disabled, `Service` holds no
+telemetry and no count is read or published.
+
+**Feeder rejections.** `knotrel_feeder_rejections_total` gains the code
+`topology_lifecycle_disabled`, counted once per events request refused because
+an event uses a lifecycle operation while lifecycle support is off. Like every
+code of this closed set, its series exists at zero in source-managed mode
+whatever the lifecycle setting. Imports refused for the same reason are not
+counted here; `knotrel_imports_total` classifies them as `payload_rejected`
+(section 15).
+
+**Series.**
+
+| Family | Standalone | Source-managed |
+| --- | --- | --- |
+| `graph_operations_total` without lifecycle support | 12 (unchanged) | 3 (unchanged) |
+| `graph_operations_total` with lifecycle support | 9 ops × 3 = 27 | 3 queries × 3 = 9 |
+| Lifecycle gauges (lifecycle support only) | 3 | 3 |
+| `feeder_rejections_total` | 0 | 20 (was 19) |
+
+The calculated maximum becomes:
+
+| Lifecycle support | Standalone | Source-managed |
+| --- | --- | --- |
+| off | 1414 | 1835 (1834 + 1) |
+| on | 1432 (1414 + 15 + 3) | 1844 (1835 + 6 + 3) |
+
+The total remains a calculation. The M6.5 series-count qualification
+(section 18) predates these additions.
+
+**Tests.** In [`tests/topology.rs`](../crates/knotrel-server/tests/topology.rs),
+`lifecycle_metrics_are_bounded_and_published_only_when_enabled` checks that
+neither the gauges nor the lifecycle `op` values appear without lifecycle
+support, and checks the published registered and lifecycle counts, the new
+operation outcomes at their expected values and that no identifier appears as
+a label value.
+
+**Overhead.** Not qualified. Section 6 applies unchanged.

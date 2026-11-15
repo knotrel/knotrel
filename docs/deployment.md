@@ -24,6 +24,13 @@ own. Configuration is read once at startup; changing it requires a restart.
     and the existing request and graph limits
     ([resource bounds](http-api.md#resource-bounds),
     [startup configuration](http-api.md#startup-configuration-and-engine-selection)).
+  - Node and edge lifecycle support (`KNOTREL_TOPOLOGY_LIFECYCLE=true|false`,
+    default `false`; [lifecycle](http-api.md#node-and-edge-lifecycle-opt-in))
+    keeps a catalog of the registered topology in addition to the engine.
+    Structurally this is about twice the plain engine's storage for an
+    all-active graph; that is an estimate, and measured values are in the
+    v0.5.0 qualification evidence. Size `--memory` accordingly. With `false`
+    no catalog is allocated.
   - There is **no durable graph persistence**. The graph, generation,
     revision, source frontier and deduplication history exist only in process
     memory and are lost on any restart. No volume is needed for graph state.
@@ -33,7 +40,11 @@ own. Configuration is read once at startup; changing it requires a restart.
   - A second feeder takes over the session; feeders are not load-balanced.
 - **Source retention.**
   - After a restart or desynchronization, the **source** must be able to
-    supply a complete authoritative snapshot for a rebuild by import.
+    supply a complete authoritative snapshot for a rebuild by import. With
+    lifecycle support that snapshot must include every node and edge flag,
+    inactive nodes, disabled edges and isolated nodes: entries without flags
+    are imported active and enabled
+    ([integration contract §9.6](integration-contract.md)).
   - The source must retain events beyond the acknowledged frontier until they
     are acknowledged.
   - Normal eviction of old entries from the deduplication window

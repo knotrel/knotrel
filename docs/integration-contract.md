@@ -61,8 +61,8 @@ Knotrel defines two mutually exclusive operating modes configured at startup:
 ### 2.2 Source-Managed Mode (Opt-In)
 - **Selection:** Explicitly selected at startup via `KNOTREL_MODE=source-managed` (or `ServerConfig::with_mode(Mode::SourceManaged)` for embedded callers).
 - **Graph Authority:** Knotrel is a derived read accelerator. The external data store is the authoritative source of truth.
-- **Direct Mutation Prohibition:** Direct client mutations via `POST /v1/operations` (`add_node`, `link`, `cut`) and mutating operations in `POST /v1/batch` are **rejected** with HTTP 409 Conflict (code: `direct_mutation_disabled`). Clients must not bypass source ordering.
-- **Queries:** Connectivity queries (`POST /v1/operations` with `op: "connected"`) and batch queries remain supported, subject to the readiness and freshness policy.
+- **Direct Mutation Prohibition:** Direct client mutations via `POST /v1/operations` (`add_node`, `link`, `cut`, and with lifecycle support `set_node_active`, `set_edge_enabled`, `remove_node`) and mutating operations in `POST /v1/batch` are **rejected** with HTTP 409 Conflict (code: `direct_mutation_disabled`). Clients must not bypass source ordering.
+- **Queries:** Connectivity queries (`POST /v1/operations` with `op: "connected"`, and with lifecycle support `node_state` and `edge_state`) and batch queries remain supported, subject to the readiness and freshness policy.
 - **Readiness:** `/ready` reports 503 during bootstrap (`uninitialized`, `loading`, `catching_up`) and transitions to 200 `ready` only after an initial coherent graph image is published and verified through a synchronization barrier $B$.
 - **Restart Semantics:** Process restart completely discards in-memory volatile graph state. Upon restart, the server re-enters `uninitialized` with a new `instance_id` and requires the external feeder to perform a full bootstrap.
 
@@ -373,7 +373,8 @@ To eliminate race conditions between deduplication, predecessor checks, and sequ
        |        - Note: an event ID evicted from window (> N events ago) cannot be       |
        |          detected and is evaluated as fresh at D_applied + 1.                   |
        |    - Execute graph mutation(s) or progress event:                               |
-       |      * If domain error (self_loop / limit_exceeded): reject with 422,          |
+       |      * If domain error (self_loop / limit_exceeded / unknown_node /             |
+       |        unknown_edge): reject with 422 (feeder events have no 404 outcome),      |
        |        STOP progress. (Uncommitted rejected attempts NOT recorded in window).   |
        |      * If success:                                                              |
        |        - If changed: true (and not progress), increment state_version.          |
@@ -444,7 +445,7 @@ Knotrel guarantees deterministic deduplication within a bounded window without r
   - *Tier 2 (Canonical Equality):* Exact byte-for-byte comparison of:
     - `event_id` string (up to 64 bytes).
     - `source_position` string (up to 256 bytes).
-    - Canonical operation descriptor: operation type (`link`, `cut`, `add_node`, `progress`) and normalized endpoints (`min(u,v)`, `max(u,v)` for undirected edges).
+    - Canonical operation descriptor: operation type (`link`, `cut`, `add_node`, `progress`, and with lifecycle support `set_node_active`, `set_edge_enabled`, `remove_node`), normalized endpoints (`min(u,v)`, `max(u,v)` for undirected edges) or node, and for lifecycle events the flag value (`active` or `enabled`). A retry at a retained sequence with the same `event_id` but a different operation type or flag is a conflicting duplicate (case 4 below).
 - **Mutually Exclusive Bounded Identity Decisions:**
   1. **Retained Committed Sequence with Different Event ID ($D \in [D_{window\_min}, D_{applied}]$, incoming `event_id != retained.event_id`):**
      Sequence $D$ was already committed with a different `event_id`.
@@ -456,7 +457,7 @@ Knotrel guarantees deterministic deduplication within a bounded window without r
      Both identity and canonical payload match the committed event.
      $\implies$ Idempotent **`200 OK` (`status: "already_applied"`, `result: "duplicate"`)**. Live graph topology and `state_version` remain unmodified; $D_{applied}$ does not advance.
   4. **Conflicting Content ($D \in [D_{window\_min}, D_{applied}]$, incoming `event_id == retained.event_id`, Tier 2 differs):**
-     Canonical operation, endpoints, or `source_position` differ from the committed record.
+     Canonical operation, endpoints, flag, or `source_position` differ from the committed record.
      $\implies$ Rejected with **`409 Conflict` (`code: "conflicting_duplicate"`)**, transitions state to **`Desynchronized`**.
   5. **Evicted History ($D < D_{window\_min}$ or Evicted `event_id` Reuse):**
      - *Evicted Sequence:* If an incoming request specifies $D \le D_{applied}$ with $D < D_{window\_min}$, the record has been evicted. Knotrel cannot verify canonical content and returns **`409 Conflict` (`code: "unverifiable_duplicate"`)**, leaving state unchanged.
@@ -567,7 +568,7 @@ Consider a batch starting at global sequence $D = 101$ with 3 events:
 - In contrast, once an event is **committed** ($D \le D_{applied}$):
   - **Retained sequence with different event ID:** If a request reuses a committed sequence $D \in [D_{window\_min}, D_{applied}]$ with a different `event_id`, it is rejected as **`409 Conflict` (`conflicting_duplicate`)** and transitions state to `Desynchronized`.
   - **Retained event ID at new sequence:** If a request at sequence $D_{applied} + 1$ reuses an `event_id` already present in the retained window, it is rejected as **`409 Conflict` (`conflicting_duplicate`)** and transitions state to `Desynchronized`.
-  - **Altered canonical content:** If a request at sequence $D \in [D_{window\_min}, D_{applied}]$ matches the committed `event_id` but alters operation, endpoints, or `source_position`, it is rejected as **`409 Conflict` (`conflicting_duplicate`)** and transitions state to `Desynchronized`.
+  - **Altered canonical content:** If a request at sequence $D \in [D_{window\_min}, D_{applied}]$ matches the committed `event_id` but alters operation, endpoints, lifecycle flag, or `source_position`, it is rejected as **`409 Conflict` (`conflicting_duplicate`)** and transitions state to `Desynchronized`.
   - **Exact retry:** If a request at sequence $D \in [D_{window\_min}, D_{applied}]$ matches `event_id` and canonical payload, it returns **`200 OK` (`status: "already_applied"`)**.
   - **Evicted history boundary:** Sequences older than the retained window ($D < D_{window\_min}$) return **`409 Conflict` (`code: "unverifiable_duplicate"`)** with server state unchanged. Reusing an `event_id` from an evicted sequence ($< D_{window\_min}$) at a new sequence cannot be detected by the bounded window and is evaluated as fresh at $D_{applied} + 1$. Knotrel explicitly guarantees deduplication strictly within the retained $N$-entry window.
 
@@ -610,12 +611,13 @@ therefore never runs ahead of the applied events.
 |---|---|---|---|---|---|
 | Rejected before execution: standalone, instance, `graph_id`, JSON shape/size, unavailable | 409/400/413/415/422/503 plain error | None | None | Nothing was applied; fix the request | `events.rs` `test_15`, `test_16`, `test_18` |
 | Worker capacity exhausted (all graph-job slots in use by any request type) | 503 `import_in_progress` plain error | None | None | This request was not admitted and applied nothing; it may be resubmitted unchanged. The code does not by itself mean an import is running | `events.rs` `test_26` |
-| Whole-request check under lock: empty or > 1024 events, any event with an invalid op, field or bound (even the last one) | 422 `invalid_request` plain error | None | None | No event of the request was applied | `events.rs` `test_18`, `test_21` |
+| Whole-request check under lock: empty or > 1024 events, any event with an invalid op, field or bound (even the last one), including `active` or `enabled` on `add_node`, `link`, `cut` or `progress` | 422 `invalid_request` plain error | None | None | No event of the request was applied | `events.rs` `test_18`, `test_21`; `topology.rs` |
+| Lifecycle support off and any event is `set_node_active`, `set_edge_enabled` or `remove_node` (same per-event prevalidation slot; the first failing event in order decides between this and `invalid_request`) | 409 `topology_lifecycle_disabled` plain error | None | None | No event of the request was applied; enable lifecycle support or stop sending lifecycle events | `topology.rs` |
 | Session/epoch fencing, stale generation, `source_id` mismatch, uninitialized graph | 409 plain error | None | None | No event applied; re-register, re-read generation, or rebuild | `events.rs` `test_13`, `test_24`; `e2e_rebuild.rs` |
 | Lease expired (checked once at request start) | 409 `lease_expired` | No graph change; status becomes `stale` | None | No event applied; renew/re-register the session | `events.rs` `test_13`; `bootstrap.rs` (status `stale`) |
 | `source_epoch` mismatch | 409 `source_epoch_mismatch` | No graph change; status becomes `desynchronized` | None | No event applied; replacement import required | `events.rs` `test_8` |
 | Already desynchronized | 409 `graph_desynchronized` | None | None | Replacement import required | `events.rs` `test_17`, `test_19`, `test_23` |
-| Domain error at first event (index 0) | Single event: 422 domain code. Batch: 422 `partial_failure`/`event_failed`, index 0 | None | Prefix = previous frontier | Nothing applied; resubmit corrected event at `applied_delivery_sequence + 1` | `events.rs` `test_9`, `test_20` |
+| Domain error at first event (index 0), including `unknown_node` and `unknown_edge` of lifecycle events | Single event: 422 domain code. Batch: 422 `partial_failure`/`event_failed`, index 0 | None | Prefix = previous frontier | Nothing applied; resubmit corrected event at `applied_delivery_sequence + 1` | `events.rs` `test_9`, `test_20`; `topology.rs` |
 | Domain error at middle or last event | 422 `partial_failure`/`event_failed` | Prefix applied; failed and later events not applied, not recorded in the window | Prefix frontier and version | Events ≤ `applied_delivery_sequence` are applied in memory; resume from `failed_delivery_sequence` | `events.rs` `test_10`, `test_20` |
 | Sequence gap after a prefix | 409 `partial_failure`/`out_of_order_sequence` | Prefix applied; status unchanged | Prefix frontier | Resend from `applied_delivery_sequence + 1` | `events.rs` `test_7`, `test_23` |
 | Predecessor mismatch or conflicting duplicate after a prefix | 409 `partial_failure` (`source_predecessor_mismatch` / `conflicting_duplicate`) | Prefix applied; status becomes `desynchronized` | Prefix frontier | Stream is inconsistent; replacement import required | `events.rs` `test_4`, `test_8`, `test_23` |
@@ -737,7 +739,9 @@ policy, which other feeders may choose differently:
 
 M3.4 found that the graph mutation semantics are already shared, and made no
 production change. Every mutation path calls the same `ConnectivityGraph`
-methods in `knotrel-core` (`add_node`, `link`, `cut` in
+methods in `knotrel-core` (since v0.5.0 through the server's `ServiceGraph`,
+which dispatches to `LifecycleGraph` instead when lifecycle support is
+enabled; that facade keeps the same limit, self-loop and no-op rules) (`add_node`, `link`, `cut` in
 [`configuration.rs`](../crates/knotrel-core/src/configuration.rs)). Those methods
 own the node/edge limit checks and their precedence, self-loop rejection,
 no-mutation-on-error, and effective-change detection (the returned `bool`).
@@ -753,7 +757,7 @@ per endpoint is policy, and stays separate on purpose.
 | Mutation dispatch | `Operation::apply` (`api.rs`) → core | Same as single, per item | Inline `CanonicalOp` match in `GraphState::apply_events` → core |
 | Graph limits, self-loop, change detection | Core | Core | Core (plus a redundant feeder self-loop pre-check that keeps its message text) |
 | Revision | `GraphState::apply`: `increment_version` iff `changed` | Same, per effective item | `increment_version` iff `changed`, after the event is accepted |
-| Domain error policy | 422 (404 `unknown_node` for queries) | Per-item error; execution continues; no rollback (ADR 0013) | Stop at the first failure; 422 domain code, or `partial_failure` with the applied prefix (§9.3) |
+| Domain error policy | 422 (404 `unknown_node` for queries and lifecycle setters, 404 `unknown_edge` for `set_edge_enabled`) | Per-item error; execution continues; no rollback (ADR 0013) | Stop at the first failure; 422 domain code, or `partial_failure` with the applied prefix (§9.3) |
 | Frontier and deduplication | — | — | Sequence and position advance for every applied event, including no-ops and `progress`; window records applied events only |
 | Response metadata | `response_metadata` captured under the lock | Same | Same function, captured under the lock for success, duplicate and partial failure |
 | Error mapping | `Outcome::from(GraphError)`, `service_error` | Same | Feeder `(code, message)` mapping and `feeder_error` |
@@ -778,6 +782,61 @@ a separate decision. The same catch-all pattern exists in candidate import
 validation, which is outside M3.4. The two worker wrappers (`run`,
 `execute_feeder_worker`) are also similar but differ in readiness publication and
 failure marking; merging them would change worker ownership and is not proposed.
+
+### 9.6 Node and Edge Lifecycle Events and Imports (v0.5.0 M10)
+
+With `KNOTREL_TOPOLOGY_LIFECYCLE=true` the source can describe registered
+topology with flags (contract: [topology-lifecycle.md](topology-lifecycle.md);
+wire shapes: [HTTP API](http-api.md#node-and-edge-lifecycle-opt-in)). The
+protocol above is unchanged; this section records what lifecycle support adds.
+
+**Events.** `set_node_active` (`node`, `active`), `set_edge_enabled`
+(`source`, `target`, `enabled`) and `remove_node` (`node`) are ordinary
+ordered events: same envelope, sequence and predecessor checks, frontier
+advance on every applied event (including no-ops), one `state_version`
+increment per changed event whatever the number of incident edges, and
+fail-fast failure matrix (§9.3). Domain errors are 422 with `unknown_node`,
+`unknown_edge` or `self_loop` (single event) or `partial_failure` /
+`event_failed` (multi-event). `remove_node` of an absent node is an applied
+no-op.
+
+**Duplicate fingerprint.** The canonical descriptor (§7.1) includes the
+operation type and the flag value, so an exact retry deduplicates and a retry
+that changes either is `conflicting_duplicate`.
+
+**Stale events cannot resurrect removed topology.** An event is applied only
+at `D_applied + 1` after the predecessor checks. Any older event is either
+answered from the retained window without being applied (exact duplicate),
+rejected as `conflicting_duplicate`, or rejected as `unverifiable_duplicate`
+once evicted; a later sequence is `out_of_order_sequence`. A delayed retry of
+an event preceding a `remove_node` therefore never re-registers the removed
+node or its edges. Only a new in-order `add_node` or `link` registers the ID
+again, as a fresh active node with no edges.
+
+**Imports carry complete registered topology.** A rebuild import must contain
+every registered node and edge with its flags, including isolated nodes,
+inactive nodes and disabled edges; anything omitted is simply absent from the
+new generation. `nodes` entries are a node ID string (active) or
+`{"node", "active"}`; `edges` entries take an optional `enabled` (default
+`true`). Repeated entries must agree, otherwise 422 `invalid_node` or
+`invalid_edge`. Legacy payloads (strings only, no `enabled`) are unchanged and
+mean all active, all enabled, so a source that tracks flags must send them on
+every rebuild.
+
+**Lifecycle support off.**
+- Events: any `set_node_active`, `set_edge_enabled` or `remove_node` event
+  rejects the whole request with 409 `topology_lifecycle_disabled`. The check
+  occupies the existing per-event prevalidation slot under the graph lock
+  (after session, generation and source checks, before any event is applied),
+  in event order together with `invalid_request`. It is counted in
+  `knotrel_feeder_rejections_total{code="topology_lifecycle_disabled"}`.
+- Imports: any node object or any `enabled` member, even with the default
+  value, rejects the import with 409 `topology_lifecycle_disabled` in the
+  payload phase (after JSON parsing and the `instance_id`/`graph_id` checks,
+  before candidate construction and the graph-lock request). It is classified
+  as `payload_rejected` in `knotrel_imports_total`.
+- `active` or `enabled` on `add_node`, `link`, `cut` or `progress` is 422
+  `invalid_request` whatever the setting.
 
 ---
 
@@ -1196,7 +1255,7 @@ Feature 0.2.4 is implemented in `knotrel-server`:
    - Configured via `KNOTREL_DEDUP_WINDOW_SIZE` (default: 10,000, bounds: 1 to 1,000,000).
 3. **Regression Invariant:** Applying `link(A, B)`, followed by `cut(A, B)`, then retrying the old `link(A, B)` event at $D=1$ yields HTTP 200 `already_applied` without modifying graph topology; edge $(A, B)$ strictly remains absent.
 4. **Sequence Continuity and Gaps:** Contiguous delivery sequence verified ($D_i = D_{prev} + 1$) with initial $D_{prev} == D_{applied}$. Gaps or out-of-order delivery return HTTP 409 `gap_detected`.
-5. **Fail-Fast Batch Semantics:** Events are processed sequentially under a single graph mutex acquisition. On first domain error (e.g. self-loop 422, unknown node 404, capacity limit 422), execution stops immediately; already committed prefix remains applied in memory; partial failure reports `failed_batch_index`, `failed_delivery_sequence`, `failed_event_id`, and current applied frontier. Uncommitted events are not recorded in the deduplication window and can be retried at $D_{applied} + 1$ with corrected payload.
+5. **Fail-Fast Batch Semantics:** Events are processed sequentially under a single graph mutex acquisition. On first domain error (e.g. self-loop or capacity limit; every feeder domain error is HTTP 422 and there is no 404 feeder outcome, see §9.3), execution stops immediately; already committed prefix remains applied in memory; partial failure reports `failed_batch_index`, `failed_delivery_sequence`, `failed_event_id`, and current applied frontier. Uncommitted events are not recorded in the deduplication window and can be retried at $D_{applied} + 1$ with corrected payload.
 6. **No-Op & Progress Events:** No-op mutations and `progress` events advance `applied_source_position` and delivery sequence without incrementing `state_version`.
 7. **Sequence Boundary Semantics and Checked Arithmetic:** Delivery sequence is bounded to `u64`. When $D_{applied} = \text{u64::MAX}$, checked arithmetic (`checked_add(1)`) prevents integer overflow panics. Because no `u64` wire payload can represent a value beyond `u64::MAX`, any incoming wire sequence satisfies $\text{seq} \le D_{applied}$. Retained duplicate retries at `u64::MAX` return HTTP 200 `already_applied`; wrapped sequence zero or evicted sequences return HTTP 409 `unverifiable_duplicate` without mutating topology, revision, sequence, or position. The internal `SequenceExhausted` error variant serves as a defensive guard for checked arithmetic and is unreachable through the `u64` wire interface.
 8. **Declared Gap & Desynchronized State Event Rejection:** `POST /v1/feeder/gap` transitions sync status to `Desynchronized`. Once desynchronized (via declared gap, conflicting duplicate, predecessor mismatch, or source epoch mismatch), subsequent event submissions are rejected under lock with HTTP 409 `graph_desynchronized` without mutating topology, revision, delivery sequence, source position, or deduplication state. Subsequent queries return HTTP 503 `desynchronized`. Feeder heartbeats renew session lease but probe reports `desynchronized`. Live graph remains intact for diagnostics; recovery requires atomic graph replacement via `POST /v1/feeder/import`.
