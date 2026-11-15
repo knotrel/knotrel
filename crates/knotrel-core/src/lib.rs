@@ -189,6 +189,8 @@ mod reference;
 pub use configuration::{ConnectivityGraph, EngineConfig, GraphLimits};
 pub use dynamic::{ForestGraph, ForestStats};
 pub use reference::ReferenceGraph;
+mod topology;
+pub use topology::{EdgeSpec, EdgeState, LifecycleError, LifecycleGraph, NodeSpec};
 
 /// A vertex identifier.
 pub type NodeId = u64;

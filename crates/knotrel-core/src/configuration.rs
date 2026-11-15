@@ -187,7 +187,7 @@ impl ConnectivityGraph {
     /// Limit checks use this ID-map lookup instead of a reflexive
     /// [`Self::connected`] query, which costs O(log V) tree-root walks on the
     /// Euler-tour and HDT engines.
-    fn contains_node(&self, node: NodeId) -> bool {
+    pub(crate) fn contains_node(&self, node: NodeId) -> bool {
         match &self.backend {
             Backend::Compact(graph) => graph.contains_node(node),
             Backend::EulerTour(graph) => graph.contains_node(node),
