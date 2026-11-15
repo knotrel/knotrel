@@ -257,6 +257,11 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Reports whether `node` is registered; expected O(1) ID-map lookup.
+    pub(crate) fn contains_node(&self, node: NodeId) -> bool {
+        self.ids.contains_key(&node)
+    }
+
     pub(crate) fn contains_edge(&self, source: NodeId, target: NodeId) -> bool {
         let (Some(&a), Some(&b)) = (self.ids.get(&source), self.ids.get(&target)) else {
             return false;

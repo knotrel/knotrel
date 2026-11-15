@@ -43,6 +43,11 @@ pub struct ForestGraph {
     stats: ForestStats,
 }
 impl ForestGraph {
+    /// Reports whether `node` is registered; expected O(1) ID-map lookup.
+    pub(crate) fn contains_node(&self, node: NodeId) -> bool {
+        self.ids.contains_key(&node)
+    }
+
     pub(crate) fn contains_edge(&self, source: NodeId, target: NodeId) -> bool {
         let (Some(&a), Some(&b)) = (self.ids.get(&source), self.ids.get(&target)) else {
             return false;
@@ -60,14 +65,23 @@ impl ForestGraph {
     ///
     /// O(1) amortized; arena/vector growth can take O(V) in one call.
     pub fn add_node(&mut self, node: NodeId) -> bool {
-        if let Entry::Vacant(entry) = self.ids.entry(node) {
-            let index = self.non_tree.len();
-            self.non_tree.push(BTreeSet::new());
-            self.forest.add_vertex();
-            entry.insert(index);
-            true
-        } else {
-            false
+        self.index_or_insert(node).1
+    }
+
+    /// Returns `node`'s dense index and whether this call registered it.
+    ///
+    /// One ID-map probe through the entry API. Expected O(1), amortized for
+    /// arena growth.
+    fn index_or_insert(&mut self, node: NodeId) -> (usize, bool) {
+        match self.ids.entry(node) {
+            Entry::Occupied(entry) => (*entry.get(), false),
+            Entry::Vacant(entry) => {
+                let index = self.non_tree.len();
+                self.non_tree.push(BTreeSet::new());
+                self.forest.add_vertex();
+                entry.insert(index);
+                (index, true)
+            }
         }
     }
     /// Inserts a simple undirected edge, registering absent endpoints.
@@ -77,13 +91,11 @@ impl ForestGraph {
     /// Rejects self-loops before registering either endpoint.
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
         GraphError::check_distinct(source, target)?;
-        self.add_node(source);
-        self.add_node(target);
-        let (a, b) = (self.ids[&source], self.ids[&target]);
-        let key = (a.min(b), a.max(b));
-        if self.edges.contains_key(&key) {
+        let (a, _) = self.index_or_insert(source);
+        let (b, _) = self.index_or_insert(target);
+        let Entry::Vacant(slot) = self.edges.entry((a.min(b), a.max(b))) else {
             return Ok(false);
-        }
+        };
         let arcs = if self.forest.connected(a, b) {
             self.non_tree[a].insert(b);
             self.non_tree[b].insert(a);
@@ -93,7 +105,7 @@ impl ForestGraph {
         } else {
             Some(self.forest.link(a, b))
         };
-        self.edges.insert(key, arcs);
+        slot.insert(arcs);
         Ok(true)
     }
     /// Removes an edge while retaining both vertices; absent edges return false.

@@ -8,7 +8,7 @@ use crate::{
         GapResponse, HeartbeatRequest, HeartbeatResponse, HistoricalOutcome, ImportMode,
         ImportRequest, ImportResponse, MAX_EVENT_ID_BYTES, MAX_LEASE_DURATION_MS,
         MAX_SOURCE_POSITION_BYTES, MIN_LEASE_DURATION_MS, Operation, Outcome, PartialBatchFailure,
-        RequiredAction, SessionRequest, SessionResponse,
+        RequiredAction, SessionRequest, SessionResponse, WireOp,
     },
     metrics::{
         CatchupInterval, CatchupKind, CatchupRecorder, CompletedCatchup, Desynchronization,
@@ -180,11 +180,13 @@ pub(crate) enum CanonicalOp {
 
 impl CanonicalOp {
     pub(crate) fn from_feeder_event(event: &crate::api::FeederEvent) -> Result<Self, FeederError> {
-        let Some(operation) = FeederOperation::parse(&event.op) else {
-            return Err(FeederError::InvalidRequest(format!(
-                "unsupported operation '{}'; must be link, cut, add_node, or progress",
-                event.op
-            )));
+        let operation = match &event.op {
+            WireOp::Known(operation) => *operation,
+            WireOp::Unknown(name) => {
+                return Err(FeederError::InvalidRequest(format!(
+                    "unsupported operation '{name}'; must be link, cut, add_node, or progress"
+                )));
+            }
         };
         match operation {
             FeederOperation::Link => {
@@ -548,8 +550,23 @@ impl From<ServiceError> for FeederError {
 }
 
 /// Shared graph state plus a strict limit on outstanding worker jobs.
+///
+/// Axum clones the router state for every request, so the handle is a single
+/// reference-counted pointer: one atomic increment per clone instead of one
+/// per shared field plus copies of the instance ID and server info strings.
 #[derive(Clone)]
-pub(crate) struct Service {
+pub(crate) struct Service(Arc<ServiceInner>);
+
+impl std::ops::Deref for Service {
+    type Target = ServiceInner;
+
+    fn deref(&self) -> &ServiceInner {
+        &self.0
+    }
+}
+
+/// State shared by every clone of a [`Service`].
+pub(crate) struct ServiceInner {
     graph: Arc<Mutex<GraphState>>,
     permits: Arc<Semaphore>,
     import_permits: Arc<Semaphore>,
@@ -559,7 +576,8 @@ pub(crate) struct Service {
     lifecycle: Lifecycle,
     info: crate::ServerInfo,
     mode: ServerMode,
-    instance_id: String,
+    // Shared with every worker closure without copying the string.
+    instance_id: Arc<str>,
     max_import_body_bytes: usize,
     // Present only when metrics are enabled; see `metrics::ServiceTelemetry`.
     telemetry: Option<Arc<ServiceTelemetry>>,
@@ -1079,6 +1097,12 @@ impl GraphState {
 
         let total_events = req.events.len();
         let mut newly_applied_count = 0usize;
+        // Stamps the last-applied instant once, on every exit path, if any
+        // event was applied: one clock read per request instead of per event.
+        let mut applied_stamp = AppliedStamp {
+            telemetry,
+            pending: false,
+        };
         let mut last_duplicate_entry: Option<DedupEntry> = None;
 
         for (idx, event) in req.events.into_iter().enumerate() {
@@ -1363,17 +1387,21 @@ impl GraphState {
                     self.increment_version();
                 }
                 self.applied_delivery_sequence = next_seq;
-                self.source_position = Some(event.source_position.clone());
+                // `clone_from` reuses the retained position's capacity; the
+                // owned event's strings then move into the window entry.
+                self.source_position
+                    .get_or_insert_default()
+                    .clone_from(&event.source_position);
                 self.dedup_window.record(DedupEntry {
                     delivery_sequence: next_seq,
-                    event_id: event.event_id.clone(),
-                    source_position: event.source_position.clone(),
+                    event_id: event.event_id,
+                    source_position: event.source_position,
                     canonical_op,
                     changed,
                 });
                 newly_applied_count += 1;
                 count_feeder_event(telemetry, result);
-                mark_applied(telemetry);
+                applied_stamp.pending = true;
             } else {
                 // Applied sequence counter is u64::MAX and cannot be incremented.
                 // Note: since seq is u64, any seq > u64::MAX is impossible on the wire.
@@ -1495,12 +1523,19 @@ pub(crate) struct ResponseMetadata {
 impl ResponseMetadata {
     /// Formats the composite ETag value enclosed in double quotes:
     /// `"<generation>.<state_version>.<percent_encoded_source_position>"`
+    #[cfg(test)]
     pub(crate) fn etag(&self) -> String {
         let pos_encoded = self
             .source_position
             .as_deref()
             .map(percent_encode_position)
             .unwrap_or_default();
+        self.etag_with_encoded_position(&pos_encoded)
+    }
+
+    /// Formats the same composite ETag from an already percent-encoded
+    /// source position, so response construction encodes it only once.
+    pub(crate) fn etag_with_encoded_position(&self, pos_encoded: &str) -> String {
         format!(
             "\"{}.{}.{}\"",
             self.generation, self.state_version, pos_encoded
@@ -1619,10 +1654,27 @@ fn count_feeder_event(telemetry: Option<&ServiceTelemetry>, result: FeederEventR
     }
 }
 
-/// Stamps the last-applied instant for an applied, non-duplicate event.
-fn mark_applied(telemetry: Option<&ServiceTelemetry>) {
-    if let Some(telemetry) = telemetry {
-        telemetry.mark_applied();
+/// Stamps the last-applied instant when dropped after at least one applied,
+/// non-duplicate event.
+///
+/// Feeder batches apply up to `MAX_BATCH_OPERATIONS` events under the graph
+/// lock; reading the clock once per request rather than once per event keeps
+/// that work out of the lock hold. The guard is dropped while the lock is
+/// still held, on success, partial failure, early error and unwinding alike,
+/// so stamps stay ordered. The gauge has millisecond resolution, so the
+/// later read changes no observable ordering between requests.
+struct AppliedStamp<'a> {
+    telemetry: Option<&'a ServiceTelemetry>,
+    pending: bool,
+}
+
+impl Drop for AppliedStamp<'_> {
+    fn drop(&mut self) {
+        if self.pending
+            && let Some(telemetry) = self.telemetry
+        {
+            telemetry.mark_applied();
+        }
     }
 }
 
@@ -1690,7 +1742,7 @@ impl Service {
             ServerMode::SourceManaged => (Some(mode.as_str()), Some(instance_id.clone())),
         };
 
-        Self {
+        Self(Arc::new(ServiceInner {
             info: crate::ServerInfo {
                 engine: engine.as_str(),
                 experimental: engine.is_experimental(),
@@ -1716,10 +1768,10 @@ impl Service {
             ))),
             lifecycle,
             mode,
-            instance_id,
+            instance_id: instance_id.into(),
             max_import_body_bytes,
             telemetry,
-        }
+        }))
     }
 
     /// Rejection and uncertain-outcome counters, present when metrics are enabled.
@@ -1871,7 +1923,7 @@ impl Service {
         if self.mode != ServerMode::SourceManaged {
             return Err(FeederError::ModeMismatch);
         }
-        if req.instance_id != self.instance_id {
+        if *req.instance_id != *self.instance_id {
             return Err(FeederError::StaleInstanceId(format!(
                 "request instance_id '{}' does not match server instance_id '{}'",
                 req.instance_id, self.instance_id
@@ -1883,14 +1935,14 @@ impl Service {
             return Err(error);
         }
         let published_atomic = self.published_readiness.clone();
-        let instance_id = self.instance_id.clone();
+        let instance_id = Arc::clone(&self.instance_id);
         let telemetry = self.telemetry.clone();
         self.run(
             JobKind::FeederSession,
             JobEffect::MayChangeState,
             move |state| {
                 let res = state
-                    .register_session(req, instance_id)
+                    .register_session(req, instance_id.to_string())
                     .inspect_err(|error| count_feeder_rejection(telemetry.as_deref(), error))?;
                 let word = state.current_readiness_word();
                 published_atomic.store(word, Ordering::Release);
@@ -1909,21 +1961,21 @@ impl Service {
         if self.mode != ServerMode::SourceManaged {
             return Err(FeederError::ModeMismatch);
         }
-        if req.instance_id != self.instance_id {
+        if *req.instance_id != *self.instance_id {
             return Err(FeederError::StaleInstanceId(format!(
                 "request instance_id '{}' does not match server instance_id '{}'",
                 req.instance_id, self.instance_id
             )));
         }
         let published_atomic = self.published_readiness.clone();
-        let instance_id = self.instance_id.clone();
+        let instance_id = Arc::clone(&self.instance_id);
         let telemetry = self.telemetry.clone();
         self.run(
             JobKind::FeederHeartbeat,
             JobEffect::MayChangeState,
             move |state| {
                 let res = state
-                    .heartbeat(req, instance_id)
+                    .heartbeat(req, instance_id.to_string())
                     .inspect_err(|error| count_feeder_rejection(telemetry.as_deref(), error))?;
                 let word = state.current_readiness_word();
                 published_atomic.store(word, Ordering::Release);
@@ -1954,7 +2006,7 @@ impl Service {
             max_nodes: self.info.max_nodes,
             max_edges: self.info.max_edges,
         };
-        let instance_id = self.instance_id.clone();
+        let instance_id = Arc::clone(&self.instance_id);
 
         let is_initial = {
             let state = self.graph.lock();
@@ -2024,17 +2076,23 @@ impl Service {
             lifecycle.check_worker_hook();
             job.import.observe(ImportObservation::begin_prepare);
 
-            // 1. Off-lock JSON parsing:
-            let mut buffer = raw_bytes.to_vec();
-            let req: ImportRequest = simd_json::from_slice(&mut buffer).map_err(|err| {
-                if err.is_data() {
-                    FeederError::UnprocessableJson(crate::api::request_error_message(&err))
-                } else {
-                    FeederError::MalformedJson
-                }
-            })?;
+            // 1. Off-lock JSON parsing. Converting the body reuses its
+            // allocation when it is uniquely owned (otherwise copies it once)
+            // and releases it with the scratch buffer before candidate
+            // building, so peak memory does not hold two body copies alongside
+            // the parsed request and the candidate graph.
+            let req: ImportRequest = {
+                let mut buffer = Vec::from(raw_bytes);
+                simd_json::from_slice(&mut buffer).map_err(|err| {
+                    if err.is_data() {
+                        FeederError::UnprocessableJson(crate::api::request_error_message(&err))
+                    } else {
+                        FeederError::MalformedJson
+                    }
+                })?
+            };
 
-            if req.instance_id != instance_id {
+            if *req.instance_id != *instance_id {
                 return Err(FeederError::StaleInstanceId(format!(
                     "request instance_id '{}' does not match server instance_id '{}'",
                     req.instance_id, instance_id
@@ -2214,7 +2272,7 @@ impl Service {
         operations: Vec<Operation>,
     ) -> Result<ExecutionResult, ServiceError> {
         let mode = self.mode;
-        let instance_id = self.instance_id.clone();
+        let instance_id = Arc::clone(&self.instance_id);
         let telemetry = self.telemetry.clone();
         let effect = if operations
             .iter()
@@ -2286,7 +2344,7 @@ impl Service {
     /// Takes a coherent snapshot through the same bounded worker path as writes.
     pub(crate) async fn stats(&self) -> Result<StatsResult, ServiceError> {
         let mode = self.mode;
-        let instance_id = self.instance_id.clone();
+        let instance_id = Arc::clone(&self.instance_id);
         let current_sync_status = self.sync_status();
         self.run(JobKind::Stats, JobEffect::ReadOnly, move |state| {
             let mut snapshot = state.snapshot(mode, &instance_id);
@@ -2314,9 +2372,6 @@ impl Service {
         F: FnOnce(&mut GraphState, ServerMode, &str) -> Result<T, FeederError> + Send + 'static,
     {
         let mode = self.mode;
-        let instance_id = self.instance_id.clone();
-        let published_atomic = self.published_readiness.clone();
-        let failure_flag = self.unavailable.clone();
 
         if self.is_unavailable() {
             self.count_rejection(Rejection::Unavailable);
@@ -2333,10 +2388,9 @@ impl Service {
             FeederError::from(ServiceError::Busy)
         })?;
         let job_guard = self.lifecycle.track_job();
-        let lifecycle = self.lifecycle.clone();
-        let graph = self.graph.clone();
-        let unavailable = self.unavailable.clone();
-        let telemetry = self.telemetry.clone();
+        // One shared handle gives the worker every field it needs with a
+        // single reference-count increment.
+        let service = self.clone();
         let panic_telemetry = self.telemetry_for(JobEffect::MayChangeState);
         let clock = JobClock::submit(self.telemetry.as_ref(), kind);
 
@@ -2345,18 +2399,20 @@ impl Service {
             let _job_guard = job_guard;
             let _permit = permit;
             let mut panic_guard = WorkerPanicGuard {
-                unavailable: unavailable.clone(),
+                unavailable: Arc::clone(&service.unavailable),
                 panic_telemetry,
                 success: false,
             };
+            let lifecycle = &service.lifecycle;
+            let telemetry = &service.telemetry;
             lifecycle.check_worker_hook();
             // Declared before the lock, so it observes after the lock is
             // released, also when unwinding.
             let mut catchup = CatchupRecorder::new(telemetry.clone());
-            let mut state = lock_timed(&graph, clock.as_ref(), &lifecycle);
-            if state.failed || unavailable.load(Ordering::Acquire) {
+            let mut state = lock_timed(&service.graph, clock.as_ref(), lifecycle);
+            if state.failed || service.unavailable.load(Ordering::Acquire) {
                 panic_guard.unavailable.store(true, Ordering::Release);
-                if let Some(telemetry) = &telemetry {
+                if let Some(telemetry) = telemetry {
                     telemetry.reject(Rejection::Unavailable);
                 }
                 return Err(FeederError::Unavailable);
@@ -2364,13 +2420,13 @@ impl Service {
             if mutate {
                 state.failed = true;
             }
-            let result = op(&mut state, mode, &instance_id);
+            let result = op(&mut state, mode, &service.instance_id);
             catchup.record(state.completed_catchup.take());
             if let Err(error) = &result {
                 count_feeder_rejection(telemetry.as_deref(), error);
             }
             let word = state.current_readiness_word();
-            published_atomic.store(word, Ordering::Release);
+            service.published_readiness.store(word, Ordering::Release);
             if mutate {
                 state.failed = false;
                 // Also after a partial failure: its applied prefix is live.
@@ -2389,7 +2445,7 @@ impl Service {
                 panicked = error.is_panic(),
                 "{worker_name} worker thread failed"
             );
-            failure_flag.store(true, Ordering::Release);
+            self.unavailable.store(true, Ordering::Release);
             FeederError::Unavailable
         })?
     }
@@ -2476,11 +2532,9 @@ impl Service {
             ServiceError::Busy
         })?;
         let job_guard = self.lifecycle.track_job();
-        let lifecycle = self.lifecycle.clone();
-        let graph = self.graph.clone();
-        let unavailable = self.unavailable.clone();
-        let failure_flag = self.unavailable.clone();
-        let telemetry = self.telemetry.clone();
+        // One shared handle gives the worker the graph, lifecycle, failure
+        // flag and telemetry with a single reference-count increment.
+        let service = self.clone();
         let panic_telemetry = self.telemetry_for(effect);
         let clock = JobClock::submit(self.telemetry.as_ref(), kind);
         let handle = tokio::task::spawn_blocking(move || {
@@ -2488,16 +2542,18 @@ impl Service {
             let _job_guard = job_guard;
             let _permit = permit;
             let mut panic_guard = WorkerPanicGuard {
-                unavailable: unavailable.clone(),
+                unavailable: Arc::clone(&service.unavailable),
                 panic_telemetry,
                 success: false,
             };
+            let lifecycle = &service.lifecycle;
+            let telemetry = service.telemetry.as_deref();
             lifecycle.check_worker_hook();
-            let mut graph = lock_timed(&graph, clock.as_ref(), &lifecycle);
-            if graph.failed || unavailable.load(Ordering::Acquire) {
+            let mut graph = lock_timed(&service.graph, clock.as_ref(), lifecycle);
+            if graph.failed || service.unavailable.load(Ordering::Acquire) {
                 tracing::warn!("graph worker state marked as failed; rejecting work");
                 panic_guard.unavailable.store(true, Ordering::Release);
-                if let Some(telemetry) = &telemetry {
+                if let Some(telemetry) = telemetry {
                     telemetry.reject(Rejection::Unavailable);
                 }
                 return Err(ServiceError::Unavailable);
@@ -2506,7 +2562,7 @@ impl Service {
             let result = work(&mut graph);
             graph.failed = false;
             if effect == JobEffect::MayChangeState {
-                publish_graph_counts(telemetry.as_deref(), &graph);
+                publish_graph_counts(telemetry, &graph);
             }
             drop(graph);
             lifecycle.check_worker_post_lock_hook();
@@ -2519,7 +2575,7 @@ impl Service {
         joined.map_err(|error| {
             // Never log the error itself: a panic message may embed request data.
             tracing::error!(panicked = error.is_panic(), "graph worker thread failed");
-            failure_flag.store(true, Ordering::Release);
+            self.unavailable.store(true, Ordering::Release);
             ServiceError::Unavailable
         })?
     }
@@ -3690,29 +3746,14 @@ mod tests {
             max_edges: Some(100),
         };
         let lifecycle = Lifecycle::ready();
-        let config = crate::ServerConfig::default();
+        let config = crate::ServerConfig::default().with_mode(ServerMode::SourceManaged);
         let service = Service::with_config(
             ConnectivityGraph::with_limits(EngineConfig::CompactBfs, limits),
             32,
             lifecycle.clone(),
             &config,
         );
-        // Force source-managed mode for this test service
-        let service = Service {
-            info: crate::ServerInfo {
-                engine: "compact-bfs",
-                experimental: false,
-                max_pending_jobs: 32,
-                max_body_bytes: crate::MAX_BODY_BYTES,
-                max_batch_operations: crate::MAX_BATCH_OPERATIONS,
-                max_nodes: Some(100),
-                max_edges: Some(100),
-                mode: Some("source_managed"),
-                instance_id: Some(service.instance_id.clone()),
-            },
-            mode: ServerMode::SourceManaged,
-            ..service
-        };
+        assert_eq!(service.info().mode, Some("source_managed"));
 
         let inst_id = service.instance_id().to_string();
         service
@@ -6053,9 +6094,8 @@ mod tests {
                 let caller = app.spawn_import();
                 pause.wait_started().await;
 
-                // Holding the count blocks the worker's job-guard update.
-                let jobs = lifecycle.jobs_receiver();
-                let held = jobs.borrow();
+                // Holding job releases blocks the worker's job-guard update.
+                let held = lifecycle.hold_job_releases();
                 pause.release();
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
                 let recorded = loop {
@@ -6067,7 +6107,7 @@ mod tests {
                     }
                     std::thread::yield_now();
                 };
-                let outstanding = *held;
+                let outstanding = lifecycle.outstanding_jobs();
                 drop(held);
                 assert!(recorded, "import not recorded while its job was counted");
                 assert_eq!(outstanding, 1);

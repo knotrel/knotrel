@@ -76,13 +76,14 @@ pub async fn serve(
     let mut tasks: JoinSet<()> = JoinSet::new();
     let header_read_timeout = config.header_read_timeout();
     let mut deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
-    let mut jobs_rx = lifecycle.jobs_receiver();
-    let mut jobs_closed = false;
     tokio::pin!(shutdown);
     lifecycle.mark_ready();
     let mut draining = false;
     loop {
-        let active_jobs = *jobs_rx.borrow_and_update();
+        // Created before the count is read: it observes any later drop of
+        // the count to zero, so the wait below cannot miss the last job.
+        let jobs_idle = lifecycle.jobs_idle();
+        let active_jobs = lifecycle.outstanding_jobs();
         if draining && tasks.is_empty() && active_jobs == 0 {
             return ShutdownOutcome::Drained;
         }
@@ -100,7 +101,7 @@ pub async fn serve(
                 deadline = Some(Box::pin(tokio::time::sleep(config.shutdown_timeout())));
                 tracing::info!(
                     open_connections = tasks.len(),
-                    outstanding_jobs = *jobs_rx.borrow(),
+                    outstanding_jobs = lifecycle.outstanding_jobs(),
                     timeout_ms = config.shutdown_timeout().as_millis(),
                     "draining"
                 );
@@ -110,18 +111,14 @@ pub async fn serve(
                     tracing::error!(panicked = error.is_panic(), "connection task failed");
                 }
             }
-            jobs_changed = jobs_rx.changed(), if draining && !jobs_closed => {
-                if jobs_changed.is_err() {
-                    jobs_closed = true;
-                }
-            }
+            () = jobs_idle, if draining => {}
             () = async {
                 match deadline.as_mut() {
                     Some(sleep) => sleep.await,
                     None => std::future::pending().await,
                 }
             } => {
-                let abandoned = tasks.len() + *jobs_rx.borrow_and_update();
+                let abandoned = tasks.len() + lifecycle.outstanding_jobs();
                 if abandoned == 0 {
                     return ShutdownOutcome::Drained;
                 }

@@ -227,17 +227,42 @@ impl ErrorCode {
 }
 
 /// A decimal-string node identifier with lossless JSON representation.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(try_from = "String")]
+///
+/// Deserialization parses the borrowed JSON string directly, so no `String`
+/// is allocated per identifier; imports can carry millions of them. Accepted
+/// input and every rejection message match the former `try_from = "String"`
+/// implementation (see `wire_node_json_contract_is_preserved`).
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct WireNode(pub(crate) u64);
 
-impl TryFrom<String> for WireNode {
-    type Error = &'static str;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
+impl WireNode {
+    /// Parses a nonempty string of ASCII decimal digits in O(len) time.
+    pub(crate) fn parse(value: &str) -> Result<Self, &'static str> {
         if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err("node IDs must be nonempty strings of ASCII decimal digits");
         }
         value.parse().map(Self).map_err(|_| "node ID exceeds u64")
+    }
+}
+
+impl<'de> Deserialize<'de> for WireNode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct WireNodeVisitor;
+
+        impl serde::de::Visitor<'_> for WireNodeVisitor {
+            type Value = WireNode;
+
+            // Same expectation as `String`'s visitor, so type errors read alike.
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<WireNode, E> {
+                WireNode::parse(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(WireNodeVisitor)
     }
 }
 
@@ -409,6 +434,45 @@ impl FeederOperation {
     }
 }
 
+/// The `op` member of a feeder event, resolved while parsing.
+///
+/// Known names are stored as their variant, so a batch of up to
+/// `MAX_BATCH_OPERATIONS` events allocates no string per operation. Unknown
+/// names keep their text for the `unsupported operation` error, which is
+/// still raised during event validation, not by the parser.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum WireOp {
+    Known(FeederOperation),
+    Unknown(String),
+}
+
+impl From<&str> for WireOp {
+    fn from(value: &str) -> Self {
+        FeederOperation::parse(value).map_or_else(|| Self::Unknown(value.to_owned()), Self::Known)
+    }
+}
+
+impl<'de> Deserialize<'de> for WireOp {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct WireOpVisitor;
+
+        impl serde::de::Visitor<'_> for WireOpVisitor {
+            type Value = WireOp;
+
+            // Same expectation as `String`'s visitor, so type errors read alike.
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<WireOp, E> {
+                Ok(WireOp::from(value))
+            }
+        }
+
+        deserializer.deserialize_str(WireOpVisitor)
+    }
+}
+
 /// A feeder event operation descriptor.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -418,7 +482,7 @@ pub(crate) struct FeederEvent {
     pub(crate) prev_delivery_sequence: u64,
     pub(crate) source_position: String,
     pub(crate) prev_source_position: String,
-    pub(crate) op: String,
+    pub(crate) op: WireOp,
     #[serde(default)]
     pub(crate) source: Option<WireNode>,
     #[serde(default)]
@@ -641,7 +705,9 @@ where
                 tracing::warn!(status = %err.status(), "failed to read request body bytes");
                 error_response(err.status(), ErrorCode::InvalidRequest, err.body_text())
             })?;
-        let mut buffer = bytes.to_vec();
+        // simd-json parses in place; reuse a uniquely owned body allocation
+        // instead of always copying it.
+        let mut buffer = Vec::from(bytes);
         let value = simd_json::from_slice(&mut buffer).map_err(|err| {
             let status = if err.is_data() {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -701,7 +767,14 @@ pub(crate) async fn logging_middleware(
     next: axum::middleware::Next,
 ) -> Response {
     let method = request.method().clone();
-    let uri = request.uri().path().to_string();
+    // Known routes are logged from their static strings; only unknown paths
+    // are copied, since the request is moved into the handler.
+    let path = request.uri().path();
+    let uri: std::borrow::Cow<'static, str> = Route::ALL
+        .into_iter()
+        .map(Route::as_str)
+        .find(|route| *route == path)
+        .map_or_else(|| path.to_owned().into(), Into::into);
     let scrape = crate::lifecycle::is_metrics_scrape(&request);
     let start = std::time::Instant::now();
 
@@ -755,7 +828,7 @@ pub(crate) async fn single(
     match service.execute_operation(operation).await {
         Ok(mut exec_result) => {
             let mut response = exec_result.outcomes.remove(0).into_response();
-            inject_metadata_headers(response.headers_mut(), &exec_result.metadata);
+            inject_metadata_headers(response.headers_mut(), exec_result.metadata);
             response
         }
         Err(error) => service_error(error),
@@ -807,7 +880,7 @@ pub(crate) async fn batch(
                 results: exec_result.outcomes,
             })
             .into_response();
-            inject_metadata_headers(response.headers_mut(), &exec_result.metadata);
+            inject_metadata_headers(response.headers_mut(), exec_result.metadata);
             response
         }
         Err(error) => service_error(error),
@@ -973,7 +1046,7 @@ pub(crate) async fn feeder_import(
                 sync_status: Some(crate::service::SyncStatus::CatchingUp),
             };
             let mut response = (StatusCode::CREATED, Json(res)).into_response();
-            inject_metadata_headers(response.headers_mut(), &metadata);
+            inject_metadata_headers(response.headers_mut(), metadata);
             response
         }
         Err(err) => feeder_error(err),
@@ -1005,12 +1078,12 @@ pub(crate) async fn feeder_events(
     match service.apply_events(events_req).await {
         Ok(crate::service::FeederEventsResult::Applied { response, metadata }) => {
             let mut res = (StatusCode::OK, Json(response)).into_response();
-            inject_metadata_headers(res.headers_mut(), &metadata);
+            inject_metadata_headers(res.headers_mut(), metadata);
             res
         }
         Ok(crate::service::FeederEventsResult::Duplicate { response, metadata }) => {
             let mut res = (StatusCode::OK, Json(response)).into_response();
-            inject_metadata_headers(res.headers_mut(), &metadata);
+            inject_metadata_headers(res.headers_mut(), metadata);
             res
         }
         Ok(crate::service::FeederEventsResult::PartialFailure {
@@ -1019,7 +1092,7 @@ pub(crate) async fn feeder_events(
             status,
         }) => {
             let mut res = (status, Json(failure)).into_response();
-            inject_metadata_headers(res.headers_mut(), &metadata);
+            inject_metadata_headers(res.headers_mut(), metadata);
             res
         }
         Err(err) => feeder_error(err),
@@ -1051,7 +1124,7 @@ pub(crate) async fn feeder_gap(
     match service.declare_gap(gap_req).await {
         Ok((res, metadata)) => {
             let mut response = (StatusCode::OK, Json(res)).into_response();
-            inject_metadata_headers(response.headers_mut(), &metadata);
+            inject_metadata_headers(response.headers_mut(), metadata);
             response
         }
         Err(err) => feeder_error(err),
@@ -1083,7 +1156,7 @@ pub(crate) async fn feeder_barrier(
     match service.declare_barrier(barrier_req).await {
         Ok((res, metadata)) => {
             let mut response = (StatusCode::OK, Json(res)).into_response();
-            inject_metadata_headers(response.headers_mut(), &metadata);
+            inject_metadata_headers(response.headers_mut(), metadata);
             response
         }
         Err(err) => feeder_error(err),
@@ -1284,7 +1357,7 @@ pub(crate) async fn stats(State(service): State<Service>) -> Response {
     let mut response = match service.stats().await {
         Ok(stats_result) => {
             let mut res = Json(stats_result.snapshot).into_response();
-            inject_metadata_headers(res.headers_mut(), &stats_result.metadata);
+            inject_metadata_headers(res.headers_mut(), stats_result.metadata);
             res
         }
         Err(error) => service_error(error),
@@ -1300,34 +1373,36 @@ pub(crate) async fn stats(State(service): State<Service>) -> Response {
 /// Injects coherent graph identity and version headers into an HTTP response.
 pub(crate) fn inject_metadata_headers(
     headers: &mut HeaderMap,
-    metadata: &crate::service::ResponseMetadata,
+    metadata: crate::service::ResponseMetadata,
 ) {
-    if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.etag()) {
+    use axum::http::HeaderValue;
+    // Owned strings become header values without another copy, and the
+    // source position is percent-encoded once for both the ETag and its header.
+    let encoded_position = metadata
+        .source_position
+        .as_deref()
+        .map(crate::service::percent_encode_position);
+    let etag = metadata.etag_with_encoded_position(encoded_position.as_deref().unwrap_or(""));
+    if let Ok(val) = HeaderValue::try_from(etag) {
         headers.insert(axum::http::header::ETAG, val);
     }
-    if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.instance_id) {
+    if let Ok(val) = HeaderValue::try_from(metadata.instance_id) {
         headers.insert(INSTANCE_ID_HEADER, val);
     }
-    headers.insert(
-        GRAPH_ID_HEADER,
-        axum::http::HeaderValue::from_static(DEFAULT_GRAPH_ID),
-    );
-    if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.generation.to_string()) {
-        headers.insert(GENERATION_HEADER, val);
-    }
-    if let Ok(val) = axum::http::HeaderValue::from_str(&metadata.state_version) {
+    headers.insert(GRAPH_ID_HEADER, HeaderValue::from_static(DEFAULT_GRAPH_ID));
+    headers.insert(GENERATION_HEADER, HeaderValue::from(metadata.generation));
+    if let Ok(val) = HeaderValue::try_from(metadata.state_version) {
         headers.insert(STATE_VERSION_HEADER, val);
     }
-    if let Some(ref pos) = metadata.source_position {
-        let encoded = crate::service::percent_encode_position(pos);
-        if let Ok(val) = axum::http::HeaderValue::from_str(&encoded) {
-            headers.insert(SOURCE_POSITION_HEADER, val);
-        }
+    if let Some(encoded) = encoded_position
+        && let Ok(val) = HeaderValue::try_from(encoded)
+    {
+        headers.insert(SOURCE_POSITION_HEADER, val);
     }
     if let Some(status) = metadata.sync_status {
         headers.insert(
             SYNC_STATUS_HEADER,
-            axum::http::HeaderValue::from_static(status.as_str()),
+            HeaderValue::from_static(status.as_str()),
         );
     }
 }
@@ -1458,12 +1533,102 @@ mod tests {
 
     #[test]
     fn test_wire_node_parsing() {
-        assert_eq!(WireNode::try_from("123".to_string()).unwrap().0, 123);
-        assert_eq!(WireNode::try_from("0".to_string()).unwrap().0, 0);
-        assert!(WireNode::try_from("".to_string()).is_err());
-        assert!(WireNode::try_from("abc".to_string()).is_err());
-        assert!(WireNode::try_from("-1".to_string()).is_err());
-        assert!(WireNode::try_from("18446744073709551616".to_string()).is_err());
+        assert_eq!(WireNode::parse("123").unwrap().0, 123);
+        assert_eq!(WireNode::parse("0").unwrap().0, 0);
+        assert!(WireNode::parse("").is_err());
+        assert!(WireNode::parse("abc").is_err());
+        assert!(WireNode::parse("-1").is_err());
+        assert!(WireNode::parse("18446744073709551616").is_err());
+    }
+
+    /// Pins the node-ID wire contract through the real JSON parser: accepted
+    /// forms, the client-visible message of every rejection, and its status.
+    #[test]
+    fn wire_node_json_contract_is_preserved() {
+        fn parse(body: &str) -> Result<Operation, (bool, String)> {
+            let mut bytes = body.as_bytes().to_vec();
+            simd_json::from_slice::<Operation>(&mut bytes)
+                .map_err(|err| (err.is_data(), request_error_message(&err)))
+        }
+        let connected = |source: &str, target: &str| {
+            format!(r#"{{"op":"connected","source":{source},"target":{target}}}"#)
+        };
+        for (source, expected) in [
+            (r#""0""#, 0),
+            (r#""42""#, 42),
+            (r#""18446744073709551615""#, u64::MAX),
+            (r#""007""#, 7),
+            (r#""\u0031\u0032""#, 12),
+        ] {
+            match parse(&connected(source, r#""1""#)) {
+                Ok(Operation::Connected { source, target }) => {
+                    assert_eq!((source.0, target.0), (expected, 1));
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        let digits = "node IDs must be nonempty strings of ASCII decimal digits";
+        let shape = "request body does not match the expected shape";
+        for (source, message) in [
+            (r#""""#, digits),
+            (r#""abc""#, digits),
+            (r#""-1""#, digits),
+            (r#""+1""#, digits),
+            (r#"" 1""#, digits),
+            (r#""1.0""#, digits),
+            (r#""\u0661""#, digits),
+            (r#""18446744073709551616""#, shape),
+            ("1", shape),
+            ("-1", shape),
+            ("1.5", shape),
+            ("null", shape),
+            ("true", shape),
+            ("[]", shape),
+            ("{}", shape),
+        ] {
+            assert_eq!(
+                parse(&connected(source, r#""1""#)).unwrap_err(),
+                (true, message.to_owned()),
+                "{source}"
+            );
+        }
+        assert_eq!(
+            parse(r#"{"op":"connected","source":"1""#).unwrap_err(),
+            (false, "request body is not valid JSON".to_owned())
+        );
+    }
+
+    /// Known feeder operations resolve while parsing; unknown names survive
+    /// for validation's message; non-strings remain shape errors.
+    #[test]
+    fn feeder_event_op_json_contract_is_preserved() {
+        fn parse(op: &str) -> Result<FeederEvent, (bool, String)> {
+            let mut bytes = format!(
+                r#"{{"event_id":"e","delivery_sequence":1,"prev_delivery_sequence":0,"source_position":"p","prev_source_position":"","op":{op}}}"#
+            )
+            .into_bytes();
+            simd_json::from_slice::<FeederEvent>(&mut bytes)
+                .map_err(|err| (err.is_data(), request_error_message(&err)))
+        }
+        for operation in FeederOperation::ALL {
+            let event = parse(&format!(r#""{}""#, operation.as_str())).unwrap();
+            assert_eq!(event.op, WireOp::Known(operation));
+        }
+        assert_eq!(
+            parse(r#""LINK""#).unwrap().op,
+            WireOp::Unknown("LINK".into())
+        );
+        assert_eq!(parse(r#""""#).unwrap().op, WireOp::Unknown(String::new()));
+        for op in ["1", "null", "[]"] {
+            assert_eq!(
+                parse(op).unwrap_err(),
+                (
+                    true,
+                    "request body does not match the expected shape".to_owned()
+                ),
+                "{op}"
+            );
+        }
     }
 
     #[test]
@@ -1477,7 +1642,7 @@ mod tests {
             source_position: Some("pos/1".into()),
             sync_status: Some(crate::service::SyncStatus::CatchingUp),
         };
-        inject_metadata_headers(&mut headers, &metadata);
+        inject_metadata_headers(&mut headers, metadata);
         assert_eq!(headers.get("etag").unwrap(), "\"2.42.pos%2F1\"");
         assert_eq!(headers.get("x-knotrel-instance-id").unwrap(), "srv-test-1");
         assert_eq!(headers.get("x-knotrel-graph-id").unwrap(), "default");

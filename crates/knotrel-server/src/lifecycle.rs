@@ -15,11 +15,11 @@ use axum::{
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
     time::Duration,
 };
-use tokio::sync::watch;
+use tokio::sync::{Notify, futures::Notified};
 
 /// Externally visible server phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,8 +170,15 @@ impl ProbePauseHandle {
 #[derive(Debug)]
 struct LifecycleInner {
     phase: AtomicU8,
-    jobs_tx: watch::Sender<usize>,
-    jobs_rx: watch::Receiver<usize>,
+    // Outstanding graph jobs, queued or running. Every request touches this
+    // count twice, so it is a plain atomic: a `watch` channel took a write
+    // lock and eight notifier mutexes per update.
+    jobs: AtomicUsize,
+    // Woken each time `jobs` drops to zero; the drain loop waits on it.
+    jobs_idle: Notify,
+    // Lets unit tests hold job releases at the decrement boundary.
+    #[cfg(all(test, feature = "test-support"))]
+    job_release_gate: parking_lot::Mutex<()>,
     #[cfg(feature = "test-support")]
     worker_hook: parking_lot::Mutex<Option<WorkerHook>>,
     #[cfg(feature = "test-support")]
@@ -191,14 +198,19 @@ struct LifecycleInner {
 /// Dropping this token decrements the active worker count on every path,
 /// including normal return, early error, or unwinding from a panic.
 pub(crate) struct JobGuard {
-    jobs_tx: watch::Sender<usize>,
+    lifecycle: Lifecycle,
 }
 
 impl Drop for JobGuard {
     fn drop(&mut self) {
-        self.jobs_tx.send_modify(|count| {
-            *count = count.saturating_sub(1);
-        });
+        let inner = &self.lifecycle.0;
+        #[cfg(all(test, feature = "test-support"))]
+        let _gate = inner.job_release_gate.lock();
+        let previous = inner.jobs.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "job count underflow");
+        if previous == 1 {
+            inner.jobs_idle.notify_waiters();
+        }
     }
 }
 
@@ -212,50 +224,34 @@ pub struct Lifecycle(Arc<LifecycleInner>);
 impl Lifecycle {
     /// Creates a handle in [`Phase::Starting`].
     pub fn new() -> Self {
-        let (jobs_tx, jobs_rx) = watch::channel(0);
-        #[cfg(feature = "test-support")]
-        let inner = LifecycleInner {
-            phase: AtomicU8::new(Phase::Starting as u8),
-            jobs_tx,
-            jobs_rx,
-            worker_hook: parking_lot::Mutex::new(None),
-            worker_post_lock_hook: parking_lot::Mutex::new(None),
-            lock_request_hook: parking_lot::Mutex::new(None),
-            drain_loop_hook: parking_lot::Mutex::new(None),
-            gate_hook: parking_lot::Mutex::new(None),
-            ready_probe_hook: parking_lot::Mutex::new(None),
-        };
-        #[cfg(not(feature = "test-support"))]
-        let inner = LifecycleInner {
-            phase: AtomicU8::new(Phase::Starting as u8),
-            jobs_tx,
-            jobs_rx,
-        };
-        Self(Arc::new(inner))
+        Self::with_phase(Phase::Starting)
     }
 
     /// Creates a handle that already reports [`Phase::Ready`].
     pub(crate) fn ready() -> Self {
-        let (jobs_tx, jobs_rx) = watch::channel(0);
-        #[cfg(feature = "test-support")]
-        let inner = LifecycleInner {
-            phase: AtomicU8::new(Phase::Ready as u8),
-            jobs_tx,
-            jobs_rx,
+        Self::with_phase(Phase::Ready)
+    }
+
+    fn with_phase(phase: Phase) -> Self {
+        Self(Arc::new(LifecycleInner {
+            phase: AtomicU8::new(phase as u8),
+            jobs: AtomicUsize::new(0),
+            jobs_idle: Notify::new(),
+            #[cfg(all(test, feature = "test-support"))]
+            job_release_gate: parking_lot::Mutex::new(()),
+            #[cfg(feature = "test-support")]
             worker_hook: parking_lot::Mutex::new(None),
+            #[cfg(feature = "test-support")]
             worker_post_lock_hook: parking_lot::Mutex::new(None),
+            #[cfg(feature = "test-support")]
             lock_request_hook: parking_lot::Mutex::new(None),
+            #[cfg(feature = "test-support")]
             drain_loop_hook: parking_lot::Mutex::new(None),
+            #[cfg(feature = "test-support")]
             gate_hook: parking_lot::Mutex::new(None),
+            #[cfg(feature = "test-support")]
             ready_probe_hook: parking_lot::Mutex::new(None),
-        };
-        #[cfg(not(feature = "test-support"))]
-        let inner = LifecycleInner {
-            phase: AtomicU8::new(Phase::Ready as u8),
-            jobs_tx,
-            jobs_rx,
-        };
-        Self(Arc::new(inner))
+        }))
     }
 
     /// Returns the current phase.
@@ -280,20 +276,30 @@ impl Lifecycle {
 
     /// Tracks an outstanding graph worker job.
     pub(crate) fn track_job(&self) -> JobGuard {
-        self.0.jobs_tx.send_modify(|count| *count += 1);
+        self.0.jobs.fetch_add(1, Ordering::AcqRel);
         JobGuard {
-            jobs_tx: self.0.jobs_tx.clone(),
+            lifecycle: self.clone(),
         }
     }
 
     /// Number of outstanding graph jobs currently queued or running.
     pub fn outstanding_jobs(&self) -> usize {
-        *self.0.jobs_rx.borrow()
+        self.0.jobs.load(Ordering::Acquire)
     }
 
-    /// Receiver observing changes to the outstanding graph job count.
-    pub(crate) fn jobs_receiver(&self) -> watch::Receiver<usize> {
-        self.0.jobs_rx.clone()
+    /// Completes once the outstanding job count next drops to zero.
+    ///
+    /// The future observes every drop to zero that happens after it is
+    /// created, even before it is first polled, so callers create it before
+    /// reading [`Self::outstanding_jobs`] to avoid a lost wakeup.
+    pub(crate) fn jobs_idle(&self) -> Notified<'_> {
+        self.0.jobs_idle.notified()
+    }
+
+    /// Blocks every job release until the guard is dropped (unit tests only).
+    #[cfg(all(test, feature = "test-support"))]
+    pub(crate) fn hold_job_releases(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.0.job_release_gate.lock()
     }
 
     /// Installs a pause point for the next worker job to facilitate deterministic testing.
@@ -769,12 +775,13 @@ pub(crate) async fn request_timeout(
 ) -> Response {
     let completed = if policy.mark_timeouts {
         let flag = Arc::new(AtomicBool::new(false));
-        let mut handler = Box::pin(metrics::mark_timeouts(flag.clone(), next.run(request)));
-        let result = tokio::time::timeout(policy.limit, handler.as_mut()).await;
+        // Pinned in this frame rather than boxed. The handler is dropped at
+        // the end of this block, after the flag is set, so its drop guards
+        // see a timeout.
+        let handler = std::pin::pin!(metrics::mark_timeouts(flag.clone(), next.run(request)));
+        let result = tokio::time::timeout(policy.limit, handler).await;
         if result.is_err() {
-            // Mark before dropping, so the handler's drop guards see it.
             flag.store(true, Ordering::Release);
-            drop(handler);
         }
         result
     } else {

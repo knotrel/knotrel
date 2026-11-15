@@ -182,13 +182,26 @@ impl ConnectivityGraph {
         }
     }
 
+    /// Reports whether `node` is registered, in expected O(1) time.
+    ///
+    /// Limit checks use this ID-map lookup instead of a reflexive
+    /// [`Self::connected`] query, which costs O(log V) tree-root walks on the
+    /// Euler-tour and HDT engines.
+    fn contains_node(&self, node: NodeId) -> bool {
+        match &self.backend {
+            Backend::Compact(graph) => graph.contains_node(node),
+            Backend::EulerTour(graph) => graph.contains_node(node),
+            Backend::Hdt(graph) => graph.contains_node(node),
+        }
+    }
+
     /// Adds a vertex; returns whether it was absent.
     /// # Errors
     /// Returns [`GraphError::NodeLimitExceeded`] without mutation at capacity.
     /// An existing vertex always returns `Ok(false)`.
     pub fn add_node(&mut self, node: NodeId) -> Result<bool, GraphError> {
         if let Some(limit) = self.limits.max_nodes {
-            if self.connected(node, node).is_ok() {
+            if self.contains_node(node) {
                 return Ok(false);
             }
             if self.node_count() >= limit {
@@ -208,7 +221,8 @@ impl ConnectivityGraph {
     /// [`GraphError::SelfLoop`] without creating its endpoint.
     /// Limit checks precede all mutation; node limits take precedence over edge
     /// limits. Duplicate edges succeed unchanged even at capacity. Each check
-    /// uses ordered index lookups, never a graph traversal or speculative insert.
+    /// uses expected O(1) ID-map lookups, never a graph traversal, tree-root
+    /// walk or speculative insert.
     /// # Errors
     /// Self-loops or cardinality violations leave the entire graph unchanged.
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
@@ -216,8 +230,8 @@ impl ConnectivityGraph {
             return Err(GraphError::SelfLoop { node: source });
         }
         if let Some(limit) = self.limits.max_nodes {
-            let missing = usize::from(self.connected(source, source).is_err())
-                + usize::from(self.connected(target, target).is_err());
+            let missing =
+                usize::from(!self.contains_node(source)) + usize::from(!self.contains_node(target));
             if missing > limit.saturating_sub(self.node_count()) {
                 return Err(GraphError::NodeLimitExceeded { limit });
             }
