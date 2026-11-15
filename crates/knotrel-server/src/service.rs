@@ -643,6 +643,14 @@ impl GraphState {
         }
     }
 
+    /// Synchronization coordinates for transition logging (M6.3).
+    fn sync_point(&self) -> crate::logging::SyncPoint {
+        crate::logging::SyncPoint {
+            generation: self.generation,
+            status: self.sync_status,
+        }
+    }
+
     fn current_readiness_word(&mut self) -> u64 {
         let deadline_ms = self.lease_deadline.map(instant_to_millis).unwrap_or(0);
         self.publication_seq = self.publication_seq.wrapping_add(1);
@@ -1469,7 +1477,8 @@ impl GraphState {
 
         tracing::warn!(
             failed_delivery_sequence = req.failed_delivery_sequence,
-            reason = ?req.reason,
+            generation = self.generation,
+            reason = ?req.reason.as_deref().map(crate::logging::sanitize),
             "feeder declared unrecoverable source gap; transitioning graph to Desynchronized"
         );
         desynchronize(
@@ -1696,11 +1705,13 @@ fn desynchronize(
 
 /// Counts one rejected feeder request when telemetry is enabled and the
 /// error is a feeder-protocol rejection.
+/// Logs (always) and counts (with metrics) a feeder rejection by its code.
 fn count_feeder_rejection(telemetry: Option<&ServiceTelemetry>, error: &FeederError) {
-    if let Some(telemetry) = telemetry
-        && let Some(code) = FeederRejection::of(error)
-    {
-        telemetry.count_feeder_rejection(code);
+    if let Some(code) = FeederRejection::of(error) {
+        crate::logging::log_feeder_rejection(code.label());
+        if let Some(telemetry) = telemetry {
+            telemetry.count_feeder_rejection(code);
+        }
     }
 }
 
@@ -2027,7 +2038,10 @@ impl Service {
             _job_guard: job_guard,
         };
         let clock = JobClock::submit(self.telemetry.as_ref(), JobKind::ImportPublish);
+        // The worker logs inside the submitting request's span (M6.3).
+        let span = tracing::Span::current();
         let handle = tokio::task::spawn_blocking(move || {
+            let _span = span.enter();
             JobClock::start(clock.as_ref());
             // Dropped last, after the lock and the request state, so the
             // `publish` phase and the terminal result include them. Bound as
@@ -2182,6 +2196,7 @@ impl Service {
                 .ok_or(FeederError::GenerationExhausted)?;
 
             // 4. ATOMIC PUBLICATION
+            let before = state.sync_point();
             state.failed = true;
             state.graph = candidate;
             state.generation = next_generation;
@@ -2215,6 +2230,24 @@ impl Service {
                 telemetry.publish_graph_counts(node_count, edge_count);
                 telemetry.mark_applied();
             }
+            tracing::info!(
+                mode = match req.mode {
+                    ImportMode::CreateOnly => "create_only",
+                    ImportMode::Replace => "replace",
+                },
+                from_generation = before.generation,
+                generation = state.generation,
+                node_count,
+                edge_count,
+                source_id = %crate::logging::sanitize(state.source_id.as_deref().unwrap_or("")),
+                source_position = %crate::logging::sanitize(&req.source_position),
+                "graph published by import"
+            );
+            before.log_transition(
+                state.sync_point(),
+                "import_publish",
+                Some(&req.source_position),
+            );
 
             let response = ImportResponse {
                 result: FeederResult::Published,
@@ -2393,8 +2426,11 @@ impl Service {
         let service = self.clone();
         let panic_telemetry = self.telemetry_for(JobEffect::MayChangeState);
         let clock = JobClock::submit(self.telemetry.as_ref(), kind);
+        // The worker logs inside the submitting request's span (M6.3).
+        let span = tracing::Span::current();
 
         let handle = tokio::task::spawn_blocking(move || {
+            let _span = span.enter();
             JobClock::start(clock.as_ref());
             let _job_guard = job_guard;
             let _permit = permit;
@@ -2420,7 +2456,13 @@ impl Service {
             if mutate {
                 state.failed = true;
             }
+            let before = state.sync_point();
             let result = op(&mut state, mode, &service.instance_id);
+            before.log_transition(
+                state.sync_point(),
+                worker_name,
+                state.source_position.as_deref(),
+            );
             catchup.record(state.completed_catchup.take());
             if let Err(error) = &result {
                 count_feeder_rejection(telemetry.as_deref(), error);
@@ -2500,14 +2542,23 @@ impl Service {
         }
         let stale_word =
             PublishedReadiness::pack(SyncStatus::Stale, observed.seq, observed.deadline_millis);
-        self.published_readiness
+        let marked = self
+            .published_readiness
             .compare_exchange(
                 observed_word,
                 stale_word,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .is_ok()
+            .is_ok();
+        if marked {
+            tracing::warn!(
+                from = SyncStatus::Ready.as_str(),
+                to = SyncStatus::Stale.as_str(),
+                "feeder lease expired; readiness is stale"
+            );
+        }
+        marked
     }
 
     // One admission/cancellation/poisoning policy for reads and writes. The
@@ -2537,7 +2588,10 @@ impl Service {
         let service = self.clone();
         let panic_telemetry = self.telemetry_for(effect);
         let clock = JobClock::submit(self.telemetry.as_ref(), kind);
+        // The worker logs inside the submitting request's span (M6.3).
+        let span = tracing::Span::current();
         let handle = tokio::task::spawn_blocking(move || {
+            let _span = span.enter();
             JobClock::start(clock.as_ref());
             let _job_guard = job_guard;
             let _permit = permit;
@@ -2559,9 +2613,15 @@ impl Service {
                 return Err(ServiceError::Unavailable);
             }
             graph.failed = true;
+            let before = graph.sync_point();
             let result = work(&mut graph);
             graph.failed = false;
             if effect == JobEffect::MayChangeState {
+                before.log_transition(
+                    graph.sync_point(),
+                    kind.label(),
+                    graph.source_position.as_deref(),
+                );
                 publish_graph_counts(telemetry, &graph);
             }
             drop(graph);

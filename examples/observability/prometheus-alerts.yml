@@ -1,0 +1,102 @@
+# Prometheus alerting rules for knotrel-server (roadmap M6.4).
+#
+# Requires KNOTREL_METRICS_ENABLED=true. Rules in the `knotrel-source` group
+# apply to source-managed mode only; their series are absent in standalone
+# mode, so they never fire there. Durations and thresholds are starting points:
+# tune them to your source's replay speed, request mix and paging policy.
+# Meaning, causes and first responses: docs/alerting.md.
+#
+# Every series is per process. Add your own `job`/`instance` matchers if one
+# Prometheus scrapes several deployments.
+groups:
+  - name: knotrel-service
+    rules:
+      - alert: KnotrelServiceUnavailable
+        expr: knotrel_service_unavailable == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: "Knotrel worker failure: the service rejects all graph work until restart"
+          runbook: "docs/alerting.md#knotrelserviceunavailable"
+
+      - alert: KnotrelQueueSaturated
+        expr: knotrel_graph_jobs_outstanding / knotrel_graph_job_capacity > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Graph job backlog above 80% of admission capacity for 5 minutes"
+          runbook: "docs/alerting.md#knotrelqueuesaturated"
+
+      - alert: KnotrelRequestsRejectedBusy
+        expr: rate(knotrel_requests_rejected_total{reason="busy"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Requests rejected with 503 busy for 5 minutes"
+          runbook: "docs/alerting.md#knotrelrequestsrejectedbusy"
+
+      - alert: KnotrelHighServerErrorRatio
+        expr: |
+          sum(rate(knotrel_http_requests_total{status_class="5xx"}[5m]))
+            / sum(rate(knotrel_http_requests_total{status_class!="cancelled"}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5% of completed requests return 5xx for 10 minutes"
+          runbook: "docs/alerting.md#knotrelhighservererrorratio"
+
+  - name: knotrel-source
+    rules:
+      - alert: KnotrelFeederLost
+        expr: knotrel_feeder_lease_remaining_seconds < 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Feeder lease expired: no live feeder session; the graph is stale"
+          runbook: "docs/alerting.md#knotrelfeederlost"
+
+      - alert: KnotrelDesynchronized
+        expr: knotrel_readiness_state{state="desynchronized"} == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: "Graph desynchronized from its source; a replacement import is required"
+          runbook: "docs/alerting.md#knotreldesynchronized"
+
+      - alert: KnotrelSourceGapDeclared
+        expr: increase(knotrel_desynchronizations_total{cause="gap_declared"}[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The feeder declared an unrecoverable source gap in the last 15 minutes"
+          runbook: "docs/alerting.md#knotrelsourcegapdeclared"
+
+      - alert: KnotrelSlowBootstrap
+        expr: knotrel_readiness_state{state=~"uninitialized|loading|catching_up"} == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Not ready after 15 minutes in {{ $labels.state }}"
+          runbook: "docs/alerting.md#knotrelslowbootstrap"
+
+      - alert: KnotrelReadinessFlapping
+        expr: changes(knotrel_readiness_state{state="ready"}[15m]) > 4
+        labels:
+          severity: warning
+        annotations:
+          summary: "Readiness entered or left ready more than 4 times in 15 minutes"
+          runbook: "docs/alerting.md#knotrelreadinessflapping"
+
+      - alert: KnotrelRepeatedFeederRejections
+        expr: sum by (code) (increase(knotrel_feeder_rejections_total[10m])) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Feeder requests repeatedly rejected with {{ $labels.code }}"
+          runbook: "docs/alerting.md#knotrelrepeatedfeederrejections"

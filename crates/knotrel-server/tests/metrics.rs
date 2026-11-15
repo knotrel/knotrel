@@ -285,6 +285,69 @@ async fn metrics_route_is_absent_when_disabled() {
     }
 }
 
+/// Bucket upper bounds per histogram family, written independently of
+/// `metrics.rs` so a mistyped bound fails here.
+#[tokio::test]
+async fn histogram_bucket_bounds_are_exact() {
+    const HTTP: [f64; 15] = [
+        0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+    ];
+    const PHASE: [f64; 14] = [
+        0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0,
+    ];
+    const CATCHUP: [f64; 13] = [
+        0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0,
+    ];
+    let expected = |family: &str| -> &[f64] {
+        match family {
+            "knotrel_http_request_duration_seconds" => &HTTP,
+            "knotrel_graph_job_queue_seconds"
+            | "knotrel_graph_lock_wait_seconds"
+            | "knotrel_graph_job_execution_seconds"
+            | "knotrel_import_duration_seconds" => &PHASE,
+            "knotrel_catchup_duration_seconds" => &CATCHUP,
+            other => panic!("unexpected histogram {other}"),
+        }
+    };
+    let app = router_with_config(config(4).with_mode(knotrel_server::ServerMode::SourceManaged));
+    send(&app, Method::GET, "/v1/info", "").await;
+    let mut seen = BTreeMap::<String, usize>::new();
+    let mut series = BTreeMap::<String, Vec<f64>>::new();
+    for sample in scrape(&app).await {
+        let Some(family) = sample.name.strip_suffix("_bucket") else {
+            continue;
+        };
+        let le = &sample.labels["le"];
+        let mut key = family.to_owned();
+        for (name, value) in sample.labels.iter().filter(|(name, _)| *name != "le") {
+            key.push_str(&format!(",{name}={value}"));
+        }
+        if le != "+Inf" {
+            series.entry(key).or_default().push(le.parse().unwrap());
+        } else {
+            *seen.entry(family.to_owned()).or_default() += 1;
+            series.entry(key).or_default();
+        }
+    }
+    for family in [
+        "knotrel_http_request_duration_seconds",
+        "knotrel_graph_job_queue_seconds",
+        "knotrel_graph_lock_wait_seconds",
+        "knotrel_graph_job_execution_seconds",
+        "knotrel_import_duration_seconds",
+        "knotrel_catchup_duration_seconds",
+    ] {
+        assert!(
+            seen.get(family).is_some_and(|n| *n > 0),
+            "no series for {family}"
+        );
+    }
+    for (key, bounds) in &series {
+        let family = key.split(',').next().unwrap();
+        assert_eq!(bounds.as_slice(), expected(family), "{key}");
+    }
+}
+
 #[tokio::test]
 async fn exposition_is_valid_and_uses_only_bounded_labels() {
     let app = router_with_config(config(4));
@@ -302,35 +365,40 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
     ))
     .await;
     feeder_samples.extend(scrape(&app).await);
-    const CAUSES: [&str; 7] = [
-        "request_timeout",
-        "cancelled",
-        "worker_panic",
-        "gap_declared",
-        "source_epoch_mismatch",
-        "source_predecessor_mismatch",
-        "conflicting_duplicate",
-    ];
     for sample in &feeder_samples {
+        // The family a sample belongs to, so label domains are checked per
+        // family rather than per label name.
+        let family = ["_bucket", "_sum", "_count"]
+            .iter()
+            .find_map(|suffix| sample.name.strip_suffix(suffix))
+            .filter(|base| base.ends_with("_seconds"))
+            .unwrap_or(&sample.name);
+        let family = family.strip_prefix("knotrel_").unwrap_or(family);
         for (key, label) in &sample.labels {
-            let allowed: &[&str] = match key.as_str() {
-                "route" => &ROUTES,
-                "method" => &METHODS,
-                "status_class" => &STATUS_CLASSES,
-                "state" => &READINESS_STATES,
-                "reason" => &REJECTION_REASONS,
-                "cause" => &CAUSES,
-                "code" => &FEEDER_REJECTION_CODES,
-                "kind" if sample.name.starts_with("knotrel_catchup") => &CATCHUP_KINDS,
-                "kind" => &JOB_KINDS,
-                "op" => &GRAPH_OPS,
-                "outcome" => &OPERATION_OUTCOMES,
-                "result" if sample.name.starts_with("knotrel_imports") => &IMPORT_RESULTS,
-                "result" => &EVENT_RESULTS,
-                "phase" => &IMPORT_PHASES,
-                "le" => &[],
-                "version" | "engine" | "mode" => &[],
-                other => panic!("unexpected label {other}"),
+            let allowed: &[&str] = match (family, key.as_str()) {
+                ("http_requests_total" | "http_request_duration_seconds", "route") => &ROUTES,
+                ("http_requests_total", "method") => &METHODS,
+                ("http_requests_total", "status_class") => &STATUS_CLASSES,
+                ("readiness_state", "state") => &READINESS_STATES,
+                ("requests_rejected_total", "reason") => &REJECTION_REASONS,
+                ("requests_outcome_uncertain_total", "cause") => &UNCERTAINTY_CAUSES,
+                ("desynchronizations_total", "cause") => &DESYNC_CAUSES,
+                ("feeder_rejections_total", "code") => &FEEDER_REJECTION_CODES,
+                ("catchup_duration_seconds", "kind") => &CATCHUP_KINDS,
+                (
+                    "graph_job_queue_seconds"
+                    | "graph_lock_wait_seconds"
+                    | "graph_job_execution_seconds",
+                    "kind",
+                ) => &JOB_KINDS,
+                ("graph_operations_total", "op") => &GRAPH_OPS,
+                ("graph_operations_total", "outcome") => &OPERATION_OUTCOMES,
+                ("imports_total", "result") => &IMPORT_RESULTS,
+                ("feeder_events_total", "result") => &EVENT_RESULTS,
+                ("import_duration_seconds", "phase") => &IMPORT_PHASES,
+                (_, "le") if family.ends_with("_seconds") => &[],
+                ("build_info", "version" | "engine" | "mode") => &[],
+                (family, other) => panic!("unexpected label {other} on {family}"),
             };
             if key == "route" {
                 assert!(
@@ -3199,4 +3267,304 @@ mod catchup {
         assert_eq!(counts(&scrape(&first).await), [1.0, 0.0]);
         assert_eq!(counts(&scrape(&second).await), [0.0, 0.0]);
     }
+}
+
+/// Every metric name and positive label value used by the shipped alert
+/// rules (`examples/observability/prometheus-alerts.yml`, docs/alerting.md)
+/// exists in the exposition of a source-managed server with a live session
+/// and an imported graph, so renaming a series or label value breaks this
+/// test.
+#[tokio::test]
+async fn alert_rules_reference_only_exported_series() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/observability/prometheus-alerts.yml"
+    );
+    let rules = std::fs::read_to_string(path).unwrap();
+    let app = router_with_config(graph_counts::source_managed());
+    graph_counts::bootstrap(&app, &["1", "2"], &[("1", "2")]).await;
+    let samples = scrape(&app).await;
+
+    // The PromQL expressions: an `expr:` line and its indented continuation.
+    let mut exprs = Vec::new();
+    let mut in_block = false;
+    for line in rules.lines() {
+        let trimmed = line.trim_start();
+        if let Some(inline) = trimmed.strip_prefix("expr:") {
+            exprs.push(inline.trim().trim_start_matches('|').to_owned());
+            in_block = true;
+        } else if in_block && line.starts_with("          ") {
+            exprs.last_mut().unwrap().push(' ');
+            exprs.last_mut().unwrap().push_str(trimmed);
+        } else {
+            in_block = false;
+        }
+    }
+    assert_eq!(exprs.len(), 10, "{exprs:#?}");
+
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut metrics = 0;
+    let mut values = 0;
+    for expr in &exprs {
+        for (start, _) in expr.match_indices("knotrel_") {
+            if expr[..start].ends_with(is_ident) {
+                continue;
+            }
+            let name: String = expr[start..].chars().take_while(|c| is_ident(*c)).collect();
+            assert!(
+                samples.iter().any(|s| s.name == name),
+                "alert rules reference unexported series {name}"
+            );
+            metrics += 1;
+        }
+        let quoted: Vec<(usize, &str)> = expr.match_indices('"').collect();
+        for pair in quoted.chunks(2) {
+            let [(open, _), (close, _)] = pair else {
+                panic!("unbalanced quotes in {expr}");
+            };
+            let before = expr[..*open].trim_end_matches(['=', '~']);
+            let operator = &expr[before.len()..*open];
+            if before.ends_with('!') {
+                continue; // negative matchers may name any value
+            }
+            assert!(operator == "=" || operator == "=~", "{expr}");
+            let label_start = before.rfind(|c: char| !is_ident(c)).map_or(0, |i| i + 1);
+            let label = &before[label_start..];
+            // Lazily created series (HTTP counts) are checked against the
+            // contract's label domain instead of the exposition.
+            let domain: &[&str] = match label {
+                "status_class" => &STATUS_CLASSES,
+                "route" => &ROUTES,
+                "method" => &METHODS,
+                _ => &[],
+            };
+            for value in expr[open + 1..*close].split('|') {
+                assert!(
+                    domain.contains(&value)
+                        || samples
+                            .iter()
+                            .any(|s| s.labels.get(label).is_some_and(|v| v == value)),
+                    "alert rules use {label}={value:?}, which no series exports"
+                );
+                values += 1;
+            }
+        }
+    }
+    assert!(
+        metrics >= 12 && values >= 8,
+        "{metrics} names, {values} values"
+    );
+}
+
+/// M6.5 series-count budget: after one warm-up cycle has exercised every
+/// path, further churn of node IDs, generations, feeder sessions and epochs,
+/// replacement imports, desynchronizations and rejections adds no series.
+/// The count also stays within the calculated maximum (contract section 16).
+#[tokio::test]
+async fn series_count_is_constant_under_sustained_churn() {
+    async fn post(
+        app: &Router,
+        instance: &str,
+        path: &str,
+        if_match: Option<&str>,
+        body: serde_json::Value,
+    ) -> (StatusCode, Option<String>) {
+        let mut request = Request::post(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-knotrel-instance-id", instance);
+        if let Some(etag) = if_match {
+            request = request.header(header::IF_MATCH, etag);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .map(|v| v.to_str().unwrap().to_owned());
+        (response.status(), etag)
+    }
+
+    const CALCULATED_MAX: usize = 1834;
+    let app = router_with_config(graph_counts::source_managed());
+    let instance = graph_counts::instance_id(&app).await;
+    let mut epoch = 0_u64;
+    let mut generation = 0_u64;
+    let mut etag: Option<String> = None;
+    let mut counts = Vec::new();
+
+    for cycle in 0..20_u64 {
+        // A new session (takeover) with a higher epoch every cycle.
+        epoch += 1;
+        let session_id = format!("feeder-{cycle}");
+        let common = |generation: u64| {
+            serde_json::json!({
+                "instance_id": instance, "graph_id": "default", "generation": generation,
+                "feeder_session_id": session_id, "feeder_epoch": epoch,
+            })
+        };
+        let merge = |mut base: serde_json::Value, extra: serde_json::Value| {
+            base.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            base
+        };
+        let session = serde_json::json!({
+            "instance_id": instance, "feeder_session_id": session_id,
+            "feeder_epoch": epoch, "lease_duration_ms": 60_000,
+        });
+        assert_eq!(
+            post(&app, &instance, "/v1/feeder/session", None, session)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let heartbeat = serde_json::json!({
+            "instance_id": instance, "feeder_session_id": session_id, "feeder_epoch": epoch,
+        });
+        post(&app, &instance, "/v1/feeder/heartbeat", None, heartbeat).await;
+
+        // Initial or replacement import with fresh node IDs each cycle.
+        let base = cycle * 1_000;
+        let nodes: Vec<String> = (base..base + 50).map(|n| n.to_string()).collect();
+        let edges: Vec<_> = (base..base + 49)
+            .map(|n| serde_json::json!({"source": n.to_string(), "target": (n + 1).to_string()}))
+            .collect();
+        let import = merge(
+            serde_json::json!({
+                "instance_id": instance, "graph_id": "default",
+                "feeder_session_id": session_id, "feeder_epoch": epoch,
+            }),
+            serde_json::json!({
+                "mode": if generation == 0 { "create_only" } else { "replace" },
+                "source_id": "pg-1", "source_epoch": format!("ep-{cycle}"),
+                "source_position": format!("c{cycle}-0"), "nodes": nodes, "edges": edges,
+            }),
+        );
+        let (status, _) = post(
+            &app,
+            &instance,
+            "/v1/feeder/import",
+            etag.as_deref(),
+            import,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "cycle {cycle}");
+        generation += 1;
+
+        let event = |seq: u64, fields: serde_json::Value| {
+            let mut event = serde_json::json!({
+                "event_id": format!("c{cycle}-e{seq}"), "delivery_sequence": seq,
+                "prev_delivery_sequence": seq - 1, "source_position": format!("c{cycle}-{seq}"),
+                "prev_source_position": format!("c{cycle}-{}", seq - 1),
+            });
+            event
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            event
+        };
+        let events_body = |events: serde_json::Value| {
+            merge(
+                common(generation),
+                serde_json::json!({
+                    "source_id": "pg-1", "source_epoch": format!("ep-{cycle}"), "events": events,
+                }),
+            )
+        };
+        let batch = serde_json::json!([
+            event(
+                1,
+                serde_json::json!({"op": "link", "source": (base + 900).to_string(), "target": base.to_string()})
+            ),
+            event(
+                2,
+                serde_json::json!({"op": "cut", "source": base.to_string(), "target": (base + 1).to_string()})
+            ),
+            event(3, serde_json::json!({"op": "progress"})),
+            event(
+                4,
+                serde_json::json!({"op": "add_node", "node": (base + 901).to_string()})
+            ),
+        ]);
+        let (status, tag) = post(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            None,
+            events_body(batch.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "cycle {cycle}");
+        etag = tag;
+        // Exact duplicate retry, out-of-order and a failing event.
+        post(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            None,
+            events_body(batch),
+        )
+        .await;
+        let skip = serde_json::json!([event(9, serde_json::json!({"op": "progress"}))]);
+        post(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            None,
+            events_body(skip),
+        )
+        .await;
+        let self_loop = serde_json::json!([event(
+            5,
+            serde_json::json!({"op": "link", "source": "7", "target": "7"})
+        )]);
+        post(
+            &app,
+            &instance,
+            "/v1/feeder/events",
+            None,
+            events_body(self_loop),
+        )
+        .await;
+
+        let barrier = merge(
+            common(generation),
+            serde_json::json!({
+                "barrier_delivery_sequence": 4, "barrier_source_position": format!("c{cycle}-4"),
+            }),
+        );
+        let (_, tag) = post(&app, &instance, "/v1/feeder/barrier", None, barrier).await;
+        etag = tag.or(etag);
+        // Every third cycle desynchronizes; the next replacement repairs it.
+        if cycle % 3 == 2 {
+            let gap = merge(
+                common(generation),
+                serde_json::json!({"failed_delivery_sequence": 5}),
+            );
+            let (status, tag) = post(&app, &instance, "/v1/feeder/gap", None, gap).await;
+            assert!(status.is_success(), "cycle {cycle}");
+            etag = tag.or(etag);
+        }
+        send(
+            &app,
+            Method::POST,
+            "/v1/operations",
+            &format!(
+                r#"{{"op":"connected","source":"{base}","target":"{}"}}"#,
+                base + 49,
+            ),
+        )
+        .await;
+        send(&app, Method::GET, "/v1/stats", "").await;
+        send(&app, Method::GET, &format!("/v1/nodes/{base}"), "").await;
+        counts.push(scrape(&app).await.len());
+    }
+    // Cycle 0 creates first-use HTTP series and cycle 2 the first gap; after
+    // the first full pattern (cycles 0-2) nothing may be added.
+    let settled = counts[3];
+    assert!(counts[3..].iter().all(|c| *c == settled), "{counts:?}");
+    assert!(settled <= CALCULATED_MAX, "{settled} > {CALCULATED_MAX}");
 }

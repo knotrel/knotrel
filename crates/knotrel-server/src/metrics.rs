@@ -197,7 +197,7 @@ impl JobKind {
         Self::ImportPublish,
     ];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Operation => "operation",
             Self::Batch => "batch",
