@@ -761,33 +761,99 @@ pub(crate) fn check_json_content_type(headers: &HeaderMap) -> Option<Response> {
     }
 }
 
-/// Traces incoming HTTP requests, recording method, path, response status, and duration.
+/// Traces incoming HTTP requests inside a per-request span (M6.3).
+///
+/// The `request` span carries a process-unique `request_id`, the method and
+/// the route (a registered path, or `unmatched`). Blocking workers enter it, so
+/// their log lines share the `request_id`. Handlers record `generation`,
+/// `state_version` and `sync_status` on it (see [`inject_metadata_headers`]).
+/// On completion one event records status and server-side latency: `info`
+/// for API requests, `trace` for probes and metrics scrapes. A request future
+/// dropped before a response exists logs `request cancelled before response`
+/// instead, so every request leaves exactly one completion or cancellation
+/// line. Unregistered paths are logged sanitized (escaped, truncated).
 pub(crate) async fn logging_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    use tracing::Instrument;
+
     let method = request.method().clone();
-    // Known routes are logged from their static strings; only unknown paths
-    // are copied, since the request is moved into the handler.
     let path = request.uri().path();
-    let uri: std::borrow::Cow<'static, str> = Route::ALL
+    let route = Route::ALL
         .into_iter()
         .map(Route::as_str)
-        .find(|route| *route == path)
-        .map_or_else(|| path.to_owned().into(), Into::into);
-    let scrape = crate::lifecycle::is_metrics_scrape(&request);
-    let start = std::time::Instant::now();
+        .find(|route| *route == path);
+    // Unknown paths are copied (the request is moved into the handler) and
+    // only then sanitized, so raw caller text never reaches the log.
+    let unmatched: Option<String> = match route {
+        Some(_) => None,
+        None => Some(crate::logging::sanitize(path).to_string()),
+    };
+    let probe = route == Some(Route::Health.as_str())
+        || route == Some(Route::Ready.as_str())
+        || crate::lifecycle::is_metrics_scrape(&request);
+    let route_label = route.unwrap_or("unmatched");
+    let request_id = crate::logging::next_request_id();
+    let span = if probe {
+        tracing::trace_span!(
+            crate::logging::REQUEST_SPAN,
+            request_id,
+            method = %method,
+            route = route_label,
+            generation = tracing::field::Empty,
+            state_version = tracing::field::Empty,
+            sync_status = tracing::field::Empty,
+        )
+    } else {
+        tracing::info_span!(
+            crate::logging::REQUEST_SPAN,
+            request_id,
+            method = %method,
+            route = route_label,
+            generation = tracing::field::Empty,
+            state_version = tracing::field::Empty,
+            sync_status = tracing::field::Empty,
+        )
+    };
 
-    let response = next.run(request).await;
+    /// Logs a cancellation if dropped before the response was produced.
+    struct CancelLog {
+        span: tracing::Span,
+        probe: bool,
+        start: std::time::Instant,
+        armed: bool,
+    }
+    impl Drop for CancelLog {
+        fn drop(&mut self) {
+            if self.armed && !self.probe {
+                let _entered = self.span.enter();
+                tracing::info!(
+                    latency_us = self.start.elapsed().as_micros(),
+                    "request cancelled before response"
+                );
+            }
+        }
+    }
+
+    let start = std::time::Instant::now();
+    let mut cancel = CancelLog {
+        span: span.clone(),
+        probe,
+        start,
+        armed: true,
+    };
+    let response = next.run(request).instrument(span.clone()).await;
+    cancel.armed = false;
 
     let latency = start.elapsed();
     let status = response.status().as_u16();
-
-    // Log probes at trace level to avoid log pollution in orchestration environments.
-    if uri == Route::Health.as_str() || uri == Route::Ready.as_str() || scrape {
+    let uri = unmatched.as_deref().unwrap_or(route_label);
+    let _entered = span.enter();
+    if probe {
         tracing::trace!(
             method = %method,
-            uri = %uri,
+            uri,
             status,
             latency_us = latency.as_micros(),
             "probe"
@@ -795,12 +861,13 @@ pub(crate) async fn logging_middleware(
     } else {
         tracing::info!(
             method = %method,
-            uri = %uri,
+            uri,
             status,
             latency_us = latency.as_micros(),
             "handled request"
         );
     }
+    drop(_entered);
 
     response
 }
@@ -1376,6 +1443,16 @@ pub(crate) fn inject_metadata_headers(
     metadata: crate::service::ResponseMetadata,
 ) {
     use axum::http::HeaderValue;
+    // Correlation fields for the request's log lines (M6.3); recording on a
+    // disabled span does nothing and allocates nothing.
+    let span = tracing::Span::current();
+    if !span.is_disabled() {
+        span.record("generation", metadata.generation);
+        span.record("state_version", metadata.state_version.as_str());
+        if let Some(status) = metadata.sync_status {
+            span.record("sync_status", status.as_str());
+        }
+    }
     // Owned strings become header values without another copy, and the
     // source position is percent-encoded once for both the ETag and its header.
     let encoded_position = metadata

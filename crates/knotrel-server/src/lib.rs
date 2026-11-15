@@ -10,6 +10,7 @@
 mod api;
 mod configuration;
 mod lifecycle;
+mod logging;
 mod metrics;
 mod serve;
 mod service;
