@@ -264,3 +264,38 @@ If publication fails with HTTP 403 / unauthorized:
 - For initial v0.1.0: Ensure the token has `publish-new` permission.
 - For subsequent releases: Ensure the token has `publish-update` permission and includes both `knotrel-core` and `knotrel-server` in its crate scope.
 - Update `CRATES_IO_TOKEN` in the `crates-io` environment and re-run the failed job.
+
+## Crate documentation gate
+
+CI and candidate validation check the crate introductions for stale release
+numbers, run all-feature doctests, and build warning-denied Rustdoc including
+private items. `scripts/check-crate-docs.py` checks only crate README files and
+module-level `//!` comments in `src/lib.rs`; it deliberately excludes release
+notes and migration history. Prefer version-independent wording and `cargo add`
+examples. An intentional historical comparison in an introduction must be moved
+to the historical documentation or the check explicitly refined and reviewed;
+this check does not prove factual accuracy of the prose.
+
+Before approval, verify that documentation included in both source packages
+accurately describes the candidate's capabilities and limitations. In particular,
+check examples, readiness, supported modes and experimental guarantees.
+
+After publication, the workflow checks docs.rs for the exact released version of
+both crates. Build failure fails the documentation-status job; a queued, missing
+or unreachable status produces a warning and leaves documentation closure pending.
+It does not undo or retry publication. To finish the release checklist, run:
+
+```sh
+python3 scripts/check-docs-rs.py VERSION
+```
+
+Exit 0 means both builds succeeded; 1 means a build failed; 2 means status is still
+unknown or pending. Inspect the linked build logs for failures, and rerun this
+read-only check after queue processing or service recovery. Never republish the
+same crate version to repair docs.rs. Record the successful exact-version check
+before declaring documentation complete; a successful release workflow with a
+pending warning alone is insufficient.
+
+The documentation check also rejects LaTeX math delimiters in crate README
+files and line-style Rustdoc comments under `src/`. Use inline code such as
+`O(V + E)` or `O(log² V)`; the generated documentation needs no math renderer.

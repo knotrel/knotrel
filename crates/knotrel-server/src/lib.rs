@@ -4,8 +4,20 @@
 //! State is ephemeral and there is no authentication, authorization, TLS or
 //! persistence layer: serve it only to trusted local clients. The standalone
 //! executable binds to loopback unless explicitly configured otherwise.
-//! [`serve`] adds bounded connections, timeouts and graceful shutdown.
-//! See the repository's `docs/http-api.md` for wire formats and batch semantics.
+//! [`serve()`] adds bounded connections, timeouts and graceful shutdown.
+//!
+//! [`ServerMode::Standalone`] supports direct operations and ordered batches.
+//! [`ServerMode::SourceManaged`] maintains derived state loaded by atomic import
+//! and updated through ordered feeder events. The external source remains
+//! authoritative; after restart, the graph must be rebuilt and synchronized.
+//!
+//! [`ServerConfig`] controls startup settings, including opt-in Prometheus metrics.
+//! Embedded callers can build a router with [`router_with_config`] or provide an
+//! explicit lifecycle with [`router_with_lifecycle`].
+//!
+//! See the [HTTP API documentation](https://github.com/knotrel/knotrel/blob/main/docs/http-api.md)
+//! for wire formats and batch semantics. That page tracks development on `main`;
+//! use the corresponding release tag when consulting a published version.
 
 mod api;
 mod configuration;
@@ -53,15 +65,16 @@ pub fn router(graph: knotrel_core::Graph) -> axum::Router {
 /// The engine, admission limit and request timeout remain fixed for this
 /// router's lifetime. The configuration address is not bound here; embedded
 /// callers own their listener. Other limits and batch semantics are the same
-/// as [`router`]. Readiness is immediately `ready`; use
-/// [`router_with_lifecycle`] with [`serve`] for the full lifecycle.
+/// as [`router`]. The process lifecycle starts ready; in source-managed mode,
+/// graph readiness additionally requires bootstrap and synchronization. Use
+/// [`router_with_lifecycle`] with [`serve()`] for the full lifecycle.
 /// This function does not read the environment.
 pub fn router_with_config(config: ServerConfig) -> axum::Router {
     router_with_lifecycle(config, Lifecycle::ready())
 }
 
 /// Like [`router_with_config`], but readiness and shutdown rejection follow
-/// the supplied [`Lifecycle`], which [`serve`] drives.
+/// the supplied [`Lifecycle`], which [`serve()`] drives.
 pub fn router_with_lifecycle(config: ServerConfig, lifecycle: Lifecycle) -> axum::Router {
     build_router(
         knotrel_core::ConnectivityGraph::with_limits(config.engine(), config.graph_limits()),

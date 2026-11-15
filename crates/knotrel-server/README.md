@@ -29,7 +29,7 @@ cargo run --release --locked -p knotrel-server
 #### 2. From crates.io (available after release publication)
 
 ```sh
-cargo install knotrel-server --version 0.1.0 --locked
+cargo install knotrel-server --locked
 knotrel-server
 ```
 
@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Security Notice
 
-Knotrel v0.1.0 does not include authentication, authorization, or TLS. The service is intended
+Knotrel does not include authentication, authorization, or TLS. The service is intended
 for trusted internal networks or local process communication. The standalone server enforces
 loopback-only binding (`127.0.0.1`) by default and will refuse to start on non-loopback addresses
 unless `KNOTREL_ALLOW_NON_LOOPBACK=true` is explicitly configured.

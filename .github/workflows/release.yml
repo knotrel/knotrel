@@ -166,8 +166,14 @@ jobs:
       - name: Strict Clippy check
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Crate documentation policy
+        run: |
+          python3 scripts/check-crate-docs.py
+          python3 tests/test_crate_documentation.py
+      - name: Documentation examples
+        run: cargo test --workspace --doc --locked --all-features
       - name: Documentation check
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --all-features --document-private-items
 
       - name: Workspace unit and integration tests
         run: cargo test --workspace --locked
@@ -486,3 +492,27 @@ jobs:
       - name: Finalize GitHub Release (publish draft after crates verification)
         run: |
           ./scripts/finalize-release.sh "$RELEASE_VERSION" "$CANDIDATE_SHA" "${{ runner.temp }}/final-release-assets"
+
+  documentation-status:
+    name: Published documentation status
+    needs: [validate-inputs-and-metadata, finalize-release]
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate-inputs-and-metadata.outputs.commit_sha }}
+      - name: Check exact-version docs.rs builds
+        env:
+          RELEASE_VERSION: ${{ needs.validate-inputs-and-metadata.outputs.version }}
+        run: |
+          status=0
+          python3 scripts/check-docs-rs.py "$RELEASE_VERSION" || status=$?
+          if [ "$status" -eq 2 ]; then
+            echo "::warning::docs.rs is pending or unavailable. Recheck the exact version using scripts/check-docs-rs.py; documentation closure is still pending."
+            echo "Documentation pending: rerun the exact-version status check before closing the release checklist." >> "$GITHUB_STEP_SUMMARY"
+          else
+            exit "$status"
+          fi

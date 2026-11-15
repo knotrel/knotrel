@@ -5,16 +5,15 @@ Exact, in-memory dynamic connectivity for undirected simple graphs.
 [![License: ELv2](https://img.shields.io/badge/License-Elastic%202.0-blue.svg)](LICENSE.md)
 
 `knotrel-core` is a specialized, synchronous Rust library that maintains exact reachability
-queries ("is vertex $u$ connected to vertex $v$ via some path?") as edges are dynamically
+queries ("is vertex `u` connected to vertex `v` via some path?") as edges are dynamically
 inserted (`link`) and deleted (`cut`) over time.
 
 ## Quick Start
 
-Add `knotrel-core` to your `Cargo.toml`:
+Add the latest published release to your project:
 
-```toml
-[dependencies]
-knotrel-core = "0.1.0"
+```sh
+cargo add knotrel-core
 ```
 
 Use `ConnectivityGraph` to create and query a dynamic graph:
@@ -80,14 +79,14 @@ assert!(!graph.connected(1, 99)?);
 
 Knotrel provides three dynamic connectivity engines via `EngineConfig`:
 
-- **Compact BFS (`EngineConfig::CompactBfs`) — Default**: Sorted adjacency vectors of stable internal indices; $O(V + E)$ worst-case BFS queries; $O(\text{deg}(u) + \text{deg}(v))$ amortized link and cut; $O(V + E)$ logical memory. Best for general use or mutation-heavy workloads.
-- **Euler Tour Trees (`EngineConfig::EulerTour`) — Experimental**: Spanning forest using AVL Euler tour sequences. $O(\log V)$ algorithmic queries and link operations. Non-tree cuts cost $O(\log V + \log E)$; tree cuts scan the smaller side ($O(\log V + \log E + s + c \log V)$ amortized) using candidate-pruned subtrees. Effective for query-dominated workloads on tree-like topologies.
-- **HDT (`EngineConfig::Hdt`) — Experimental**: Deterministic Holm–de Lichtenberg–Thorup dynamic connectivity with an append-only growth policy for expanding vertices. Maintains a hierarchy of $O(\log V)$ levels materialized lazily as promotions require them. Bounds amortized update costs to $O(\log^2 V)$, eliminating repeated scan storms in dense bridge-churn workloads.
+- **Compact BFS (`EngineConfig::CompactBfs`) — Default**: Sorted adjacency vectors of stable internal indices; `O(V + E)` worst-case BFS queries; `O(deg(u) + deg(v))` amortized link and cut; `O(V + E)` logical memory. Best for general use or mutation-heavy workloads.
+- **Euler Tour Trees (`EngineConfig::EulerTour`) — Experimental**: Spanning forest using AVL Euler tour sequences. `O(log V)` algorithmic queries and link operations. Non-tree cuts cost `O(log V + log E)`; tree cuts scan the smaller side (`O(log V + log E + s + c log V)` amortized) using candidate-pruned subtrees. Effective for query-dominated workloads on tree-like topologies.
+- **HDT (`EngineConfig::Hdt`) — Experimental**: Deterministic Holm–de Lichtenberg–Thorup dynamic connectivity with an append-only growth policy for expanding vertices. Maintains a hierarchy of `O(log V)` levels materialized lazily as promotions require them. Bounds amortized update costs to `O(log² V)`, eliminating repeated scan storms in dense bridge-churn workloads.
 
 ### Complexity & Memory Notes
 
-- **Algorithmic vs. API costs**: Algorithmic complexity bounds apply to internal index structures. The public API maps external `NodeId` (`u64`) keys via hash maps (`IntMap` / `FxHashMap`), which rely on expected $O(1)$ lookups and do not offer deterministic worst-case constant bounds for arbitrary ID distributions.
-- **Logical memory vs. heap/RSS**: Stated memory bounds ($O(V + E)$ and $O(E + V \log V)$) describe logical graph entity storage. Allocated vector capacities are retained after cuts and do not bound process heap memory or RSS.
+- **Algorithmic vs. API costs**: Algorithmic complexity bounds apply to internal index structures. The public API maps external `NodeId` (`u64`) keys via hash maps (`IntMap` / `FxHashMap`), which rely on expected `O(1)` lookups and do not offer deterministic worst-case constant bounds for arbitrary ID distributions.
+- **Logical memory vs. heap/RSS**: Stated memory bounds (`O(V + E)` and `O(E + V log V)`) describe logical graph entity storage. Allocated vector capacities are retained after cuts and do not bound process heap memory or RSS.
 - **Amortized bounds**: HDT update bounds are amortized sequence averages, not per-request latency guarantees; large promotion searches or vector growths can produce latency spikes, and it may have higher constant factors on small or sparse graphs; verify against your actual workload.
 
 ### Recommendation

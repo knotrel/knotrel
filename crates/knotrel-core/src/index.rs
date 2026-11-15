@@ -17,7 +17,7 @@ use std::num::NonZeroUsize;
 /// never equal `usize::MAX`. The checked encoding explicitly guards against overflow
 /// and rejects `usize::MAX` without wrapping.
 ///
-/// Encoding, access, and clearing are worst-case $O(1)$ operations with zero allocation.
+/// Encoding, access, and clearing are worst-case `O(1)` operations with zero allocation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Index(Option<NonZeroUsize>);
 
