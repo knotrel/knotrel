@@ -1637,12 +1637,12 @@ mod tests {
             (r#""007""#, 7),
             (r#""\u0031\u0032""#, 12),
         ] {
-            match parse(&connected(source, r#""1""#)) {
-                Ok(Operation::Connected { source, target }) => {
-                    assert_eq!((source.0, target.0), (expected, 1));
-                }
-                other => panic!("{source}: {other:?}"),
-            }
+            let parsed = parse(&connected(source, r#""1""#));
+            assert!(
+                matches!(&parsed, Ok(Operation::Connected { source, target })
+                    if (source.0, target.0) == (expected, 1)),
+                "{source}: {parsed:?}"
+            );
         }
         let digits = "node IDs must be nonempty strings of ASCII decimal digits";
         let shape = "request body does not match the expected shape";
@@ -1705,6 +1705,11 @@ mod tests {
                 ),
                 "{op}"
             );
+            // Type errors read exactly like those of `String`.
+            let wire = serde_json::from_str::<WireOp>(op).unwrap_err().to_string();
+            let string = serde_json::from_str::<String>(op).unwrap_err().to_string();
+            assert_eq!(wire, string, "{op}");
+            assert!(wire.contains("expected a string"), "{wire}");
         }
     }
 

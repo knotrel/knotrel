@@ -54,34 +54,53 @@ fn install() -> Capture {
         .json()
         .with_current_span(true)
         .with_span_list(false)
-        .with_env_filter("info")
+        // Trace for the API module only, so probe spans and lines are enabled.
+        .with_env_filter("info,knotrel_server::api=trace")
         .with_writer(move || writer.clone())
         .init();
     capture
 }
 
 async fn send(app: &Router, method: Method, path: &str, body: String) -> (StatusCode, Value) {
+    let (status, body, _) = send_if_match(app, method, path, body, None).await;
+    (status, body)
+}
+
+/// Sends a request with an optional `If-Match` header and returns the
+/// response `ETag` too.
+async fn send_if_match(
+    app: &Router,
+    method: Method,
+    path: &str,
+    body: String,
+    if_match: Option<&str>,
+) -> (StatusCode, Value, Option<String>) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(
+            "x-knotrel-instance-id",
+            INSTANCE.get().map_or("", String::as_str),
+        );
+    if let Some(etag) = if_match {
+        request = request.header(header::IF_MATCH, etag);
+    }
     let response = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(path)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(
-                    "x-knotrel-instance-id",
-                    INSTANCE.get().map_or("", String::as_str),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
+        .oneshot(request.body(Body::from(body)).unwrap())
         .await
         .unwrap();
     let status = response.status();
+    let etag = response
+        .headers()
+        .get(header::ETAG)
+        .map(|value| value.to_str().unwrap().to_owned());
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     (
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        etag,
     )
 }
 
@@ -181,6 +200,17 @@ async fn logs_correlate_requests_and_never_expose_payloads() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
+    // An expired lease, observed by a readiness probe, marks readiness stale.
+    #[cfg(feature = "test-support")]
+    {
+        let _clock = knotrel_server::lock_clock_for_test().await;
+        knotrel_server::advance_clock(std::time::Duration::from_millis(61_000));
+        let (status, body) = send(&app, Method::GET, "/ready", String::new()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["status"], "stale", "{body}");
+        knotrel_server::reset_clock();
+    }
+
     let gap = merge(
         common(1),
         json!({"failed_delivery_sequence": 2, "reason": "broker\nINJECTED line"}),
@@ -190,6 +220,21 @@ async fn logs_correlate_requests_and_never_expose_payloads() {
 
     let (status, _) = send(&app, Method::POST, "/v1/feeder/events", events.to_string()).await;
     assert!(status.is_client_error(), "{status}");
+
+    let replace = merge(
+        import.clone(),
+        json!({"mode": "replace", "source_position": "p-r"}),
+    );
+    let (_, _, etag) = send_if_match(&app, Method::GET, "/v1/stats", String::new(), None).await;
+    let (status, body, _) = send_if_match(
+        &app,
+        Method::POST,
+        "/v1/feeder/import",
+        replace.to_string(),
+        etag.as_deref(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 
     let unknown = format!("/x{}", "a".repeat(200));
     let (status, _) = send(&app, Method::GET, &unknown, String::new()).await;
@@ -253,7 +298,7 @@ async fn logs_correlate_requests_and_never_expose_payloads() {
 
     // Exactly one completion line per API request; probes stay below info.
     let handled = find(&lines, |l| message(l) == "handled request");
-    assert_eq!(handled.len(), 8, "{text}");
+    assert_eq!(handled.len(), 10, "{text}");
     let mut ids: Vec<u64> = handled
         .iter()
         .map(|l| l["span"]["request_id"].as_u64().unwrap())
@@ -261,7 +306,11 @@ async fn logs_correlate_requests_and_never_expose_payloads() {
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), handled.len(), "request IDs must be unique");
-    assert!(find(&lines, |l| l["span"]["route"] == "/health").is_empty());
+    let probes = find(&lines, |l| l["span"]["route"] == "/health");
+    assert_eq!(probes.len(), 1, "{text}");
+    assert_eq!(probes[0]["level"], "TRACE");
+    assert_eq!(message(probes[0]), "probe");
+    assert!(probes[0]["span"]["request_id"].is_u64());
 
     let request_for = |route: &str| -> &Value {
         handled
@@ -285,7 +334,11 @@ async fn logs_correlate_requests_and_never_expose_payloads() {
     assert_eq!(ready[0]["fields"]["from"], "catching_up");
 
     let published = find(&lines, |l| message(l) == "graph published by import");
-    assert_eq!(published.len(), 1, "{text}");
+    assert_eq!(published.len(), 2, "{text}");
+    assert_eq!(published[0]["fields"]["mode"], "create_only");
+    assert_eq!(published[1]["fields"]["mode"], "replace");
+    assert_eq!(published[1]["fields"]["generation"], 2);
+    assert_eq!(published[1]["fields"]["from_generation"], 1);
     assert_eq!(published[0]["fields"]["generation"], 1);
     assert_eq!(published[0]["fields"]["node_count"], 2);
     let position = published[0]["fields"]["source_position"].as_str().unwrap();
@@ -301,6 +354,17 @@ async fn logs_correlate_requests_and_never_expose_payloads() {
     assert_eq!(desync.len(), 1, "{text}");
     assert_eq!(desync[0]["level"], "WARN");
     assert_eq!(desync[0]["span"]["route"], "/v1/feeder/gap");
+
+    #[cfg(feature = "test-support")]
+    {
+        let expired = find(&lines, |l| {
+            message(l) == "feeder lease expired; readiness is stale"
+        });
+        assert_eq!(expired.len(), 1, "{text}");
+        assert_eq!(expired[0]["level"], "WARN");
+        assert_eq!(expired[0]["fields"]["from"], "ready");
+        assert_eq!(expired[0]["fields"]["to"], "stale");
+    }
 
     let rejected = find(&lines, |l| message(l) == "feeder request rejected");
     assert_eq!(rejected.len(), 1, "{text}");

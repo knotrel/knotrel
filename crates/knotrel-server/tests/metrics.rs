@@ -652,6 +652,93 @@ mod paused {
         assert_eq!(requests(&samples, "/v1/operations", "POST", "5xx"), 1.0);
     }
 
+    fn unavailable_rejections(samples: &[Sample]) -> Option<f64> {
+        value(
+            samples,
+            "knotrel_requests_rejected_total",
+            &[("reason", "unavailable")],
+        )
+    }
+
+    /// A job admitted before another worker failed is rejected as
+    /// `unavailable` when it reaches the graph, and counted once.
+    #[tokio::test]
+    async fn queued_graph_job_after_worker_failure_is_an_unavailable_rejection() {
+        let lifecycle = Lifecycle::new();
+        lifecycle.mark_ready();
+        let app = router_with_lifecycle(config(4), lifecycle.clone());
+        let mut queued_pause = lifecycle.pause_next_worker();
+        let queued = tokio::spawn({
+            let app = app.clone();
+            async move { send(&app, Method::POST, "/v1/operations", LINK).await }
+        });
+        queued_pause.wait_started().await;
+
+        let mut failing_pause = lifecycle.pause_next_worker();
+        let failing = tokio::spawn({
+            let app = app.clone();
+            async move { send(&app, Method::POST, "/v1/operations", LINK).await }
+        });
+        failing_pause.wait_started().await;
+        failing_pause.panic_on_release();
+        assert_eq!(failing.await.unwrap().0, StatusCode::SERVICE_UNAVAILABLE);
+
+        queued_pause.release();
+        assert_eq!(queued.await.unwrap().0, StatusCode::SERVICE_UNAVAILABLE);
+        wait_idle(&lifecycle).await;
+        assert_eq!(unavailable_rejections(&scrape(&app).await), Some(1.0));
+    }
+
+    /// The feeder counterpart: a feeder worker that panics fails the service,
+    /// and a feeder batch admitted before that is rejected as `unavailable`.
+    #[tokio::test]
+    async fn queued_feeder_batch_after_feeder_worker_failure_is_an_unavailable_rejection() {
+        use super::graph_counts::{bootstrap, event, events, feeder, source_managed};
+
+        let lifecycle = Lifecycle::new();
+        lifecycle.mark_ready();
+        let app = router_with_lifecycle(source_managed(), lifecycle.clone());
+        let instance = bootstrap(&app, &["1", "2"], &[]).await;
+        let batch = |seq: u64| {
+            events(
+                &instance,
+                1,
+                serde_json::json!([event(
+                    seq,
+                    serde_json::json!({"op": "link", "source": "1", "target": "2"})
+                )]),
+            )
+        };
+
+        let mut queued_pause = lifecycle.pause_next_worker();
+        let queued = tokio::spawn({
+            let (app, instance, body) = (app.clone(), instance.clone(), batch(1));
+            async move { feeder(&app, &instance, "/v1/feeder/events", None, body).await }
+        });
+        queued_pause.wait_started().await;
+
+        let mut failing_pause = lifecycle.pause_next_worker();
+        let failing = tokio::spawn({
+            let (app, instance, body) = (app.clone(), instance.clone(), batch(1));
+            async move { feeder(&app, &instance, "/v1/feeder/events", None, body).await }
+        });
+        failing_pause.wait_started().await;
+        failing_pause.panic_on_release();
+        let (status, body) = failing.await.unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+
+        queued_pause.release();
+        let (status, body) = queued.await.unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        wait_idle(&lifecycle).await;
+        let samples = scrape(&app).await;
+        assert_eq!(unavailable_rejections(&samples), Some(1.0));
+        assert_eq!(
+            value(&samples, "knotrel_service_unavailable", &[]),
+            Some(1.0)
+        );
+    }
+
     #[tokio::test]
     async fn timed_out_request_is_completed_while_its_worker_stays_outstanding() {
         let lifecycle = Lifecycle::new();
