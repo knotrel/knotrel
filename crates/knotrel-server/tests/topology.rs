@@ -35,6 +35,7 @@ struct Reply {
     body: Value,
     raw: String,
     version: Option<String>,
+    etag: Option<String>,
 }
 
 async fn send(
@@ -61,6 +62,10 @@ async fn send(
         .headers()
         .get("x-knotrel-state-version")
         .map(|value| value.to_str().unwrap().to_owned());
+    let etag = response
+        .headers()
+        .get(header::ETAG)
+        .map(|value| value.to_str().unwrap().to_owned());
     let bytes = to_bytes(response.into_body(), 4 << 20).await.unwrap();
     let raw = String::from_utf8(bytes.to_vec()).unwrap();
     let body = serde_json::from_str(&raw).unwrap_or(Value::Null);
@@ -69,6 +74,7 @@ async fn send(
         body,
         raw,
         version,
+        etag,
     }
 }
 
@@ -769,4 +775,169 @@ async fn source_managed_query_only_batches_accept_state_queries() {
     .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
     assert_eq!(reply.body["results"][0]["registered"], true);
+}
+
+#[tokio::test]
+async fn null_flags_are_rejected_as_malformed_in_every_configuration() {
+    for lifecycle in [false, true] {
+        let mut feeder = Feeder::start(EngineConfig::CompactBfs, lifecycle).await;
+        let reply = feeder
+            .import(
+                json!(["1", "2"]),
+                json!([{"source":"1","target":"2","enabled":null}]),
+            )
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            reply.raw
+        );
+        assert_eq!(reply.body["code"], "invalid_request");
+        let reply = feeder
+            .import(json!([{"node":"1","active":null}]), json!([]))
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            reply.raw
+        );
+        assert_eq!(
+            feeder.import(json!(["1"]), json!([])).await.status,
+            StatusCode::CREATED
+        );
+        let event = feeder.event("e1", json!({"op":"add_node","node":"3","active":null}));
+        let reply = feeder.events(vec![event]).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            reply.raw
+        );
+        assert_eq!(get(&feeder.app, "/v1/stats").await["state_version"], "0");
+    }
+    let app = router_with_config(config(
+        EngineConfig::CompactBfs,
+        true,
+        ServerMode::Standalone,
+    ));
+    let reply = op(
+        &app,
+        json!({"op":"set_node_active","node":"1","active":null}),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn feeder_edge_setter_checks_endpoints_in_supplied_order() {
+    let mut feeder = Feeder::start(EngineConfig::CompactBfs, true).await;
+    feeder.import(json!(["1"]), json!([])).await;
+    let event = feeder.event(
+        "e1",
+        json!({"op":"set_edge_enabled","source":"9","target":"3","enabled":false}),
+    );
+    let reply = feeder.events(vec![event]).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reply.raw
+    );
+    assert_eq!(reply.body["code"], "unknown_node");
+    assert_eq!(reply.body["message"], "unknown node: 9");
+}
+
+#[tokio::test]
+async fn replacement_import_publishes_new_flags_under_if_match() {
+    for engine in ENGINES {
+        let mut feeder = Feeder::start(engine, true).await;
+        feeder
+            .import(
+                json!(["1", "2", "3"]),
+                json!([{"source":"1","target":"2"},{"source":"2","target":"3"}]),
+            )
+            .await;
+        let event = feeder.event(
+            "e1",
+            json!({"op":"set_node_active","node":"2","active":false}),
+        );
+        feeder.events(vec![event]).await;
+        let etag = send(&feeder.app, Method::GET, "/v1/stats", None, "")
+            .await
+            .etag
+            .expect("stats ETag");
+        let body = json!({
+            "mode":"replace","instance_id":feeder.instance,"graph_id":"default",
+            "source_id":"src","source_epoch":"e2","source_position":"q1",
+            "feeder_session_id":"s","feeder_epoch":1,
+            "nodes":["1", {"node":"2","active":true}, "3"],
+            "edges":[{"source":"1","target":"2","enabled":false},{"source":"2","target":"3"}],
+        });
+        let response = feeder
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/v1/feeder/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-knotrel-instance-id", &feeder.instance)
+                    .header(header::IF_MATCH, &etag)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED, "{engine:?}");
+        let stats = get(&feeder.app, "/v1/stats").await;
+        assert_eq!(stats["generation"], 2);
+        assert_eq!(stats["state_version"], "0");
+        assert_eq!(stats["active_node_count"], 3);
+        assert_eq!(stats["enabled_edge_count"], 1);
+        assert_eq!(
+            feeder.query(connected("1", "3")).await.body["connected"],
+            false
+        );
+        assert_eq!(
+            feeder.query(connected("2", "3")).await.body["connected"],
+            true
+        );
+    }
+}
+
+#[tokio::test]
+async fn compaction_under_http_churn_keeps_answers_and_counts() {
+    for engine in ENGINES {
+        let app = router_with_config(config(engine, true, ServerMode::Standalone));
+        op(&app, json!({"op":"link","source":"1","target":"2"})).await;
+        op(
+            &app,
+            json!({"op":"set_edge_enabled","source":"1","target":"2","enabled":false}),
+        )
+        .await;
+        // 1,500 distinct removed IDs exceed the 1,024 retired-slot threshold.
+        for chunk in 0..3_u64 {
+            let mut operations = Vec::new();
+            for i in 0..500_u64 {
+                let id = (1_000 + chunk * 500 + i).to_string();
+                operations.push(json!({"op":"link","source":id,"target":"1"}));
+                operations.push(json!({"op":"remove_node","node":id}));
+            }
+            let reply = batch(&app, json!(operations)).await;
+            assert_eq!(reply.status, StatusCode::OK);
+        }
+        let stats = get(&app, "/v1/stats").await;
+        assert_eq!(
+            (stats["node_count"].clone(), stats["edge_count"].clone()),
+            (json!(2), json!(1))
+        );
+        assert_eq!(stats["effective_edge_count"], 0);
+        assert_eq!(op(&app, connected("1", "2")).await.body["connected"], false);
+        op(
+            &app,
+            json!({"op":"set_edge_enabled","source":"2","target":"1","enabled":true}),
+        )
+        .await;
+        assert_eq!(op(&app, connected("1", "2")).await.body["connected"], true);
+    }
 }

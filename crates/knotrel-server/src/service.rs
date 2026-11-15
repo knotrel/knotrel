@@ -1574,15 +1574,19 @@ impl GraphState {
                             .lifecycle_mut()
                             .map(|graph| graph.set_node_active(*node, *active)),
                     ),
-                    CanonicalOp::SetEdgeEnabled {
-                        source,
-                        target,
-                        enabled,
-                    } => lifecycle_event(
-                        self.graph
-                            .lifecycle_mut()
-                            .map(|graph| graph.set_edge_enabled(*source, *target, *enabled)),
-                    ),
+                    // The fingerprint is normalized (min, max); the facade
+                    // gets the supplied order so that error precedence and
+                    // messages match direct operations (`u` before `v`).
+                    CanonicalOp::SetEdgeEnabled { enabled, .. } => {
+                        let (Some(source), Some(target)) = (event.source, event.target) else {
+                            unreachable!("prevalidated set_edge_enabled has both endpoints")
+                        };
+                        lifecycle_event(
+                            self.graph
+                                .lifecycle_mut()
+                                .map(|graph| graph.set_edge_enabled(source.0, target.0, *enabled)),
+                        )
+                    }
                     CanonicalOp::RemoveNode { node } => lifecycle_event(
                         self.graph
                             .lifecycle_mut()
@@ -2522,10 +2526,7 @@ impl Service {
         let mode = self.mode;
         let instance_id = Arc::clone(&self.instance_id);
         let telemetry = self.telemetry.clone();
-        let effect = if operations
-            .iter()
-            .all(|operation| matches!(operation, Operation::Connected { .. }))
-        {
+        let effect = if operations.iter().all(Operation::is_query) {
             JobEffect::ReadOnly
         } else {
             JobEffect::MayChangeState
@@ -3015,6 +3016,46 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(service.permits.available_permits(), 1);
         assert_eq!(service.info().engine, "compact-bfs");
+    }
+
+    #[tokio::test]
+    async fn panic_during_a_lifecycle_mutation_fails_closed() {
+        let graph = ServiceGraph::empty(
+            EngineConfig::CompactBfs,
+            knotrel_core::GraphLimits::default(),
+            true,
+        );
+        let service = Service::new(graph, 2, Lifecycle::new());
+        assert!(service.execute(vec![link(1, 2), link(2, 3)]).await.is_ok());
+        let writer = service.clone();
+        let result = writer
+            .run(
+                JobKind::Operation,
+                JobEffect::MayChangeState,
+                move |state| {
+                    let outcome = state.apply(Operation::SetNodeActive {
+                        node: crate::api::WireNode(2),
+                        active: false,
+                    });
+                    assert!(matches!(outcome, Outcome::Changed { changed: true }));
+                    panic!("panic after a lifecycle mutation");
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(ServiceError::Unavailable)));
+        assert!(service.is_unavailable());
+        assert!(matches!(
+            service
+                .execute(vec![Operation::RemoveNode {
+                    node: crate::api::WireNode(1)
+                }])
+                .await,
+            Err(ServiceError::Unavailable)
+        ));
+        assert!(matches!(
+            service.stats().await,
+            Err(ServiceError::Unavailable)
+        ));
     }
 
     #[tokio::test]

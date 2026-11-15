@@ -248,7 +248,11 @@ New `op` values, with the existing envelope fields:
 | `remove_node` | `node` | `source`, `target`, `active`, `enabled` |
 
 `progress`, `link`, `cut` and `add_node` must not carry `active` or
-`enabled`: 422 `invalid_request`, whatever the setting.
+`enabled`: 422 `invalid_request`, whatever the setting. A flag whose value is
+`null` is a shape error (422) wherever a flag is accepted, so it is never
+treated as absent. Feeder `set_edge_enabled` checks endpoints in the supplied
+order, as direct operations do; only the duplicate fingerprint is
+normalized.
 
 With lifecycle support off, an event using one of the three new `op` values
 rejects the whole request with 409 `topology_lifecycle_disabled`. The check

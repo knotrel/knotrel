@@ -280,9 +280,21 @@ pub(crate) struct WireEdge {
     pub(crate) source: WireNode,
     pub(crate) target: WireNode,
     /// Import-only edge flag; absent means enabled. Requires lifecycle
-    /// support even when `true`.
-    #[serde(default)]
+    /// support even when `true`. `null` is rejected.
+    #[serde(default, deserialize_with = "present_flag")]
     pub(crate) enabled: Option<bool>,
+}
+
+/// Deserializes a present lifecycle flag, which must be a boolean.
+///
+/// With `#[serde(default)]`, an absent member stays `None`; a present member
+/// is `Some(bool)`, and `null` or any other type is a shape error (422). An
+/// explicit `null` therefore never passes as "absent", so a flag can never be
+/// silently ignored.
+fn present_flag<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error> {
+    bool::deserialize(deserializer).map(Some)
 }
 
 /// One import `nodes` entry: a node ID string (active) or a flagged object
@@ -572,10 +584,12 @@ pub(crate) struct FeederEvent {
     #[serde(default)]
     pub(crate) node: Option<WireNode>,
     /// Node flag of `set_node_active`; forbidden on other operations.
-    #[serde(default)]
+    /// `null` is rejected, so presence always means a boolean.
+    #[serde(default, deserialize_with = "present_flag")]
     pub(crate) active: Option<bool>,
     /// Edge flag of `set_edge_enabled`; forbidden on other operations.
-    #[serde(default)]
+    /// `null` is rejected, so presence always means a boolean.
+    #[serde(default, deserialize_with = "present_flag")]
     pub(crate) enabled: Option<bool>,
 }
 
