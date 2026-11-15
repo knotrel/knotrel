@@ -16,7 +16,8 @@ model.
 
 ## Run it
 
-Requires Python 3.9 or newer and a Knotrel v0.3.0 server. No Python packages are
+Requires Python 3.9 or newer and a Knotrel v0.4.0 server. The HTTP API is
+unchanged from v0.3.0, so a v0.3.0 server also works. No Python packages are
 installed.
 
 1. Start a **fresh, dedicated, standalone** server in one terminal, from a clone

@@ -161,10 +161,12 @@ variant were measured in v0.3.0 release qualification. See
 the reproducible workloads, methodology and published reports: release
 regression qualification, engine/competitor comparisons and algorithm
 experiments, each labelled with the version and host it actually measured.
-For v0.3.0, the release qualification outcome and its
-limitations are summarized in the
-[v0.3.0 release notes](docs/releases/v0.3.0-release-notes.md#performance-qualification);
-no speedup is claimed.
+[Performance by version](docs/performance-by-version.md) summarizes the
+release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0) for users, with
+their limits. The authoritative statements are in the release notes for
+[v0.4.0](docs/releases/v0.4.0-release-notes.md#regression-qualification-against-v030)
+and [v0.3.0](docs/releases/v0.3.0-release-notes.md#performance-qualification).
+No speedup is claimed for either release.
 
 ## Installing a release
 

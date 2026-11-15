@@ -3,8 +3,10 @@
 This tutorial uses a small **synthetic** electrical distribution network to show
 what Knotrel answers. It opens one connection, sees which customers lose their
 path to the source, then closes a reserve connection and sees connectivity
-return. Everything runs against the existing HTTP API of a Knotrel v0.3.0
-server, driven by a Python 3 standard-library script.
+return. Everything runs against the HTTP API of a Knotrel v0.4.0 server,
+driven by a Python 3 standard-library script. The client-visible HTTP API is
+unchanged from v0.3.0, so the script also runs against a v0.3.0 server. The
+optional observability step [below](#observe-the-run-optional) needs v0.4.0.
 
 > **Scope.** This is a topology demonstration, not an electrical simulator or
 > an operational switching tool. The network is invented for teaching and is
@@ -173,6 +175,57 @@ All checks passed. Topological connectivity only: no voltage, current, power flo
 recommendation for operating a real electrical network.** Whether a real tie can
 be closed safely depends on load, protection and operating rules that are
 entirely outside this example.
+
+## Observe the run (optional)
+
+v0.4.0 can export Prometheus metrics and writes one structured log line per
+request. To see what the demonstration did from the server's side, start the
+dedicated server with metrics enabled instead:
+
+```sh
+KNOTREL_MODE=standalone KNOTREL_METRICS_ENABLED=true cargo run --release --locked -p knotrel-server
+```
+
+**Logs.** Each request runs in a `request` span with a process-unique
+`request_id` and the matched route. The server log shows one `handled request`
+line per HTTP call the script makes, with its status and latency.
+
+**Metrics.** After the script finishes, read the graph size and the operation
+counts:
+
+```sh
+curl -s http://127.0.0.1:8080/metrics \
+  | grep -E '^knotrel_graph_(nodes|edges) |^knotrel_graph_operations_total' \
+  | grep -v ' 0$'
+```
+
+For one run against a fresh server, expect these lines, in any order:
+
+```text
+knotrel_graph_nodes 13
+knotrel_graph_edges 12
+knotrel_graph_operations_total{op="add_node",outcome="changed"} 13
+knotrel_graph_operations_total{op="link",outcome="changed"} 13
+knotrel_graph_operations_total{op="cut",outcome="changed"} 1
+knotrel_graph_operations_total{op="connected",outcome="true"} 18
+knotrel_graph_operations_total{op="connected",outcome="false"} 3
+```
+
+How the counts add up:
+- **Nodes:** 13.
+- **Links:** 12 closed connections plus the reserve, 13 in all.
+- **Cuts:** one.
+- **Edges:** 12 remain at the end.
+- **Queries:** 21, three rounds of seven. Three of them, after the opening,
+  report no path.
+
+**Metrics show what the server executed, not what it means for the grid.**
+They count operations; whether a customer is affected remains the
+application's interpretation.
+
+`/metrics` is unauthenticated and served on the same listener. Keep the server
+on loopback. See the [observability contract](../observability-contract.md)
+for every series and label.
 
 ## How the script handles failure
 
