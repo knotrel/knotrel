@@ -268,6 +268,52 @@ fn startup_probe_mutation_query_and_sigterm_shutdown() {
 }
 
 #[test]
+fn topology_lifecycle_environment_variable_enables_lifecycle_operations() {
+    let mut server = Server::start(&[("KNOTREL_TOPOLOGY_LIFECYCLE", "true")]);
+    let (status, info) = call(&server, "GET", "/v1/info", "");
+    assert_eq!(status, 200);
+    assert!(info.contains(r#""topology_lifecycle":true"#), "{info}");
+    call(
+        &server,
+        "POST",
+        "/v1/operations",
+        r#"{"op":"link","source":"1","target":"2"}"#,
+    );
+    assert_eq!(
+        call(
+            &server,
+            "POST",
+            "/v1/operations",
+            r#"{"op":"set_node_active","node":"2","active":false}"#
+        ),
+        (200, r#"{"result":"changed","changed":true}"#.into())
+    );
+    assert_eq!(
+        call(
+            &server,
+            "POST",
+            "/v1/operations",
+            r#"{"op":"connected","source":"1","target":"2"}"#
+        ),
+        (200, r#"{"result":"connected","connected":false}"#.into())
+    );
+    server.signal("TERM");
+    assert_eq!(server.wait_exit(STEP).code(), Some(0));
+
+    let mut plain = Server::start(&[]);
+    let (status, body) = call(
+        &plain,
+        "POST",
+        "/v1/operations",
+        r#"{"op":"remove_node","node":"1"}"#,
+    );
+    assert_eq!(status, 409);
+    assert!(body.contains("topology_lifecycle_disabled"), "{body}");
+    plain.signal("TERM");
+    assert_eq!(plain.wait_exit(STEP).code(), Some(0));
+}
+
+#[test]
 fn sigint_is_a_graceful_shutdown() {
     let mut server = Server::start(&[]);
     server.signal("INT");
