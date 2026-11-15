@@ -1,6 +1,6 @@
 # Alerting (M6.4)
 
-**Status:** Implemented, unreleased; planned for v0.4.0. Rules:
+**Status:** Released in v0.4.0. Rules:
 [`examples/observability/prometheus-alerts.yml`](../examples/observability/prometheus-alerts.yml).
 
 These rules turn the opt-in metrics of the

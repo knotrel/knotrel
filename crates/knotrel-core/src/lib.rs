@@ -83,6 +83,26 @@
 //! It is atomic with respect to publication: on the first validation error, the partially
 //! constructed graph is dropped and the error is returned.
 //!
+//! # Node and Edge Lifecycle
+//!
+//! [`LifecycleGraph`] adds reversible node activation, reversible edge
+//! enabling and permanent node removal on any engine. It keeps the registered
+//! topology with flags and answers connectivity over the effective graph:
+//! enabled edges whose endpoints are both active. [`ConnectivityGraph`] is
+//! unchanged and carries no lifecycle bookkeeping.
+//!
+//! ```rust
+//! use knotrel_core::{EngineConfig, LifecycleGraph};
+//!
+//! let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs);
+//! graph.link(1, 2)?;
+//! graph.set_edge_enabled(1, 2, false)?;
+//! assert!(!graph.connected(1, 2)?);
+//! assert_eq!(graph.edge_count(), 1);
+//! assert_eq!(graph.effective_edge_count(), 0);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! # Choosing a Backend Engine
 //!
 //! Knotrel provides three underlying dynamic connectivity engines through [`EngineConfig`].

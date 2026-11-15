@@ -24,7 +24,8 @@ An external feeder reads the authoritative database or event stream and supplies
 | **v0.2.0 — Integration & Graph Loading** | Rebuildable single-graph accelerator fed by an external authority | Integration contract, atomic HTTP import, identity/version model, ordered events with duplicate/gap detection, synchronization-aware bootstrap/readiness, external feeder and reproducible measurements | Local WAL/AOF, automatic snapshots and disk recovery DEFERRED; export OPTIONAL; embedded provider connectors, multi-graph and advanced concurrency DEFERRED |
 | **v0.3.0 — Operational Service** | Operable integration and measured update/query efficiency | Batch compatibility and integration improvements, lifecycle, deployment, metrics/tracing; evidence-based contention decision | Concurrency redesign only if justified; local persistence not a prerequisite |
 | **v0.4.0 — Observability & Performance** | Close integration-aware observability and ship only validated hot-path optimizations | Acceptance M6 (metrics review, structured logs, alert rules, overhead and series-count qualification); before/after qualification of each included optimization; release candidate, CI, packaging, deployment check and documentation | Local persistence DEFERRED to v0.5.0; M10 node/edge lifecycle and M5 concurrency redesign not required |
-| **v0.5.0 — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; snapshot-only, AOF-only and combined modes are candidates, not three implementation commitments |
+| **v0.5.0 — Node & Edge Lifecycle** | Reversible node/edge activation and permanent node removal without losing configured connection state | M10: core facade on every engine, standalone HTTP, ordered feeder events, flagged atomic imports, telemetry, tutorial, independent review and performance qualification | Opt-in (`KNOTREL_TOPOLOGY_LIFECYCLE`); no persistence, multi-graph, electrical simulation or concurrency redesign |
+| **Unassigned — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; deferred from v0.5.0 by the 2026-11-16 scope decision; release unassigned |
 | **v1.0.0 — Production Readiness** | Supported operational, security and compatibility guarantees | Deployment threat model, supported API/integration compatibility, fault tests and runbooks | Multi-graph demand-gated; local persistence need not be enabled or implemented to qualify a volatile deployment; general-purpose/distributed database features excluded |
 
 **Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
@@ -63,11 +64,11 @@ Checks reflect verified implementation and acceptance gates. Features 0.2.5+ rem
 - [x] **Feature 0.4.1:** Hot-path optimization review, evidence and inclusion decision (REQUIRED; decided 2026-11-15)
 - [ ] **Feature 0.4.2:** Release candidate, qualification and publication (REQUIRED)
 
-### Post-M6 — Node and edge lifecycle (release unassigned)
+### v0.5.0 — Node & Edge Lifecycle
 
-- [ ] **Feature M10:** Reversible node/edge activation and permanent node removal — scheduled after Acceptance M6, not required for v0.4.0; [implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md).
+- [ ] **Feature M10:** Reversible node/edge activation and permanent node removal — assigned to v0.5.0 on 2026-11-16; [contract](docs/topology-lifecycle.md), [implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). Implementation, review and qualification status: see [M10](#m10--node-and-edge-lifecycle-assigned-to-v050).
 
-### v0.5.0 — Optional Local Persistence & Fast Recovery
+### Unassigned — Optional Local Persistence & Fast Recovery
 
 - [ ] **Feature P1:** Persistence value, strategy and support decision
 - [ ] **Feature P2:** Canonical local checkpoint and snapshot evaluation
@@ -473,9 +474,11 @@ Deferred from v0.3.0 (not part of its acceptance); assigned to v0.4.0 by the sco
   Evidence (2026-11-15): budget approved before measurement (median ≤ 3%, 95% CI upper bound ≤ 6%); [metrics-overhead campaign](../knotrel-benchmarks/results/metrics-overhead-20261115/README.md) on the v0.4.0 candidate tree: 6/6 scenarios PASS, largest cost +1.28% [+0.60%, +1.59%]; `series_count_is_constant_under_sustained_churn` keeps the series count constant over 20 churn cycles and below the calculated maximum ([observability contract §18](docs/observability-contract.md#18-m65-qualification-overhead-and-series-count)).
 - [x] **Acceptance M6:** Operators can explain synchronization and performance failures from bounded telemetry, without inferring freshness solely from process health. Accepted by the owner on 2026-11-15 on the M6.1–M6.5 evidence above.
 
-### M10 — Node and edge lifecycle (planned after M6; release unassigned)
+### M10 — Node and edge lifecycle (assigned to v0.5.0)
 
-**Sequencing decision (2026-11-13):** Start after **Acceptance M6**, including its instrumentation-overhead and cardinality checks. This adds no work to the current M6 increments or the released v0.3.0 scope. Per the 2026-11-15 scope decision, M10 is not a v0.4.0 requirement and does not assign or replace the v0.5.0 persistence milestone.
+**Sequencing decision (2026-11-13):** Start after **Acceptance M6**, including its instrumentation-overhead and cardinality checks. This adds no work to the current M6 increments or the released v0.3.0 scope. Per the 2026-11-15 scope decision, M10 was not a v0.4.0 requirement.
+
+**Scope decision (2026-11-16):** The owner assigned M10 to v0.5.0. Optional local persistence and fast recovery move to an unassigned future release; their milestone text below is unchanged and the historical v0.4.0 decision to defer persistence to v0.5.0 is preserved as recorded.
 
 [Design and implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). The plan distinguishes registered topology from effective connectivity: an edge participates only when enabled and both endpoints are active. Deactivating a node preserves independently configured edge flags; removing a node cascades to its incident registered edges. Detailed API and compatibility decisions require M10.1 acceptance before coding.
 
@@ -500,7 +503,7 @@ Deferred from v0.3.0 (not part of its acceptance); assigned to v0.4.0 by the sco
 
 ## v0.4.0 — Observability & Performance
 
-**Scope decision (2026-11-15):** The next release closes M6 and ships only hot-path optimizations validated by before/after evidence. Local persistence, previously planned as v0.4.0, moves unchanged to [v0.5.0](#v050--optional-local-persistence--fast-recovery). M10 (node/edge lifecycle) follows Acceptance M6 but is not a v0.4.0 requirement. An M5 concurrency redesign is not required; the coarse graph mutex is retained. No other new capability enters this release without an explicit scope decision.
+**Scope decision (2026-11-15):** The next release closes M6 and ships only hot-path optimizations validated by before/after evidence. Local persistence, previously planned as v0.4.0, moves unchanged to [v0.5.0](#unassigned--optional-local-persistence--fast-recovery) (since deferred to an unassigned release by the 2026-11-16 decision). M10 (node/edge lifecycle) follows Acceptance M6 but is not a v0.4.0 requirement. An M5 concurrency redesign is not required; the coarse graph mutex is retained. No other new capability enters this release without an explicit scope decision.
 
 **Order of remaining work:** independent M6.2 review → M6.3 structured logs → M6.4 alert rules → M6.5 overhead and series-count qualification → Acceptance M6 → optimization inclusion decision (Feature 0.4.1, can proceed in parallel with M6.3–M6.4) → release candidate and publication (Feature 0.4.2).
 
@@ -535,7 +538,9 @@ Tasks and acceptance as listed in [M6](#m6--integration-aware-observability-p1--
 
 ---
 
-## v0.5.0 — Optional Local Persistence & Fast Recovery
+## Unassigned — Optional Local Persistence & Fast Recovery
+
+**Scope decision (2026-11-16):** Previously planned as v0.5.0; deferred to an unassigned future release when M10 (node and edge lifecycle) was assigned to v0.5.0. The milestone content is unchanged.
 
 **Planning change (2026-11-15):** Previously planned as v0.4.0; content unchanged.
 

@@ -12,6 +12,7 @@ the Knotrel in-memory dynamic graph connectivity engine ([`knotrel-core`](https:
 - **Dynamic graph mutations**: Insert (`link`) and delete (`cut`) edges dynamically.
 - **Exact reachability queries**: Query whether two vertices are connected (`connected`).
 - **Batch execution**: Isolated batch processing via `/v1/batch` (1–1024 operations). Batch operations execute sequentially in input order under an exclusive graph lock without concurrent interleaving. If an operation fails, previously completed operations are retained in graph state (no transactional rollback is provided).
+- **Node and edge lifecycle (opt-in)**: With `KNOTREL_TOPOLOGY_LIFECYCLE=true`, deactivate and reactivate nodes, disable and re-enable edges without deleting them, remove nodes permanently, and inspect node and edge state. Connectivity uses only enabled edges between active nodes.
 - **Engine selection**: Built on `knotrel-core`, configurable with Compact BFS (default), experimental Euler Tour Trees (`ett`), or experimental Holm–de Lichtenberg–Thorup (`hdt`).
 - **Telemetry and lifecycle**: Clean liveness (`/health`), readiness (`/ready`), instance configuration (`/v1/info`), and live graph snapshot stats (`/v1/stats`).
 - **Safe defaults**: Loopback-only binding by default, bounded request timeout, configurable queue limits, and graceful drain.
@@ -44,7 +45,8 @@ By default, the server binds to `127.0.0.1:8080`.
 | `KNOTREL_ENGINE` | `compact-bfs` | Dynamic connectivity engine (`compact-bfs`, `ett`, or `hdt`) |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Maximum queued and concurrent graph operations |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered node count (`unlimited` to remove ceiling) |
-| `KNOTREL_MAX_EDGES` | `500000` | Maximum active edge count (`unlimited` to remove ceiling) |
+| `KNOTREL_MAX_EDGES` | `500000` | Maximum registered edge count (`unlimited` to remove ceiling) |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node and edge lifecycle operations; inactive nodes and disabled edges count against the limits |
 
 ### Library Usage
 
