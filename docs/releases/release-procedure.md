@@ -183,6 +183,7 @@ Before tagging and publishing:
 - [ ] Source package verification passed.
 - [ ] Elastic License 2.0 is included in all archives.
 - [ ] `CRATES_IO_TOKEN` is configured in the `crates-io` environment with required reviewer protection.
+- [ ] The release tag will be created with `git tag -s` and checked with `git verify-tag` before it is pushed.
 - [ ] Explicit maintainer authorization has been granted.
 
 ---
@@ -191,11 +192,31 @@ Before tagging and publishing:
 
 Once explicitly approved:
 
-1. Create and push the Git tag:
+1. Create a **signed** annotated tag on the candidate commit, verify it, then
+   push it:
    ```sh
-   git tag -a v0.4.0 -m "Knotrel v0.4.0"
+   git tag -s v0.4.0 -m "Knotrel v0.4.0" <commit-sha-of-v0.4.0-tag>
+   git verify-tag v0.4.0
    git push origin v0.4.0
    ```
+   Use `-s`, not `-a`. With `-a`, GitHub shows the tag object as unverified
+   (`unsigned`) even when the commit it points to has a valid signature.
+   `git verify-tag` must report a good signature from the maintainer's signing
+   key before the push. After pushing, confirm that GitHub reports the tag as
+   verified:
+   ```sh
+   gh api repos/knotrel/knotrel/git/refs/tags/v0.4.0 --jq .object.sha \
+     | xargs -I{} gh api repos/knotrel/knotrel/git/tags/{} --jq .verification
+   ```
+
+   Do not delete or move a tag that a published GitHub Release uses.
+   Deleting it turns the release back into a draft. Republishing it restores
+   it, but GitHub records a new publication date. If such a tag must be
+   recreated (for example to sign it), run `git tag -s` successfully first;
+   then delete, recreate and push the tag on the same commit at once.
+   Immediately republish the release with
+   `gh release edit <tag> --draft=false --latest=<true|false>`, restoring its
+   previous state, and check that its assets are unchanged.
 
 2. Trigger the `release.yml` GitHub Actions workflow with:
    - `version`: `0.4.0`
