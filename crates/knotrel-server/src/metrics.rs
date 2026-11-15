@@ -226,10 +226,25 @@ pub(crate) enum GraphOp {
     Link,
     Cut,
     Connected,
+    SetNodeActive,
+    SetEdgeEnabled,
+    RemoveNode,
+    NodeState,
+    EdgeState,
 }
 
 impl GraphOp {
-    const ALL: [Self; 4] = [Self::AddNode, Self::Link, Self::Cut, Self::Connected];
+    const ALL: [Self; 9] = [
+        Self::AddNode,
+        Self::Link,
+        Self::Cut,
+        Self::Connected,
+        Self::SetNodeActive,
+        Self::SetEdgeEnabled,
+        Self::RemoveNode,
+        Self::NodeState,
+        Self::EdgeState,
+    ];
 
     pub(crate) fn of(operation: &Operation) -> Self {
         match operation {
@@ -237,6 +252,11 @@ impl GraphOp {
             Operation::Link { .. } => Self::Link,
             Operation::Cut { .. } => Self::Cut,
             Operation::Connected { .. } => Self::Connected,
+            Operation::SetNodeActive { .. } => Self::SetNodeActive,
+            Operation::SetEdgeEnabled { .. } => Self::SetEdgeEnabled,
+            Operation::RemoveNode { .. } => Self::RemoveNode,
+            Operation::NodeState { .. } => Self::NodeState,
+            Operation::EdgeState { .. } => Self::EdgeState,
         }
     }
 
@@ -246,6 +266,11 @@ impl GraphOp {
             Self::Link => "link",
             Self::Cut => "cut",
             Self::Connected => "connected",
+            Self::SetNodeActive => "set_node_active",
+            Self::SetEdgeEnabled => "set_edge_enabled",
+            Self::RemoveNode => "remove_node",
+            Self::NodeState => "node_state",
+            Self::EdgeState => "edge_state",
         }
     }
 
@@ -253,15 +278,30 @@ impl GraphOp {
     fn outcomes(self) -> [&'static str; OperationOutcome::COUNT] {
         match self {
             Self::Connected => ["true", "false", "error"],
+            Self::NodeState | Self::EdgeState => ["registered", "unregistered", "error"],
             _ => ["changed", "unchanged", "error"],
         }
     }
 
-    /// Whether HTTP can execute this operation in `mode`; source-managed
-    /// mode refuses direct mutations with `direct_mutation_disabled` before
+    fn is_query(self) -> bool {
+        matches!(self, Self::Connected | Self::NodeState | Self::EdgeState)
+    }
+
+    fn requires_lifecycle(self) -> bool {
+        !matches!(
+            self,
+            Self::AddNode | Self::Link | Self::Cut | Self::Connected
+        )
+    }
+
+    /// Whether HTTP can execute this operation in `mode` with the given
+    /// lifecycle support: source-managed mode refuses direct mutations with
+    /// `direct_mutation_disabled`, and lifecycle operations are refused with
+    /// `topology_lifecycle_disabled` without lifecycle support, both before
     /// admission.
-    fn reachable_in(self, mode: ServerMode) -> bool {
-        mode == ServerMode::Standalone || self == Self::Connected
+    fn reachable_in(self, mode: ServerMode, lifecycle: bool) -> bool {
+        (mode == ServerMode::Standalone || self.is_query())
+            && (lifecycle || !self.requires_lifecycle())
     }
 }
 
@@ -280,14 +320,32 @@ impl OperationOutcome {
 /// Index into [`GraphOp::outcomes`]: changed or `true`, unchanged or `false`, error.
 fn outcome_index(outcome: &Outcome) -> usize {
     match outcome {
-        Outcome::Changed { changed: true } | Outcome::Connected { connected: true } => {
-            OperationOutcome::Positive as usize
+        Outcome::Changed { changed: true }
+        | Outcome::Connected { connected: true }
+        | Outcome::NodeState {
+            registered: true, ..
         }
-        Outcome::Changed { changed: false } | Outcome::Connected { connected: false } => {
-            OperationOutcome::Negative as usize
+        | Outcome::EdgeState {
+            registered: true, ..
+        } => OperationOutcome::Positive as usize,
+        Outcome::Changed { changed: false }
+        | Outcome::Connected { connected: false }
+        | Outcome::NodeState {
+            registered: false, ..
         }
+        | Outcome::EdgeState {
+            registered: false, ..
+        } => OperationOutcome::Negative as usize,
         Outcome::Error { .. } => OperationOutcome::Error as usize,
     }
+}
+
+/// Lifecycle count gauges, registered only with lifecycle support.
+#[derive(Debug, Default)]
+struct LifecycleGauges {
+    active_nodes: Gauge,
+    enabled_edges: Gauge,
+    effective_edges: Gauge,
 }
 
 /// How the event loop finished evaluating one feeder event, the `result`
@@ -345,6 +403,8 @@ pub(crate) enum FeederRejection {
     UnverifiableDuplicate,
     SequenceExhausted,
     InvalidRequest,
+    /// A lifecycle event without lifecycle support.
+    TopologyLifecycleDisabled,
     /// Any graph-domain error of an event.
     EventFailed,
     BarrierPositionMismatch,
@@ -353,7 +413,7 @@ pub(crate) enum FeederRejection {
 }
 
 impl FeederRejection {
-    pub(crate) const ALL: [Self; 19] = [
+    pub(crate) const ALL: [Self; 20] = [
         Self::SessionRequired,
         Self::FencedSession,
         Self::LeaseExpired,
@@ -369,6 +429,7 @@ impl FeederRejection {
         Self::UnverifiableDuplicate,
         Self::SequenceExhausted,
         Self::InvalidRequest,
+        Self::TopologyLifecycleDisabled,
         Self::EventFailed,
         Self::BarrierPositionMismatch,
         Self::BarrierNotReached,
@@ -398,6 +459,7 @@ impl FeederRejection {
             FeederError::UnverifiableDuplicate(_) => Self::UnverifiableDuplicate,
             FeederError::SequenceExhausted => Self::SequenceExhausted,
             FeederError::InvalidRequest(_) => Self::InvalidRequest,
+            FeederError::TopologyLifecycleDisabled => Self::TopologyLifecycleDisabled,
             FeederError::Domain(..) => Self::EventFailed,
             FeederError::BarrierPositionMismatch { .. } => Self::BarrierPositionMismatch,
             FeederError::BarrierNotReached { .. } => Self::BarrierNotReached,
@@ -434,6 +496,7 @@ impl FeederRejection {
             Self::UnverifiableDuplicate => ErrorCode::UnverifiableDuplicate,
             Self::SequenceExhausted => ErrorCode::SequenceExhausted,
             Self::InvalidRequest => ErrorCode::InvalidRequest,
+            Self::TopologyLifecycleDisabled => ErrorCode::TopologyLifecycleDisabled,
             Self::EventFailed => ErrorCode::EventFailed,
             Self::BarrierPositionMismatch => ErrorCode::BarrierPositionMismatch,
             Self::BarrierNotReached => ErrorCode::BarrierNotReached,
@@ -619,6 +682,8 @@ pub(crate) struct ServiceTelemetry {
     uncertain: [Counter; Uncertainty::ALL.len()],
     graph_nodes: Gauge,
     graph_edges: Gauge,
+    // Present only with lifecycle support.
+    lifecycle_gauges: Option<LifecycleGauges>,
     queue_family: PhaseFamily,
     lock_wait_family: PhaseFamily,
     execution_family: PhaseFamily,
@@ -639,7 +704,7 @@ pub(crate) struct ServiceTelemetry {
 }
 
 impl ServiceTelemetry {
-    pub(crate) fn new(mode: ServerMode) -> Arc<Self> {
+    pub(crate) fn new(mode: ServerMode, lifecycle: bool) -> Arc<Self> {
         let rejected_family = Family::<OutcomeLabels, Counter>::default();
         let uncertain_family = Family::<OutcomeLabels, Counter>::default();
         let rejected = Rejection::ALL.map(|reason| {
@@ -667,7 +732,7 @@ impl ServiceTelemetry {
         });
         let operations_family = Family::<OperationLabels, Counter>::default();
         let operations = GraphOp::ALL.map(|op| {
-            op.reachable_in(mode).then(|| {
+            op.reachable_in(mode, lifecycle).then(|| {
                 op.outcomes().map(|outcome| {
                     operations_family
                         .get_or_create(&[("op", op.label()), ("outcome", outcome)])
@@ -741,6 +806,7 @@ impl ServiceTelemetry {
             uncertain,
             graph_nodes: Gauge::default(),
             graph_edges: Gauge::default(),
+            lifecycle_gauges: lifecycle.then(LifecycleGauges::default),
             queue_family,
             lock_wait_family,
             execution_family,
@@ -776,6 +842,23 @@ impl ServiceTelemetry {
             "Edges in the live graph as last published at construction or by a worker under the graph lock when its state-changing graph work returned; a later panic does not roll it back, so after a worker failure it may not describe the current graph",
             self.graph_edges.clone(),
         );
+        if let Some(gauges) = &self.lifecycle_gauges {
+            registry.register(
+                "knotrel_graph_active_nodes",
+                "Registered nodes whose flag is active, published with knotrel_graph_nodes at the same boundaries; present only with node and edge lifecycle support",
+                gauges.active_nodes.clone(),
+            );
+            registry.register(
+                "knotrel_graph_enabled_edges",
+                "Registered edges whose flag is enabled, whether or not both endpoints are active, published with knotrel_graph_edges at the same boundaries; present only with node and edge lifecycle support",
+                gauges.enabled_edges.clone(),
+            );
+            registry.register(
+                "knotrel_graph_effective_edges",
+                "Edges that participate in connectivity (enabled, both endpoints active), published with knotrel_graph_edges at the same boundaries; present only with node and edge lifecycle support",
+                gauges.effective_edges.clone(),
+            );
+        }
         registry.register(
             "knotrel_graph_job_queue_seconds",
             "Time an admitted graph job waited in the blocking pool, from submission to the start of its worker; recorded by the worker when it starts, also after its caller has gone",
@@ -846,11 +929,20 @@ impl ServiceTelemetry {
     /// newer one. The two stores are separate: a concurrent scrape may pair
     /// one job's node count with the next job's edge count. A publication is
     /// never rolled back, even if the worker panics afterwards.
-    pub(crate) fn publish_graph_counts(&self, nodes: usize, edges: usize) {
-        self.graph_nodes
-            .set(i64::try_from(nodes).unwrap_or(i64::MAX));
-        self.graph_edges
-            .set(i64::try_from(edges).unwrap_or(i64::MAX));
+    ///
+    /// Node and edge counts are registered counts. With lifecycle support the
+    /// three lifecycle gauges are published too; each count is read in `O(1)`.
+    pub(crate) fn publish_graph_counts(&self, graph: &crate::graph::ServiceGraph) {
+        let gauge = |count: usize| i64::try_from(count).unwrap_or(i64::MAX);
+        self.graph_nodes.set(gauge(graph.node_count()));
+        self.graph_edges.set(gauge(graph.edge_count()));
+        if let (Some(gauges), Some(counts)) = (&self.lifecycle_gauges, graph.lifecycle_counts()) {
+            gauges.active_nodes.set(gauge(counts.active_node_count));
+            gauges.enabled_edges.set(gauge(counts.enabled_edge_count));
+            gauges
+                .effective_edges
+                .set(gauge(counts.effective_edge_count));
+        }
     }
 
     fn phases(&self, kind: JobKind) -> Option<&PhaseHistograms> {

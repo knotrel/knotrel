@@ -1,5 +1,6 @@
 //! Wire types and HTTP handlers for the versioned graph API.
 
+use crate::graph::{LifecycleFailure, ServiceGraph};
 use crate::service::{Service, ServiceError};
 use axum::{
     Json,
@@ -8,7 +9,7 @@ use axum::{
     http::{HeaderMap, HeaderName, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
-use knotrel_core::{ConnectivityGraph, GraphError};
+use knotrel_core::{GraphError, LifecycleError};
 use serde::{Deserialize, Serialize};
 
 /// Registered HTTP route templates.
@@ -123,15 +124,17 @@ pub(crate) enum ErrorCode {
     StaleGeneration,
     StaleInstanceId,
     SupersededBarrier,
+    TopologyLifecycleDisabled,
     Unavailable,
     Uninitialized,
+    UnknownEdge,
     UnknownNode,
     UnverifiableDuplicate,
 }
 
 impl ErrorCode {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 43] = [
+    pub(crate) const ALL: [Self; 45] = [
         Self::BarrierNotReached,
         Self::BarrierPositionMismatch,
         Self::Busy,
@@ -171,8 +174,10 @@ impl ErrorCode {
         Self::StaleGeneration,
         Self::StaleInstanceId,
         Self::SupersededBarrier,
+        Self::TopologyLifecycleDisabled,
         Self::Unavailable,
         Self::Uninitialized,
+        Self::UnknownEdge,
         Self::UnknownNode,
         Self::UnverifiableDuplicate,
     ];
@@ -218,8 +223,10 @@ impl ErrorCode {
             Self::StaleGeneration => "stale_generation",
             Self::StaleInstanceId => "stale_instance_id",
             Self::SupersededBarrier => "superseded_barrier",
+            Self::TopologyLifecycleDisabled => "topology_lifecycle_disabled",
             Self::Unavailable => "unavailable",
             Self::Uninitialized => "uninitialized",
+            Self::UnknownEdge => "unknown_edge",
             Self::UnknownNode => "unknown_node",
             Self::UnverifiableDuplicate => "unverifiable_duplicate",
         }
@@ -272,6 +279,61 @@ impl<'de> Deserialize<'de> for WireNode {
 pub(crate) struct WireEdge {
     pub(crate) source: WireNode,
     pub(crate) target: WireNode,
+    /// Import-only edge flag; absent means enabled. Requires lifecycle
+    /// support even when `true`.
+    #[serde(default)]
+    pub(crate) enabled: Option<bool>,
+}
+
+/// One import `nodes` entry: a node ID string (active) or a flagged object
+/// `{"node":"202","active":false}`. The object form requires lifecycle
+/// support even when `active` is `true`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ImportNode {
+    pub(crate) node: WireNode,
+    /// `None` for the string form.
+    pub(crate) active: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for ImportNode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Flagged {
+            node: WireNode,
+            active: bool,
+        }
+
+        struct ImportNodeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ImportNodeVisitor {
+            type Value = ImportNode;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                // The legacy form keeps the former type-error wording.
+                formatter.write_str("a string")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<ImportNode, E> {
+                let node = WireNode::parse(value).map_err(E::custom)?;
+                Ok(ImportNode { node, active: None })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<ImportNode, A::Error> {
+                let flagged =
+                    Flagged::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(ImportNode {
+                    node: flagged.node,
+                    active: Some(flagged.active),
+                })
+            }
+        }
+
+        deserializer.deserialize_any(ImportNodeVisitor)
+    }
 }
 
 /// Mode of graph import: initial creation or atomic replacement.
@@ -338,7 +400,7 @@ pub(crate) struct ImportRequest {
     pub(crate) source_position: String,
     pub(crate) feeder_session_id: String,
     pub(crate) feeder_epoch: u64,
-    pub(crate) nodes: Vec<WireNode>,
+    pub(crate) nodes: Vec<ImportNode>,
     pub(crate) edges: Vec<WireEdge>,
 }
 
@@ -352,6 +414,9 @@ pub(crate) struct ImportResponse {
     pub(crate) state_version: String,
     pub(crate) node_count: usize,
     pub(crate) edge_count: usize,
+    /// Present only with lifecycle support; flattened into the object.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub(crate) lifecycle: Option<crate::graph::LifecycleCounts>,
     pub(crate) source_position: String,
     pub(crate) status: crate::service::SyncStatus,
 }
@@ -407,11 +472,22 @@ pub(crate) enum FeederOperation {
     Cut,
     AddNode,
     Progress,
+    SetNodeActive,
+    SetEdgeEnabled,
+    RemoveNode,
 }
 
 impl FeederOperation {
     #[cfg(test)]
-    const ALL: [Self; 4] = [Self::Link, Self::Cut, Self::AddNode, Self::Progress];
+    const ALL: [Self; 7] = [
+        Self::Link,
+        Self::Cut,
+        Self::AddNode,
+        Self::Progress,
+        Self::SetNodeActive,
+        Self::SetEdgeEnabled,
+        Self::RemoveNode,
+    ];
 
     #[cfg(test)]
     pub(crate) const fn as_str(self) -> &'static str {
@@ -420,6 +496,9 @@ impl FeederOperation {
             Self::Cut => "cut",
             Self::AddNode => "add_node",
             Self::Progress => "progress",
+            Self::SetNodeActive => "set_node_active",
+            Self::SetEdgeEnabled => "set_edge_enabled",
+            Self::RemoveNode => "remove_node",
         }
     }
 
@@ -429,6 +508,9 @@ impl FeederOperation {
             "cut" => Self::Cut,
             "add_node" => Self::AddNode,
             "progress" => Self::Progress,
+            "set_node_active" => Self::SetNodeActive,
+            "set_edge_enabled" => Self::SetEdgeEnabled,
+            "remove_node" => Self::RemoveNode,
             _ => return None,
         })
     }
@@ -489,6 +571,12 @@ pub(crate) struct FeederEvent {
     pub(crate) target: Option<WireNode>,
     #[serde(default)]
     pub(crate) node: Option<WireNode>,
+    /// Node flag of `set_node_active`; forbidden on other operations.
+    #[serde(default)]
+    pub(crate) active: Option<bool>,
+    /// Edge flag of `set_edge_enabled`; forbidden on other operations.
+    #[serde(default)]
+    pub(crate) enabled: Option<bool>,
 }
 
 /// Request payload for ordered feeder incremental events.
@@ -586,38 +674,171 @@ pub(crate) struct GapResponse {
 }
 
 /// One operation, deserialized completely before graph execution.
+///
+/// The lifecycle variants always parse, whatever the server setting, so the
+/// shape check (validation step 5) is independent of configuration; requests
+/// using them without lifecycle support are rejected before execution.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Operation {
-    AddNode { node: WireNode },
-    Link { source: WireNode, target: WireNode },
-    Cut { source: WireNode, target: WireNode },
-    Connected { source: WireNode, target: WireNode },
+    AddNode {
+        node: WireNode,
+    },
+    Link {
+        source: WireNode,
+        target: WireNode,
+    },
+    Cut {
+        source: WireNode,
+        target: WireNode,
+    },
+    Connected {
+        source: WireNode,
+        target: WireNode,
+    },
+    SetNodeActive {
+        node: WireNode,
+        active: bool,
+    },
+    SetEdgeEnabled {
+        source: WireNode,
+        target: WireNode,
+        enabled: bool,
+    },
+    RemoveNode {
+        node: WireNode,
+    },
+    NodeState {
+        node: WireNode,
+    },
+    EdgeState {
+        source: WireNode,
+        target: WireNode,
+    },
 }
 
 impl Operation {
+    /// Whether this operation only reads the graph.
+    pub(crate) fn is_query(&self) -> bool {
+        matches!(
+            self,
+            Self::Connected { .. } | Self::NodeState { .. } | Self::EdgeState { .. }
+        )
+    }
+
+    /// Whether this operation needs lifecycle support.
+    pub(crate) fn requires_lifecycle(&self) -> bool {
+        matches!(
+            self,
+            Self::SetNodeActive { .. }
+                | Self::SetEdgeEnabled { .. }
+                | Self::RemoveNode { .. }
+                | Self::NodeState { .. }
+                | Self::EdgeState { .. }
+        )
+    }
+
     /// Applies one operation, keeping graph errors local to this operation.
-    pub(crate) fn apply(self, graph: &mut ConnectivityGraph) -> Outcome {
+    pub(crate) fn apply(self, graph: &mut ServiceGraph) -> Outcome {
+        let changed = |result: Result<bool, GraphError>| {
+            result
+                .map(|changed| Outcome::Changed { changed })
+                .unwrap_or_else(Outcome::from)
+        };
         match self {
-            Self::AddNode { node } => graph
-                .add_node(node.0)
-                .map(|changed| Outcome::Changed { changed })
-                .unwrap_or_else(Outcome::from),
-            Self::Link { source, target } => graph
-                .link(source.0, target.0)
-                .map(|changed| Outcome::Changed { changed })
-                .unwrap_or_else(Outcome::from),
-            Self::Cut { source, target } => graph
-                .cut(source.0, target.0)
-                .map(|changed| Outcome::Changed { changed })
-                .unwrap_or_else(Outcome::from),
+            Self::AddNode { node } => changed(graph.add_node(node.0)),
+            Self::Link { source, target } => changed(graph.link(source.0, target.0)),
+            Self::Cut { source, target } => changed(graph.cut(source.0, target.0)),
             Self::Connected { source, target } => graph
                 .connected(source.0, target.0)
                 .map(|connected| Outcome::Connected { connected })
                 .unwrap_or_else(Outcome::from),
+            Self::SetNodeActive { node, active } => lifecycle_outcome(
+                graph
+                    .lifecycle_mut()
+                    .map_err(LifecycleFailure::from)
+                    .and_then(|graph| Ok(graph.set_node_active(node.0, active)?)),
+            ),
+            Self::SetEdgeEnabled {
+                source,
+                target,
+                enabled,
+            } => lifecycle_outcome(
+                graph
+                    .lifecycle_mut()
+                    .map_err(LifecycleFailure::from)
+                    .and_then(|graph| Ok(graph.set_edge_enabled(source.0, target.0, enabled)?)),
+            ),
+            Self::RemoveNode { node } => lifecycle_outcome(
+                graph
+                    .lifecycle_mut()
+                    .map_err(LifecycleFailure::from)
+                    .map(|graph| graph.remove_node(node.0)),
+            ),
+            Self::NodeState { node } => match graph.lifecycle() {
+                Err(_) => Outcome::lifecycle_disabled(),
+                Ok(graph) => {
+                    let active = graph.node_active(node.0);
+                    Outcome::NodeState {
+                        registered: active.is_some(),
+                        active: active.unwrap_or(false),
+                    }
+                }
+            },
+            Self::EdgeState { source, target } => match graph.lifecycle() {
+                Err(_) => Outcome::lifecycle_disabled(),
+                Ok(_) if source.0 == target.0 => {
+                    Outcome::from(GraphError::SelfLoop { node: source.0 })
+                }
+                Ok(graph) => {
+                    let state = graph.edge_state(source.0, target.0);
+                    Outcome::EdgeState {
+                        registered: state.is_some(),
+                        enabled: state.is_some_and(|state| state.enabled),
+                        effective: state.is_some_and(|state| state.effective),
+                    }
+                }
+            },
         }
     }
 }
+
+/// Maps a lifecycle mutation result to an outcome.
+fn lifecycle_outcome(result: crate::graph::LifecycleResult) -> Outcome {
+    match result {
+        Ok(changed) => Outcome::Changed { changed },
+        Err(LifecycleFailure::Unsupported) => Outcome::lifecycle_disabled(),
+        Err(LifecycleFailure::Domain(error)) => Outcome::from(error),
+    }
+}
+
+/// Stable code and message for a lifecycle domain error.
+pub(crate) fn lifecycle_error_code(error: LifecycleError) -> (ErrorCode, String) {
+    let code = match error {
+        LifecycleError::Graph(error) => graph_error_code(error),
+        LifecycleError::UnknownEdge { .. } => ErrorCode::UnknownEdge,
+        LifecycleError::ConflictingNode { .. } => ErrorCode::InvalidNode,
+        LifecycleError::ConflictingEdge { .. } => ErrorCode::InvalidEdge,
+        // `LifecycleError` is non-exhaustive; a future variant is still an
+        // ordinary rejected request, never a silent success.
+        _ => ErrorCode::InvalidRequest,
+    };
+    (code, error.to_string())
+}
+
+/// Stable code for a core graph error.
+pub(crate) fn graph_error_code(error: GraphError) -> ErrorCode {
+    match error {
+        GraphError::NodeLimitExceeded { .. } => ErrorCode::NodeLimitExceeded,
+        GraphError::EdgeLimitExceeded { .. } => ErrorCode::EdgeLimitExceeded,
+        GraphError::SelfLoop { .. } => ErrorCode::SelfLoop,
+        GraphError::UnknownNode { .. } => ErrorCode::UnknownNode,
+    }
+}
+
+/// Message of the `topology_lifecycle_disabled` rejection.
+pub(crate) const LIFECYCLE_DISABLED_MESSAGE: &str =
+    "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true";
 
 /// An operation result; batches preserve errors at the corresponding index.
 #[derive(Debug, Serialize)]
@@ -629,6 +850,15 @@ pub(crate) enum Outcome {
     Connected {
         connected: bool,
     },
+    NodeState {
+        registered: bool,
+        active: bool,
+    },
+    EdgeState {
+        registered: bool,
+        enabled: bool,
+        effective: bool,
+    },
     Error {
         code: ErrorCode,
         message: String,
@@ -639,15 +869,32 @@ pub(crate) enum Outcome {
 
 impl From<GraphError> for Outcome {
     fn from(error: GraphError) -> Self {
-        let code = match error {
-            GraphError::NodeLimitExceeded { .. } => ErrorCode::NodeLimitExceeded,
-            GraphError::EdgeLimitExceeded { .. } => ErrorCode::EdgeLimitExceeded,
-            GraphError::SelfLoop { .. } => ErrorCode::SelfLoop,
-            GraphError::UnknownNode { .. } => ErrorCode::UnknownNode,
-        };
+        Self::Error {
+            code: graph_error_code(error),
+            message: error.to_string(),
+            expected_sequence: None,
+        }
+    }
+}
+
+impl From<LifecycleError> for Outcome {
+    fn from(error: LifecycleError) -> Self {
+        let (code, message) = lifecycle_error_code(error);
         Self::Error {
             code,
-            message: error.to_string(),
+            message,
+            expected_sequence: None,
+        }
+    }
+}
+
+impl Outcome {
+    /// Defensive outcome for a lifecycle operation that reached a plain
+    /// graph; request validation normally rejects it first.
+    fn lifecycle_disabled() -> Self {
+        Self::Error {
+            code: ErrorCode::TopologyLifecycleDisabled,
+            message: LIFECYCLE_DISABLED_MESSAGE.into(),
             expected_sequence: None,
         }
     }
@@ -657,9 +904,13 @@ impl IntoResponse for Outcome {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::Error {
-                code: ErrorCode::UnknownNode,
+                code: ErrorCode::UnknownNode | ErrorCode::UnknownEdge,
                 ..
             } => StatusCode::NOT_FOUND,
+            Self::Error {
+                code: ErrorCode::TopologyLifecycleDisabled,
+                ..
+            } => StatusCode::CONFLICT,
             Self::Error {
                 code: ErrorCode::Desynchronized | ErrorCode::Uninitialized | ErrorCode::Loading,
                 ..
@@ -881,9 +1132,10 @@ pub(crate) async fn single(
         Ok(operation) => operation,
         Err(response) => return response,
     };
-    if service.mode() == crate::ServerMode::SourceManaged
-        && !matches!(operation, Operation::Connected { .. })
-    {
+    if operation.requires_lifecycle() && !service.topology_lifecycle() {
+        return lifecycle_disabled_response();
+    }
+    if service.mode() == crate::ServerMode::SourceManaged && !operation.is_query() {
         return error_response(
             StatusCode::CONFLICT,
             ErrorCode::DirectMutationDisabled,
@@ -911,11 +1163,11 @@ pub(crate) async fn batch(
         Ok(batch) => batch,
         Err(response) => return response,
     };
+    if !service.topology_lifecycle() && batch.operations.iter().any(Operation::requires_lifecycle) {
+        return lifecycle_disabled_response();
+    }
     if service.mode() == crate::ServerMode::SourceManaged {
-        let has_mutation = batch
-            .operations
-            .iter()
-            .any(|op| !matches!(op, Operation::Connected { .. }));
+        let has_mutation = batch.operations.iter().any(|op| !op.is_query());
         if has_mutation {
             return error_response(
                 StatusCode::CONFLICT,
@@ -952,6 +1204,15 @@ pub(crate) async fn batch(
         }
         Err(error) => service_error(error),
     }
+}
+
+/// Validation step 5a: a lifecycle operation without lifecycle support.
+fn lifecycle_disabled_response() -> Response {
+    error_response(
+        StatusCode::CONFLICT,
+        ErrorCode::TopologyLifecycleDisabled,
+        LIFECYCLE_DISABLED_MESSAGE.into(),
+    )
 }
 
 fn check_feeder_headers(service: &Service, headers: &HeaderMap) -> Option<Response> {
@@ -1388,6 +1649,7 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
             ErrorCode::InvalidRequest,
             msg,
         ),
+        FeederError::TopologyLifecycleDisabled => lifecycle_disabled_response(),
     }
 }
 
@@ -1524,7 +1786,15 @@ mod tests {
 
         assert_eq!(
             FeederOperation::ALL.map(FeederOperation::as_str),
-            ["link", "cut", "add_node", "progress"]
+            [
+                "link",
+                "cut",
+                "add_node",
+                "progress",
+                "set_node_active",
+                "set_edge_enabled",
+                "remove_node"
+            ]
         );
         for operation in FeederOperation::ALL {
             assert_eq!(FeederOperation::parse(operation.as_str()), Some(operation));
@@ -1595,8 +1865,10 @@ mod tests {
                 "stale_generation",
                 "stale_instance_id",
                 "superseded_barrier",
+                "topology_lifecycle_disabled",
                 "unavailable",
                 "uninitialized",
+                "unknown_edge",
                 "unknown_node",
                 "unverifiable_duplicate",
             ]
@@ -1605,7 +1877,12 @@ mod tests {
 
     fn make_service(mode: ServerMode) -> Service {
         let config = ServerConfig::default().with_mode(mode);
-        Service::with_config(ConnectivityGraph::default(), 2, Lifecycle::new(), &config)
+        Service::with_config(
+            knotrel_core::ConnectivityGraph::default(),
+            2,
+            Lifecycle::new(),
+            &config,
+        )
     }
 
     #[test]
@@ -2128,6 +2405,10 @@ mod tests {
                     received: 0,
                 },
                 Some("superseded_barrier"),
+            ),
+            (
+                FeederError::TopologyLifecycleDisabled,
+                Some("topology_lifecycle_disabled"),
             ),
         ];
         let mut labels = std::collections::BTreeSet::new();

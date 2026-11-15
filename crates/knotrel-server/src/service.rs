@@ -1,5 +1,6 @@
 //! Bounded CPU work and exclusive graph ownership for each request.
 
+use crate::graph::ServiceGraph;
 use crate::{
     Lifecycle, ServerMode,
     api::{
@@ -16,7 +17,9 @@ use crate::{
         PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed,
     },
 };
-use knotrel_core::{ConnectivityGraph, EngineConfig, GraphError};
+#[cfg(test)]
+use knotrel_core::ConnectivityGraph;
+use knotrel_core::{EngineConfig, GraphError};
 use parking_lot::Mutex;
 use std::{
     sync::{
@@ -170,57 +173,116 @@ impl PublishedReadiness {
 }
 
 /// Canonical operation descriptor normalized for undirected graph edges.
+///
+/// It is the duplicate-detection fingerprint of an event together with its
+/// source position: the operation type, normalized endpoints and any
+/// lifecycle flag all participate, so a retry that changes any of them is a
+/// conflicting duplicate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalOp {
-    AddNode { node: u64 },
-    Link { source: u64, target: u64 },
-    Cut { source: u64, target: u64 },
+    AddNode {
+        node: u64,
+    },
+    Link {
+        source: u64,
+        target: u64,
+    },
+    Cut {
+        source: u64,
+        target: u64,
+    },
     Progress,
+    SetNodeActive {
+        node: u64,
+        active: bool,
+    },
+    SetEdgeEnabled {
+        source: u64,
+        target: u64,
+        enabled: bool,
+    },
+    RemoveNode {
+        node: u64,
+    },
 }
 
 impl CanonicalOp {
-    pub(crate) fn from_feeder_event(event: &crate::api::FeederEvent) -> Result<Self, FeederError> {
+    /// Validates one event's shape and resolves its canonical operation.
+    ///
+    /// Lifecycle operations without lifecycle support return
+    /// [`FeederError::TopologyLifecycleDisabled`] before their fields are
+    /// checked. `active` and `enabled` on any other operation are
+    /// `invalid_request`, whatever the setting.
+    pub(crate) fn from_feeder_event(
+        event: &crate::api::FeederEvent,
+        lifecycle: bool,
+    ) -> Result<Self, FeederError> {
         let operation = match &event.op {
             WireOp::Known(operation) => *operation,
             WireOp::Unknown(name) => {
+                return Err(FeederError::InvalidRequest(if lifecycle {
+                    format!(
+                        "unsupported operation '{name}'; must be link, cut, add_node, progress, \
+                         set_node_active, set_edge_enabled, or remove_node"
+                    )
+                } else {
+                    format!(
+                        "unsupported operation '{name}'; must be link, cut, add_node, or progress"
+                    )
+                }));
+            }
+        };
+        let is_lifecycle = matches!(
+            operation,
+            FeederOperation::SetNodeActive
+                | FeederOperation::SetEdgeEnabled
+                | FeederOperation::RemoveNode
+        );
+        if is_lifecycle && !lifecycle {
+            return Err(FeederError::TopologyLifecycleDisabled);
+        }
+        let flags = (event.active, event.enabled);
+        let endpoints = |name: &str| {
+            let (Some(source), Some(target), None) = (event.source, event.target, event.node)
+            else {
                 return Err(FeederError::InvalidRequest(format!(
-                    "unsupported operation '{name}'; must be link, cut, add_node, or progress"
+                    "{name} operation requires source and target, and must not have node"
                 )));
+            };
+            Ok((source.0.min(target.0), source.0.max(target.0)))
+        };
+        let single = |name: &str| {
+            let (Some(node), None, None) = (event.node, event.source, event.target) else {
+                return Err(FeederError::InvalidRequest(format!(
+                    "{name} operation requires node, and must not have source or target"
+                )));
+            };
+            Ok(node.0)
+        };
+        let no_flags = |name: &str| {
+            if flags == (None, None) {
+                Ok(())
+            } else {
+                Err(FeederError::InvalidRequest(format!(
+                    "{name} operation must not have active or enabled"
+                )))
             }
         };
         match operation {
             FeederOperation::Link => {
-                let (Some(source), Some(target), None) = (event.source, event.target, event.node)
-                else {
-                    return Err(FeederError::InvalidRequest(
-                        "link operation requires source and target, and must not have node".into(),
-                    ));
-                };
-                Ok(Self::Link {
-                    source: source.0.min(target.0),
-                    target: source.0.max(target.0),
-                })
+                let (source, target) = endpoints("link")?;
+                no_flags("link")?;
+                Ok(Self::Link { source, target })
             }
             FeederOperation::Cut => {
-                let (Some(source), Some(target), None) = (event.source, event.target, event.node)
-                else {
-                    return Err(FeederError::InvalidRequest(
-                        "cut operation requires source and target, and must not have node".into(),
-                    ));
-                };
-                Ok(Self::Cut {
-                    source: source.0.min(target.0),
-                    target: source.0.max(target.0),
-                })
+                let (source, target) = endpoints("cut")?;
+                no_flags("cut")?;
+                Ok(Self::Cut { source, target })
             }
             FeederOperation::AddNode => {
-                let (Some(node), None, None) = (event.node, event.source, event.target) else {
-                    return Err(FeederError::InvalidRequest(
-                        "add_node operation requires node, and must not have source or target"
-                            .into(),
-                    ));
-                };
-                Ok(Self::AddNode { node: node.0 })
+                let node = single("add_node")?;
+                no_flags("add_node")?;
+                Ok(Self::AddNode { node })
             }
             FeederOperation::Progress => {
                 if event.node.is_some() || event.source.is_some() || event.target.is_some() {
@@ -228,9 +290,138 @@ impl CanonicalOp {
                         "progress operation must not have node, source, or target".into(),
                     ));
                 }
+                no_flags("progress")?;
                 Ok(Self::Progress)
             }
+            FeederOperation::SetNodeActive => {
+                let node = single("set_node_active")?;
+                let (Some(active), None) = flags else {
+                    return Err(FeederError::InvalidRequest(
+                        "set_node_active operation requires active, and must not have enabled"
+                            .into(),
+                    ));
+                };
+                Ok(Self::SetNodeActive { node, active })
+            }
+            FeederOperation::SetEdgeEnabled => {
+                let (source, target) = endpoints("set_edge_enabled")?;
+                let (None, Some(enabled)) = flags else {
+                    return Err(FeederError::InvalidRequest(
+                        "set_edge_enabled operation requires enabled, and must not have active"
+                            .into(),
+                    ));
+                };
+                Ok(Self::SetEdgeEnabled {
+                    source,
+                    target,
+                    enabled,
+                })
+            }
+            FeederOperation::RemoveNode => {
+                let node = single("remove_node")?;
+                no_flags("remove_node")?;
+                Ok(Self::RemoveNode { node })
+            }
         }
+    }
+}
+
+/// Builds an import candidate off-lock from the request's nodes and edges.
+///
+/// Without lifecycle support, any flagged entry rejects the import with
+/// `topology_lifecycle_disabled` before anything is built; otherwise the
+/// legacy ordered loop runs unchanged. With lifecycle support, the complete
+/// registered topology, including inactive nodes and disabled edges, is
+/// built by [`LifecycleGraph::try_from_topology`](knotrel_core::LifecycleGraph::try_from_topology).
+fn build_import_candidate(
+    nodes: Vec<crate::api::ImportNode>,
+    edges: Vec<crate::api::WireEdge>,
+    engine: EngineConfig,
+    limits: knotrel_core::GraphLimits,
+    topology_lifecycle: bool,
+) -> Result<ServiceGraph, FeederError> {
+    let self_loop = || {
+        FeederError::Domain(
+            ErrorCode::SelfLoop,
+            "self-loops are forbidden in simple undirected graphs".into(),
+        )
+    };
+    let limit_error = |error: GraphError, fallback: ErrorCode| match error {
+        GraphError::NodeLimitExceeded { limit } => FeederError::Domain(
+            ErrorCode::NodeLimitExceeded,
+            format!("node limit {limit} exceeded"),
+        ),
+        GraphError::EdgeLimitExceeded { limit } => FeederError::Domain(
+            ErrorCode::EdgeLimitExceeded,
+            format!("edge limit {limit} exceeded"),
+        ),
+        GraphError::SelfLoop { .. } => self_loop(),
+        _ => FeederError::Domain(fallback, error.to_string()),
+    };
+    if !topology_lifecycle {
+        if nodes.iter().any(|node| node.active.is_some())
+            || edges.iter().any(|edge| edge.enabled.is_some())
+        {
+            return Err(FeederError::TopologyLifecycleDisabled);
+        }
+        let mut candidate = knotrel_core::ConnectivityGraph::with_limits(engine, limits);
+        for node in nodes {
+            candidate
+                .add_node(node.node.0)
+                .map_err(|err| limit_error(err, ErrorCode::InvalidNode))?;
+        }
+        for edge in edges {
+            if edge.source.0 == edge.target.0 {
+                return Err(self_loop());
+            }
+            candidate
+                .link(edge.source.0, edge.target.0)
+                .map_err(|err| limit_error(err, ErrorCode::InvalidEdge))?;
+        }
+        return Ok(ServiceGraph::Plain(candidate));
+    }
+    let node_specs: Vec<knotrel_core::NodeSpec> = nodes
+        .into_iter()
+        .map(|node| knotrel_core::NodeSpec {
+            node: node.node.0,
+            active: node.active.unwrap_or(true),
+        })
+        .collect();
+    let edge_specs: Vec<knotrel_core::EdgeSpec> = edges
+        .into_iter()
+        .map(|edge| knotrel_core::EdgeSpec {
+            source: edge.source.0,
+            target: edge.target.0,
+            enabled: edge.enabled.unwrap_or(true),
+        })
+        .collect();
+    knotrel_core::LifecycleGraph::try_from_topology(engine, limits, &node_specs, &edge_specs)
+        .map(ServiceGraph::Lifecycle)
+        .map_err(|error| match error {
+            knotrel_core::LifecycleError::Graph(error) => {
+                limit_error(error, ErrorCode::InvalidEdge)
+            }
+            other => {
+                let (code, message) = crate::api::lifecycle_error_code(other);
+                FeederError::Domain(code, message)
+            }
+        })
+}
+
+/// Maps a lifecycle event's result to the event loop's domain error pair.
+///
+/// Prevalidation rejects lifecycle events for a plain graph, so the
+/// unsupported branch is defensive and still reports an error.
+fn lifecycle_event(
+    result: Result<Result<bool, knotrel_core::LifecycleError>, crate::graph::LifecycleUnsupported>,
+) -> Result<bool, (ErrorCode, String)> {
+    match result {
+        Ok(Ok(changed)) => Ok(changed),
+        Ok(Err(error)) => Err(crate::api::lifecycle_error_code(error)),
+        Err(_) => Err((
+            ErrorCode::TopologyLifecycleDisabled,
+            crate::api::LIFECYCLE_DISABLED_MESSAGE.into(),
+        )),
     }
 }
 
@@ -480,7 +671,10 @@ pub(crate) enum FeederError {
     StaleGeneration(String),
     SourceMismatch(String),
     SourceEpochMismatch(String),
-    OutOfOrderSequence { expected: u64, received: u64 },
+    OutOfOrderSequence {
+        expected: u64,
+        received: u64,
+    },
     SourcePredecessorMismatch(String),
     ConflictingDuplicate(String),
     UnverifiableDuplicate(String),
@@ -492,9 +686,20 @@ pub(crate) enum FeederError {
     PayloadTooLarge,
     Domain(ErrorCode, String),
     InvalidRequest(String),
-    BarrierPositionMismatch { expected: String, received: String },
-    BarrierNotReached { expected: u64, received: u64 },
-    SupersededBarrier { expected: u64, received: u64 },
+    BarrierPositionMismatch {
+        expected: String,
+        received: String,
+    },
+    BarrierNotReached {
+        expected: u64,
+        received: u64,
+    },
+    SupersededBarrier {
+        expected: u64,
+        received: u64,
+    },
+    /// A lifecycle event or import entry without lifecycle support.
+    TopologyLifecycleDisabled,
 }
 
 /// Feeder barrier declaration request payload.
@@ -587,7 +792,7 @@ pub(crate) struct ServiceInner {
 /// a mutation without its revision increment. Version starts at zero even when
 /// embedding a pre-populated graph; it counts this service instance's changes.
 struct GraphState {
-    graph: ConnectivityGraph,
+    graph: ServiceGraph,
     // parking_lot does not poison on unwind. Mark each job before execution;
     // only normal completion clears this bit, while still holding the lock.
     // Queued jobs therefore cannot observe state left by a panicked worker.
@@ -620,7 +825,7 @@ struct GraphState {
 }
 
 impl GraphState {
-    fn new(graph: ConnectivityGraph, dedup_capacity: usize) -> Self {
+    fn new(graph: ServiceGraph, dedup_capacity: usize) -> Self {
         Self {
             graph,
             failed: false,
@@ -731,6 +936,7 @@ impl GraphState {
         GraphSnapshot {
             node_count,
             edge_count,
+            lifecycle: self.graph.lifecycle_counts(),
             max_nodes: limits.max_nodes,
             max_edges: limits.max_edges,
             remaining_nodes: limits.max_nodes.map(|limit| limit - node_count),
@@ -1084,6 +1290,7 @@ impl GraphState {
             )));
         }
 
+        let lifecycle = self.graph.is_lifecycle();
         for event in &req.events {
             if event.event_id.len() > MAX_EVENT_ID_BYTES {
                 return Err(FeederError::InvalidRequest(format!(
@@ -1100,7 +1307,7 @@ impl GraphState {
                     "prev_source_position must not exceed {MAX_SOURCE_POSITION_BYTES} bytes"
                 )));
             }
-            let _ = CanonicalOp::from_feeder_event(event)?;
+            let _ = CanonicalOp::from_feeder_event(event, lifecycle)?;
         }
 
         let total_events = req.events.len();
@@ -1115,7 +1322,7 @@ impl GraphState {
 
         for (idx, event) in req.events.into_iter().enumerate() {
             let is_batch = newly_applied_count > 0 || total_events > 1;
-            let canonical_op = CanonicalOp::from_feeder_event(&event)?;
+            let canonical_op = CanonicalOp::from_feeder_event(&event, lifecycle)?;
             let seq = event.delivery_sequence;
 
             if seq <= self.applied_delivery_sequence {
@@ -1362,6 +1569,25 @@ impl GraphState {
                         }
                     }
                     CanonicalOp::Progress => Ok(false),
+                    CanonicalOp::SetNodeActive { node, active } => lifecycle_event(
+                        self.graph
+                            .lifecycle_mut()
+                            .map(|graph| graph.set_node_active(*node, *active)),
+                    ),
+                    CanonicalOp::SetEdgeEnabled {
+                        source,
+                        target,
+                        enabled,
+                    } => lifecycle_event(
+                        self.graph
+                            .lifecycle_mut()
+                            .map(|graph| graph.set_edge_enabled(*source, *target, *enabled)),
+                    ),
+                    CanonicalOp::RemoveNode { node } => lifecycle_event(
+                        self.graph
+                            .lifecycle_mut()
+                            .map(|graph| Ok(graph.remove_node(*node))),
+                    ),
                 };
 
                 let changed = match changed_result {
@@ -1503,6 +1729,9 @@ impl GraphState {
 pub(crate) struct GraphSnapshot {
     node_count: usize,
     edge_count: usize,
+    /// Present only with lifecycle support; flattened into the object.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    lifecycle: Option<crate::graph::LifecycleCounts>,
     max_nodes: Option<usize>,
     max_edges: Option<usize>,
     remaining_nodes: Option<usize>,
@@ -1718,34 +1947,40 @@ fn count_feeder_rejection(telemetry: Option<&ServiceTelemetry>, error: &FeederEr
 /// Publishes the live graph's counts while the caller holds its lock.
 fn publish_graph_counts(telemetry: Option<&ServiceTelemetry>, state: &GraphState) {
     if let Some(telemetry) = telemetry {
-        telemetry.publish_graph_counts(state.graph.node_count(), state.graph.edge_count());
+        telemetry.publish_graph_counts(&state.graph);
     }
 }
 
 impl Service {
     /// Creates the service; zero capacity intentionally rejects every request.
     #[allow(dead_code)]
-    pub(crate) fn new(graph: ConnectivityGraph, capacity: usize, lifecycle: Lifecycle) -> Self {
+    pub(crate) fn new(
+        graph: impl Into<ServiceGraph>,
+        capacity: usize,
+        lifecycle: Lifecycle,
+    ) -> Self {
         let config = crate::ServerConfig::default();
         Self::with_config(graph, capacity, lifecycle, &config)
     }
 
     /// Creates the service with validated startup settings.
     pub(crate) fn with_config(
-        graph: ConnectivityGraph,
+        graph: impl Into<ServiceGraph>,
         capacity: usize,
         lifecycle: Lifecycle,
         config: &crate::ServerConfig,
     ) -> Self {
+        let graph = graph.into();
         let engine = graph.engine();
+        let topology_lifecycle = graph.is_lifecycle();
         let mode = config.mode();
         let instance_id = fresh_instance_id();
         let max_import_body_bytes = config.max_import_body_bytes();
         let telemetry = config
             .metrics_enabled()
-            .then(|| ServiceTelemetry::new(mode));
+            .then(|| ServiceTelemetry::new(mode, topology_lifecycle));
         if let Some(telemetry) = &telemetry {
-            telemetry.publish_graph_counts(graph.node_count(), graph.edge_count());
+            telemetry.publish_graph_counts(&graph);
         }
 
         let (mode_str, inst_id_opt) = match mode {
@@ -1764,6 +1999,7 @@ impl Service {
                 max_edges: graph.limits().max_edges,
                 mode: mode_str,
                 instance_id: inst_id_opt,
+                topology_lifecycle,
             },
             graph: Arc::new(Mutex::new(GraphState::new(
                 graph,
@@ -1887,6 +2123,10 @@ impl Service {
     }
 
     /// Returns the operating mode of this service.
+    pub(crate) fn topology_lifecycle(&self) -> bool {
+        self.info.topology_lifecycle
+    }
+
     pub(crate) fn mode(&self) -> ServerMode {
         self.mode
     }
@@ -2013,6 +2253,7 @@ impl Service {
         let telemetry = self.telemetry.clone();
         let panic_telemetry = self.telemetry_for(JobEffect::MayChangeState);
         let engine = self.info.engine;
+        let topology_lifecycle = self.info.topology_lifecycle;
         let limits = knotrel_core::GraphLimits {
             max_nodes: self.info.max_nodes,
             max_edges: self.info.max_edges,
@@ -2122,41 +2363,14 @@ impl Service {
 
             // 2. Off-lock candidate building
             let engine_config = engine_from_label(engine);
-            let mut candidate = ConnectivityGraph::with_limits(engine_config, limits);
+            let candidate = build_import_candidate(
+                req.nodes,
+                req.edges,
+                engine_config,
+                limits,
+                topology_lifecycle,
+            )?;
 
-            for node in req.nodes {
-                candidate.add_node(node.0).map_err(|err| match err {
-                    GraphError::NodeLimitExceeded { limit } => FeederError::Domain(
-                        ErrorCode::NodeLimitExceeded,
-                        format!("node limit {limit} exceeded"),
-                    ),
-                    _ => FeederError::Domain(ErrorCode::InvalidNode, err.to_string()),
-                })?;
-            }
-
-            for edge in req.edges {
-                if edge.source.0 == edge.target.0 {
-                    return Err(FeederError::Domain(
-                        ErrorCode::SelfLoop,
-                        "self-loops are forbidden in simple undirected graphs".into(),
-                    ));
-                }
-                candidate
-                    .link(edge.source.0, edge.target.0)
-                    .map_err(|err| match err {
-                        GraphError::EdgeLimitExceeded { limit } => FeederError::Domain(
-                            ErrorCode::EdgeLimitExceeded,
-                            format!("edge limit {limit} exceeded"),
-                        ),
-                        GraphError::NodeLimitExceeded { limit } => FeederError::Domain(
-                            ErrorCode::NodeLimitExceeded,
-                            format!("node limit {limit} exceeded"),
-                        ),
-                        _ => FeederError::Domain(ErrorCode::InvalidEdge, err.to_string()),
-                    })?;
-            }
-
-            // 3. Lock acquisition & atomic precondition verification
             job.import.observe(ImportObservation::begin_publish);
             let mut state = lock_timed(&graph, clock.as_ref(), &lifecycle);
             if state.failed || unavailable.load(Ordering::Acquire) {
@@ -2227,7 +2441,7 @@ impl Service {
             let node_count = state.graph.node_count();
             let edge_count = state.graph.edge_count();
             if let Some(telemetry) = &telemetry {
-                telemetry.publish_graph_counts(node_count, edge_count);
+                telemetry.publish_graph_counts(&state.graph);
                 telemetry.mark_applied();
             }
             tracing::info!(
@@ -2257,6 +2471,7 @@ impl Service {
                 state_version: "0".to_string(),
                 node_count,
                 edge_count,
+                lifecycle: state.graph.lifecycle_counts(),
                 source_position: req.source_position,
                 status: SyncStatus::CatchingUp,
             };
@@ -2726,7 +2941,7 @@ mod tests {
             ),
         ] {
             let mut state = GraphState::new(
-                ConnectivityGraph::default(),
+                ConnectivityGraph::default().into(),
                 crate::ServerConfig::DEFAULT_DEDUP_WINDOW_SIZE,
             );
             state.version = before.bytes().rev().map(|b| b - b'0').collect();
@@ -3398,6 +3613,8 @@ mod tests {
                 source_position: "pos-1".into(),
                 prev_source_position: "pos-0".into(),
                 op: "link".into(),
+                active: None,
+                enabled: None,
                 source: Some(crate::api::WireNode(1)),
                 target: Some(crate::api::WireNode(2)),
                 node: None,
@@ -3431,6 +3648,8 @@ mod tests {
                 source_position: "pos-max".into(),
                 prev_source_position: "pos-1".into(),
                 op: "link".into(),
+                active: None,
+                enabled: None,
                 source: Some(crate::api::WireNode(1)),
                 target: Some(crate::api::WireNode(3)),
                 node: None,
@@ -3460,6 +3679,8 @@ mod tests {
                 source_position: "pos-max".into(),
                 prev_source_position: "pos-1".into(),
                 op: "link".into(),
+                active: None,
+                enabled: None,
                 source: Some(crate::api::WireNode(1)),
                 target: Some(crate::api::WireNode(3)),
                 node: None,
@@ -3507,6 +3728,8 @@ mod tests {
                 source_position: "pos-overflow".into(),
                 prev_source_position: "pos-max".into(),
                 op: "add_node".into(),
+                active: None,
+                enabled: None,
                 source: None,
                 target: None,
                 node: Some(crate::api::WireNode(5)),
@@ -3571,6 +3794,8 @@ mod tests {
                     source_position: "pos-1".into(),
                     prev_source_position: "pos-0".into(),
                     op: "add_node".into(),
+                    active: None,
+                    enabled: None,
                     source: None,
                     target: None,
                     node: Some(crate::api::WireNode(3)),
@@ -3612,6 +3837,8 @@ mod tests {
                     source_position: "pos-2".into(),
                     prev_source_position: "pos-1".into(),
                     op: "add_node".into(),
+                    active: None,
+                    enabled: None,
                     source: None,
                     target: None,
                     node: Some(crate::api::WireNode(4)),
@@ -3637,6 +3864,8 @@ mod tests {
                     source_position: "pos-2".into(),
                     prev_source_position: "pos-1".into(),
                     op: "progress".into(),
+                    active: None,
+                    enabled: None,
                     source: None,
                     target: None,
                     node: None,
@@ -3662,7 +3891,7 @@ mod tests {
             max_edges: Some(100),
         };
         let mut state = GraphState::new(
-            ConnectivityGraph::with_limits(EngineConfig::CompactBfs, limits),
+            ConnectivityGraph::with_limits(EngineConfig::CompactBfs, limits).into(),
             64,
         );
         let instance_id = "srv-inst-1";
@@ -3969,50 +4198,52 @@ mod tests {
             source_position: "1".into(),
             prev_source_position: "".into(),
             op: "link".into(),
+            active: None,
+            enabled: None,
             node: None,
             source: None,
             target: None,
         };
 
         // Link missing source/target
-        assert!(CanonicalOp::from_feeder_event(&base_event).is_err());
+        assert!(CanonicalOp::from_feeder_event(&base_event, false).is_err());
         // Link with node
         let mut evt = base_event.clone();
         evt.source = Some(WireNode(1));
         evt.target = Some(WireNode(2));
         evt.node = Some(WireNode(3));
-        assert!(CanonicalOp::from_feeder_event(&evt).is_err());
+        assert!(CanonicalOp::from_feeder_event(&evt, false).is_err());
 
         // Cut missing source/target
         let mut cut_evt = base_event.clone();
         cut_evt.op = "cut".into();
-        assert!(CanonicalOp::from_feeder_event(&cut_evt).is_err());
+        assert!(CanonicalOp::from_feeder_event(&cut_evt, false).is_err());
         // Cut with node
         cut_evt.source = Some(WireNode(1));
         cut_evt.target = Some(WireNode(2));
         cut_evt.node = Some(WireNode(3));
-        assert!(CanonicalOp::from_feeder_event(&cut_evt).is_err());
+        assert!(CanonicalOp::from_feeder_event(&cut_evt, false).is_err());
 
         // AddNode missing node
         let mut node_evt = base_event.clone();
         node_evt.op = "add_node".into();
-        assert!(CanonicalOp::from_feeder_event(&node_evt).is_err());
+        assert!(CanonicalOp::from_feeder_event(&node_evt, false).is_err());
         // AddNode with source
         node_evt.node = Some(WireNode(1));
         node_evt.source = Some(WireNode(1));
-        assert!(CanonicalOp::from_feeder_event(&node_evt).is_err());
+        assert!(CanonicalOp::from_feeder_event(&node_evt, false).is_err());
 
         // Progress with node or source
         let mut prog_evt = base_event.clone();
         prog_evt.op = "progress".into();
-        assert!(CanonicalOp::from_feeder_event(&prog_evt).is_ok());
+        assert!(CanonicalOp::from_feeder_event(&prog_evt, false).is_ok());
         prog_evt.node = Some(WireNode(1));
-        assert!(CanonicalOp::from_feeder_event(&prog_evt).is_err());
+        assert!(CanonicalOp::from_feeder_event(&prog_evt, false).is_err());
 
         // Unsupported op
         let mut unk_evt = base_event.clone();
         unk_evt.op = "unsupported".into();
-        assert!(CanonicalOp::from_feeder_event(&unk_evt).is_err());
+        assert!(CanonicalOp::from_feeder_event(&unk_evt, false).is_err());
 
         // 2. DedupWindow check_sequence and ring replacement
         let mut window = DedupWindow::new(4);
@@ -4174,6 +4405,8 @@ mod tests {
             source_position: "1".into(),
             prev_source_position: "".into(),
             op: "add_node".into(),
+            active: None,
+            enabled: None,
             node: Some(WireNode(1)),
             source: None,
             target: None,
@@ -4438,6 +4671,8 @@ mod tests {
             source_position: "1".into(),
             prev_source_position: "".into(),
             op: "add_node".into(),
+            active: None,
+            enabled: None,
             node: Some(crate::api::WireNode(1)),
             source: None,
             target: None,
@@ -4544,6 +4779,8 @@ mod tests {
             source_position: "1".into(),
             prev_source_position: "".into(),
             op: "cut".into(),
+            active: None,
+            enabled: None,
             node: None,
             source: Some(WireNode(1)),
             target: Some(WireNode(1)),
@@ -4565,6 +4802,8 @@ mod tests {
             source_position: "1".into(),
             prev_source_position: "".into(),
             op: "add_node".into(),
+            active: None,
+            enabled: None,
             node: Some(WireNode(1)),
             source: None,
             target: None,
