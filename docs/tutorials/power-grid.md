@@ -3,10 +3,13 @@
 This tutorial uses a small **synthetic** electrical distribution network to show
 what Knotrel answers. It opens one connection, sees which customers lose their
 path to the source, then closes a reserve connection and sees connectivity
-return. Everything runs against the HTTP API of a Knotrel v0.4.0 server,
-driven by a Python 3 standard-library script. The client-visible HTTP API is
-unchanged from v0.3.0, so the script also runs against a v0.3.0 server. The
-optional observability step [below](#observe-the-run-optional) needs v0.4.0.
+return. Everything runs against the HTTP API of a Knotrel v0.5.0 server,
+driven by Python 3 standard-library scripts. The first script uses only
+operations available since v0.1.0, so it also runs against v0.3.0 and v0.4.0
+servers. The optional observability step [below](#observe-the-run-optional)
+needs v0.4.0 or later, and the
+[lifecycle part](#take-a-substation-out-of-service-v050) needs v0.5.0 with
+lifecycle support enabled.
 
 > **Scope.** This is a topology demonstration, not an electrical simulator or
 > an operational switching tool. The network is invented for teaching and is
@@ -226,6 +229,70 @@ application's interpretation.
 `/metrics` is unauthenticated and served on the same listener. Keep the server
 on loopback. See the [observability contract](../observability-contract.md)
 for every series and label.
+
+## Take a substation out of service (v0.5.0)
+
+Cutting connections one by one loses information: when the substation comes
+back, the application must remember which connections were in service.
+v0.5.0 adds **node and edge lifecycle** support, which keeps that state in
+Knotrel. It is opt-in; start a fresh, dedicated server with it enabled:
+
+```sh
+KNOTREL_MODE=standalone KNOTREL_TOPOLOGY_LIFECYCLE=true cargo run --release --locked -p knotrel-server
+```
+
+Then run the lifecycle scenario:
+
+```sh
+python3 examples/power-grid/lifecycle_demo.py
+```
+
+The model separates **registered** topology from **effective** connectivity:
+
+| Network concept | Knotrel lifecycle operation |
+| --- | --- |
+| Take a substation out of service, keeping its connections | `{"op":"set_node_active","node":"202","active":false}` |
+| Mark one connection unavailable without deleting it | `{"op":"set_edge_enabled","source":"202","target":"203","enabled":false}` |
+| Decommission a substation and all its connections | `{"op":"remove_node","node":"202"}` |
+| Inspect a node or a connection | `{"op":"node_state","node":"202"}`, `{"op":"edge_state","source":"202","target":"203"}` |
+
+A connection participates in connectivity only when it is registered,
+enabled, and both of its endpoints are active. Deactivating a node never
+changes the `enabled` flag of its connections.
+
+The script runs five steps after the initial load:
+
+1. **Deactivate A2.** A2 and everything reachable only through it lose their
+   path: M3, M4 and M5. A2's four connections stay registered.
+2. **Disable `A-A2-A3` while A2 is inactive.** Nothing changes yet for
+   connectivity, but the flag is recorded and the revision advances.
+3. **Reactivate A2.** `A-A1-A2` and A2's service drops return, so M3 and M4
+   are connected again. `A-A2-A3` stays disabled, so M5 still has **no path to
+   the assumed source**.
+4. **Remove A2.** The node and all four of its connections are deleted,
+   including the disabled one. M3, M4 and M5 have no path.
+5. **Re-create A2.** `add_node` creates a fresh, isolated A2. None of its old
+   connections return: `edge_state` reports them as not registered.
+
+Expected output, abridged:
+
+```text
+Reactivating Secondary substation A2 (202) (set_node_active true)
+  connection A-A2-A3: registered=True, enabled=False, effective=False
+  connection A-A1-A2: registered=True, enabled=True, effective=True
+...
+  check passed: customers without a path = Meter M5 (305)
+```
+
+**Inactive and disabled objects still count against `KNOTREL_MAX_NODES` and
+`KNOTREL_MAX_EDGES`.** Only removal frees capacity. Deactivating a substation
+costs work proportional to its number of connections, and lifecycle mode keeps
+extra bookkeeping in memory; see the
+[lifecycle contract](../topology-lifecycle.md) for costs and limits.
+
+As before, **this is topology, not electrical analysis.** An active, enabled
+path says nothing about voltage, loading, protection or whether the operation
+is safe on a real network.
 
 ## How the script handles failure
 

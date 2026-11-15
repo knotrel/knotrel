@@ -215,7 +215,8 @@ startup.
 | `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
-| `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges; zero allowed; `unlimited` opts out |
+| `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges (registered edges with lifecycle support); zero allowed; `unlimited` opts out |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; see the [lifecycle contract](docs/topology-lifecycle.md) |
 | `RUST_LOG` | `info` | Logging filter |
 
 For example, to opt into the experimental forest:
@@ -254,10 +255,11 @@ Further timeouts and size limits are listed under
 
 - [HTTP API](docs/http-api.md) and [OpenAPI specification](docs/openapi.yaml): operations, batch semantics, limits and errors.
 - [Power-grid tutorial](docs/tutorials/power-grid.md): runnable topology demonstration of connectivity loss and restoration over the HTTP API.
+- [Node and edge lifecycle contract](docs/topology-lifecycle.md): opt-in activation, enabling and removal semantics, costs and limits.
 - [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
-- [v0.3.0 release notes](docs/releases/v0.3.0-release-notes.md): scope, qualification outcomes, platform coverage and limitations.
+- [v0.5.0 release notes](docs/releases/v0.5.0-release-notes.md) (draft), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
 - [Release procedure](docs/releases/release-procedure.md): verification, packaging and authorized publication.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.

@@ -75,6 +75,35 @@ assert!(!graph.connected(1, 99)?);
 # Ok::<(), knotrel_core::GraphError>(())
 ```
 
+## Node and Edge Lifecycle
+
+`LifecycleGraph` (since v0.5.0) keeps the **registered** topology with a
+node-active flag per node and an edge-enabled flag per edge, and answers
+`connected` over the **effective** graph: an edge counts only when it is
+enabled and both endpoints are active. Deactivating a node keeps its edges and
+their flags; `remove_node` deletes a node and all its edges, and re-adding the
+ID creates a fresh isolated node.
+
+```rust
+use knotrel_core::{EngineConfig, LifecycleGraph};
+
+let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs);
+graph.link(1, 2)?;
+graph.link(2, 3)?;
+graph.set_node_active(2, false)?;
+assert!(!graph.connected(1, 3)?);
+graph.set_node_active(2, true)?;
+assert!(graph.connected(1, 3)?);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+It works with every engine, but it is not free: deactivating or removing a
+node costs work proportional to its degree, and the graph keeps a topology
+catalog besides the engine's effective graph. `ConnectivityGraph` is
+unchanged. See the
+[lifecycle contract](https://github.com/knotrel/knotrel/blob/main/docs/topology-lifecycle.md)
+for exact semantics, errors and costs.
+
 ## Engine Selection
 
 Knotrel provides three dynamic connectivity engines via `EngineConfig`:
@@ -106,6 +135,9 @@ cargo run -p knotrel-core --example bulk_import
 
 # Engine selection and equivalence checks
 cargo run -p knotrel-core --example engine_selection
+
+# Node activation, edge enabling and node removal
+cargo run -p knotrel-core --example lifecycle
 ```
 
 ## License

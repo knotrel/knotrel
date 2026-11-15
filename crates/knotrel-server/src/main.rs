@@ -50,6 +50,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         request_timeout_ms = config.request_timeout().as_millis(),
         shutdown_timeout_ms = config.shutdown_timeout().as_millis(),
         metrics_enabled = config.metrics_enabled(),
+        topology_lifecycle = config.topology_lifecycle(),
         "Knotrel listening; graph state is in memory"
     );
     let outcome = knotrel_server::serve(listener, app, &config, &lifecycle, async {

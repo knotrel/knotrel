@@ -191,5 +191,43 @@ class ValidDatasetTests(unittest.TestCase):
         self.assertEqual(self.load(data)["expected_after_open"], {"303", "304", "305"})
 
 
+class LifecycleScenarioTests(unittest.TestCase):
+    """The lifecycle demo's expected sets, recomputed independently by BFS."""
+
+    def test_expected_sets_match_an_independent_model(self):
+        sys.path.insert(0, str(HERE))
+        import lifecycle_demo
+
+        grid = demo.load_dataset(HERE / "grid.json")
+        sub = lifecycle_demo.SUBSTATION
+        nodes = {n: True for n in grid["nodes"]}
+        edges = {frozenset((c["a"], c["b"])): True for c in grid["closed"]}
+
+        def without_path():
+            adjacency = {n: set() for n in nodes}
+            for edge, enabled in edges.items():
+                a, b = tuple(edge)
+                if enabled and nodes[a] and nodes[b]:
+                    adjacency[a].add(b)
+                    adjacency[b].add(a)
+            seen, stack = {grid["primary"]}, [grid["primary"]]
+            while stack:
+                for neighbor in adjacency[stack.pop()] - seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+            return {c for c in grid["customers"] if c not in seen or not nodes[c]}
+
+        disabled = next(c for c in grid["closed"] if c["id"] == lifecycle_demo.DISABLED_CONNECTION)
+        nodes[sub] = False
+        self.assertEqual(without_path(), lifecycle_demo.EXPECTED["deactivated"])
+        edges[frozenset((disabled["a"], disabled["b"]))] = False
+        self.assertEqual(without_path(), lifecycle_demo.EXPECTED["disabled_while_inactive"])
+        nodes[sub] = True
+        self.assertEqual(without_path(), lifecycle_demo.EXPECTED["reactivated"])
+        edges = {edge: flag for edge, flag in edges.items() if sub not in edge}
+        self.assertEqual(without_path(), lifecycle_demo.EXPECTED["removed"])
+        self.assertEqual(without_path(), lifecycle_demo.EXPECTED["recreated"])
+
+
 if __name__ == "__main__":
     unittest.main()
