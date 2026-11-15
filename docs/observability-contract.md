@@ -1,8 +1,12 @@
 # Observability contract
 
-**Status:** Vocabulary for roadmap M6.1, plus eight M6.2 increments
-(sections 7, 8, 10, 11, 12, 13, 14 and 15), which are implemented but unreleased. M6 is deferred and is not
-part of v0.3.0. Neither M6.2 nor M6 is complete. Rows marked *pending* in
+**Status:** Vocabulary for roadmap M6.1, nine M6.2 increments
+(sections 7, 8, 10, 11, 12, 13, 14, 15 and 16) and the M6.3 structured logs
+(section 17), implemented but unreleased and planned for v0.4.0. M6 is not
+part of v0.3.0. M6.2 passed an independent review (section 6) with the
+corrections applied; alert rules (M6.4) are in [alerting.md](alerting.md);
+overhead and series count (M6.5) are qualified in section 18. M6 was accepted
+by the owner on 2026-11-15. Rows marked *pending* in
 section 4 are vocabulary only: no endpoint, metric or log field exists for
 them yet. The opt-in `/metrics` endpoint does not change any existing route,
 status code or body of the [HTTP API](http-api.md), the
@@ -10,9 +14,10 @@ status code or body of the [HTTP API](http-api.md), the
 [deployment runbook](deployment.md).
 
 Scope: service health, workload pressure and feeder synchronization of one
-`knotrel-server` process. Out of scope: alert rules (M6.4), budgets (M6.5),
-log-format changes (M6.3), persistence metrics, and anything requiring a
-contention redesign (M5).
+`knotrel-server` process, including structured logs (section 17) and the
+M6.5 qualification (section 18). Alert rules (M6.4) are documented
+separately in [alerting.md](alerting.md). Out of scope: persistence metrics
+and anything requiring a contention redesign (M5).
 
 Code references below name symbols in
 [`crates/knotrel-server/src`](../crates/knotrel-server/src) as observed at
@@ -27,7 +32,7 @@ the v0.3.0 release.
 | Static configuration | `GET /v1/info` | Exposed | Engine, mode, `max_pending_jobs`, limits, `instance_id`. No lock, no permit. |
 | Graph snapshot | `GET /v1/stats`, `Service::stats` | Exposed | `node_count`, `edge_count`, limits, remaining capacity, `state_version`. In source-managed mode it also reports `generation`, `source_position` and effective `sync_status`. **Runs as a graph job:** consumes an admission permit and takes the graph lock. |
 | Response metadata | `api::inject_metadata_headers` | Exposed | `X-Knotrel-Instance-Id`, `-Graph-Id`, `-Generation`, `-State-Version`, `-Source-Position`, `-Sync-Status`, `ETag`. |
-| Request log | `api::logging_middleware` | Exposed (tracing) | `method`, `uri` (path), `status`, `latency_us`. `info` level; probes (and `/metrics` when enabled) at `trace`. Outermost layer, so it sees `request_timeout`, `shutting_down` and handler responses. It has no drop hook: a request future that is dropped before a response exists emits **no** line. |
+| Request log | `api::logging_middleware` | Exposed (tracing) | Runs inside a `request` span (`request_id`, `method`, `route`, and when known `generation`, `state_version`, `sync_status`); the line records `uri`, `status`, `latency_us`. `info` level; probes (and `/metrics` when enabled) at `trace`. Outermost layer, so it sees `request_timeout`, `shutting_down` and handler responses. A request future dropped before a response logs `request cancelled before response` (section 17). |
 | Rejection and failure logs | `Service::run`, `Service::execute_feeder_worker`, `Service::acquire_import_permit`, `lifecycle::request_timeout`, `declare_gap`, worker `JoinError` handlers | Exposed (tracing) | Messages for capacity exhaustion, import capacity, request time limit, declared gap (`failed_delivery_sequence`, caller-supplied `reason`), worker panic and unavailable service. |
 | Process lifecycle logs | [`main.rs`](../crates/knotrel-server/src/main.rs), [`serve.rs`](../crates/knotrel-server/src/serve.rs) | Exposed (tracing) | Startup configuration, shutdown requested, draining (`open_connections`, `outstanding_jobs`), shutdown deadline (`abandoned`), accept backoff, connection limit. |
 | Outstanding worker jobs | `Lifecycle::outstanding_jobs`, `JobGuard` | Exposed via opt-in `/metrics` | Queued plus running graph jobs, including import workers. Otherwise logged only when draining. |
@@ -35,7 +40,7 @@ the v0.3.0 release.
 | Lifecycle phase, worker failure | `Phase`, `unavailable` flag | Exposed via `/ready` and opt-in `/metrics` | `readiness_state` and `service_unavailable` gauges. |
 | Synchronization state | `GraphState` (`generation`, `version`, `sync_status`, `applied_delivery_sequence`, `source_position`, session, epoch, `lease_deadline`) | Internal | Partly visible through `/v1/stats`, headers and `/ready`; lease time remaining via opt-in `/metrics` (section 14). |
 | Event outcome counts | `FeederEventsResponse.events_applied` | Exposed per response; cumulative via opt-in `/metrics` | Fifth M6.2 increment; section 12. |
-| Import preparation and catch-up timing | none | **Needs instrumentation** | Only whole-request server-side latency exists, in logs and (opt-in) `/metrics`. |
+| Import preparation and catch-up timing | `import_duration_seconds`, `catchup_duration_seconds` (`metrics.rs`) | Exposed when `KNOTREL_METRICS_ENABLED=true` (source-managed mode) | Eighth and ninth M6.2 increments; sections 15 and 16. |
 | HTTP counts, duration, backlog, capacity, unavailable flag, readiness, build, graph node and edge counts | `GET /metrics` (`metrics.rs`) | Exposed when `KNOTREL_METRICS_ENABLED=true` | M6.2 increments; sections 7, 8 and 10. |
 | Graph-job queue, lock-wait and execution time | `JobClock` and `lock_timed` (`metrics.rs`), recorded by workers | Exposed when `KNOTREL_METRICS_ENABLED=true` | Fourth M6.2 increment; section 11. |
 | Rejections before execution, uncertain-outcome observations | `ServiceTelemetry` (`metrics.rs`), owned by `Service` | Exposed when `KNOTREL_METRICS_ENABLED=true` | Second M6.2 increment; section 8. |
@@ -49,8 +54,8 @@ the v0.3.0 release.
 2. No backlog signal outside drain. (Now exported as `graph_jobs_outstanding` via the opt-in `/metrics`.)
 3. Graph counts are readable only through `/v1/stats`, which competes for the same admission permits and graph lock as the work being diagnosed. (The opt-in `/metrics` now exposes worker-published counts without either; section 10.)
 4. No breakdown of where time goes: caller latency cannot be split into queueing, lock wait and execution. (The opt-in `/metrics` now records worker queue, lock-wait and execution time per job kind; these intervals do not add up to HTTP latency; section 11.)
-5. There is no record of how long bootstrap or replacement catch-up took.
-6. A dropped request future leaves no request log line. (The opt-in `/metrics` endpoint now counts it as `cancelled`.)
+5. There is no record of how long bootstrap or replacement catch-up took. (The opt-in `/metrics` now records import phases and catch-up duration; sections 15 and 16.)
+6. A dropped request future leaves no request log line. (The opt-in `/metrics` endpoint counts it as `cancelled`, and the request log now writes `request cancelled before response`; section 17.)
 7. The status code alone cannot distinguish the `503` causes: `busy`, `request_timeout`, `shutting_down`, `unavailable`, and `import_in_progress` from saturated feeder calls. (The opt-in rejection and uncertain-outcome counters now record the internal cause; section 8.)
 
 ## 2. Semantic rules
@@ -176,8 +181,8 @@ classifies by the internal cause (`busy`) and leaves the HTTP code unchanged.
 
 The "M6.2" column gives the proposed Prometheus name (prefix `knotrel_`).
 `E` marks essential first delivery and `D` marks deferred. **Implemented**
-means served by the first slice (section 7); **pending** means vocabulary
-only. Every series is
+means served by one of the M6.2 increments (sections 7, 8 and 10 to 16);
+**pending** means vocabulary only. Every series is
 per process and resets to zero on process restart, because Knotrel holds no
 durable state. "Replacement" means publication of a new generation by import.
 
@@ -258,7 +263,17 @@ counter and phase durations.
 
 **Ninth increment (done, section 16):** catch-up duration.
 
-**Remaining essential (`E`):** none (all essential M6.2 metrics implemented, pending independent review).
+**Remaining essential (`E`):** none.
+
+**Independent review (2026-11-15).** An acceptance review of every
+implemented row against sections 2 to 16 and the invariants below found no
+code defects. Its corrections are applied: the last-applied stamp is
+documented as once per events request (section 14), session and heartbeat
+calls are listed as republishing graph counts (section 10), stale status and
+series-count passages are updated, and two tests were added
+(`histogram_bucket_bounds_are_exact`, and label domains keyed per metric
+family in `exposition_is_valid_and_uses_only_bounded_labels`). M6.2 is
+accepted on that basis; Acceptance M6 still requires M6.4 and M6.5.
 
 **Instrumentation locations for the remaining rows:**
 
@@ -292,10 +307,14 @@ now owns (section 8).
 - Replacement keeps counters and restarts catch-up.
 - The label-value set after a churn of generations and sessions is unchanged.
 
-**Overhead qualification: pending.** No overhead budget has been approved,
-and the v0.3.0 regression-qualification tolerances are **not** an
-automatically approved instrumentation budget. A proposed approach, to be
-approved before running:
+**Overhead qualification (M6.5).** Budget approved by the owner on
+2026-11-15, before measurement: per qualification cell, metrics enabled
+versus disabled on one release binary, the paired median slowdown must be at
+most **3%** and the upper bound of its 95% interval at most **6%**. A cell
+outside that is re-run once with a fixed extension; a cell still outside
+without a confirmed regression is disclosed as INCONCLUSIVE, and a confirmed
+regression beyond the budget blocks Acceptance M6. The series count must be
+exactly constant after churn. Results: section 18. The approach:
 
 - paired runs of one release build with metrics disabled versus enabled, on
   the existing qualification cells with the balanced collector;
@@ -466,7 +485,10 @@ already disarmed its drop guard.
 - timeouts and cancellations before admission or while waiting for a
   read-only job;
 - panics in read-only jobs. These still set `service_unavailable`;
-- a blocking task cancelled by runtime shutdown before it starts.
+- worker-side observations of a blocking task cancelled by runtime shutdown
+  before it starts. Its caller's drop guard is dropped with the runtime too
+  and may still record `cancelled` for a state-changing job, consistent
+  with the caller semantics above.
 
 **Mechanism and ownership.**
 - `Service` owns an `Option<Arc<ServiceTelemetry>>`. It is created only when
@@ -519,13 +541,13 @@ check. They cover:
    trail an in-flight job until it completes; the metric help states the
    publication boundary.
 3. **Cancellation accounting.** Resolved in section 7: counted as the
-   neutral `cancelled`, not `client_closed`. Whether `logging_middleware`
-   should also log it is left to M6.3.
+   neutral `cancelled`, not `client_closed`. Resolved for logs in section 17:
+   `logging_middleware` writes one `request cancelled before response` line.
 4. **Lag.** Recommendation: no lag metric until the protocol carries a
    comparable source frontier. That would be an integration-contract change,
    not an observability change.
-5. **Overhead budget.** Open. It must be approved before an overhead
-   campaign; see section 6.
+5. **Overhead budget.** Resolved on 2026-11-15 (section 6): median at most
+   3%, 95% interval upper bound at most 6%, one fixed extension.
 
 ## 10. Third M6.2 increment: graph node and edge gauges (implemented, unreleased)
 
@@ -543,8 +565,8 @@ post-lock steps and drops its guards afterwards.
 | Path | Published | Not published |
 | --- | --- | --- |
 | Construction (`Service::with_config`) | From the supplied graph, including a nonempty embedded graph. | — |
-| `Service::run` (single operations, legacy batches) | After the job's work returns, for state-changing jobs. Includes the successful operations of a batch that contained domain errors. | Read-only jobs (`stats`, query-only requests): counts cannot change. |
-| `execute_feeder_worker` (events, gap) | After the operation returns, for mutating feeder calls, whether it succeeded, partially failed or was rejected. A partial failure publishes its applied prefix. | Session, heartbeat and barrier calls: no graph change. |
+| `Service::run` (single operations, legacy batches, feeder session and heartbeat) | After the job's work returns, for state-changing jobs. Includes the successful operations of a batch that contained domain errors. Session and heartbeat calls run as state-changing jobs and republish unchanged counts, which is not observable. | Read-only jobs (`stats`, query-only requests): counts cannot change. |
+| `execute_feeder_worker` (events, gap, barrier) | After the operation returns, for mutating feeder calls (events, gap), whether it succeeded, partially failed or was rejected. A partial failure publishes its applied prefix. | Barrier calls: no graph change. |
 | `Service::import` | At atomic publication, after the candidate replaced the live graph. | Any import rejected before publication (parse, limits, fencing, precondition, mode, unavailable): its candidate counts are never published. |
 
 Consequences:
@@ -585,7 +607,7 @@ metrics are disabled, `Service` holds `None`; nothing is registered,
 allocated or published.
 
 **Series.** 2 more series. The maximum became **1249 standalone, 1254
-source-managed** (now 1414 and 1802; section 15).
+source-managed** (now 1414 and 1834; section 16).
 
 **Tests.** In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)
 (module `graph_counts`) and `service.rs` (module `tests::graph_counts`):
@@ -703,8 +725,7 @@ is allocated; the lock helper only wraps the guard.
 - standalone: 3 families × 3 kinds × 17 = 153;
 - source-managed: 3 × 9 × 17 = 459.
 
-The maximum becomes **1402 standalone, 1713 source-managed** (now 1414
-and 1802; section 15). The test
+The maximum becomes **1402 standalone, 1713 source-managed** (now 1414 and 1834; section 16). The test
 `series_exist_only_for_kinds_reachable_in_the_mode` checks the per-mode
 timing series counts against actual exposition.
 
@@ -806,8 +827,7 @@ there is no ownership cycle.
 | standalone | 12: three mutations × {`changed`, `unchanged`, `error`}, plus `connected` × {`true`, `false`, `error`} | 0: family not registered (feeder endpoints refuse with `mode_conflict`) |
 | source-managed | 3: `connected` × {`true`, `false`, `error`}; direct mutations are refused before execution | 4 |
 
-The maximum becomes **1414 standalone, 1720 source-managed** (now 1414 and
-1802; section 15). The test
+The maximum becomes **1414 standalone, 1720 source-managed** (now 1414 and 1834; section 16). The test
 `series_exist_at_zero_only_for_reachable_combinations` checks these sets
 against actual exposition.
 
@@ -927,8 +947,7 @@ counting is a single atomic increment.
 | standalone | 0: family not registered (feeder endpoints refuse with `mode_conflict`) | 0 |
 | source-managed | 19 | 4 |
 
-The maximum becomes **1414 standalone, 1743 source-managed** (now 1414 and
-1802; section 15). The test
+The maximum becomes **1414 standalone, 1743 source-managed** (now 1414 and 1834; section 16). The test
 `feeder_rejections::series_exist_at_zero_only_in_source_managed_mode` checks
 these sets against actual exposition.
 
@@ -998,9 +1017,9 @@ so their resolution is 1 ms. No timer task updates them.
 
 | Aspect | Behavior |
 | --- | --- |
-| Reset by | Each event the event loop applies (`GraphState::apply_events`, right after counting it `changed` or `unchanged`), including no-op mutations and `progress` events; and each successful import publication (`Service::import`, after the new generation is live). |
+| Reset by | A feeder events request that applied at least one event (`changed` or `unchanged`, including no-op mutations and `progress`), stamped **once per request** when `AppliedStamp` drops at the end of `GraphState::apply_events`, still under the graph lock (also on partial failure, early error and unwinding); and each successful import publication (`Service::import`, after the new generation is live). |
 | Not reset by | Exact duplicates, rejected events, rejected requests, rejected or unpublished imports (the candidate is never stamped), declared gaps, barriers, session registration, heartbeats, `/v1/stats` and `connected` queries. |
-| Partial success | A request that fails after an applied prefix keeps the stamp of its last applied prefix event. |
+| Partial success | A request that fails after an applied prefix is stamped when its evaluation ends (at the failing event), not at its last applied event. The difference is at most that request's remaining time under the lock. |
 | Value | Time since the stamp. An idle source legitimately makes it large: it measures inactivity, not lag. |
 | Absent | Standalone mode; source-managed mode before the first qualifying application. |
 | Replacement | Reset by the published import; never removed afterwards. Counters are unaffected (sections 12 and 13). |
@@ -1033,8 +1052,7 @@ clock.
 | standalone | 0 | 0 |
 | source-managed | 0 or 1 | 0 or 1 |
 
-The maximum becomes **1414 standalone, 1745 source-managed** (now 1414 and
-1802; section 15).
+The maximum becomes **1414 standalone, 1745 source-managed** (now 1414 and 1834; section 16).
 `feeder_activity::series_appear_with_a_session_and_a_first_application`
 checks that exactly these two series appear in actual exposition; it does not
 verify the calculated total bound.
@@ -1066,9 +1084,9 @@ In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs) (module
 first application, unlabelled `gauge` types with HELP text that disclaims
 lag, and independent instances.
 
-**Overhead.** Not qualified. Section 6 applies unchanged. With metrics
-enabled, each applied event adds one clock read and one atomic `fetch_max`
-under the graph lock.
+**Overhead.** See section 6 and the M6.5 qualification. With metrics
+enabled, each feeder events request that applied an event adds one clock
+read and one atomic `fetch_max` under the graph lock, not one per event.
 
 ## 15. Eighth M6.2 increment: import gauge, results and phase durations (implemented, unreleased)
 
@@ -1373,3 +1391,118 @@ In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs) (module
   only in source-managed mode (32 series, 14 buckets per kind including `+Inf`),
   HELP/TYPE checks, HTTP initial + replacement end-to-end counts and isolated
   instances.
+
+## 17. M6.3 structured logs (implemented, unreleased)
+
+Logs answer "which one": they correlate a request with the worker that ran
+it and with the graph coordinates it observed. They are an operational
+interface, not a stable machine contract: field names below are kept stable
+within a minor release, and new fields can be added.
+
+**Format.** `LOG_FORMAT=json` selects one JSON object per line (the
+`tracing-subscriber` JSON format, including the current `span` and its
+parents in `spans`); any other value or none selects the human-readable
+format, which prints the same span fields as a prefix. `RUST_LOG` selects the
+filter (default `info`).
+
+**Request span.** `api::logging_middleware` wraps every request in a span
+named `request`:
+
+| Field | Meaning |
+| --- | --- |
+| `request_id` | Unique within the process, increasing from 1. Not sent to clients and not a metric label; combine with `instance_id` (the `X-Knotrel-Instance-Id` response header and `/v1/info`) to correlate across processes. |
+| `method`, `route` | HTTP method and registered path, or `unmatched`. |
+| `generation`, `state_version`, `sync_status` | Recorded by `api::inject_metadata_headers` when the response carries metadata: the same values as the response headers. Absent on requests that fail before metadata exists. |
+
+Exactly one line ends each request: `handled request` (`uri`, `status`,
+`latency_us`) at `info`, or `probe` at `trace` for `/health`, `/ready` and
+`/metrics`, or `request cancelled before response` (`latency_us`) at `info` if
+the request future is dropped first. Unregistered paths are logged
+sanitized.
+
+**Workers.** `Service::run`, `Service::execute_feeder_worker` and
+`Service::import` capture the request span and enter it on the blocking
+thread, so every worker line carries the submitting request's `request_id`,
+also after the caller has gone.
+
+**Synchronization diagnostics.**
+
+| Message | Level | Fields | Emitted |
+| --- | --- | --- | --- |
+| `synchronization state changed` | `warn` into `desynchronized` or `stale`, otherwise `info` | `job`, `from`, `to`, `from_generation`, `generation`, `source_position` (sanitized) | By the worker, under the graph lock, when a job changed the sync status or the generation (session, heartbeat, events, gap, barrier, import). |
+| `graph published by import` | `info` | `mode`, `from_generation`, `generation`, `node_count`, `edge_count`, `source_id`, `source_position` (both sanitized) | At atomic import publication. |
+| `feeder declared unrecoverable source gap; …` | `warn` | `failed_delivery_sequence`, `generation`, `reason` (sanitized) | `declare_gap`. |
+| `feeder request rejected` | `info` | `code` (the `feeder_rejections_total` code) | Where a feeder rejection is produced; logged whether or not metrics are enabled. The error message is not logged. |
+| `feeder lease expired; readiness is stale` | `warn` | `from`, `to` | Once per expiry, by the readiness check that publishes `stale`. |
+
+Rejections before execution (`busy`, import capacity, unavailable), request
+time limits, worker failures and drain progress keep their existing lines,
+now inside the request span.
+
+**Redaction.** Never logged: graph payloads (node IDs, edges, operations,
+event bodies), feeder session IDs, error messages that quote caller input,
+and panic payloads. Caller-supplied identifiers that operators need
+(`source_id`, source positions, the gap `reason`, unregistered paths) are
+sanitized by `logging::sanitize`: control characters are escaped and the
+value is cut to 64 characters followed by `…`. Credentials do not exist in
+the protocol; if added later they must not be logged.
+
+**Cost.** With no subscriber or a filter above `info`, spans and events are
+disabled and allocate nothing. At the default `info` filter each API request
+creates one span and writes one line, as before plus the span fields;
+synchronization lines occur only on transitions. Caller text is formatted
+lazily, only when a line is written.
+
+**Tests.** [`tests/logs.rs`](../crates/knotrel-server/tests/logs.rs) captures
+JSON output of a source-managed bootstrap, events, barrier, gap, a rejected
+events call, an unregistered path and a cancelled request. It checks one
+completion or cancellation line per request with unique IDs, that worker
+transition lines carry the submitting request's ID, the span metadata
+fields, the import publication and rejection lines, warn level on
+desynchronization, sanitized positions, reasons and paths, and that the
+session ID, node IDs and raw multi-line caller text never appear. Unit tests
+in `src/logging.rs` cover sanitization and transition detection.
+
+
+## 18. M6.5 qualification: overhead and series count
+
+**Overhead.** Campaign
+[`metrics-overhead-20261115`](../../knotrel-benchmarks/results/metrics-overhead-20261115/README.md)
+in `knotrel-benchmarks` (generated
+[`REPORT.md`](../../knotrel-benchmarks/results/metrics-overhead-20261115/REPORT.md),
+sha256 `f946f97a2d9fb948be6a198da72389259e825d94c47212794b1029aa8b50689e`;
+[`analysis/summary.json`](../../knotrel-benchmarks/results/metrics-overhead-20261115/analysis/summary.json),
+sha256 `0b760e055fb45ea08c092a76e7c73c4da4b687921b00b71a3ca78e22457e2dc8`).
+One release build of the in-process router probe on the v0.4.0 candidate tree
+(identity `6ec5f564…ae65c3c`), metrics on versus off on the same binary, with a
+byte-identical A/A copy, 24 counterbalanced rounds, Apple M3. Budget of
+section 6, approved before measurement.
+
+| Scenario | Metrics on vs off, paired median [95% CI] | A/A bound | Verdict |
+| --- | ---: | ---: | --- |
+| Single `connected` | −12.92% [−14.09%, −9.08%] | ±4.28% | PASS |
+| 8 concurrent clients, single `connected` | +0.73% [−0.26%, +1.58%] | ±1.53% | PASS |
+| Batch, 1,024 `connected` | +1.28% [+0.60%, +1.59%] | ±0.65% | PASS |
+| Batch, 1,024 alternating cut/link | +0.99% [+0.46%, +1.93%] | ±1.33% | PASS |
+| Import, 100,000 nodes | −0.64% [−3.25%, +0.57%] | ±3.64% | PASS |
+| Feeder batch, 1,024 events | +0.60% [−0.30%, +1.82%] | ±1.47% | PASS |
+
+All six scenarios pass after the primary rounds; the extension did not run.
+The single-request row is faster with metrics on, which no code path
+explains; it is the first, shortest scenario in each process and most exposed
+to start-up effects. It is not a speedup claim. Logs are disabled in the probe
+(no subscriber); their cost is part of the v0.4.0 regression qualification
+against v0.3.0.
+
+**Series count.** `series_count_is_constant_under_sustained_churn`
+([`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs)) runs 20
+cycles of feeder session takeovers with rising epochs, replacement imports
+with fresh node IDs and source epochs, applied, duplicate, out-of-order and
+failing events, barriers, a declared gap every third cycle, queries and
+unregistered paths. After the first full cycle pattern the exposition's
+sample count is identical in every later cycle and stays below the
+calculated maximum of 1,834 source-managed series. Together with invariant 3
+(compile-time label sets), this qualifies the series budget.
+
+**Status.** M6.5 is accepted on this evidence. With M6.1 to M6.4, M6 was
+accepted by the owner on 2026-11-15.

@@ -23,7 +23,8 @@ An external feeder reads the authoritative database or event stream and supplies
 | **v0.1.0 — Public Preview** | Released Rust library and experimental volatile service | Preserve verified API, networking, lifecycle, examples and release history | Persistence/import absent; existing batches remain supported, not future work |
 | **v0.2.0 — Integration & Graph Loading** | Rebuildable single-graph accelerator fed by an external authority | Integration contract, atomic HTTP import, identity/version model, ordered events with duplicate/gap detection, synchronization-aware bootstrap/readiness, external feeder and reproducible measurements | Local WAL/AOF, automatic snapshots and disk recovery DEFERRED; export OPTIONAL; embedded provider connectors, multi-graph and advanced concurrency DEFERRED |
 | **v0.3.0 — Operational Service** | Operable integration and measured update/query efficiency | Batch compatibility and integration improvements, lifecycle, deployment, metrics/tracing; evidence-based contention decision | Concurrency redesign only if justified; local persistence not a prerequisite |
-| **v0.4.0 — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; snapshot-only, AOF-only and combined modes are candidates, not three implementation commitments |
+| **v0.4.0 — Observability & Performance** | Close integration-aware observability and ship only validated hot-path optimizations | Acceptance M6 (metrics review, structured logs, alert rules, overhead and series-count qualification); before/after qualification of each included optimization; release candidate, CI, packaging, deployment check and documentation | Local persistence DEFERRED to v0.5.0; M10 node/edge lifecycle and M5 concurrency redesign not required |
+| **v0.5.0 — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; snapshot-only, AOF-only and combined modes are candidates, not three implementation commitments |
 | **v1.0.0 — Production Readiness** | Supported operational, security and compatibility guarantees | Deployment threat model, supported API/integration compatibility, fault tests and runbooks | Multi-graph demand-gated; local persistence need not be enabled or implemented to qualify a volatile deployment; general-purpose/distributed database features excluded |
 
 **Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
@@ -53,14 +54,20 @@ Checks reflect verified implementation and acceptance gates. Features 0.2.5+ rem
 
 - [ ] **Feature M3:** Compatible batch processing, retry semantics and update efficiency
 - [ ] **Feature M4:** Operational lifecycle, configuration and deployability
-- [ ] **Feature M6:** Integration-aware observability — deferred to a later release (reduced v0.3.0 scope, approved 2026-11-12)
-- [ ] **Feature M5:** Measured contention, query concurrency and isolation — deferred to a later release (reduced v0.3.0 scope, approved 2026-11-12)
+- [x] **Feature M6:** Integration-aware observability — deferred from v0.3.0 (reduced scope, approved 2026-11-12); delivered in v0.4.0, accepted 2026-11-15
+- [ ] **Feature M5:** Measured contention, query concurrency and isolation — deferred to a later release (reduced v0.3.0 scope, approved 2026-11-12); not a v0.4.0 requirement
+
+### v0.4.0 — Observability & Performance
+
+- [x] **Feature M6:** Integration-aware observability, through Acceptance M6 (REQUIRED; accepted 2026-11-15); see [M6](#m6--integration-aware-observability-p1--assigned-to-v040)
+- [x] **Feature 0.4.1:** Hot-path optimization review, evidence and inclusion decision (REQUIRED; decided 2026-11-15)
+- [ ] **Feature 0.4.2:** Release candidate, qualification and publication (REQUIRED)
 
 ### Post-M6 — Node and edge lifecycle (release unassigned)
 
-- [ ] **Feature M10:** Reversible node/edge activation and permanent node removal — scheduled after Acceptance M6; [implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md).
+- [ ] **Feature M10:** Reversible node/edge activation and permanent node removal — scheduled after Acceptance M6, not required for v0.4.0; [implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md).
 
-### v0.4.0 — Optional Local Persistence & Fast Recovery
+### v0.5.0 — Optional Local Persistence & Fast Recovery
 
 - [ ] **Feature P1:** Persistence value, strategy and support decision
 - [ ] **Feature P2:** Canonical local checkpoint and snapshot evaluation
@@ -448,19 +455,27 @@ Evidence: [startup configuration](docs/http-api.md#startup-configuration-and-eng
 Evidence: [container example](examples/container/Dockerfile) and [deployment runbook](docs/deployment.md), with the startup, feeder, lease-expiry, restart/rebuild and shutdown check repeated on 2026-11-13 from clean commit `a076c031a94e9e72c8b80b78e1dc512f51599220`. The [transcript](../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/deployment/transcript.txt) records zero failures. Acceptance is under D2 and applies to this source or a documentation-only descendant; relevant later changes require revalidation.
 - [x] **Acceptance M4:** Operators can distinguish process liveness (`/health`), synchronized readiness, `uninitialized`/`loading`/`catching_up`/`stale`/`desynchronized` states, rebuild after restart, and draining, using documented probes and the deployment runbook. Source-relative lag is not reported in v0.3.0: `stale` and `catching_up` indicate synchronization state, not a lag magnitude. Acceptance recorded 2026-11-13 under D2 on the evidence above.
 
-### M6 — Integration-aware observability (P1) — Deferred to a later release (not part of v0.3.0)
+### M6 — Integration-aware observability (P1) — Assigned to v0.4.0
 
-- [ ] **M6.1 Vocabulary:** Requests/status, graph counts, pending jobs, active imports, applied source progress, bootstrap duration, duplicate/gap/conflict counters and feeder health. Report lag only when the source protocol supplies a meaningful comparison.
-- [ ] **M6.2 Prometheus metrics:** Bounded-cardinality HTTP/execution/lock-wait/import/catch-up histograms and backlog gauges. Never use raw node IDs, request IDs, generations or source cursors as metric labels. Persistence metrics are conditional on v0.4.0 capabilities.
-  - In progress, unreleased: first slice implemented (opt-in `GET /metrics`, HTTP counts and server-side duration, outstanding jobs, capacity, unavailable flag, readiness state, build info; [observability contract §7](docs/observability-contract.md#7-first-m62-slice-implemented-unreleased)), rejection/uncertain-outcome counters ([§8](docs/observability-contract.md#8-second-m62-increment-rejection-and-uncertain-outcomes-implemented-unreleased)), graph node/edge gauges ([§10](docs/observability-contract.md#10-third-m62-increment-graph-node-and-edge-gauges-implemented-unreleased)), graph-job queue/lock-wait/execution histograms ([§11](docs/observability-contract.md#11-fourth-m62-increment-graph-job-queue-lock-wait-and-execution-histograms-implemented-unreleased)), graph-operation and feeder-event outcome counters ([§12](docs/observability-contract.md#12-fifth-m62-increment-graph-operation-and-feeder-event-outcome-counters-implemented-unreleased)), feeder rejection and desynchronization counters ([§13](docs/observability-contract.md#13-sixth-m62-increment-feeder-rejection-and-desynchronization-counters-implemented-unreleased)), feeder lease remaining and last-applied age gauges ([§14](docs/observability-contract.md#14-seventh-m62-increment-feeder-lease-remaining-and-last-applied-age-implemented-unreleased)), import in-progress/result/phase-duration metrics ([§15](docs/observability-contract.md#15-eighth-m62-increment-import-gauge-results-and-phase-durations-implemented-unreleased)) and catch-up duration ([§16](docs/observability-contract.md#16-ninth-m62-increment-catch-up-duration-implemented-unreleased)). All essential M6.2 metrics are implemented (pending independent review). Structured logs (M6.3), alerts (M6.4) and overhead and series-count qualification (M6.5) remain pending.
-- [ ] **M6.3 Logs:** Structured operation/request correlation, generation/revision and sanitized synchronization diagnostics without graph payloads or credentials.
-- [ ] **M6.4 Alerts:** Readiness flapping, gaps, feeder loss, slow bootstrap, queue saturation and repeated errors; local storage alerts only for an enabled persistence capability.
-- [ ] **M6.5 Budgets:** Verify instrumentation overhead and bounded series counts under churn, rebuilds and repeated source sessions.
-- [ ] **Acceptance M6:** Operators can explain synchronization and performance failures from bounded telemetry, without inferring freshness solely from process health.
+Deferred from v0.3.0 (not part of its acceptance); assigned to v0.4.0 by the scope decision of 2026-11-15. Its tasks and acceptance criteria are unchanged; the [v0.4.0 section](#v040--observability--performance) sets the order of the remaining work.
+
+- [x] **M6.1 Vocabulary:** Requests/status, graph counts, pending jobs, active imports, applied source progress, bootstrap duration, duplicate/gap/conflict counters and feeder health. Report lag only when the source protocol supplies a meaningful comparison.
+- [x] **M6.2 Prometheus metrics:** Bounded-cardinality HTTP/execution/lock-wait/import/catch-up histograms and backlog gauges. Never use raw node IDs, request IDs, generations or source cursors as metric labels. Persistence metrics are conditional on v0.5.0 capabilities.
+  - In progress, unreleased: first slice implemented (opt-in `GET /metrics`, HTTP counts and server-side duration, outstanding jobs, capacity, unavailable flag, readiness state, build info; [observability contract §7](docs/observability-contract.md#7-first-m62-slice-implemented-unreleased)), rejection/uncertain-outcome counters ([§8](docs/observability-contract.md#8-second-m62-increment-rejection-and-uncertain-outcomes-implemented-unreleased)), graph node/edge gauges ([§10](docs/observability-contract.md#10-third-m62-increment-graph-node-and-edge-gauges-implemented-unreleased)), graph-job queue/lock-wait/execution histograms ([§11](docs/observability-contract.md#11-fourth-m62-increment-graph-job-queue-lock-wait-and-execution-histograms-implemented-unreleased)), graph-operation and feeder-event outcome counters ([§12](docs/observability-contract.md#12-fifth-m62-increment-graph-operation-and-feeder-event-outcome-counters-implemented-unreleased)), feeder rejection and desynchronization counters ([§13](docs/observability-contract.md#13-sixth-m62-increment-feeder-rejection-and-desynchronization-counters-implemented-unreleased)), feeder lease remaining and last-applied age gauges ([§14](docs/observability-contract.md#14-seventh-m62-increment-feeder-lease-remaining-and-last-applied-age-implemented-unreleased)), import in-progress/result/phase-duration metrics ([§15](docs/observability-contract.md#15-eighth-m62-increment-import-gauge-results-and-phase-durations-implemented-unreleased)) and catch-up duration ([§16](docs/observability-contract.md#16-ninth-m62-increment-catch-up-duration-implemented-unreleased)). All essential M6.2 metrics are implemented. Independent acceptance review 2026-11-15: no code defects; contract corrections and two tests (exact histogram bucket bounds, per-family label domains) applied ([observability contract §6](docs/observability-contract.md#6-m62-handoff)).
+- [x] **M6.3 Logs:** Structured operation/request correlation, generation/revision and sanitized synchronization diagnostics without graph payloads or credentials.
+
+  Evidence (2026-11-15, unreleased): per-request `request` span with `request_id`, route and response metadata, entered by blocking workers; synchronization-transition, import-publication, feeder-rejection, lease-expiry and cancellation lines; sanitization of caller-supplied identifiers ([observability contract §17](docs/observability-contract.md#17-m63-structured-logs-implemented-unreleased)); [`tests/logs.rs`](crates/knotrel-server/tests/logs.rs) checks correlation across workers and that session IDs, node IDs and raw caller text never appear.
+- [x] **M6.4 Alerts:** Readiness flapping, gaps, feeder loss, slow bootstrap, queue saturation and repeated errors; local storage alerts only for an enabled persistence capability.
+
+  Evidence (2026-11-15, unreleased): ten Prometheus rules in [`examples/observability/prometheus-alerts.yml`](examples/observability/prometheus-alerts.yml) with a per-alert [runbook](docs/alerting.md); `alert_rules_reference_only_exported_series` fails if a rule names a series or label value the server does not export.
+- [x] **M6.5 Budgets:** Verify instrumentation overhead and bounded series counts under churn, rebuilds and repeated source sessions.
+
+  Evidence (2026-11-15): budget approved before measurement (median ≤ 3%, 95% CI upper bound ≤ 6%); [metrics-overhead campaign](../knotrel-benchmarks/results/metrics-overhead-20261115/README.md) on the v0.4.0 candidate tree: 6/6 scenarios PASS, largest cost +1.28% [+0.60%, +1.59%]; `series_count_is_constant_under_sustained_churn` keeps the series count constant over 20 churn cycles and below the calculated maximum ([observability contract §18](docs/observability-contract.md#18-m65-qualification-overhead-and-series-count)).
+- [x] **Acceptance M6:** Operators can explain synchronization and performance failures from bounded telemetry, without inferring freshness solely from process health. Accepted by the owner on 2026-11-15 on the M6.1–M6.5 evidence above.
 
 ### M10 — Node and edge lifecycle (planned after M6; release unassigned)
 
-**Sequencing decision (2026-11-13):** Start after **Acceptance M6**, including its instrumentation-overhead and cardinality checks. This adds no work to the current M6 increments or the released v0.3.0 scope and does not assign or replace the v0.4.0 persistence milestone.
+**Sequencing decision (2026-11-13):** Start after **Acceptance M6**, including its instrumentation-overhead and cardinality checks. This adds no work to the current M6 increments or the released v0.3.0 scope. Per the 2026-11-15 scope decision, M10 is not a v0.4.0 requirement and does not assign or replace the v0.5.0 persistence milestone.
 
 [Design and implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). The plan distinguishes registered topology from effective connectivity: an edge participates only when enabled and both endpoints are active. Deactivating a node preserves independently configured edge flags; removing a node cascades to its incident registered edges. Detailed API and compatibility decisions require M10.1 acceptance before coding.
 
@@ -472,7 +487,7 @@ Evidence: [container example](examples/container/Dockerfile) and [deployment run
 - [ ] **M10.6 Evidence and operations:** M6 telemetry updates, power-grid tutorial, bounded resource and before/after performance qualification under separately approved criteria.
 - [ ] **Acceptance M10:** Correct core/service behavior across supported engines, preserved source and lifecycle contracts, explicit resource semantics and accepted qualification evidence. No persistence or electrical-simulation guarantee is introduced.
 
-### M5 — Measured contention, query concurrency and isolation (P1) — Deferred to a later release (not part of v0.3.0)
+### M5 — Measured contention, query concurrency and isolation (P1) — Deferred to a later release (not part of v0.3.0 or v0.4.0)
 
 - [ ] **M5.1 Instrument:** Separate parse/serialize, queue, lock, graph work, candidate build and publication costs. Optional storage I/O is not a prerequisite.
 - [ ] **M5.2 Workloads:** Mixed reads/writes, batch sizes, rebuild/import overlap and feeder catch-up; report tails, fairness and memory with reproducible workloads.
@@ -483,9 +498,48 @@ Evidence: [container example](examples/container/Dockerfile) and [deployment run
 
 ---
 
-## v0.4.0 — Optional Local Persistence & Fast Recovery
+## v0.4.0 — Observability & Performance
 
-**Tentative placement:** After v0.3.0 is appropriate because stable source-position semantics, operational telemetry and measured rebuild costs are prerequisites for judging local persistence. A measured customer need can move a selected capability earlier only through an explicit scope decision; it must not block v0.2.0 or bypass synchronization correctness. Persistence remains OPTIONAL and disabled by default.
+**Scope decision (2026-11-15):** The next release closes M6 and ships only hot-path optimizations validated by before/after evidence. Local persistence, previously planned as v0.4.0, moves unchanged to [v0.5.0](#v050--optional-local-persistence--fast-recovery). M10 (node/edge lifecycle) follows Acceptance M6 but is not a v0.4.0 requirement. An M5 concurrency redesign is not required; the coarse graph mutex is retained. No other new capability enters this release without an explicit scope decision.
+
+**Order of remaining work:** independent M6.2 review → M6.3 structured logs → M6.4 alert rules → M6.5 overhead and series-count qualification → Acceptance M6 → optimization inclusion decision (Feature 0.4.1, can proceed in parallel with M6.3–M6.4) → release candidate and publication (Feature 0.4.2).
+
+### Feature M6 — Integration-aware observability (REQUIRED)
+
+Tasks and acceptance as listed in [M6](#m6--integration-aware-observability-p1--assigned-to-v040). Status on 2026-11-15 (end of day):
+
+- M6.2: implemented; independent review passed with contract and test corrections.
+- M6.3: implemented (request spans, worker correlation, sanitized synchronization diagnostics).
+- M6.4: implemented (ten Prometheus rules and runbook).
+- M6.5: qualified (6/6 PASS under the approved budget; constant series count under churn).
+- Acceptance M6: accepted by the owner (2026-11-15).
+
+### Feature 0.4.1 — Hot-path optimization review, evidence and inclusion decision (REQUIRED)
+
+- [x] **0.4.1.1 Review:** Independent review of the hot-path audit change set (allocation, cloning, lookup and job-tracking changes in `knotrel-core` and `knotrel-server`), with client-visible contracts unchanged. Rationale and review findings: [hot-path audit note](docs/hot-path-audit-v0.3.0.md).
+- [x] **0.4.1.2 Evidence:** Before/after campaign against `e1e1181` with a same-binary A/A arm: [hot-path-audit-20261114](../knotrel-benchmarks/results/hot-path-audit-20261114/README.md). Recorded outcome: results identical across arms; 16.7–75.0% fewer allocations per request; 13 confirmed timing improvements, 28 inconclusive, and 1 marginal regression (`compact-bfs` dynamic `connected`, +2.1% against a ±2.1% A/A bound) on a query path the change set does not modify. Re-measured 2026-11-15 with the same binaries and 24 rounds ([re-check](../knotrel-benchmarks/results/hot-path-recheck-20261115/README.md)): +0.83% [+0.10%, +1.78%] against ±2.14%, inconclusive; the regression does not reproduce.
+- [x] **0.4.1.3 Decision:** Record which changes are included. Include a change only if it is reviewed, correctness-neutral and supported by the evidence (confirmed improvement, allocation reduction or mechanism evidence, with no unexplained confirmed regression). The reverted metric-handle cache stays out. Decided 2026-11-15: all kept changes are included ([inclusion decision](docs/hot-path-audit-v0.3.0.md#inclusion-decision-v040-roadmap-feature-041)).
+- [x] **0.4.1.4 Interaction with M6:** M6.5 overhead qualification is measured on the tree that includes the selected optimizations, so the two do not invalidate each other. Done: the M6.5 campaign measured the tree with the included changes.
+
+### Feature 0.4.2 — Release candidate, qualification and publication (REQUIRED)
+
+- [ ] **0.4.2.1 Release candidate:** Freeze a candidate commit after Acceptance M6 and Feature 0.4.1; later code changes require a new candidate.
+  - Prepared 2026-11-15: version 0.4.0 in the workspace, core dependency and lockfile; release notes and procedure updated. The RC differs from the M6.5-measured tree only by version metadata. Awaiting the commit.
+- [ ] **0.4.2.2 Verification:** Formatting, Clippy with warnings denied, workspace tests/doctests and Rustdoc with warnings denied on Rust 1.100.0; `knotrel-core` MSRV 1.98.1; release build and smoke test; CI green.
+  - Pre-commit status (2026-11-15, uncommitted candidate tree `6ec5f564…ae65c3c`): all local checks pass (330 default and 459 all-features tests, MSRV 60 tests and Clippy, release build and smoke test). To be repeated on the committed RC, plus CI.
+- [ ] **0.4.2.3 Performance gate:** Regression qualification of the candidate against v0.3.0 under rules approved before execution, following the v0.3.0 protocol. No speedup is claimed without a confirmed cell-level improvement.
+- [ ] **0.4.2.4 Package and deployment:** Container example and deployment runbook re-checked on the candidate, including `/metrics`, the new logs and the alert rules.
+- [ ] **0.4.2.5 Documentation and publication:** Release notes, observability contract, HTTP API and deployment docs updated; tag, packages and changelog published only on explicit approval.
+
+**Exit gate:** Acceptance M6, a recorded inclusion decision for every optimization, a passing performance gate with disclosed inconclusive cells, and complete release documentation. Persistence, M10 and M5 are out of scope; their absence does not block this release.
+
+---
+
+## v0.5.0 — Optional Local Persistence & Fast Recovery
+
+**Planning change (2026-11-15):** Previously planned as v0.4.0; content unchanged.
+
+**Tentative placement:** After v0.4.0 is appropriate because stable source-position semantics, operational telemetry (M6, v0.4.0) and measured rebuild costs are prerequisites for judging local persistence. A measured customer need can move a selected capability earlier only through an explicit scope decision; it must not block v0.2.0 or bypass synchronization correctness. Persistence remains OPTIONAL and disabled by default.
 
 **Goal:** Reduce startup cost and dependency on expensive full source reconstruction, while the external store remains authoritative. Local state can be stale. This milestone does not freeze a storage engine, codec, fsync policy, crate boundary or cross-platform durability guarantee.
 
@@ -581,23 +635,24 @@ The recovery principle is mandatory for any selected local persistence strategy:
 2. **First handoff: Feature 0.2.1 — External source-of-truth integration contract.** Produce the contract/ADR, API examples, state machine and deterministic acceptance-test specification; no import or persistence implementation in that handoff. Resolve D1–D6 before dependent coding.
 3. Implement 0.2.2 using the identity/precondition design from 0.2.1; complete shared metadata in 0.2.3, ordered events in 0.2.4, bootstrap/readiness in 0.2.5 and feeder/evidence in 0.2.6. Keep incomplete source-managed functionality experimental/unready until the release gate passes.
 4. v0.3.0 builds operational controls and measurements on that contract; it does not depend on a local WAL.
-   - **Next functional milestone after Acceptance M6: M10**, node/edge activation and node removal, per the [plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). Release assignment remains open; M5 concurrency redesign is not a prerequisite.
-5. v0.4.0 first evaluates value using the source/rebuild contract and operational evidence. Implement only approved persistence strategies; full external rebuild remains the fallback.
-6. Move security forward whenever exposure requires it. Multi-graph and concurrency redesign remain demand/evidence-gated.
+5. v0.4.0 completes M6 and the validated hot-path optimizations, then qualifies and publishes the release. It does not depend on persistence, M10 or M5.
+   - **Next functional milestone after Acceptance M6: M10**, node/edge activation and node removal, per the [plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). Release assignment remains open; it is not a v0.4.0 requirement, and M5 concurrency redesign is not a prerequisite.
+6. v0.5.0 first evaluates value using the source/rebuild contract and operational evidence. Implement only approved persistence strategies; full external rebuild remains the fallback.
+7. Move security forward whenever exposure requires it. Multi-graph and concurrency redesign remain demand/evidence-gated.
 
 **Planning migration:** The previous durability-first Feature 0.2.1 and M1.1–M1.6 are superseded as v0.2.0 requirements; their storage concerns are retained under P1–P5. Previous M2.1–M2.6 import concerns now map to 0.2.1–0.2.3, 0.2.5 and 0.2.6, with durability-before-ack replaced by coherent in-memory publication plus source synchronization. M3–M9 retain their purpose with integration-first dependencies. This remapping does not mark any former or future task complete.
 
 ## Release-aware acceptance matrix
 
-| Area | v0.1.0 Preview | v0.2.0 Integration | v0.3.0 Operational | v0.4.0 Optional Persistence | v1.0.0 Production |
-|---|---|---|---|---|---|
-| Correctness | Existing graph/HTTP oracle tests | Atomic import, ordered source prefix, identity and gaps | Batch compatibility and mixed-load isolation | Selected-mode round trips and replay | Supported compatibility and long-running stability |
-| Authority/storage | Volatile | External authority; no local persistence required | Same contract | Local checkpoints/logs optional; external authority unchanged | Guarantees match deployed mode |
-| Restart | Empty standalone graph | Source-managed rebuild and catch-up | Operational rebuild/runbook | Restore then verify source synchronization or rebuild | Supported recovery/upgrade procedures |
-| Readiness | Basic lifecycle | Bootstrap barrier, gaps and freshness policy | Diagnostics, alerts and drain | Local recovery alone never means ready | Documented deployment guarantees |
-| Security | Trusted boundary | Protect feeder/import/progress control | Auth required for untrusted exposure | Protect storage/admin if enabled | Qualified threat model |
-| Performance | No blanket claims | Full load/catch-up and end-to-end evidence | Measured update/query/queue objectives | Compare total time-to-ready and write costs | Reproducible capacity envelope |
-| Compatibility | Released APIs | Standalone and Rust preserved | Legacy batches preserved | Opt-in formats/version policy | Supported migrations and deprecation |
+| Area | v0.1.0 Preview | v0.2.0 Integration | v0.3.0 Operational | v0.4.0 Observability & Performance | v0.5.0 Optional Persistence | v1.0.0 Production |
+|---|---|---|---|---|---|---|
+| Correctness | Existing graph/HTTP oracle tests | Atomic import, ordered source prefix, identity and gaps | Batch compatibility and mixed-load isolation | Results unchanged by optimizations and instrumentation | Selected-mode round trips and replay | Supported compatibility and long-running stability |
+| Authority/storage | Volatile | External authority; no local persistence required | Same contract | Same contract | Local checkpoints/logs optional; external authority unchanged | Guarantees match deployed mode |
+| Restart | Empty standalone graph | Source-managed rebuild and catch-up | Operational rebuild/runbook | Same, observable through logs and metrics | Restore then verify source synchronization or rebuild | Supported recovery/upgrade procedures |
+| Readiness | Basic lifecycle | Bootstrap barrier, gaps and freshness policy | Diagnostics, alerts and drain | Alert rules for loss, gaps, flapping and slow bootstrap | Local recovery alone never means ready | Documented deployment guarantees |
+| Security | Trusted boundary | Protect feeder/import/progress control | Auth required for untrusted exposure | Same; logs exclude payloads and credentials | Protect storage/admin if enabled | Qualified threat model |
+| Performance | No blanket claims | Full load/catch-up and end-to-end evidence | Measured update/query/queue objectives | Before/after evidence per optimization; instrumentation overhead budget | Compare total time-to-ready and write costs | Reproducible capacity envelope |
+| Compatibility | Released APIs | Standalone and Rust preserved | Legacy batches preserved | Client-visible contracts unchanged; opt-in metrics | Opt-in formats/version policy | Supported migrations and deprecation |
 
 ## Cross-cutting test matrix
 
@@ -645,6 +700,6 @@ Proposed resolutions documented in [ADR 0012](docs/architecture/0012-external-so
 
 - [ ] **D7 — Batch evolution:** Preserve legacy continue-after-error behavior; define a separate feeder batch failure/retry model if needed. Is multi-operation event atomicity actually required?
 - [ ] **D8 — Multi-graph demand:** Is there a demonstrated need beyond one implicit graph, or should this remain deferred indefinitely?
-- [ ] **D9 — Persistence value:** Does snapshot-only suffice? Does AOF add measurable value over the authoritative event log? Select zero, one or more configurations explicitly; v0.4.0 timing remains tentative.
+- [ ] **D9 — Persistence value:** Does snapshot-only suffice? Does AOF add measurable value over the authoritative event log? Select zero, one or more configurations explicitly; v0.5.0 timing remains tentative.
 - [ ] **D10 — Storage guarantees:** For selected modes, choose supported OS/filesystems, sync/ack policy, local checkpoint semantics, loss window, disk budget and error behavior. Distinguish power-loss assumptions from process-kill evidence.
 - [ ] **D11 — Recovery and migration:** Define compatible schemas, safe fallback, source-history expiration, restore identity/fencing and operator intervention. Local restore never bypasses source synchronization.

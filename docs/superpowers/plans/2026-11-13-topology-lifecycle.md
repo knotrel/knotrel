@@ -10,7 +10,7 @@
 
 **Spec:** The proposed behavioral specification in sections 1–3 of this document. Scheduling is approved by the owner on 2026-11-13; detailed contracts require M10.1 acceptance before implementation.
 
-**Status:** Planned, not implemented. Start only after Acceptance M6, including its overhead/cardinality gate. This is not part of released v0.3.0 and has no assigned release version. It does not silently change v0.4.0 persistence scope.
+**Status:** Planned, not implemented. Start only after Acceptance M6, including its overhead/cardinality gate. This is not part of released v0.3.0 and has no assigned release version. It is not a v0.4.0 (Observability & Performance) requirement and does not silently change the v0.5.0 persistence scope.
 
 ## Global constraints
 

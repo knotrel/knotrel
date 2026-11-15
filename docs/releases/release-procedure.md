@@ -115,7 +115,7 @@ release workflow must verify the committed RC.
 This verifies:
 - Dependencies are pre-fetched (`cargo fetch --locked`).
 - `cargo package --workspace --offline` packages and verifies both crates natively without repository-local Cargo patches.
-- `knotrel-core-0.3.0.crate` and `knotrel-server-0.3.0.crate` archives are created for this candidate.
+- `knotrel-core-0.4.0.crate` and `knotrel-server-0.4.0.crate` archives are created for this candidate.
 - `LICENSE.md` exists in both archives and matches the Elastic License 2.0 text.
 - Packages are extracted into an isolated sandbox outside the repository checkout.
 - `cargo metadata` proves `knotrel-core` resolves exclusively from the isolated archive.
@@ -145,7 +145,7 @@ do not treat a run against an earlier commit as the final RC validation.
 
 1. Navigate to GitHub Actions > **Release**.
 2. Trigger the workflow manually via `workflow_dispatch`:
-   - `version`: `0.3.0`
+   - `version`: `0.4.0`
    - `commit_sha`: the full, committed RC SHA on `origin/main` (supply it explicitly)
    - `dry_run`: `true`
 3. The dry-run workflow executes:
@@ -157,13 +157,13 @@ do not treat a run against an earlier commit as the final RC validation.
 4. Security guarantee:
    - In dry-run mode (`dry_run: true`), `publish-release`, `publish-crates` and `finalize-release` jobs are **completely skipped**.
    - The `crates-io` environment and `CRATES_IO_TOKEN` secret are **never accessed**.
-5. Download the assembled release bundle artifact (`knotrel-release-bundle-v0.3.0`) from the GitHub Actions run and verify:
+5. Download the assembled release bundle artifact (`knotrel-release-bundle-v0.4.0`) from the GitHub Actions run and verify:
    ```sh
    sha256sum -c SHA256SUMS
    ```
 
 `verify-dry-run-publish.sh` defers the server registry publish dry run if the
-crates.io API confirms that `knotrel-core` 0.3.0 is absent (HTTP 404). The
+crates.io API confirms that `knotrel-core` 0.4.0 is absent (HTTP 404). The
 offline source-package check still runs, but it does not prove that the server
 can be published to the registry. A successful dry run does not guarantee
 publication.
@@ -174,10 +174,10 @@ publication.
 
 Before tagging and publishing:
 - [ ] Working tree is clean and `git status` shows no uncommitted files.
-- [ ] Workspace and inherited crate versions are `0.3.0`, and the core dependency and lockfile agree.
-- [ ] Release notes in `docs/releases/v0.3.0-release-notes.md` include the two D6 disclosures and all operational limitations.
+- [ ] Workspace and inherited crate versions are `0.4.0`, and the core dependency and lockfile agree.
+- [ ] Release notes in `docs/releases/v0.4.0-release-notes.md` include every disclosed INCONCLUSIVE result of the v0.4.0 regression qualification and all operational limitations.
 - [ ] Candidate commit SHA is verified on `origin/main`.
-- [ ] The qualified SHA-to-RC diff passes the dependency-aware check in `docs/release-v0.3.0-closure-plan.md` §5.9, and the deployment transcript remains applicable.
+- [ ] The v0.4.0 regression qualification (roadmap 0.4.2.3) ran on the exact RC commit, and the deployment check (roadmap 0.4.2.4) was repeated on it.
 - [ ] All CI and release dry-run quality gates passed on the exact candidate commit SHA.
 - [ ] All three platform binaries passed native CI smoke tests and provenance verification.
 - [ ] Source package verification passed.
@@ -193,17 +193,17 @@ Once explicitly approved:
 
 1. Create and push the Git tag:
    ```sh
-   git tag -a v0.3.0 -m "Knotrel v0.3.0"
-   git push origin v0.3.0
+   git tag -a v0.4.0 -m "Knotrel v0.4.0"
+   git push origin v0.4.0
    ```
 
 2. Trigger the `release.yml` GitHub Actions workflow with:
-   - `version`: `0.3.0`
-   - `commit_sha`: `<commit-sha-of-v0.3.0-tag>`
+   - `version`: `0.4.0`
+   - `commit_sha`: `<commit-sha-of-v0.4.0-tag>`
    - `dry_run`: `false`
 
 3. Workflow execution order:
-   - `validate-inputs-and-metadata`: Validates that remote tag `v0.3.0` exists and points exactly to `<commit-sha-of-v0.3.0-tag>`.
+   - `validate-inputs-and-metadata`: Validates that remote tag `v0.4.0` exists and points exactly to `<commit-sha-of-v0.4.0-tag>`.
    - `candidate-quality-gates`: Validates fmt, Clippy, doc, tests, and examples.
    - `build-binaries` and `build-source`: Build and verify binary and source packages, including crates.io publish dry-run validation.
    - `assemble-release-bundle`: Verifies bundle checksums and asset inventory.
@@ -212,8 +212,8 @@ Once explicitly approved:
      1. Prompts environment reviewer for approval.
      2. Validates `CARGO_REGISTRY_TOKEN` presence and verifies prospective packages match bundle checksums byte-for-byte.
      3. Preflights both `knotrel-core` and `knotrel-server` on crates.io before attempting any upload.
-     4. Publishes `knotrel-core v0.3.0` (if absent) and polls until verified on REST API, sparse index, and resolvable via Cargo probe.
-     5. Publishes `knotrel-server v0.3.0` (if absent) with full verification against published core, and polls until verified on crates.io.
+     4. Publishes `knotrel-core v0.4.0` (if absent) and polls until verified on REST API, sparse index, and resolvable via Cargo probe.
+     5. Publishes `knotrel-server v0.4.0` (if absent) with full verification against published core, and polls until verified on crates.io.
    - `finalize-release`: Automatically finalizes the GitHub Release (`gh release edit --draft=false`) after confirming both crates are published and all 14 assets are verified on the draft.
 
 4. For the initial v0.1.0 bootstrap only, perform the mandatory token rotation
@@ -241,11 +241,11 @@ Because crates.io is an immutable package registry, a network glitch, timeout, o
 
 1. Inspect the workflow logs to identify why `knotrel-server` failed (e.g. index delay, transient network failure, token rate limit).
 2. Do not delete or re-tag the release.
-3. Re-dispatch the `release.yml` workflow with `dry_run: false`, `version: 0.3.0`, and the same `commit_sha` (or re-run failed jobs).
+3. Re-dispatch the `release.yml` workflow with `dry_run: false`, `version: 0.4.0`, and the same `commit_sha` (or re-run failed jobs).
 4. When `publish-release` runs: It verifies the existing draft release and reuses it without error.
 5. When `publish-crates` runs:
    - It preflights both crates.
-   - It queries `https://crates.io/api/v1/crates/knotrel-core/0.3.0` and matches the checksum against the local candidate artifact.
+   - It queries `https://crates.io/api/v1/crates/knotrel-core/0.4.0` and matches the checksum against the local candidate artifact.
    - It reports: `Confirmed: Remote knotrel-core checksum matches local release candidate. Skipping upload.`
    - It proceeds directly to publishing and verifying `knotrel-server`.
 6. When `finalize-release` runs: It revalidates both crates on crates.io and publishes the draft GitHub Release.
@@ -254,7 +254,7 @@ Because crates.io is an immutable package registry, a network glitch, timeout, o
 
 If `publish-crates.sh` discovers that a crate version already exists on crates.io with a different SHA256 checksum than the local candidate:
 - The script immediately aborts with an error:
-  `ERROR: Remote knotrel-... v0.3.0 checksum mismatch! Stopping for manual reconciliation.`
+  `ERROR: Remote knotrel-... v0.4.0 checksum mismatch! Stopping for manual reconciliation.`
 - Full release success is **not declared**.
 - The maintainer must investigate whether a conflicting version was previously published. Because crates.io disallows overwrites, the release version must be bumped (e.g. to `0.3.1`) if the remote version cannot be used.
 

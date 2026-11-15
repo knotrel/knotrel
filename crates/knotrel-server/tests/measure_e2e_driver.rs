@@ -703,7 +703,7 @@ fn test_engine_propagation_json_schema_and_markdown_agreement() {
 
     // 2. Driver info
     assert_eq!(json["driver"]["name"], "measure_e2e");
-    assert_eq!(json["driver"]["version"], "0.3.0");
+    assert_eq!(json["driver"]["version"], env!("CARGO_PKG_VERSION"));
 
     // 3. Server provenance
     let canonical_server_bin = fs::canonicalize(server_bin)
