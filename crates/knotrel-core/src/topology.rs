@@ -1012,6 +1012,9 @@ impl LifecycleGraph {
         if record.active {
             self.active_nodes -= 1;
         }
+        // The retired slot is isolated now; release its adjacency allocation
+        // so it retains only its ID-map entry and an empty vector header.
+        self.engine.release_isolated_storage(node);
         self.compact_if_needed();
         true
     }
@@ -1234,6 +1237,24 @@ mod tests {
         assert!(graph.engine_vertex_count() < vertices, "a compaction ran");
         assert_eq!(graph.node_active(200), Some(false));
         assert_eq!(graph.edge_state(0, 200).map(|s| s.effective), Some(false));
+        graph.validate();
+    }
+
+    /// A removed node's retired engine slot keeps no adjacency allocation,
+    /// whatever its former degree, and its same-ID reuse starts empty.
+    #[test]
+    fn removal_releases_retired_slot_adjacency() {
+        let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
+        for leaf in 1..=300 {
+            graph.link(0, leaf).unwrap();
+        }
+        assert!(graph.engine.adjacency_capacity(0).unwrap() >= 300);
+        assert!(graph.remove_node(0));
+        assert_eq!(graph.engine.adjacency_capacity(0), Some(0), "retired slot");
+        assert_eq!(graph.storage_stats().retired_vertices, 1);
+        assert!(graph.add_node(0).unwrap());
+        assert_eq!(graph.engine.adjacency_capacity(0), Some(0));
+        assert!(!graph.connected(0, 1).unwrap());
         graph.validate();
     }
 

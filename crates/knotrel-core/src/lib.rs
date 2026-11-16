@@ -472,6 +472,27 @@ impl Graph {
             edges: incidences / 2,
         }
     }
+
+    /// Releases the adjacency allocation of an isolated vertex.
+    ///
+    /// A no-op for an absent node or one that still has edges. The vertex and
+    /// its index stay registered. `O(1)` expected.
+    pub(crate) fn release_isolated_storage(&mut self, node: NodeId) {
+        if let Some(&index) = self.ids.get(&node) {
+            let list = &mut self.adjacency[index];
+            if list.is_empty() {
+                *list = Vec::new();
+            }
+        }
+    }
+
+    /// Returns the adjacency capacity (elements) held by `node`, if present.
+    #[cfg(test)]
+    pub(crate) fn adjacency_capacity(&self, node: NodeId) -> Option<usize> {
+        self.ids
+            .get(&node)
+            .map(|&index| self.adjacency[index].capacity())
+    }
 }
 
 #[cfg(test)]

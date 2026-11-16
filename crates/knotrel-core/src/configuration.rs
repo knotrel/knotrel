@@ -182,6 +182,23 @@ impl ConnectivityGraph {
         }
     }
 
+    /// Releases the adjacency storage of an isolated vertex (`compact-bfs`
+    /// only; a no-op for the other engines and for a vertex with edges).
+    pub(crate) fn release_isolated_storage(&mut self, node: NodeId) {
+        if let Backend::Compact(graph) = &mut self.backend {
+            graph.release_isolated_storage(node);
+        }
+    }
+
+    /// Returns the adjacency capacity held by `node` (`compact-bfs` only).
+    #[cfg(test)]
+    pub(crate) fn adjacency_capacity(&self, node: NodeId) -> Option<usize> {
+        match &self.backend {
+            Backend::Compact(graph) => graph.adjacency_capacity(node),
+            _ => None,
+        }
+    }
+
     /// Reports whether `node` is registered, in expected O(1) time.
     ///
     /// Limit checks use this ID-map lookup instead of a reflexive
