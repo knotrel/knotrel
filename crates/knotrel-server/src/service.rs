@@ -53,12 +53,18 @@ fn instant_to_millis(instant: Instant) -> u64 {
     instant.duration_since(*START_INSTANT).as_millis() as u64
 }
 
+/// Maps a label produced by [`EngineConfig::as_str`] back to its engine.
+/// An unknown label is a programming error and fails loudly instead of
+/// silently substituting an engine.
 fn engine_from_label(label: &str) -> EngineConfig {
-    match label {
-        value if value == EngineConfig::EulerTour.as_str() => EngineConfig::EulerTour,
-        value if value == EngineConfig::Hdt.as_str() => EngineConfig::Hdt,
-        _ => EngineConfig::CompactBfs,
-    }
+    [
+        EngineConfig::CompactBfs,
+        EngineConfig::EulerTour,
+        EngineConfig::Hdt,
+    ]
+    .into_iter()
+    .find(|engine| engine.as_str() == label)
+    .unwrap_or_else(|| panic!("engine label {label:?} does not come from EngineConfig::as_str"))
 }
 
 pub(crate) fn now_to_millis() -> u64 {
