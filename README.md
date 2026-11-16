@@ -219,15 +219,18 @@ the reproducible workloads, methodology and published reports: release
 regression qualification, engine/competitor comparisons and algorithm
 experiments, each labelled with the version and host it actually measured.
 [Performance by version](docs/performance-by-version.md) summarizes the
-release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 candidate) for users, with
+release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 → v0.6.0 candidate) for users, with
 their limits. The authoritative statements are in the release notes for
 [v0.4.0](docs/releases/v0.4.0-release-notes.md#regression-qualification-against-v030)
 and [v0.3.0](docs/releases/v0.3.0-release-notes.md#performance-qualification).
 No speedup is claimed for either release. The v0.5.0 candidate's qualification
 did not pass unconditionally: its regressions and unresolved or inconclusive
 results are accepted by maintainer waivers for v0.5.0 only, as recorded in the
-[draft release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification);
-no speedup is claimed.
+[release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification);
+no speedup is claimed. The v0.6.0 candidate (unreleased) reduces import memory
+and makes core flagged imports and fresh-ID churn measurably faster, but its
+qualification did not pass unconditionally and awaits maintainer decisions
+([draft release notes](docs/releases/v0.6.0-release-notes.md#performance-qualification)).
 
 ## Installing a release
 
