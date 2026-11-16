@@ -121,7 +121,7 @@ Hash-map lookups are expected `O(1)`, not worst case.
 | `set_node_active` | `O(d)` catalog scan plus `d_eff × U` | same |
 | `set_edge_enabled`, `link`, `cut` | `O(d_u + d_v)` catalog work plus at most one `U` | same |
 | `remove_node` without compaction | `O(d + sum of neighbor degrees)` catalog work plus `d_eff × U` | same |
-| `remove_node` that triggers compaction | the above plus an `O(V log V + E)` one-pass engine rebuild from the catalog | adds `O(log V + E / V)` rebuild work per removal (about four times the v0.5.0 constant, see below), with `V` and `E` taken at rebuild time |
+| `remove_node` that triggers compaction | the above plus an `O(V log V + E)` one-pass engine rebuild from the catalog | adds `O(log V + E / V)` rebuild work per removal, with `V` and `E` taken at rebuild time |
 | `connected` | the engine's query cost plus two flag checks | same |
 
 Deactivation and removal cut effective incident edges in descending neighbor
@@ -138,13 +138,13 @@ and key vertices by node ID. A removed node's engine vertex stays as an
 isolated *retired* slot: all its edges were cut, and since v0.6.0 its adjacency
 allocation is released, so a retired slot keeps only its engine ID-map entry
 and an empty vector header. Registering the **same** ID again reuses that
-slot. After every removal, if retired slots exceed `max(⌊V / 4⌋, 1024)`
-(v0.5.0: `max(V, 1024)`), the facade rebuilds the engine from the catalog: all
-registered nodes (active or not) and all effective edges. More than
-`max(⌊V / 4⌋, 1024)` removals separate two rebuilds, which gives the amortized
-term above. Engine vertices stay at most `V + max(⌊V / 4⌋, 1024)` (v0.5.0:
-`2V + 1024`). Rebuilds are four times as frequent as in v0.5.0 for the same
-fresh-ID churn; each one holds the server's graph lock.
+slot. After every removal, if retired slots exceed `max(V, 1024)`, the facade
+rebuilds the engine from the catalog: all registered nodes (active or not) and
+all effective edges. More than `max(V, 1024)` removals separate two rebuilds,
+which gives the amortized term above. Engine vertices stay at most
+`V + max(V, 1024)`, that is at most `2V + 1024`. Each rebuild holds the
+server's graph lock. (v0.6.0 evaluated a `max(V / 4, 1024)` threshold and
+rejected it: fresh-ID churn became about 90% slower.)
 
 **Engine construction.** Bulk construction (`try_from_topology`, flagged
 imports) and compaction build the `compact-bfs` engine in one pass from the
@@ -162,7 +162,7 @@ and RSS.
 | Catalog node map | one 32-byte record per registered node | up to the historical maximum of registered nodes, rounded to the table's power-of-two growth; under fresh-ID delete/insert churn the table may double once at more than half load | allocator overhead |
 | Incident lists | 16 bytes per incidence, two per registered edge | each list at most `max(4 × length, 16)` elements (shrunk below a quarter) | — |
 | Engine | one ID-map entry and one vector header per engine vertex; 8 bytes per effective incidence | per vertex: at least its historical maximum degree since the last rebuild (cuts do not shrink); after a rebuild, its enabled registered degree, which can exceed its effective degree | — |
-| Retired slots | at most `max(⌊V / 4⌋, 1024)` ID-map entries and vector headers | — | — |
+| Retired slots | at most `max(V, 1024)` ID-map entries and vector headers | — | — |
 | Compaction | the old and the new engine are live together during a rebuild, plus an `O(V)` sorted ID vector | — | — |
 | HTTP import | the request body while it is parsed, then the decoded request, the catalog and the new engine; the old graph stays live until just after publication (atomic replace; it is freed after the graph lock is released). A body that fails the streaming parse is parsed a second time by the former parser to keep the error contract, with that parser's working set (as in v0.5.0) | — | RSS, allocator retention |
 
