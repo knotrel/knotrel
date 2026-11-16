@@ -178,6 +178,23 @@ fn try_request(
     try_read_response(stream)
 }
 
+/// Reads one interim response head (for example `100 Continue`) and returns
+/// its status line. Nothing beyond the head's terminating blank line is read.
+fn read_interim_continue(stream: &mut TcpStream) -> String {
+    stream.set_read_timeout(Some(STEP)).unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        let read = stream
+            .read(&mut byte)
+            .expect("IO error reading interim response");
+        assert_ne!(read, 0, "connection closed before an interim response");
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8(head).expect("interim response head is UTF-8");
+    head.lines().next().unwrap_or_default().to_owned()
+}
+
 fn read_response(stream: &mut TcpStream) -> (u16, String) {
     try_read_response(stream).expect("IO error reading HTTP response")
 }
@@ -351,20 +368,24 @@ fn sigterm_drains_an_admitted_request_before_exiting() {
     let body = r#"{"op":"link","source":"1","target":"2"}"#;
     let mut in_flight = TcpStream::connect(server.address).unwrap();
     let head = format!(
-        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\nexpect: 100-continue\r\n\r\n",
         body.len()
     );
     in_flight.write_all(head.as_bytes()).unwrap();
+    // Externally observable admission: the server sends the interim
+    // `100 Continue` only when the handler first reads the request body, which
+    // happens after the request has passed `shutdown_gate` (the gate is layered
+    // outside the request timeout and the route handlers). Receiving it before
+    // the signal proves that the request was admitted before draining began.
+    // The exact gate boundary is also verified in-process with explicit
+    // admission acknowledgements in `lifecycle.rs`.
+    assert_eq!(
+        read_interim_continue(&mut in_flight),
+        "HTTP/1.1 100 Continue"
+    );
     in_flight
         .write_all(&body.as_bytes()[..body.len() - 1])
         .unwrap();
-    // Note on black-box admission boundary:
-    // In this real-process smoke test, internal middleware hooks are not accessible.
-    // The test uses loopback TCP connection establishment and a completed probe on a
-    // separate connection as an externally observable proxy that the in-flight
-    // request connection was established before shutdown. The exact internal admission
-    // boundary through `shutdown_gate` is deterministically verified with explicit
-    // admission acknowledgements in `lifecycle.rs`.
     assert_eq!(call(&server, "GET", "/ready", "").0, 200);
 
     server.signal("TERM");
