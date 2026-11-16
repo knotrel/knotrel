@@ -199,10 +199,11 @@ struct Incidence {
 #[derive(Debug, Default)]
 struct NodeRecord {
     active: bool,
-    /// Construction-only degree count used to size `incident` exactly in
-    /// bulk import (saturating; only a capacity hint). Zero otherwise. It
-    /// occupies the record's padding, so the record stays 32 bytes on 64-bit
-    /// targets.
+    /// Construction-only scratch, zero between public calls: the saturating
+    /// degree count that sizes `incident` in bulk import (only a capacity
+    /// hint), then the node's engine index during
+    /// [`LifecycleGraph::build_engine`]. It occupies the record's padding, so
+    /// the record stays 32 bytes on 64-bit targets.
     pending: u32,
     /// Incident registered edges, strictly sorted by `neighbor`.
     incident: Vec<Incidence>,
@@ -584,25 +585,106 @@ impl LifecycleGraph {
 
     /// Shrinks incident lists, computes counts and builds the engine from the
     /// effective edges of a validated catalog with sorted, duplicate-free
-    /// incident lists. `O(V + E)` plus the engine's bulk construction.
+    /// incident lists. `O(V log V + E)` (see [`Self::build_engine`]).
     fn finish(
         engine: EngineConfig,
         limits: GraphLimits,
         mut catalog: FxHashMap<NodeId, NodeRecord>,
         order: Vec<NodeId>,
     ) -> Self {
-        let mut effective: Vec<(NodeId, NodeId)> = Vec::new();
         let mut active_nodes = 0;
         let mut registered_edges = 0;
         let mut enabled_incidences = 0;
-        for &node in &order {
-            let record = catalog.get_mut(&node).expect("ordered node is registered");
+        for record in catalog.values_mut() {
             record.incident.shrink_to_fit();
             registered_edges += record.incident.len();
             enabled_incidences += record.incident.iter().filter(|i| i.enabled).count();
             active_nodes += usize::from(record.active);
         }
-        for &node in &order {
+        let (engine_graph, effective_edges) = Self::build_engine(engine, &mut catalog, &order);
+        Self {
+            nodes: catalog,
+            engine: engine_graph,
+            limits,
+            active_nodes,
+            registered_edges: registered_edges / 2,
+            enabled_edges: enabled_incidences / 2,
+            effective_edges,
+        }
+    }
+
+    /// Builds an unlimited engine holding every catalog node as a vertex and
+    /// exactly the effective edges; returns it with the effective edge count.
+    ///
+    /// For `compact-bfs` (the only engine with lifecycle support) the engine
+    /// is built in one pass ([`Graph::from_sorted_adjacency`]): node IDs are
+    /// sorted and receive engine indices in ascending ID order, so each
+    /// node's effective neighbor indices, read in its incident list's
+    /// neighbor-ID order, are already strictly increasing. Each neighbor's
+    /// index and flag come from one catalog probe (the index is parked in the
+    /// construction-only `pending` field, reset to zero afterwards). Each
+    /// adjacency vector is allocated once with capacity equal to the node's
+    /// enabled registered degree (an upper bound of its effective degree), so
+    /// no vector grows. `O(V log V + E)` time with expected `O(1)` probes;
+    /// scratch memory is the `O(V)` sorted ID vector.
+    ///
+    /// Other engines, and catalogs too large for 32-bit indices, use the
+    /// incremental [`Self::build_engine_incremental`]. `order` is used only
+    /// by that path (as the vertex insertion order).
+    fn build_engine(
+        engine: EngineConfig,
+        catalog: &mut FxHashMap<NodeId, NodeRecord>,
+        order: &[NodeId],
+    ) -> (ConnectivityGraph, usize) {
+        if engine != EngineConfig::CompactBfs || u32::try_from(catalog.len()).is_err() {
+            return Self::build_engine_incremental(engine, catalog, order);
+        }
+        let mut ids: Vec<NodeId> = catalog.keys().copied().collect();
+        ids.sort_unstable();
+        for (index, node) in ids.iter().enumerate() {
+            catalog
+                .get_mut(node)
+                .expect("listed node is registered")
+                .pending = u32::try_from(index).expect("node count checked above");
+        }
+        let mut adjacency: Vec<Vec<usize>> = Vec::with_capacity(ids.len());
+        let mut incidences = 0;
+        for node in &ids {
+            let record = &catalog[node];
+            if !record.active {
+                adjacency.push(Vec::new());
+                continue;
+            }
+            let enabled = record.incident.iter().filter(|i| i.enabled).count();
+            let mut neighbors = Vec::with_capacity(enabled);
+            for incidence in record.incident.iter().filter(|i| i.enabled) {
+                let neighbor = &catalog[&incidence.neighbor];
+                if neighbor.active {
+                    neighbors.push(neighbor.pending as usize);
+                }
+            }
+            incidences += neighbors.len();
+            adjacency.push(neighbors);
+        }
+        for record in catalog.values_mut() {
+            record.pending = 0;
+        }
+        let graph = crate::Graph::from_sorted_adjacency(ids, adjacency);
+        (ConnectivityGraph::from(graph), incidences / 2)
+    }
+
+    /// Incremental engine construction through
+    /// [`ConnectivityGraph::try_from_edges`]: vertices in `order`, then the
+    /// effective edges. `O(V + E)` catalog work plus one engine insertion per
+    /// effective edge. Used for engines other than `compact-bfs` and as the
+    /// differential reference in tests.
+    fn build_engine_incremental(
+        engine: EngineConfig,
+        catalog: &FxHashMap<NodeId, NodeRecord>,
+        order: &[NodeId],
+    ) -> (ConnectivityGraph, usize) {
+        let mut effective: Vec<(NodeId, NodeId)> = Vec::new();
+        for &node in order {
             let record = &catalog[&node];
             if !record.active {
                 continue;
@@ -616,18 +698,10 @@ impl LifecycleGraph {
                 }
             }
         }
-        let engine_graph =
-            ConnectivityGraph::try_from_edges(engine, GraphLimits::default(), &order, &effective)
+        let graph =
+            ConnectivityGraph::try_from_edges(engine, GraphLimits::default(), order, &effective)
                 .expect("an unlimited engine accepts a validated simple graph");
-        Self {
-            nodes: catalog,
-            engine: engine_graph,
-            limits,
-            active_nodes,
-            registered_edges: registered_edges / 2,
-            enabled_edges: enabled_incidences / 2,
-            effective_edges: effective.len(),
-        }
+        (graph, effective.len())
     }
 
     /// Returns the configured limits on registered topology.
@@ -943,35 +1017,22 @@ impl LifecycleGraph {
     }
 
     /// Rebuilds the engine when retired slots exceed
-    /// `max(registered nodes, MIN_RETIRED_BEFORE_COMPACTION)`.
+    /// `max(registered nodes, MIN_RETIRED_BEFORE_COMPACTION)`, through
+    /// [`Self::build_engine`]. The old engine is dropped after the new one is
+    /// built, so both are live at the peak.
     fn compact_if_needed(&mut self) {
         let retired = self.engine.node_count() - self.nodes.len();
         if retired <= self.nodes.len().max(MIN_RETIRED_BEFORE_COMPACTION) {
             return;
         }
-        let order: Vec<NodeId> = self.nodes.keys().copied().collect();
-        let mut effective = Vec::with_capacity(self.effective_edges);
-        for (&node, record) in &self.nodes {
-            if !record.active {
-                continue;
-            }
-            for incidence in &record.incident {
-                if node < incidence.neighbor
-                    && incidence.enabled
-                    && self.nodes[&incidence.neighbor].active
-                {
-                    effective.push((node, incidence.neighbor));
-                }
-            }
-        }
-        debug_assert_eq!(effective.len(), self.effective_edges);
-        self.engine = ConnectivityGraph::try_from_edges(
-            self.engine.engine(),
-            GraphLimits::default(),
-            &order,
-            &effective,
-        )
-        .expect("an unlimited engine accepts a validated simple graph");
+        let order: Vec<NodeId> = if self.engine.engine() == EngineConfig::CompactBfs {
+            Vec::new()
+        } else {
+            self.nodes.keys().copied().collect()
+        };
+        let (engine, effective) = Self::build_engine(self.engine.engine(), &mut self.nodes, &order);
+        debug_assert_eq!(effective, self.effective_edges);
+        self.engine = engine;
     }
 
     /// Returns whether `source` and `target` are connected in the effective
@@ -1259,6 +1320,77 @@ mod tests {
             fallback_successes < fast_successes / 10,
             "{fallback_successes}"
         );
+    }
+
+    /// Bulk engine construction agrees with incremental construction on
+    /// random flagged catalogs: same vertex and edge counts, the same
+    /// connectivity on every pair, and every internal invariant. Compaction
+    /// uses the same builder, so a compacted graph is checked as well.
+    #[test]
+    fn bulk_engine_build_matches_incremental_build() {
+        let mut seed = 0x9e37_79b9_u64;
+        let mut next = move |bound: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % bound
+        };
+        for case in 0..400 {
+            // IDs are spread over a wide range and inserted out of order, so
+            // ascending-ID indices differ from registration order.
+            let n = 2 + next(40);
+            let id = |k: u64| k.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> (case % 40);
+            let nodes: Vec<NodeSpec> = (0..next(n))
+                .map(|_| NodeSpec {
+                    node: id(next(n)),
+                    active: next(3) != 0,
+                })
+                .collect();
+            let mut edges = Vec::new();
+            for _ in 0..next(3 * n) {
+                let (source, target) = (id(next(n)), id(next(n)));
+                let enabled = next(4) != 0;
+                if source != target {
+                    edges.push(EdgeSpec {
+                        source,
+                        target,
+                        enabled,
+                    });
+                }
+            }
+            let Ok((mut catalog, order)) =
+                LifecycleGraph::catalog_exact(GraphLimits::default(), &nodes, &edges)
+            else {
+                continue; // conflicting repeated flags
+            };
+            let (incremental, incremental_edges) = LifecycleGraph::build_engine_incremental(
+                EngineConfig::CompactBfs,
+                &catalog,
+                &order,
+            );
+            let (bulk, bulk_edges) =
+                LifecycleGraph::build_engine(EngineConfig::CompactBfs, &mut catalog, &order);
+            assert_eq!(bulk_edges, incremental_edges, "case {case}");
+            assert_eq!(bulk.edge_count(), incremental.edge_count(), "case {case}");
+            assert_eq!(bulk.node_count(), incremental.node_count(), "case {case}");
+            assert!(catalog.values().all(|record| record.pending == 0));
+            for &a in &order {
+                for &b in &order {
+                    assert_eq!(
+                        bulk.connected(a, b),
+                        incremental.connected(a, b),
+                        "case {case}: {a}-{b}"
+                    );
+                }
+            }
+            let graph = LifecycleGraph::finish(
+                EngineConfig::CompactBfs,
+                GraphLimits::default(),
+                catalog,
+                order,
+            );
+            graph.validate();
+        }
     }
 
     /// Random mixed operations, including high-degree hubs, keep every

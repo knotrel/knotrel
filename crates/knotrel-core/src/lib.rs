@@ -430,6 +430,48 @@ impl Graph {
     pub fn edge_count(&self) -> usize {
         self.edges
     }
+
+    /// Builds a graph in one pass from validated adjacency (bulk construction
+    /// for the lifecycle facade).
+    ///
+    /// `ids[i]` receives internal index `i`; `adjacency[i]` lists the indices
+    /// of its neighbors. The caller guarantees the [`Graph`] invariants:
+    /// distinct IDs, equal lengths, every list strictly sorted, symmetric
+    /// (`j` in `adjacency[i]` iff `i` in `adjacency[j]`) and free of
+    /// self-loops; debug builds verify them. Vectors are taken as they are,
+    /// so their capacities are kept.
+    ///
+    /// `O(V + E)` time plus the ID-map insertions (expected `O(1)` each);
+    /// no adjacency vector is reallocated.
+    pub(crate) fn from_sorted_adjacency(ids: Vec<NodeId>, adjacency: Vec<Vec<usize>>) -> Self {
+        assert_eq!(ids.len(), adjacency.len(), "one adjacency list per ID");
+        let mut map: IntMap<NodeId, usize> =
+            IntMap::with_capacity_and_hasher(ids.len(), Default::default());
+        for (index, &node) in ids.iter().enumerate() {
+            let previous = map.insert(node, index);
+            debug_assert!(previous.is_none(), "distinct IDs");
+        }
+        let incidences: usize = adjacency.iter().map(Vec::len).sum();
+        debug_assert!(incidences.is_multiple_of(2), "symmetric adjacency");
+        #[cfg(debug_assertions)]
+        for (index, list) in adjacency.iter().enumerate() {
+            for pair in list.windows(2) {
+                debug_assert!(pair[0] < pair[1], "strictly sorted adjacency");
+            }
+            for &neighbor in list {
+                debug_assert_ne!(neighbor, index, "no self-loops");
+                debug_assert!(
+                    adjacency[neighbor].binary_search(&index).is_ok(),
+                    "symmetric adjacency"
+                );
+            }
+        }
+        Self {
+            ids: map,
+            adjacency,
+            edges: incidences / 2,
+        }
+    }
 }
 
 #[cfg(test)]
