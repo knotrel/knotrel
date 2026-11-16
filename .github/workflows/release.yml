@@ -175,11 +175,14 @@ jobs:
       - name: Documentation check
         run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --all-features --document-private-items
 
+      # The core's randomized invariant tests run with optimizations (debug
+      # assertions and overflow checks stay on); release builds are unaffected.
       - name: Workspace unit and integration tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --config 'profile.test.package."knotrel-core".opt-level=2'
 
+      # `test-support` only affects knotrel-server, so only its tests rerun.
       - name: Fault-injection lifecycle tests (test-support)
-        run: cargo test --workspace --locked --features knotrel-server/test-support
+        run: cargo test -p knotrel-server --locked --features test-support --config 'profile.test.package."knotrel-core".opt-level=2'
 
       - name: Run example (basic)
         run: cargo run -p knotrel-core --example basic

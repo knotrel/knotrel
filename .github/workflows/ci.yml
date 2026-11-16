@@ -33,10 +33,16 @@ jobs:
         run: cargo build --workspace --locked
       - name: Build (release)
         run: cargo build --workspace --release --locked
+      # The core's randomized invariant tests run with optimizations (debug
+      # assertions and overflow checks stay on); the release workflow uses the
+      # same flags. Release builds and coverage are unaffected.
       - name: Run tests (workspace)
-        run: cargo test --workspace --locked
+        shell: bash
+        run: cargo test --workspace --locked --config 'profile.test.package."knotrel-core".opt-level=2'
+      # `test-support` only affects knotrel-server, so only its tests rerun.
       - name: Run tests (test-support)
-        run: cargo test --workspace --locked --features knotrel-server/test-support
+        shell: bash
+        run: cargo test -p knotrel-server --locked --features test-support --config 'profile.test.package."knotrel-core".opt-level=2'
       - name: Run example (basic)
         run: cargo run -p knotrel-core --example basic
       - name: Run example (bulk_import)
