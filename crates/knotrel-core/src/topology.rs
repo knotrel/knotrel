@@ -38,13 +38,14 @@
 //! again reuses that vertex, which therefore carries no stale adjacency.
 //! A retired slot keeps no adjacency allocation (it is released on removal),
 //! only its engine ID-map entry and an empty vector header. When retired
-//! slots exceed `max(⌊V / 4⌋, 1024)`, the engine is rebuilt from the catalog.
+//! slots exceed `max(V, 1024)`, the engine is rebuilt from the catalog.
 //! A rebuild costs `O(V log V + E)` (an ID sort plus one scan of the active
 //! nodes' incidences, with `V + E_eff` sequential engine insertions); more
-//! than `max(⌊V / 4⌋, 1024)` removals separate two rebuilds, so the amortized
-//! cost is `O(log V + E / V)` per removal (with a constant about four times
-//! that of a `max(V, 1024)` threshold), and engine vertices stay at
-//! most `V + max(⌊V / 4⌋, 1024)`, where `V` is the registered node count.
+//! than `max(V, 1024)` removals separate two rebuilds, so the amortized cost
+//! is `O(log V + E / V)` per removal, and engine vertices stay at most
+//! `V + max(V, 1024)`, where `V` is the registered node count. (A
+//! `max(V / 4, 1024)` threshold was evaluated for v0.6.0 and rejected: it
+//! made fresh-ID churn about 90% slower in diagnostics.)
 
 use crate::{ConnectivityGraph, EngineConfig, GraphError, GraphLimits, NodeId};
 use rustc_hash::FxHashMap;
@@ -55,7 +56,7 @@ const MIN_RETIRED_BEFORE_COMPACTION: usize = 1024;
 
 /// Compaction runs when retired slots exceed registered nodes divided by
 /// this value (and [`MIN_RETIRED_BEFORE_COMPACTION`]).
-const RETIRED_DIVISOR: usize = 4;
+const RETIRED_DIVISOR: usize = 1;
 
 /// Largest number of retired engine slots kept without compaction.
 const fn retired_allowance(registered: usize) -> usize {
@@ -1153,7 +1154,7 @@ impl LifecycleGraph {
     /// registered node plus retired slots of removed nodes not yet compacted.
     ///
     /// It is a storage diagnostic, at most
-    /// `node_count() + max(node_count() / 4, 1024)` (integer division).
+    /// `node_count() + max(node_count(), 1024)`.
     #[must_use]
     pub fn engine_vertex_count(&self) -> usize {
         self.engine.node_count()
@@ -1500,8 +1501,7 @@ mod tests {
                 graph.validate();
             }
             assert!(
-                graph.engine_vertex_count()
-                    <= graph.node_count() + (graph.node_count() / 4).max(1024)
+                graph.engine_vertex_count() <= graph.node_count() + graph.node_count().max(1024)
             );
             let storage = graph.storage_stats();
             assert_eq!(storage.catalog_nodes, graph.node_count());
