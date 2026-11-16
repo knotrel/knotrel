@@ -505,6 +505,20 @@ impl HdtGraph {
 mod tests {
     use super::*;
 
+    /// The dense base level never releases a record, even when isolated.
+    #[test]
+    fn dense_level_records_are_never_released() {
+        let mut graph = HdtGraph::new();
+        graph.link(1, 2).unwrap();
+        graph.cut(1, 2).unwrap();
+        let level = &mut graph.levels[0];
+        let slots = level.tree.len();
+        level.release_if_isolated(0);
+        assert_eq!(level.tree.len(), slots);
+        assert_eq!(level.local(0), Some(0));
+        assert!(level.free_locals.is_empty());
+    }
+
     /// Independent closure of all edges at/above each level must match that
     /// forest. Also verify size bounds, exact-level incidences and arc counts.
     fn validate(graph: &HdtGraph) {

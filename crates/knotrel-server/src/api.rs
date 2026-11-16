@@ -1765,6 +1765,47 @@ mod tests {
     use crate::{Lifecycle, ServerConfig, ServerMode};
     use axum::http::HeaderValue;
 
+    /// Lifecycle operations that reach a plain graph (request validation
+    /// rejects them earlier) still fail with `topology_lifecycle_disabled`
+    /// (409), never as a silent no-op; `UnsupportedEngine` maps to
+    /// `invalid_request`; an import node of the wrong JSON type is refused.
+    #[test]
+    fn lifecycle_paths_on_a_plain_graph_and_error_mappings() {
+        let mut graph: ServiceGraph =
+            knotrel_core::ConnectivityGraph::new(knotrel_core::EngineConfig::CompactBfs).into();
+        for operation in [
+            Operation::SetNodeActive {
+                node: WireNode(1),
+                active: false,
+            },
+            Operation::RemoveNode { node: WireNode(1) },
+            Operation::NodeState { node: WireNode(1) },
+            Operation::EdgeState {
+                source: WireNode(1),
+                target: WireNode(2),
+            },
+        ] {
+            let outcome = operation.apply(&mut graph);
+            assert!(matches!(
+                outcome,
+                Outcome::Error {
+                    code: ErrorCode::TopologyLifecycleDisabled,
+                    ..
+                }
+            ));
+            assert_eq!(outcome.into_response().status(), StatusCode::CONFLICT);
+        }
+        let (code, message) = lifecycle_error_code(LifecycleError::UnsupportedEngine {
+            engine: knotrel_core::EngineConfig::Hdt,
+        });
+        assert_eq!(code, ErrorCode::InvalidRequest);
+        assert!(message.contains("hdt"), "{message}");
+        let error = serde_json::from_str::<ImportNode>("5")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("a string"), "{error}");
+    }
+
     #[test]
     fn typed_wire_vocabulary_matches_the_http_contract() {
         assert_eq!(

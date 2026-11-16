@@ -36,6 +36,8 @@ use tokio::time::sleep;
 struct ChildServerGuard {
     child: Option<Child>,
     address: SocketAddr,
+    /// Captured server stderr, removed when the guard is dropped.
+    stderr_path: std::path::PathBuf,
 }
 
 impl ChildServerGuard {
@@ -58,20 +60,53 @@ impl ChildServerGuard {
         if let Some(w) = window_size {
             cmd.env("KNOTREL_DEDUP_WINDOW_SIZE", w.to_string());
         }
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        // Capture stderr so that a startup failure reports its cause.
+        let stderr_path = std::env::temp_dir().join(format!(
+            "knotrel_e2e_rebuild_{}_{}_{}.stderr",
+            std::process::id(),
+            address.port(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let stderr_file = std::fs::File::create(&stderr_path).expect("create server stderr file");
+        cmd.stdout(Stdio::null()).stderr(Stdio::from(stderr_file));
         let child = cmd.spawn().expect("spawn knotrel-server");
 
         // Immediately guarded before any startup check can fail
         Self {
             child: Some(child),
             address,
+            stderr_path,
         }
     }
 
-    async fn wait_listening(&self, timeout_dur: Duration) -> bool {
+    /// The server's stderr so far, or the I/O error that prevented reading it.
+    fn stderr_text(&self) -> String {
+        match std::fs::read_to_string(&self.stderr_path) {
+            Ok(text) => text,
+            Err(error) => format!("<could not read captured server stderr: {error}>"),
+        }
+    }
+
+    /// Waits until `/health` answers 200. A server that exits or never
+    /// answers fails the test with its exit status and captured stderr.
+    async fn wait_listening(&mut self, timeout_dur: Duration) -> bool {
         let actual_timeout = timeout_dur.max(Duration::from_secs(10));
         let deadline = tokio::time::Instant::now() + actual_timeout;
         while tokio::time::Instant::now() < deadline {
+            if let Some(status) = self
+                .child
+                .as_mut()
+                .and_then(|child| child.try_wait().ok().flatten())
+            {
+                panic!(
+                    "server on {} exited before listening: {status}\nserver stderr:\n{}",
+                    self.address,
+                    self.stderr_text()
+                );
+            }
             if let Ok(mut stream) = tokio::net::TcpStream::connect(self.address).await {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let req = format!(
@@ -90,7 +125,11 @@ impl ChildServerGuard {
             }
             sleep(Duration::from_millis(20)).await;
         }
-        false
+        panic!(
+            "server on {} did not answer /health within {actual_timeout:?}\nserver stderr:\n{}",
+            self.address,
+            self.stderr_text()
+        );
     }
 
     fn signal(&mut self, signame: &str) {
@@ -124,6 +163,7 @@ impl Drop for ChildServerGuard {
             let _ = child.kill();
             let _ = child.wait();
         }
+        let _ = std::fs::remove_file(&self.stderr_path);
     }
 }
 
@@ -135,7 +175,7 @@ fn get_free_port() -> SocketAddr {
 #[tokio::test]
 async fn test_01_initial_bootstrap_oracle_verification() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let mut client = ExternalFeederClient::new(address, "feeder-test-01");
@@ -218,7 +258,7 @@ async fn test_01_initial_bootstrap_oracle_verification() {
 #[tokio::test]
 async fn test_02_noop_and_progress_records_preserve_revision() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let mut client = ExternalFeederClient::new(address, "feeder-test-02");
@@ -302,7 +342,7 @@ async fn test_02_noop_and_progress_records_preserve_revision() {
 #[tokio::test]
 async fn test_03_committed_event_with_lost_acknowledgment_and_feeder_recovery() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     // Controlled fault proxy between feeder and server
@@ -367,7 +407,7 @@ async fn test_03_committed_event_with_lost_acknowledgment_and_feeder_recovery() 
 #[tokio::test]
 async fn test_04_old_link_retry_after_newer_cut_preserves_cut() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let mut client = ExternalFeederClient::new(address, "feeder-test-04");
@@ -523,7 +563,7 @@ async fn test_05_graceful_restart_and_abrupt_termination_require_rebuild() {
 #[tokio::test]
 async fn test_06_declared_gap_followed_by_authoritative_rebuild() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let mut client = ExternalFeederClient::new(address, "feeder-test-06");
@@ -605,7 +645,7 @@ async fn test_06_declared_gap_followed_by_authoritative_rebuild() {
 #[tokio::test]
 async fn test_07_lease_expiry_cannot_be_repaired_by_heartbeat_alone() {
     let address = get_free_port();
-    let _server = ChildServerGuard::spawn(address);
+    let mut _server = ChildServerGuard::spawn(address);
     assert!(_server.wait_listening(Duration::from_secs(5)).await);
 
     let mut client = ExternalFeederClient::new(address, "feeder-test-07");
@@ -666,7 +706,7 @@ async fn test_07_lease_expiry_cannot_be_repaired_by_heartbeat_alone() {
 #[tokio::test]
 async fn test_08_failed_domain_mutation_stops_batch_without_false_progress() {
     let address = get_free_port();
-    let _server = ChildServerGuard::spawn(address);
+    let mut _server = ChildServerGuard::spawn(address);
     assert!(_server.wait_listening(Duration::from_secs(5)).await);
 
     let mut client = ExternalFeederClient::new(address, "feeder-test-08");
@@ -793,7 +833,7 @@ async fn test_08_failed_domain_mutation_stops_batch_without_false_progress() {
 #[tokio::test]
 async fn test_09_import_with_lost_acknowledgment_and_reconciliation() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let proxy = ControlledFaultProxy::start(address).await.unwrap();
@@ -859,7 +899,7 @@ async fn test_09_import_with_lost_acknowledgment_and_reconciliation() {
 #[tokio::test]
 async fn test_10_authoritative_changes_during_snapshot_loading_catch_up_to_barrier_b() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let proxy = ControlledFaultProxy::start(address).await.unwrap();
@@ -1021,7 +1061,7 @@ async fn test_10_authoritative_changes_during_snapshot_loading_catch_up_to_barri
 async fn test_11_unverifiable_duplicate_requiring_safe_recovery() {
     let address = get_free_port();
     // Bounded deduplication window of size 5
-    let server = ChildServerGuard::spawn_with_window_size(address, Some(5));
+    let mut server = ChildServerGuard::spawn_with_window_size(address, Some(5));
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let mut client = ExternalFeederClient::new(address, "feeder-test-11");
@@ -1085,7 +1125,7 @@ async fn test_11_unverifiable_duplicate_requiring_safe_recovery() {
 #[tokio::test]
 async fn test_12_heartbeat_observability_fencing_and_clean_shutdown() {
     let address = get_free_port();
-    let _server = ChildServerGuard::spawn(address);
+    let mut _server = ChildServerGuard::spawn(address);
     assert!(_server.wait_listening(Duration::from_secs(5)).await);
 
     let mut client1 = ExternalFeederClient::new(address, "feeder-primary");
@@ -1129,7 +1169,7 @@ async fn test_12_heartbeat_observability_fencing_and_clean_shutdown() {
 #[tokio::test]
 async fn test_13_lost_ack_combined_with_replacement_before_retry() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let proxy = ControlledFaultProxy::start(address).await.unwrap();
@@ -1274,7 +1314,7 @@ async fn test_14_lost_ack_combined_with_restart() {
 #[tokio::test]
 async fn test_15_lost_ack_combined_with_competing_ownership_takeover() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let proxy = ControlledFaultProxy::start(address).await.unwrap();
@@ -1348,7 +1388,7 @@ async fn test_15_lost_ack_combined_with_competing_ownership_takeover() {
 #[tokio::test]
 async fn test_16_import_reconciliation_existing_graph_same_cursor_different_topology() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let proxy = ControlledFaultProxy::start(address).await.unwrap();
@@ -1423,7 +1463,7 @@ async fn test_16_import_reconciliation_existing_graph_same_cursor_different_topo
 #[tokio::test]
 async fn test_17_import_reconciliation_import_never_committed() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let proxy = ControlledFaultProxy::start(address).await.unwrap();
@@ -1460,7 +1500,7 @@ async fn test_17_import_reconciliation_import_never_committed() {
 #[tokio::test]
 async fn test_18_import_reconciliation_replaced_by_another_feeder_before_reconciliation() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let proxy = ControlledFaultProxy::start(address).await.unwrap();
@@ -1585,7 +1625,7 @@ async fn test_19_import_reconciliation_restart_during_uncertain_outcome() {
 #[tokio::test]
 async fn test_20_heartbeat_failure_halts_feeder_control_flow() {
     let address = get_free_port();
-    let _server = ChildServerGuard::spawn(address);
+    let mut _server = ChildServerGuard::spawn(address);
     assert!(_server.wait_listening(Duration::from_secs(5)).await);
 
     let mut client1 = ExternalFeederClient::new(address, "feeder-halt-01");
@@ -1650,7 +1690,7 @@ async fn test_20_heartbeat_failure_halts_feeder_control_flow() {
 #[tokio::test]
 async fn test_21_import_reconciliation_same_count_same_cursor_different_topology() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
 
     let proxy = ControlledFaultProxy::start(address).await.unwrap();
@@ -1822,7 +1862,7 @@ async fn start_feeder_with_baseline(address: SocketAddr, session: &str) -> Exter
 #[tokio::test]
 async fn test_22_partial_failure_diagnostics_include_409_continuity_rejection_after_prefix() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
     let mut client = start_feeder_with_baseline(address, "feeder-test-22").await;
 
@@ -1855,7 +1895,7 @@ async fn test_22_partial_failure_diagnostics_include_409_continuity_rejection_af
 #[tokio::test]
 async fn test_23_recovery_helper_requires_rebuild_after_desynchronizing_rejection() {
     let address = get_free_port();
-    let server = ChildServerGuard::spawn(address);
+    let mut server = ChildServerGuard::spawn(address);
     assert!(server.wait_listening(Duration::from_secs(5)).await);
     let mut client = start_feeder_with_baseline(address, "feeder-test-23").await;
 

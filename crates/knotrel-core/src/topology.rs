@@ -1119,6 +1119,63 @@ impl LifecycleGraph {
 mod tests {
     use super::*;
 
+    /// `Error::source` exposes only wrapped graph errors.
+    #[test]
+    fn lifecycle_error_source_wraps_only_graph_errors() {
+        let graph = LifecycleError::Graph(GraphError::SelfLoop { node: 1 });
+        assert!(graph.source().is_some());
+        for other in [
+            LifecycleError::UnknownEdge {
+                source: 1,
+                target: 2,
+            },
+            LifecycleError::ConflictingNode { node: 1 },
+            LifecycleError::UnsupportedEngine {
+                engine: EngineConfig::Hdt,
+            },
+        ] {
+            assert!(other.source().is_none(), "{other}");
+        }
+    }
+
+    /// Incident vectors shrink after most incidences are cut; a link to an
+    /// inactive endpoint is registered without an engine edge; compaction
+    /// skips inactive nodes' incidences.
+    #[test]
+    fn shrink_inactive_links_and_compaction_with_inactive_nodes() {
+        let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
+        for neighbor in 1..=64 {
+            graph.link(0, neighbor).unwrap();
+        }
+        let before = graph.nodes[&0].incident.capacity();
+        for neighbor in 1..=60 {
+            graph.cut(0, neighbor).unwrap();
+        }
+        assert!(graph.nodes[&0].incident.capacity() < before);
+        graph.validate();
+
+        graph.add_node(200).unwrap();
+        graph.set_node_active(200, false).unwrap();
+        assert_eq!(graph.link(0, 200), Ok(true));
+        assert_eq!(graph.edge_state(0, 200).map(|s| s.effective), Some(false));
+        graph.validate();
+
+        // More than 1,024 removals while node 200 (with an incident edge)
+        // stays inactive trigger a compaction that must skip it.
+        for node in 1_000..2_200 {
+            graph.link(node, node + 10_000).unwrap();
+        }
+        let vertices = graph.engine_vertex_count();
+        for node in 1_000..2_200 {
+            graph.remove_node(node);
+            graph.remove_node(node + 10_000);
+        }
+        assert!(graph.engine_vertex_count() < vertices, "a compaction ran");
+        assert_eq!(graph.node_active(200), Some(false));
+        assert_eq!(graph.edge_state(0, 200).map(|s| s.effective), Some(false));
+        graph.validate();
+    }
+
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn node_record_degree_hint_fits_in_padding() {

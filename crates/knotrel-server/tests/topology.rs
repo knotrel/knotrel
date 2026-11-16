@@ -995,3 +995,54 @@ async fn deferred_engines_reject_lifecycle_and_keep_non_lifecycle_behavior() {
         );
     }
 }
+
+/// Malformed lifecycle events are refused with 422 and explicit messages:
+/// an unknown operation name lists the lifecycle operations, and each setter
+/// requires exactly its own flag. A self-loop in a flagged import is refused.
+#[tokio::test]
+async fn malformed_lifecycle_events_and_self_loop_imports_are_refused() {
+    for (event, message) in [
+        (
+            json!({"op":"frobnicate","node":"1"}),
+            "set_node_active, set_edge_enabled, or remove_node",
+        ),
+        (
+            json!({"op":"set_node_active","node":"1","enabled":false}),
+            "set_node_active operation requires active, and must not have enabled",
+        ),
+        (
+            json!({"op":"set_edge_enabled","source":"1","target":"2","active":false}),
+            "set_edge_enabled operation requires enabled, and must not have active",
+        ),
+    ] {
+        let mut feeder = Feeder::start(EngineConfig::CompactBfs, true).await;
+        assert_eq!(
+            feeder.import(json!(["1", "2"]), json!([])).await.status,
+            StatusCode::CREATED
+        );
+        let event = feeder.event("e1", event);
+        let reply = feeder.events(vec![event]).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            reply.raw
+        );
+        assert!(reply.raw.contains(message), "{}", reply.raw);
+    }
+
+    let mut fresh = Feeder::start(EngineConfig::CompactBfs, true).await;
+    let reply = fresh
+        .import(
+            json!(["1"]),
+            json!([{"source":"3","target":"3","enabled":false}]),
+        )
+        .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reply.raw
+    );
+    assert_eq!(reply.body["code"], "self_loop");
+}
