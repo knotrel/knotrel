@@ -83,6 +83,30 @@ pub struct EdgeState {
     pub effective: bool,
 }
 
+/// Storage diagnostics of a [`LifecycleGraph`], from
+/// [`LifecycleGraph::storage_stats`].
+///
+/// Logical sizes and retained capacities are reported separately: vectors
+/// and hash maps keep capacity after removals, so capacity can exceed the
+/// logical size. Capacities count elements, not bytes, and exclude allocator
+/// overhead and the inner engine's own capacities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LifecycleStorage {
+    /// Vertices held by the inner engine, including retired slots.
+    pub engine_vertices: usize,
+    /// Retired engine slots of removed nodes not yet compacted.
+    pub retired_vertices: usize,
+    /// Registered nodes in the catalog.
+    pub catalog_nodes: usize,
+    /// Capacity of the catalog's node map (elements).
+    pub catalog_node_capacity: usize,
+    /// Incidence entries in the catalog: two per registered edge.
+    pub incident_entries: usize,
+    /// Sum of the incident vectors' capacities (elements).
+    pub incident_capacity: usize,
+}
+
 /// Errors returned by lifecycle-specific [`LifecycleGraph`] operations.
 ///
 /// The enum is non-exhaustive so that later lifecycle errors can be added
@@ -843,6 +867,29 @@ impl LifecycleGraph {
         self.engine.node_count()
     }
 
+    /// Returns storage diagnostics: logical sizes and retained capacities.
+    ///
+    /// Costs `O(V)` time (one pass over the catalog) and no allocation.
+    #[must_use]
+    pub fn storage_stats(&self) -> LifecycleStorage {
+        let (incident_entries, incident_capacity) =
+            self.nodes.values().fold((0, 0), |(len, cap), record| {
+                (
+                    len + record.incident.len(),
+                    cap + record.incident.capacity(),
+                )
+            });
+        let engine_vertices = self.engine.node_count();
+        LifecycleStorage {
+            engine_vertices,
+            retired_vertices: engine_vertices - self.nodes.len(),
+            catalog_nodes: self.nodes.len(),
+            catalog_node_capacity: self.nodes.capacity(),
+            incident_entries,
+            incident_capacity,
+        }
+    }
+
     /// Verifies every internal invariant; panics on violation. Test support.
     #[cfg(test)]
     pub(crate) fn validate(&self) {
@@ -936,6 +983,14 @@ mod tests {
                 graph.validate();
             }
             assert!(graph.engine_vertex_count() <= 2 * graph.node_count() + 1024);
+            let storage = graph.storage_stats();
+            assert_eq!(storage.catalog_nodes, graph.node_count());
+            assert_eq!(storage.incident_entries, 2 * graph.edge_count());
+            assert!(storage.incident_capacity >= storage.incident_entries);
+            assert_eq!(
+                storage.engine_vertices,
+                storage.catalog_nodes + storage.retired_vertices
+            );
             assert!(graph.connected(0, 1).unwrap());
             assert!(!graph.connected(0, 2).unwrap());
             assert_eq!(
