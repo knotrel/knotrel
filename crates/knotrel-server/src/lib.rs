@@ -15,6 +15,39 @@
 //! Embedded callers can build a router with [`router_with_config`] or provide an
 //! explicit lifecycle with [`router_with_lifecycle`].
 //!
+//! # Node and edge lifecycle
+//!
+//! Since v0.5.0, the server can keep inactive nodes and disabled edges in its
+//! topology and exclude them from connectivity, and can remove nodes
+//! permanently (operations `set_node_active`, `set_edge_enabled`,
+//! `remove_node`, `node_state` and `edge_state`; flagged imports and feeder
+//! events in source-managed mode). This topology lifecycle is unrelated to the
+//! process [`Lifecycle`] above. It is opt-in: the executable enables it with
+//! `KNOTREL_TOPOLOGY_LIFECYCLE=true`, embedded callers with
+//! [`ServerConfig::with_topology_lifecycle`]. It is supported only on the
+//! `compact-bfs` engine; enabling it with `ett` or `hdt` returns
+//! [`ConfigError`] (the executable exits before binding), and those engines
+//! remain available without lifecycle. With lifecycle off, behavior is
+//! unchanged and lifecycle operations are refused with
+//! `topology_lifecycle_disabled`.
+//!
+//! ```rust
+//! use knotrel_core::EngineConfig;
+//! use knotrel_server::ServerConfig;
+//!
+//! let address = "127.0.0.1:0".parse()?;
+//! let config = ServerConfig::new(address, EngineConfig::CompactBfs, 32)?
+//!     .with_topology_lifecycle(true)?;
+//! assert!(config.topology_lifecycle());
+//!
+//! let ett = ServerConfig::new(address, EngineConfig::EulerTour, 32)?;
+//! assert!(ett.with_topology_lifecycle(true).is_err());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! See the [lifecycle contract](https://github.com/knotrel/knotrel/blob/main/docs/topology-lifecycle.md)
+//! for semantics, costs and memory limits.
+//!
 //! See the [HTTP API documentation](https://github.com/knotrel/knotrel/blob/main/docs/http-api.md)
 //! for wire formats and batch semantics. That page tracks development on `main`;
 //! use the corresponding release tag when consulting a published version.
