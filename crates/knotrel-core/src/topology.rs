@@ -39,10 +39,11 @@
 //! A retired slot keeps no adjacency allocation (it is released on removal),
 //! only its engine ID-map entry and an empty vector header. When retired
 //! slots exceed `max(⌊V / 4⌋, 1024)`, the engine is rebuilt from the catalog.
-//! A rebuild performs `O(V + E_eff)` sequential engine insertions; more than
-//! `max(⌊V / 4⌋, 1024)` removals separate two rebuilds, so the amortized cost
-//! is `O(1 + E_eff / V)` engine insertions per removal (with a constant about
-//! four times that of a `max(V, 1024)` threshold), and engine vertices stay at
+//! A rebuild costs `O(V log V + E)` (an ID sort plus one scan of the active
+//! nodes' incidences, with `V + E_eff` sequential engine insertions); more
+//! than `max(⌊V / 4⌋, 1024)` removals separate two rebuilds, so the amortized
+//! cost is `O(log V + E / V)` per removal (with a constant about four times
+//! that of a `max(V, 1024)` threshold), and engine vertices stay at
 //! most `V + max(⌊V / 4⌋, 1024)`, where `V` is the registered node count.
 
 use crate::{ConnectivityGraph, EngineConfig, GraphError, GraphLimits, NodeId};
@@ -378,8 +379,8 @@ impl LifecycleGraph {
     /// are accepted once; edges compare as unordered pairs.
     ///
     /// The catalog is assembled first and incident vectors are sorted once,
-    /// `O((V + E) log E)`; the engine then receives the active nodes'
-    /// effective edges through [`ConnectivityGraph::try_from_edges`].
+    /// `O((V + E) log E)`; the engine is then built in one pass from the
+    /// catalog with exactly the effective edges, `O(V log V + E)`.
     ///
     /// # Errors
     ///
@@ -647,14 +648,22 @@ impl LifecycleGraph {
     ///
     /// Other engines, and catalogs too large for 32-bit indices, use the
     /// incremental [`Self::build_engine_incremental`]. `order` is used only
-    /// by that path (as the vertex insertion order).
+    /// by that path, as the vertex insertion order when it lists every catalog
+    /// node; otherwise (compaction passes an empty slice) the catalog's keys
+    /// are used, so no registered node is ever left out of the engine.
     fn build_engine(
         engine: EngineConfig,
         catalog: &mut FxHashMap<NodeId, NodeRecord>,
         order: &[NodeId],
     ) -> (ConnectivityGraph, usize) {
         if engine != EngineConfig::CompactBfs || u32::try_from(catalog.len()).is_err() {
-            return Self::build_engine_incremental(engine, catalog, order);
+            // `order` may be empty (compaction passes none): every catalog node
+            // must still become a vertex, so fall back to the catalog's keys.
+            if order.len() == catalog.len() {
+                return Self::build_engine_incremental(engine, catalog, order);
+            }
+            let keys: Vec<NodeId> = catalog.keys().copied().collect();
+            return Self::build_engine_incremental(engine, catalog, &keys);
         }
         let mut ids: Vec<NodeId> = catalog.keys().copied().collect();
         ids.sort_unstable();
@@ -1062,12 +1071,7 @@ impl LifecycleGraph {
         if retired <= retired_allowance(self.nodes.len()) {
             return;
         }
-        let order: Vec<NodeId> = if self.engine.engine() == EngineConfig::CompactBfs {
-            Vec::new()
-        } else {
-            self.nodes.keys().copied().collect()
-        };
-        let (engine, effective) = Self::build_engine(self.engine.engine(), &mut self.nodes, &order);
+        let (engine, effective) = Self::build_engine(self.engine.engine(), &mut self.nodes, &[]);
         debug_assert_eq!(effective, self.effective_edges);
         self.engine = engine;
     }
