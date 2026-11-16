@@ -354,8 +354,11 @@ impl LifecycleGraph {
     /// Edges are appended without a per-edge duplicate lookup: incident lists
     /// are sorted once and adjacent repeats are dropped (a repeated edge with a
     /// different flag returns `None`). Without a node limit each endpoint costs
-    /// one expected O(1) catalog probe. `O(V + E log E)` time overall, the same
-    /// bound as the exact path, with fewer hash probes per edge.
+    /// two expected O(1) catalog probes (counting pass and fill pass; two more
+    /// per edge with a node limit) instead of the exact path's duplicate-map
+    /// lookup and insertion plus endpoint probes. `O(V + E log E)` time
+    /// overall, the same bound as the exact path. An input that fails is
+    /// detected here first, so error paths pay up to about twice the work.
     fn catalog_fast(
         limits: GraphLimits,
         nodes: &[NodeSpec],
@@ -398,8 +401,9 @@ impl LifecycleGraph {
                     return None;
                 }
             }
-            // Count degrees first so each incident vector is allocated once,
-            // exactly sized, with no growth or shrink reallocation.
+            // Count degrees first so each incident vector is allocated once:
+            // exactly sized for duplicate-free input (repeated entries are
+            // counted, so such vectors are shrunk by `finish`).
             for endpoint in [spec.source, spec.target] {
                 let record = catalog.entry(endpoint).or_insert_with(|| {
                     order.push(endpoint);
@@ -1073,16 +1077,16 @@ impl LifecycleGraph {
 mod tests {
     use super::*;
 
-    /// The fast catalog path agrees with the exact path: identical catalogs
-    /// and registration order whenever it succeeds, and `None` on every input
-    /// the exact path rejects. Inputs mix duplicates (same and reversed
-    /// endpoints, same and different flags), self-loops and tight limits.
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn node_record_degree_hint_fits_in_padding() {
         assert_eq!(size_of::<NodeRecord>(), 32);
     }
 
+    /// The fast catalog path agrees with the exact path: identical catalogs
+    /// and registration order whenever it succeeds, and `None` on every input
+    /// the exact path rejects. Inputs mix duplicates (same and reversed
+    /// endpoints, same and different flags), self-loops and tight limits.
     #[test]
     fn fast_catalog_matches_exact_catalog() {
         let mut seed = 0x51_u64;
@@ -1094,6 +1098,7 @@ mod tests {
         };
         let mut fast_successes = 0;
         let mut exact_errors = 0;
+        let mut fallback_successes = 0;
         for case in 0..3_000 {
             let n = 2 + next(60);
             let nodes: Vec<NodeSpec> = (0..next(10))
@@ -1144,12 +1149,17 @@ mod tests {
                     }
                 }
                 (Err(_), None) => exact_errors += 1,
-                (Ok(_), None) => {}
+                (Ok(_), None) => fallback_successes += 1,
                 (Err(error), Some(_)) => panic!("case {case}: fast path accepted {error:?}"),
             }
         }
         assert!(fast_successes > 600, "{fast_successes}");
         assert!(exact_errors > 300, "{exact_errors}");
+        // Only an edge-limit pre-check with duplicates may defer a success.
+        assert!(
+            fallback_successes < fast_successes / 10,
+            "{fallback_successes}"
+        );
     }
 
     /// Random mixed operations, including high-degree hubs, keep every
