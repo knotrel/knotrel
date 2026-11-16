@@ -20,8 +20,10 @@ asks: *are device A and device B still connected, through any path?* Knotrel
 keeps the graph current and answers each question exactly, without
 approximation or cached staleness.
 
-**Status:** v0.3.0 is the latest published preview on crates.io and the
-[GitHub Releases page](https://github.com/knotrel/knotrel/releases).
+**Status:** v0.4.0 is the latest published preview on crates.io and the
+[GitHub Releases page](https://github.com/knotrel/knotrel/releases). The `main`
+branch carries the **unreleased v0.5.0 candidate** (opt-in node and edge
+lifecycle); see the [draft release notes](docs/releases/v0.5.0-release-notes.md).
 
 ## When Knotrel helps
 
@@ -31,6 +33,9 @@ approximation or cached staleness.
   recomputation.
 - You want an embeddable synchronous Rust library or a small local HTTP
   service with bounded limits.
+- *(Unreleased v0.5.0 candidate)* Devices or links go out of service and come
+  back, or are retired, and queries must ignore them meanwhile: see
+  [node and edge lifecycle](#node-and-edge-lifecycle-unreleased).
 
 ### When something simpler may suffice
 
@@ -81,7 +86,7 @@ checks which customers keep a path to the source.
 
 ```toml
 [dependencies]
-knotrel-core = "0.3.0"
+knotrel-core = "0.4.0"
 ```
 
 ```rust
@@ -155,6 +160,16 @@ are not per-request latency guarantees. Only `compact-bfs` and its workspace
 variant were measured in v0.3.0 release qualification. See
 [startup engine configuration](docs/architecture/0007-startup-engine-configuration.md).
 
+### Node and edge lifecycle (unreleased)
+
+The unreleased v0.5.0 candidate adds reversible node activation, reversible
+edge enabling and permanent node removal. It is **opt-in**
+(`KNOTREL_TOPOLOGY_LIFECYCLE=true`, or `knotrel_core::LifecycleGraph`) and supported
+**only on `compact-bfs`**: the server refuses to start with lifecycle on `ett`
+or `hdt`, which remain available without lifecycle. With lifecycle off,
+behavior is unchanged from v0.4.0. Semantics, costs and memory limits are in
+the [lifecycle contract](docs/topology-lifecycle.md).
+
 ## Performance evidence
 
 **[knotrel-benchmarks](https://github.com/knotrel/knotrel-benchmarks)** holds
@@ -166,7 +181,11 @@ release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0) for users, with
 their limits. The authoritative statements are in the release notes for
 [v0.4.0](docs/releases/v0.4.0-release-notes.md#regression-qualification-against-v030)
 and [v0.3.0](docs/releases/v0.3.0-release-notes.md#performance-qualification).
-No speedup is claimed for either release.
+No speedup is claimed for either release. The v0.5.0 candidate's qualification
+did not pass unconditionally: its regressions and unresolved or inconclusive
+results are accepted by maintainer waivers for v0.5.0 only, as recorded in the
+[draft release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification);
+no speedup is claimed.
 
 ## Installing a release
 
@@ -176,28 +195,28 @@ the SHA-256 checksum before running.
 
 ```sh
 # Verify checksum on Linux:
-sha256sum -c knotrel-server-v0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c knotrel-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 # Or on macOS:
-# shasum -a 256 -c knotrel-server-v0.3.0-aarch64-apple-darwin.tar.gz.sha256
+# shasum -a 256 -c knotrel-server-v0.4.0-aarch64-apple-darwin.tar.gz.sha256
 
 # Extract and start on Linux (x86_64):
-tar -xzf knotrel-server-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
-cd knotrel-server-v0.3.0-x86_64-unknown-linux-gnu
+tar -xzf knotrel-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz
+cd knotrel-server-v0.4.0-x86_64-unknown-linux-gnu
 ./knotrel-server
 
 # Or on macOS (Apple Silicon):
-# tar -xzf knotrel-server-v0.3.0-aarch64-apple-darwin.tar.gz
-# cd knotrel-server-v0.3.0-aarch64-apple-darwin
+# tar -xzf knotrel-server-v0.4.0-aarch64-apple-darwin.tar.gz
+# cd knotrel-server-v0.4.0-aarch64-apple-darwin
 # ./knotrel-server
 ```
 
 On Windows (PowerShell):
 ```powershell
 # Compare the displayed hash with the downloaded .sha256 file before extracting.
-Get-FileHash -Algorithm SHA256 knotrel-server-v0.3.0-x86_64-pc-windows-msvc.zip
-Get-Content knotrel-server-v0.3.0-x86_64-pc-windows-msvc.zip.sha256
-Expand-Archive knotrel-server-v0.3.0-x86_64-pc-windows-msvc.zip -DestinationPath .
-cd knotrel-server-v0.3.0-x86_64-pc-windows-msvc
+Get-FileHash -Algorithm SHA256 knotrel-server-v0.4.0-x86_64-pc-windows-msvc.zip
+Get-Content knotrel-server-v0.4.0-x86_64-pc-windows-msvc.zip.sha256
+Expand-Archive knotrel-server-v0.4.0-x86_64-pc-windows-msvc.zip -DestinationPath .
+cd knotrel-server-v0.4.0-x86_64-pc-windows-msvc
 .\knotrel-server.exe
 ```
 
@@ -216,7 +235,7 @@ startup.
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges (registered edges with lifecycle support); zero allowed; `unlimited` opts out |
-| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | *Unreleased v0.5.0 candidate.* `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
 | `RUST_LOG` | `info` | Logging filter |
 
 For example, to opt into the experimental forest:
@@ -255,7 +274,7 @@ Further timeouts and size limits are listed under
 
 - [HTTP API](docs/http-api.md) and [OpenAPI specification](docs/openapi.yaml): operations, batch semantics, limits and errors.
 - [Power-grid tutorial](docs/tutorials/power-grid.md): runnable topology demonstration of connectivity loss and restoration over the HTTP API.
-- [Node and edge lifecycle contract](docs/topology-lifecycle.md): opt-in activation, enabling and removal semantics, costs and limits.
+- [Node and edge lifecycle contract](docs/topology-lifecycle.md) (unreleased v0.5.0 candidate): opt-in activation, enabling and removal semantics, costs and limits.
 - [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
