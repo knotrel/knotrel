@@ -352,6 +352,77 @@ async fn shutdown_gate_boundary_explicit_admission_and_rejection() {
     assert_eq!(running.finished().await, ShutdownOutcome::Drained);
 }
 
+/// Headers of a mutation that asks for `100 Continue` before sending its body.
+#[cfg(feature = "test-support")]
+fn expect_continue_head() -> String {
+    format!(
+        "POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: {}\r\nexpect: 100-continue\r\n\r\n",
+        BODY.len()
+    )
+}
+
+/// The process-level drain test observes admission through `100 Continue`.
+/// This pins the ordering it relies on in the real HTTP stack: the gate has
+/// already admitted the request when the interim response reaches the client,
+/// and a request reaching the gate while draining gets 503 without any
+/// `100 Continue`.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn continue_is_sent_only_after_shutdown_gate_admits_the_request() {
+    let mut running = Running::start(config()).await;
+    let (gate_tx, mut gate_rx) = tokio::sync::mpsc::unbounded_channel();
+    running.lifecycle.on_gate(move |path, decision| {
+        let _ = gate_tx.send((path.to_string(), decision));
+    });
+
+    let mut admitted = running.connect().await;
+    admitted
+        .write_all(expect_continue_head().as_bytes())
+        .await
+        .unwrap();
+    let interim = read_reply(&mut admitted)
+        .await
+        .expect("an interim response");
+    assert_eq!(interim.status, 100);
+    // The hook runs inside the gate before the request continues, so its
+    // decision is already queued when the interim response arrives.
+    assert_eq!(
+        gate_rx
+            .try_recv()
+            .expect("gate decided before 100 Continue"),
+        ("/v1/operations".to_string(), GateDecision::Admitted)
+    );
+
+    running.shutdown();
+    wait_for_phase(&running.lifecycle, Phase::Draining).await;
+
+    let mut late = running.connect().await;
+    late.write_all(expect_continue_head().as_bytes())
+        .await
+        .unwrap();
+    let refused = read_reply(&mut late).await.expect("a response");
+    assert_eq!(refused.status, 503, "no 100 Continue while draining");
+    assert!(refused.closes());
+    assert_eq!(
+        refused.body,
+        r#"{"result":"error","code":"shutting_down","message":"server is shutting down; retry against another instance"}"#
+    );
+    assert_eq!(
+        gate_rx.recv().await.expect("gate decision"),
+        (
+            "/v1/operations".to_string(),
+            GateDecision::RejectedShuttingDown
+        )
+    );
+    drop(late);
+
+    admitted.write_all(BODY.as_bytes()).await.unwrap();
+    let finished = read_reply(&mut admitted).await.expect("a response");
+    assert_eq!(finished.status, 200);
+    assert_eq!(finished.body, r#"{"result":"changed","changed":true}"#);
+    assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+}
+
 #[tokio::test]
 async fn idle_keep_alive_connections_are_closed_when_draining_starts() {
     let mut running = Running::start(config()).await;
