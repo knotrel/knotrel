@@ -8,10 +8,18 @@ release qualification bundles. The release notes remain the authoritative
 statement for each release.
 
 **Short version:**
-- **v0.5.0 (unreleased candidate) is not demonstrated to be faster than
+- **v0.6.0 (unreleased candidate, not accepted) is not demonstrated to be
+  faster in general than v0.5.0.** With lifecycle off: no regression, two
+  unresolved and two disclosed inconclusive results. With lifecycle on:
+  imports use much less memory (HTTP import peak −61% to −76%), and core
+  flagged imports and fresh-ID churn are confirmed faster (−5.6% to −13.6%).
+  One flagged HTTP import regressed (+13.4%), and earlier lifecycle failures
+  recur. Maintainer decisions are pending. See
+  [v0.6.0 compared with v0.5.0](#v060-candidate-compared-with-v050).
+- **v0.5.0 (released 2026-11-16) is not demonstrated to be faster than
   v0.4.0.** With lifecycle off, no workload regressed; two results are
   unresolved and accepted by maintainer waivers. See
-  [v0.5.0 compared with v0.4.0](#v050-candidate-compared-with-v040).
+  [v0.5.0 compared with v0.4.0](#v050-compared-with-v040).
 - **The opt-in v0.5.0 lifecycle has measured costs,** including two flagged
   import regressions and heap growth under churn with fresh node IDs, accepted
   by maintainer waivers for v0.5.0 only. See
@@ -51,25 +59,27 @@ statement for each release.
 
   Other hosts, engines, configurations and CI-built binaries were not
   measured.
-- **v0.5.0 is a candidate.** Its column describes the measured candidate
-  `dcd8ccc`; the page will be revised if the released commit's executed code
-  differs.
+- **v0.5.0** was measured on candidate `dcd8ccc`; its release builds contain
+  the same executed code (release notes).
+- **v0.6.0 is a candidate.** Its column describes the measured candidate
+  `48bc82f`. The page will be revised if the released commit's executed code
+  differs or the maintainer's decisions change its status.
 
 ## Release-to-release results
 
 Primary metric per cell, median paired change [interval] and outcome:
 
-| Workload | v0.3.0 vs v0.2.0 | v0.4.0 vs v0.3.0 | v0.5.0 (candidate) vs v0.4.0 |
-|---|---|---|---|
-| Core sparse traversal, `compact-bfs` | +0.10% [−21.95%, +6.14%] PASS | +8.71% [−2.34%, +31.89%] **UNRESOLVED**¹ | −7.23% [−33.47%, +2.83%] PASS |
-| Core sparse traversal, `compact-workspace` | −2.26% [−11.13%, +9.41%] PASS | **+28.90% [+15.44%, +35.73%] REGRESSION**² | −1.94% [−9.87%, +6.00%] PASS⁴ |
-| Core sustained churn, `compact-bfs` | −0.01% [−1.76%, +8.01%] PASS | +1.08% [−1.72%, +5.18%] PASS | −1.02% [−3.67%, +0.64%] PASS |
-| Core sustained churn, `compact-workspace` | −0.46% [−5.30%, +0.76%] PASS | +0.57% [−0.40%, +2.52%] PASS | +0.19% [−1.38%, +2.28%] PASS |
-| HTTP batch, size 1 | −0.71% [−7.37%, +7.69%] PASS | +5.89% [−3.34%, +8.52%] **UNRESOLVED**³ | +0.04% [−5.57%, +5.32%] **UNRESOLVED**⁵ |
-| HTTP batch, size 8 | −1.42% [−15.63%, +12.09%] INCONCLUSIVE | +1.47% [−7.64%, +14.12%] INCONCLUSIVE | −0.42% [−5.05%, +8.17%] PASS |
-| HTTP batch, size 64 | −0.83% [−7.56%, +5.08%] PASS | +1.10% [−3.83%, +9.68%] PASS | −2.11% [−4.01%, +1.96%] **UNRESOLVED**⁶ |
-| HTTP batch, size 256 | +0.08% [−1.55%, +6.98%] PASS | −2.29% [−8.98%, +4.93%] PASS | −1.72% [−3.13%, +6.84%] PASS |
-| HTTP lifecycle, time to ready | +8.02% [−11.46%, +21.97%] INCONCLUSIVE | −12.86% [−21.83%, +23.21%] INCONCLUSIVE | +5.14% [−17.35%, +22.13%] INCONCLUSIVE |
+| Workload | v0.3.0 vs v0.2.0 | v0.4.0 vs v0.3.0 | v0.5.0 vs v0.4.0 | v0.6.0 (candidate) vs v0.5.0 |
+|---|---|---|---|---|
+| Core sparse traversal, `compact-bfs` | +0.10% [−21.95%, +6.14%] PASS | +8.71% [−2.34%, +31.89%] **UNRESOLVED**¹ | −7.23% [−33.47%, +2.83%] PASS | −0.95% [−3.78%, +2.92%] PASS |
+| Core sparse traversal, `compact-workspace` | −2.26% [−11.13%, +9.41%] PASS | **+28.90% [+15.44%, +35.73%] REGRESSION**² | −1.94% [−9.87%, +6.00%] PASS⁴ | +6.20% [−1.72%, +19.43%] INCONCLUSIVE, disclosed |
+| Core sustained churn, `compact-bfs` | −0.01% [−1.76%, +8.01%] PASS | +1.08% [−1.72%, +5.18%] PASS | −1.02% [−3.67%, +0.64%] PASS | −0.34% [−1.17%, +0.09%] PASS |
+| Core sustained churn, `compact-workspace` | −0.46% [−5.30%, +0.76%] PASS | +0.57% [−0.40%, +2.52%] PASS | +0.19% [−1.38%, +2.28%] PASS | −0.27% [−4.75%, +1.71%] PASS |
+| HTTP batch, size 1 | −0.71% [−7.37%, +7.69%] PASS | +5.89% [−3.34%, +8.52%] **UNRESOLVED**³ | +0.04% [−5.57%, +5.32%] **UNRESOLVED**⁵ | +0.30% [−5.15%, +4.15%] **UNRESOLVED**⁷ |
+| HTTP batch, size 8 | −1.42% [−15.63%, +12.09%] INCONCLUSIVE | +1.47% [−7.64%, +14.12%] INCONCLUSIVE | −0.42% [−5.05%, +8.17%] PASS | +0.40% [−9.43%, +2.05%] PASS |
+| HTTP batch, size 64 | −0.83% [−7.56%, +5.08%] PASS | +1.10% [−3.83%, +9.68%] PASS | −2.11% [−4.01%, +1.96%] **UNRESOLVED**⁶ | −0.73% [−7.81%, +6.96%] PASS |
+| HTTP batch, size 256 | +0.08% [−1.55%, +6.98%] PASS | −2.29% [−8.98%, +4.93%] PASS | −1.72% [−3.13%, +6.84%] PASS | −0.93% [−2.75%, +0.60%] **UNRESOLVED**⁸ |
+| HTTP lifecycle, time to ready | +8.02% [−11.46%, +21.97%] INCONCLUSIVE | −12.86% [−21.83%, +23.21%] INCONCLUSIVE | +5.14% [−17.35%, +22.13%] INCONCLUSIVE | +7.18% [−18.30%, +24.15%] INCONCLUSIVE, disclosed |
 
 ¹ The primary median is within tolerance, but the connectivity-query p99 is
 unresolved: +2.02% [−4.97%, +28.53%].
@@ -89,13 +99,19 @@ v0.3.0 was recovered: releases cannot be chained (see above).
 ⁶ The primary metric passes. The sampled maximum RSS is unresolved: +0.11%
 [−3.50%, +25.14%] against 20% (6.94 → 7.03 MB).
 
+⁷ The primary metric passes. The request p99 is unresolved: −2.29% [−26.62%,
++52.03%] (120.4 → 131.2 µs).
+
+⁸ The primary metric passes. The sampled maximum RSS is unresolved: +1.15%
+[+0.23%, +22.16%] against 20% (6.82 → 6.96 MB).
+
 **The decision rules differ between the columns:**
 - **v0.3.0:** classified only the primary metric. A p99 or memory metric could
   block only by proving a regression.
 - **v0.4.0:** requires every gated p99 and memory metric to PASS as well. That
   is why two v0.4.0 cells are UNRESOLVED even though their primary metric
   median is within tolerance.
-- **v0.5.0:** uses the v0.4.0 design and rules on the same nine workloads.
+- **v0.5.0 and v0.6.0:** use the v0.4.0 design and rules on the same nine workloads.
 
 Outcomes in the v0.3.0 column are therefore less strict than in the other
 two.
@@ -110,7 +126,44 @@ two.
   (`556683c`), with lifecycle disabled. The `main` commits checked since then
   contain the same executed code in release builds.
 
-### v0.5.0 (candidate) compared with v0.4.0
+### v0.6.0 (candidate) compared with v0.5.0
+
+Candidate `48bc82f` against published v0.5.0 (`51e3b4d`), 2026-11-16. Full
+report: `results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md` in
+knotrel-benchmarks. No maintainer decision has been taken yet; nothing below
+is accepted.
+
+**Lifecycle off** (table above): 5 PASS, 2 INCONCLUSIVE (disclosed),
+2 UNRESOLVED, no REGRESSION.
+
+**Lifecycle on, release to release** (new in v0.6.0; median change
+[interval], 10% tolerance):
+
+| Workload | v0.5.0 → v0.6.0 | Outcome |
+|---|---|---|
+| Core flagged import, 100k nodes, 20% inactive / 10% disabled | 15.60 → 13.53 ms, −13.6% [−14.9%, −12.0%] | PASS, improved |
+| Core flagged import, 100k, 60/30 | −0.3% [−3.9%, +1.9%] | PASS |
+| Core flagged import, 10k sparse / hub | −11.7% [−15.4%, −8.2%] / −5.6% [−10.6%, −4.1%] | PASS, improved |
+| HTTP import, 100k, 20/10 | +0.7% [−0.3%, +1.7%] | PASS |
+| HTTP import, 100k, 60/30 | 25.13 → 28.48 ms, **+13.4% [+12.6%, +14.0%]** | **REGRESSION** |
+| HTTP import, 10k, 20/10 | +7.7% [+6.1%, +8.7%] | PASS |
+| Fresh-ID churn, 100k sparse / hub | −5.8% [−7.3%, −3.2%] / −5.7% [−6.7%, −3.3%] | PASS, improved |
+| Same-ID and toggle churn, 100k | −3.4% / +0.6% | PASS |
+| HTTP import peak live heap, 100k (create 20/10, 60/30; replace) | 111 / 129 / 130 → 33 / 31 / 50 MiB | PASS (−61% to −76%) |
+| Fresh-churn heap max / compaction peak, 100k sparse | 37.3 / 49.2 → 33.5 / 40.7 MiB | PASS |
+
+**Recurring lifecycle failures** (cost against references, v0.5.0 rules):
+- the import with 60% inactive nodes is still a REGRESSION (+420%);
+- heap growth under fresh-ID churn still FAILs its check in three cells;
+- metrics overhead on lifecycle batches is still INCONCLUSIVE.
+
+**Contention:** no regression against v0.5.0 on the cells that measured what
+they declared. With read-heavy work, the single graph lock dominates latency
+from four clients on, and throughput does not grow with clients. v0.7.0
+addresses this. Feeder catch-up overlapping queries was not measured at 100k
+nodes (tooling defect, disclosed in the report).
+
+### v0.5.0 compared with v0.4.0
 
 | Outcome | Cells |
 |---|---|
@@ -226,7 +279,17 @@ qualification.**
 
 ## What this means for you
 
-**v0.5.0 (unreleased candidate):**
+**v0.6.0 (unreleased candidate; maintainer decisions pending):**
+
+| If you… | What the evidence supports |
+|---|---|
+| Keep lifecycle off (the default) | No workload regressed against v0.5.0. Startup readiness and `compact-workspace` traversal are inconclusive; the size-1 batch p99 and the size-256 sampled RSS are not bounded at their tolerances |
+| Enable lifecycle and import large graphs over HTTP | Peak import memory is much lower than in v0.5.0 (about the body, then the request plus the new graph, beside the old graph). Imports dominated by inactive entries take about 13% longer than in v0.5.0 |
+| Remove nodes with fresh IDs under lifecycle | About 6% faster than v0.5.0, with lower heap peaks and shorter compaction pauses (about 18 ms at 100k nodes on the measured host). Heap still grows between compactions |
+| Run many concurrent read-heavy clients | Throughput does not grow with clients: every query waits for the single graph lock |
+| Expect v0.6.0 to be faster overall | Not supported by the evidence |
+
+**v0.5.0:**
 
 | If you… | What the evidence supports |
 |---|---|
@@ -247,7 +310,9 @@ qualification.**
 
 ## Sources
 
-- **v0.5.0 (candidate):** [draft release notes](releases/v0.5.0-release-notes.md#performance-qualification)
+- **v0.6.0 (candidate):** [draft release notes](releases/v0.6.0-release-notes.md#performance-qualification)
+  and knotrel-benchmarks `results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md`.
+- **v0.5.0:** [release notes](releases/v0.5.0-release-notes.md#performance-qualification)
   and [knotrel-benchmarks `results/lifecycle-qualification-v0.5.0`](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/lifecycle-qualification-v0.5.0/README.md)
   (protocol, run reports, experiment A on `dcd8ccc` and the maintainer
   decision). Its raw evidence is kept in a private repository; see that

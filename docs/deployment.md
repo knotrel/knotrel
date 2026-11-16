@@ -30,12 +30,14 @@ own. Configuration is read once at startup; changing it requires a restart.
     keeps a catalog of the registered topology in addition to the engine.
     Structurally this is about twice the plain engine's storage for an
     all-active graph; that is an estimate, and measured values are in the
-    v0.5.0 qualification evidence. Engine compaction (after many removals)
-    and imports need transient memory beyond the steady state: on candidate
-    `a1d9577` with 100,000 nodes, compaction peaked about 32% above the
-    largest steady value, and a 100,000-node HTTP import peaked at 111-130 MiB
-    of live heap for a final graph of about 24 MiB. Process RSS has no hard
-    bound (allocator retention). Size `--memory` accordingly. With `false`
+    v0.6.0 qualification evidence. Engine compaction (after many removals)
+    and imports need transient memory beyond the steady state. On candidate
+    `48bc82f` with 100,000 nodes, compaction peaked at 40.7 MiB of net live
+    heap against a 33.5 MiB steady maximum. A 100,000-node HTTP import peaked
+    at 31–33 MiB (create) and 50 MiB (replace, old graph still live) for a
+    final graph of about 23 MiB; v0.5.0 peaked at 111–130 MiB. Size memory
+    for `old graph + import body + new graph`. Process RSS has no hard bound
+    (allocator retention). Size `--memory` accordingly. With `false`
     no catalog is allocated.
   - There is **no durable graph persistence**. The graph, generation,
     revision, source frontier and deduplication history exist only in process

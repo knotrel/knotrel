@@ -82,12 +82,12 @@ Checks reflect verified implementation and acceptance gates. From v0.6.0 on, eve
 
 [Design and implementation plan](docs/superpowers/plans/2026-11-16-v0.6.0-lifecycle-efficiency.md). Statuses: see [v0.6.0](#v060--lifecycle-efficiency--measured-concurrency).
 
-- [ ] **0.6.1** Baseline and resource model
-- [ ] **0.6.2** Lifecycle and import efficiency
-- [ ] **0.6.3** Contention and batch evaluation (M5 measurement, deferred M3.6)
+- [x] **0.6.1** Baseline and resource model — Implemented
+- [x] **0.6.2** Lifecycle and import efficiency — Implemented, Reviewed, Qualified (not passed unconditionally; decisions pending)
+- [x] **0.6.3** Contention and batch evaluation (M5 measurement, deferred M3.6) — measured; feeder catch-up at 100k not covered (tooling defect)
 - [x] **0.6.4** Evidence-driven execution improvements — decision recorded: no synchronization change in v0.6.0 (maintainer decision B, 2026-11-16); M5 implementation moves to v0.7.0
-- [ ] **0.6.5** Final qualification and operational validation
-- [ ] **0.6.6** v1.0 readiness assessment
+- [x] **0.6.5** Final qualification and operational validation — Qualified on `48bc82f`; release gates (CI, dry run, tags) open; not accepted
+- [x] **0.6.6** v1.0 readiness assessment — draft for maintainer review
 
 ### v0.7.0 — Measured Concurrency (planned)
 
@@ -573,7 +573,7 @@ Tasks and acceptance as listed in [M6](#m6--integration-aware-observability-p1--
 
 ### 0.6.1 — Baseline and resource model
 
-- [ ] Published v0.5.0 identities recorded separately for product and benchmarks; resource model with live state, container capacity, temporary peaks, allocator retention and RSS kept apart ([design §4](docs/superpowers/plans/2026-11-16-v0.6.0-lifecycle-efficiency.md#4-resource-model-061)); qualification matrix frozen before timed runs.
+- [x] Published v0.5.0 identities recorded separately for product and benchmarks; resource model with live state, container capacity, temporary peaks, allocator retention and RSS kept apart ([design §4](docs/superpowers/plans/2026-11-16-v0.6.0-lifecycle-efficiency.md#4-resource-model-061)); qualification matrix frozen before timed runs.
 
 ### 0.6.2 — Lifecycle and import efficiency (at most three candidates)
 
@@ -587,7 +587,8 @@ Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/READM
 
 ### 0.6.3 — Contention and batch evaluation (M5, M3.6)
 
-- [ ] Bounded matrix (lifecycle off/on, read-heavy and mixed, batch 1/8/64, 1–64 clients, imports and feeder catch-up overlapping queries, 10k/100k nodes) measured with client and server-side phases; decision under the predeclared rule.
+- [x] Bounded matrix (lifecycle off/on, read-heavy and mixed, batch 1/8/64, 1–64 clients, imports and feeder catch-up overlapping queries, 10k/100k nodes) measured with client and server-side phases; decision under the predeclared rule.
+  - Final (M_desc/M_reg on `48bc82f`): rule (i) holds in 32 of 32 saturated read-heavy configurations; 5 of 6 regression cells against v0.5.0 PASS, the sixth did not measure its declared feeder catch-up. **Coverage defect:** at 100k nodes the probe's feeder catch-up and `mixed50` link toggles exceeded the server's default node limit, so catch-up overlapping queries was not measured at 100k (knotrel-benchmarks comparison §7).
   - Diagnostic D3 (2026-11-16): rule (i) triggered — at 4 or more clients, read-heavy batches spend 61–94% of client latency waiting for the graph lock, and throughput does not grow with clients. The final M_desc/M_reg results are recorded with the qualification. This evaluation does **not** certify that the current model meets any concurrency objective.
 
 ### 0.6.4 — Evidence-driven execution improvements
@@ -596,11 +597,18 @@ Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/READM
 
 ### 0.6.5 — Final qualification and operational validation
 
-- [ ] Frozen candidate; experiments A, B/C, R, Rmem, M_desc, M_reg; versioned diff against published v0.5.0 in knotrel-benchmarks; deployment and rebuild smoke test; tag mapping prepared (no tags created).
+- [x] Frozen candidate `48bc82f` (tooling `54dcfc5`, freeze `7635846`); experiments A, B/C, R, Rmem, M_desc, M_reg run 2026-11-16 in about 60 minutes on AC power; [versioned diff](https://github.com/knotrel/knotrel-benchmarks/blob/feature/v0.6.0-qualification/results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md) (knotrel-benchmarks report commit `ad0ebd0a`, branch not yet pushed); release-binary smoke tests passed for both measured servers; tag mapping prepared in the release notes (no tags created).
+  - Outcome, not passed unconditionally:
+    - A (lifecycle off): 5 PASS, 2 INCONCLUSIVE_DISCLOSED, 2 UNRESOLVED.
+    - R (lifecycle on): 10 PASS (6 improved), 1 REGRESSION (HTTP import 60/30, +13.4%).
+    - Rmem: 10 of 10 PASS.
+    - B1–B4: 59 PASS, 1 REGRESSION (`import-high`), 1 INCONCLUSIVE (`metrics-ops`).
+    - C3: 3 FAIL (fresh-ID churn); C4: 8 RSS disclosures.
+    - No waiver applied; decisions listed in the [release notes](docs/releases/v0.6.0-release-notes.md#outstanding-decisions).
 
 ### 0.6.6 — v1.0 readiness assessment
 
-- [ ] [Assessment](docs/releases/v1.0-readiness.md) of the ten v1.0 criteria with gates for v1.0.0-rc; a v0.7.0 only for concrete gaps.
+- [x] [Assessment](docs/releases/v1.0-readiness.md) of the ten v1.0 criteria with gates for v1.0.0-rc; v0.7.0 planned for the measured concurrency gap.
 
 **Exit gate:** every candidate has a recorded retain/reject decision; every qualification cell is classified under the frozen rules, with failures reported as failures; release artifacts and the v1.0 assessment are ready for maintainer review. Acceptance and publication are maintainer decisions.
 
