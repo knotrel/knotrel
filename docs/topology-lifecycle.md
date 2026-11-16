@@ -96,9 +96,18 @@ registered topology and an inner engine. The inner engine is a
 `ConnectivityGraph` created **without limits** (limits are enforced on the
 catalog, so retired slots can never cause `NodeLimitExceeded`). Its vertices
 are **every registered node, whatever its flag, plus retired slots**; its
-edges are **exactly the effective edges**. All three engines (`compact-bfs`,
-experimental `ett` and `hdt`) are supported through the same facade. No engine
-state machine is duplicated and no engine deletion invariant is modified.
+edges are **exactly the effective edges**. No engine state machine is
+duplicated and no engine deletion invariant is modified.
+
+**Supported engines (v0.5.0).** Lifecycle support is available only with
+`compact-bfs`. Lifecycle support for the experimental `ett` and `hdt` engines
+is deferred: their resource behavior under lifecycle churn was not
+established well enough for this release (see decision 8). Every
+`LifecycleGraph` constructor returns `LifecycleError::UnsupportedEngine` for
+them before examining any input, and the server refuses to start with
+lifecycle support and either engine. No engine is ever substituted. The
+plain (non-lifecycle) `ett` and `hdt` engines, their APIs and their server
+configurations are unchanged.
 
 **Costs.** Let `d` be the registered degree of the node concerned, `d_eff` its
 effective degree, `U` the cost of one effective edge insertion or deletion in
@@ -145,13 +154,13 @@ effective graph in the engine. Structurally this is about twice the plain
 engine's storage for an all-active graph; this is an estimate, and measured
 values are in the v0.5.0 qualification evidence. Vectors and hash maps retain
 capacity after removals up to their peak size; incident lists shrink when
-they fall below a quarter of their capacity. The `ett` and `hdt` engines free
-an incidence set's storage when it becomes empty, and `hdt` releases an upper
-level's record of a vertex that becomes isolated there, reusing the slot. Under
-sustained churn `hdt` storage still grows until its level structure (spanning
-forest copies of promoted tree edges, `O(V log V)` in total) reaches a steady
-state; that growth also occurs without lifecycle mode. Hash tables under
-delete/insert churn may double once at more than half load.
+they fall below a quarter of their capacity. Hash tables under delete/insert
+churn may double once at more than half load. Engine compaction briefly holds
+the old and the new engine together; measured peaks are in the v0.5.0
+qualification evidence. (Independently of lifecycle support, the `ett` and
+`hdt` engines free an incidence set's storage when it becomes empty, and `hdt`
+releases an upper level's record of a vertex that becomes isolated there,
+reusing the slot.)
 
 ## 6. Rust API (`knotrel-core`)
 
@@ -168,11 +177,14 @@ pub enum LifecycleError {
     UnknownEdge { source: NodeId, target: NodeId },
     ConflictingNode { node: NodeId },
     ConflictingEdge { source: NodeId, target: NodeId },
+    UnsupportedEngine { engine: EngineConfig },
 }
 
 impl LifecycleGraph {
-    pub fn new(engine: EngineConfig) -> Self;
-    pub fn with_limits(engine: EngineConfig, limits: GraphLimits) -> Self;
+    pub const fn supports_engine(engine: EngineConfig) -> bool; // compact-bfs only
+    pub fn new(engine: EngineConfig) -> Result<Self, LifecycleError>;
+    pub fn with_limits(engine: EngineConfig, limits: GraphLimits)
+        -> Result<Self, LifecycleError>;
     pub fn try_from_topology(engine, limits, nodes: &[NodeSpec], edges: &[EdgeSpec])
         -> Result<Self, LifecycleError>;
     pub fn add_node(&mut self, node) -> Result<bool, GraphError>;
@@ -194,8 +206,10 @@ impl LifecycleGraph {
 }
 ```
 
-`try_from_topology` registers `nodes`, then `edges` (creating missing
-endpoints active). Repeated entries with identical flags are accepted; a node
+`new`, `with_limits` and `try_from_topology` return
+`UnsupportedEngine { engine }` for `ett` and `hdt`; `try_from_topology` checks
+the engine before any entry. `try_from_topology` registers `nodes`, then
+`edges` (creating missing endpoints active). Repeated entries with identical flags are accepted; a node
 or edge repeated with a different flag returns `ConflictingNode` or
 `ConflictingEdge` (edges compare as unordered pairs). Self-loops and limits
 return `LifecycleError::Graph`.
@@ -204,7 +218,18 @@ return `LifecycleError::Graph`.
 
 `KNOTREL_TOPOLOGY_LIFECYCLE` is exactly `true` or `false` (default `false`),
 also `ServerConfig::with_topology_lifecycle`. With `false`, the server holds
-the plain engine as before and no catalog is allocated.
+the plain engine as before and no catalog is allocated; every engine and mode
+behaves as in v0.4.0.
+
+`true` requires `KNOTREL_ENGINE=compact-bfs` (the default). With `ett` or
+`hdt`, `ServerConfig::from_env` fails with "`KNOTREL_TOPOLOGY_LIFECYCLE`
+requires `KNOTREL_ENGINE=compact-bfs`; node and edge lifecycle support for
+`<engine>` is not available in this release", so the executable exits with
+status 1 before binding or serving. Embedded callers get the same
+`ConfigError` from `ServerConfig::with_topology_lifecycle(true)`, which
+returns `Result<ServerConfig, ConfigError>`; the engine is fixed by
+`ServerConfig::new`, so no router can be built with an unsupported
+combination.
 
 `GET /v1/info` adds `"topology_lifecycle": true` only when enabled.
 
@@ -355,3 +380,15 @@ No event can resurrect removed topology except a new in-order `add_node` or
    `topology_lifecycle_disabled` are fixed; feeder domain errors keep 422; the
    cost table separates worst-case, compaction spikes and amortized terms; the
    memory statement is an estimate pending measurement.
+8. **Lifecycle support limited to `compact-bfs` (owner decision B1,
+   2026-11-16).** The qualification of earlier candidates found, on `ett`
+   and `hdt` with lifecycle, removal regressions at high degree, heap growth
+   failures, and for `hdt` retained storage that kept growing through 120
+   cycles on one replayed path without an established practical steady state
+   (no leak was demonstrated; per-level arenas are bounded by code but no
+   practical bound for the whole process was established). Rather than
+   accept those costs, `ett` and `hdt` lifecycle support is deferred. The
+   rejection is explicit in the core constructors and at server
+   configuration, never a silent engine switch. Those earlier results remain
+   recorded for the candidates they measured; the exclusion does not turn
+   them into passes.

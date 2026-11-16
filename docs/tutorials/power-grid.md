@@ -235,7 +235,9 @@ for every series and label.
 Cutting connections one by one loses information: when the substation comes
 back, the application must remember which connections were in service.
 v0.5.0 adds **node and edge lifecycle** support, which keeps that state in
-Knotrel. It is opt-in; start a fresh, dedicated server with it enabled:
+Knotrel. It is opt-in and available with the default `compact-bfs` engine (the
+server refuses to start with lifecycle support on `ett` or `hdt`); start a
+fresh, dedicated server with it enabled:
 
 ```sh
 KNOTREL_MODE=standalone KNOTREL_TOPOLOGY_LIFECYCLE=true cargo run --release --locked -p knotrel-server
