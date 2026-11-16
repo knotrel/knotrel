@@ -905,6 +905,7 @@ Requests must include `Content-Type: application/json` and the mandatory `X-Knot
       "delivery_sequence": 1,
       "prev_delivery_sequence": 0,
       "source_position": "pos-01",
+      "prev_source_position": "pos-00",
       "op": "link",
       "source": "1",
       "target": "2"
@@ -914,6 +915,7 @@ Requests must include `Content-Type: application/json` and the mandatory `X-Knot
       "delivery_sequence": 2,
       "prev_delivery_sequence": 1,
       "source_position": "pos-02",
+      "prev_source_position": "pos-01",
       "op": "progress"
     }
   ]

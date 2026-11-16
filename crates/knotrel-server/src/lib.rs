@@ -17,7 +17,7 @@
 //!
 //! # Node and edge lifecycle
 //!
-//! Since v0.5.0, the server can keep inactive nodes and disabled edges in its
+//! The server can keep inactive nodes and disabled edges in its
 //! topology and exclude them from connectivity, and can remove nodes
 //! permanently (operations `set_node_active`, `set_edge_enabled`,
 //! `remove_node`, `node_state` and `edge_state`; flagged imports and feeder
