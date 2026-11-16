@@ -364,6 +364,9 @@ fn restart_starts_with_an_empty_graph() {
 
 #[test]
 fn sigterm_drains_an_admitted_request_before_exiting() {
+    // `server` is declared before every connection, so on an assertion failure
+    // the connections are closed first and `Server::drop` then kills and
+    // reaps the child process.
     let mut server = Server::start(&[]);
     let body = r#"{"op":"link","source":"1","target":"2"}"#;
     let mut in_flight = TcpStream::connect(server.address).unwrap();
@@ -429,6 +432,23 @@ fn sigterm_drains_an_admitted_request_before_exiting() {
         assert!(Instant::now() < deadline, "server never reported draining");
         sleep(Duration::from_millis(10));
     }
+    assert!(server.child.try_wait().unwrap().is_none(), "exited early");
+
+    // Regression for the admission signal: a request started after draining
+    // was observed reaches the gate while draining, so it is refused with
+    // 503 `shutting_down` and never receives `100 Continue` (the first
+    // response head on its connection is the 503).
+    let mut late = TcpStream::connect(server.address).unwrap();
+    late.write_all(head.as_bytes()).unwrap();
+    let (status, response) = read_response(&mut late);
+    assert_eq!(
+        (status, response.as_str()),
+        (
+            503,
+            r#"{"result":"error","code":"shutting_down","message":"server is shutting down; retry against another instance"}"#
+        )
+    );
+    drop(late);
     assert!(server.child.try_wait().unwrap().is_none(), "exited early");
 
     in_flight
