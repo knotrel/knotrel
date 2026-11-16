@@ -599,7 +599,9 @@ fn repeated_remove_and_reinsert_keeps_engine_storage_bounded() {
             graph.link(63, 64).unwrap();
             peak = peak.max(graph.engine_vertex_count());
         }
-        assert!(peak <= 2 * 65 + 1024 + 1, "peak {peak}");
+        // Registered nodes (at most 66 with the fresh one) plus at most
+        // max(66 / 4, 1024) retired slots.
+        assert!(peak <= 66 + 1024, "peak {peak}");
         assert!(graph.connected(0, 64).unwrap());
         assert_eq!(graph.node_count(), 65);
         assert_eq!(graph.edge_count(), 64);
