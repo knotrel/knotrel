@@ -219,7 +219,7 @@ the reproducible workloads, methodology and published reports: release
 regression qualification, engine/competitor comparisons and algorithm
 experiments, each labelled with the version and host it actually measured.
 [Performance by version](docs/performance-by-version.md) summarizes the
-release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0) for users, with
+release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 candidate) for users, with
 their limits. The authoritative statements are in the release notes for
 [v0.4.0](docs/releases/v0.4.0-release-notes.md#regression-qualification-against-v030)
 and [v0.3.0](docs/releases/v0.3.0-release-notes.md#performance-qualification).
