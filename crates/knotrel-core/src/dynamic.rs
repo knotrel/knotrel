@@ -1,5 +1,5 @@
 //! Exact general-graph connectivity using one Euler-tour spanning forest.
-use crate::{GraphError, NodeId, forest::Forest};
+use crate::{GraphError, NodeId, forest::Forest, index::remove_incidence};
 use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
 use std::collections::{BTreeSet, hash_map::Entry};
@@ -32,7 +32,8 @@ pub struct ForestStats {
 /// smaller side size, k the yielded candidate-bearing vertices, and c the
 /// examined non-tree incidences. Empty candidate sets require no enumeration. Non-tree cuts cost O(log V + log E).
 /// A single token-arena or free-list growth can add O(V) time. Logical storage is O(V + E); allocated
-/// arenas retain O(V) high-water capacity, and removed tree-edge slots are reused.
+/// arenas retain O(V) high-water capacity, removed tree-edge slots are reused and an emptied
+/// non-tree incidence set frees its storage.
 /// Queries allocate no scratch, cache no answers and use no internal locks.
 #[derive(Debug, Default)]
 pub struct ForestGraph {
@@ -138,10 +139,10 @@ impl ForestGraph {
                 }
             }
             if let Some((v, w)) = replacement {
-                self.non_tree[v].remove(&w);
-                self.non_tree[w].remove(&v);
-                self.forest.set_candidate(v, !self.non_tree[v].is_empty());
-                self.forest.set_candidate(w, !self.non_tree[w].is_empty());
+                let v_empty = remove_incidence(&mut self.non_tree[v], w);
+                let w_empty = remove_incidence(&mut self.non_tree[w], v);
+                self.forest.set_candidate(v, !v_empty);
+                self.forest.set_candidate(w, !w_empty);
                 let arcs = self.forest.link(v, w);
                 *self
                     .edges
@@ -150,10 +151,10 @@ impl ForestGraph {
                 self.stats.replacements = self.stats.replacements.saturating_add(1);
             }
         } else {
-            self.non_tree[a].remove(&b);
-            self.non_tree[b].remove(&a);
-            self.forest.set_candidate(a, !self.non_tree[a].is_empty());
-            self.forest.set_candidate(b, !self.non_tree[b].is_empty());
+            let a_empty = remove_incidence(&mut self.non_tree[a], b);
+            let b_empty = remove_incidence(&mut self.non_tree[b], a);
+            self.forest.set_candidate(a, !a_empty);
+            self.forest.set_candidate(b, !b_empty);
         }
         Ok(true)
     }
