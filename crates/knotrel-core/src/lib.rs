@@ -273,7 +273,10 @@ impl Error for GraphError {}
 /// External IDs map to stable, append-only indices. Each sorted adjacency vector
 /// contains unique indices, and every edge appears at both endpoints. Cuts retain
 /// vertices. Logical storage is O(V + E). Allocated storage is O(V + H), where H is
-/// the sum of per-vertex historical maximum degrees (capacity is retained). No query answers are cached.
+/// the sum of per-vertex adjacency capacities: each is at least the vertex's
+/// historical maximum degree (capacity is retained) and, for a graph built in
+/// bulk by the lifecycle facade, starts at the vertex's enabled registered
+/// degree. No query answers are cached.
 #[derive(Debug, Default)]
 pub struct Graph {
     ids: IntMap<NodeId, usize>,
@@ -498,6 +501,59 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bulk-built graph keeps every `Graph` invariant and then behaves like
+    /// an incrementally built one under further `add_node`, `link`, `cut` and
+    /// `connected` calls.
+    #[test]
+    fn bulk_built_graph_matches_incremental_graph_under_mutation() {
+        let mut seed = 0x2545_f491_u64;
+        let mut next = move |bound: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % bound
+        };
+        for _case in 0..200 {
+            let n = 1 + next(30) as usize;
+            let ids: Vec<NodeId> = (0..n as u64).map(|i| i * 7 + 3).collect();
+            let mut incremental = Graph::new();
+            for &id in &ids {
+                incremental.add_node(id);
+            }
+            let mut adjacency = vec![Vec::new(); n];
+            for _ in 0..next(3 * n as u64 + 1) {
+                let (a, b) = (next(n as u64) as usize, next(n as u64) as usize);
+                if a != b && incremental.link(ids[a], ids[b]) == Ok(true) {
+                    adjacency[a].push(b);
+                    adjacency[b].push(a);
+                }
+            }
+            for list in &mut adjacency {
+                list.sort_unstable();
+            }
+            let mut bulk = Graph::from_sorted_adjacency(ids.clone(), adjacency);
+            assert_eq!(bulk.node_count(), incremental.node_count());
+            assert_eq!(bulk.edge_count(), incremental.edge_count());
+            for _ in 0..100 {
+                let a = next(n as u64 + 5) * 7 + 3;
+                let b = next(n as u64 + 5) * 7 + 3;
+                match next(4) {
+                    0 => assert_eq!(bulk.add_node(a), incremental.add_node(a)),
+                    1 => assert_eq!(bulk.link(a, b), incremental.link(a, b)),
+                    2 => assert_eq!(bulk.cut(a, b), incremental.cut(a, b)),
+                    _ => assert_eq!(bulk.connected(a, b), incremental.connected(a, b)),
+                }
+                assert_eq!(bulk.edge_count(), incremental.edge_count());
+                assert_eq!(bulk.node_count(), incremental.node_count());
+            }
+            for list in &bulk.adjacency {
+                assert!(list.windows(2).all(|pair| pair[0] < pair[1]));
+            }
+            bulk.release_isolated_storage(ids[0]);
+            assert_eq!(bulk.connected(ids[0], ids[0]), Ok(true));
+        }
+    }
 
     #[test]
     fn link_preserves_internal_source_before_target_index_order() {

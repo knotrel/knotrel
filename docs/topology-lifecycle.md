@@ -121,7 +121,7 @@ Hash-map lookups are expected `O(1)`, not worst case.
 | `set_node_active` | `O(d)` catalog scan plus `d_eff × U` | same |
 | `set_edge_enabled`, `link`, `cut` | `O(d_u + d_v)` catalog work plus at most one `U` | same |
 | `remove_node` without compaction | `O(d + sum of neighbor degrees)` catalog work plus `d_eff × U` | same |
-| `remove_node` that triggers compaction | the above plus an `O(V log V + E)` one-pass engine rebuild from the catalog | adds `O(1 + E / V)` rebuild work per removal (about four times the v0.5.0 constant, see below), with `V` and `E` taken at rebuild time |
+| `remove_node` that triggers compaction | the above plus an `O(V log V + E)` one-pass engine rebuild from the catalog | adds `O(log V + E / V)` rebuild work per removal (about four times the v0.5.0 constant, see below), with `V` and `E` taken at rebuild time |
 | `connected` | the engine's query cost plus two flag checks | same |
 
 Deactivation and removal cut effective incident edges in descending neighbor
@@ -161,10 +161,10 @@ and RSS.
 | --- | --- | --- | --- |
 | Catalog node map | one 32-byte record per registered node | up to the historical maximum of registered nodes, rounded to the table's power-of-two growth; under fresh-ID delete/insert churn the table may double once at more than half load | allocator overhead |
 | Incident lists | 16 bytes per incidence, two per registered edge | each list at most `max(4 × length, 16)` elements (shrunk below a quarter) | — |
-| Engine | one ID-map entry and one vector header per engine vertex; 8 bytes per effective incidence | per vertex: its historical maximum degree since the last rebuild (cuts do not shrink) | — |
+| Engine | one ID-map entry and one vector header per engine vertex; 8 bytes per effective incidence | per vertex: at least its historical maximum degree since the last rebuild (cuts do not shrink); after a rebuild, its enabled registered degree, which can exceed its effective degree | — |
 | Retired slots | at most `max(⌊V / 4⌋, 1024)` ID-map entries and vector headers | — | — |
 | Compaction | the old and the new engine are live together during a rebuild, plus an `O(V)` sorted ID vector | — | — |
-| HTTP import | the request body, the decoded request, the catalog and the new engine, beside the old graph until publication (atomic replace) | — | RSS, allocator retention |
+| HTTP import | the request body while it is parsed, then the decoded request, the catalog and the new engine; the old graph stays live until just after publication (atomic replace; it is freed after the graph lock is released). A body that fails the streaming parse is parsed a second time by the former parser to keep the error contract, with that parser's working set (as in v0.5.0) | — | RSS, allocator retention |
 
 Measured values (allocator byte counts and the qualification results) are in
 the v0.6.0 qualification evidence and release notes; they are observations on
