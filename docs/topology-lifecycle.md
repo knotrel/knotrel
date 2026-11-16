@@ -111,8 +111,8 @@ configurations are unchanged.
 
 **Costs.** Let `d` be the registered degree of the node concerned, `d_eff` its
 effective degree, `U` the cost of one effective edge insertion or deletion in
-the engine (for `compact-bfs`, `O(d_max)` because adjacency lists are sorted
-vectors; for `ett` and `hdt`, see their engine documentation), and `V`,
+the engine (for `compact-bfs`, the only engine with lifecycle support,
+`O(d_max)` because adjacency lists are sorted vectors), and `V`,
 `E_eff` the registered nodes and effective edges at the time of the call.
 Hash-map lookups are expected `O(1)`, not worst case.
 
@@ -127,21 +127,16 @@ Hash-map lookups are expected `O(1)`, not worst case.
 Deactivation and removal cut effective incident edges in descending neighbor
 order. For `compact-bfs` this removes from the end of the node's sorted
 adjacency vector, so a high-degree removal does not pay `O(d)` shifts per
-edge; for `ett` and `hdt` the order was chosen because it measured much
-faster on high-degree nodes, not because of a proven bound.
+edge.
 
 None of these is logarithmic in general. Removing or deactivating a
 high-degree hub costs work proportional to its degree, and a compacting
-removal holds the server's graph lock for a whole-graph rebuild. In `ett` and
-`hdt`, cutting one of a removed node's tree edges may select another of its
-still-incident edges as a replacement before that edge is cut too; the end
-state is correct, but the work is not minimal.
+removal holds the server's graph lock for a whole-graph rebuild.
 
 **Engine slots and compaction.** The engines do not support vertex deletion
 and key vertices by node ID. A removed node's engine vertex stays as an
 isolated *retired* slot: all its edges were cut, which leaves no adjacency in
-`compact-bfs`, a singleton tour with no non-tree edges in `ett`, and empty
-incidence sets at every level in `hdt`. Registering the **same** ID again
+`compact-bfs`. Registering the **same** ID again
 reuses that slot. After every removal, if retired slots exceed
 `max(registered nodes, 1024)`, the facade rebuilds the engine from the
 catalog: all registered nodes (active or not) and all effective edges. More
@@ -219,7 +214,10 @@ return `LifecycleError::Graph`.
 `KNOTREL_TOPOLOGY_LIFECYCLE` is exactly `true` or `false` (default `false`),
 also `ServerConfig::with_topology_lifecycle`. With `false`, the server holds
 the plain engine as before and no catalog is allocated; every engine and mode
-behaves as in v0.4.0.
+behaves as in v0.4.0 apart from the additive changes listed in the release
+notes (lifecycle request names, events and flagged import entries get 409
+`topology_lifecycle_disabled` instead of 422, and one more feeder-rejection
+series).
 
 `true` requires `KNOTREL_ENGINE=compact-bfs` (the default). With `ett` or
 `hdt`, `ServerConfig::from_env` fails with "`KNOTREL_TOPOLOGY_LIFECYCLE`

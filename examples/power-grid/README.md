@@ -12,7 +12,7 @@ model.
 | --- | --- |
 | [`grid.json`](grid.json) | Synthetic dataset: node names and types, connection states and the expected scenario results. Names and types are application metadata; Knotrel receives only node IDs and active edges. |
 | [`power_grid_demo.py`](power_grid_demo.py) | Python 3 standard-library script that acts as the application sending topology changes over the HTTP API. |
-| [`lifecycle_demo.py`](lifecycle_demo.py) | v0.5.0 node and edge lifecycle scenario on the same network; needs a server with `KNOTREL_TOPOLOGY_LIFECYCLE=true`. |
+| [`lifecycle_demo.py`](lifecycle_demo.py) | v0.5.0 node and edge lifecycle scenario on the same network; needs a server with `KNOTREL_TOPOLOGY_LIFECYCLE=true` on the default `compact-bfs` engine. |
 | [`test_power_grid_demo.py`](test_power_grid_demo.py) | Dataset-validation regression checks and an independent model of the lifecycle scenario; they need no server. |
 
 ## Run it
@@ -74,6 +74,7 @@ demonstration.
 support:
 
 ```sh
+# Lifecycle support requires the default compact-bfs engine.
 KNOTREL_MODE=standalone KNOTREL_TOPOLOGY_LIFECYCLE=true cargo run --release --locked -p knotrel-server
 python3 examples/power-grid/lifecycle_demo.py
 ```

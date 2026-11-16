@@ -3,7 +3,8 @@
 
 The script loads the same synthetic network as ``power_grid_demo.py`` into a
 fresh, dedicated standalone server started with
-``KNOTREL_TOPOLOGY_LIFECYCLE=true``, then:
+``KNOTREL_TOPOLOGY_LIFECYCLE=true`` (lifecycle support requires the default
+``compact-bfs`` engine), then:
 
 1. deactivates secondary substation A2 and observes which customers lose
    their path to the assumed source;
