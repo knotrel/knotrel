@@ -172,7 +172,7 @@ Progress:
   uncommitted working tree based on `cdb0e5b`. That run is retained in the `docs/deployment.md`
   appendix as a pre-RC record.
 - O3 was repeated on 2026-11-13 from clean commit `a076c03`; the
-  [transcript](../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/deployment/transcript.txt)
+  [transcript](../../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/deployment/transcript.txt)
   records zero failures. M4.5 and Acceptance M4 are recorded under D2 for that source or a
   documentation-only descendant.
 - Q0/Q1 completed 2026-11-12. The driver copy and hash record are under
@@ -200,7 +200,7 @@ Detailed in §4 and §5. Ordered tasks:
 Package completion condition: Q6 report filed under `evidence/v0.3.0-qualification-<timestamp>/`,
 naming the qualified SHA.
 
-**Q6 outcome:** The [decision report](../../evidence/v0.3.0-qualification-20261112T224213Z-6a1267f/final-decision-analysis.json)
+**Q6 outcome:** The [decision report](../../../evidence/v0.3.0-qualification-20261112T224213Z-6a1267f/final-decision-analysis.json)
 records candidate `6a1267f48c0f72f5b9705ad7f44da74af54b9b70`, 108 initial pairs and
 36 extension pairs, with 288/288 valid observations. Seven cells are PASS; two remain INCONCLUSIVE
 and are accepted with disclosure under the previously approved D6 policy:
@@ -232,7 +232,7 @@ A successful dry run does not guarantee registry publication. Publication follow
 and is outside this plan.
 
 **Local Package 4 evidence (2026-11-13).** On `a076c03` with the documentation changes in
-this working tree, [retained logs and exit codes](../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/logs/)
+this working tree, [retained logs and exit codes](../../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/logs)
 show R4.1 metadata/version checks and all R4.2 quality gates exiting 0. The default and
 `test-support` workspace suites passed 214 and 301 tests respectively; the core MSRV suite
 passed 59 tests, including doctests. R4.3 source-package verification passed in a disposable
@@ -241,7 +241,7 @@ extracted macOS archive and the O3 source-managed deployment transcript. The loc
 deliberately records unknown commit provenance and is not a release artifact. These are local
 results, not checks at a committed RC.
 
-The [provisional applicability record](../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/logs/qualification-applicability.log)
+The [provisional applicability record](../../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/logs/qualification-applicability.log)
 compares the recorded dependency inputs and frozen binary hashes with `6a1267f`. The sole
 subsequent committed change at `a076c03` reorders the coverage-workflow cache and tool
 installation steps; the working-tree changes are documentation only. No measured input or
@@ -262,9 +262,9 @@ Execute in order. Each line is complete only when its condition holds.
 
 **2 — Focused verification of concrete gaps**
 
-- [x] **O3** Candidate container restart/rebuild [transcript](../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/deployment/transcript.txt) recorded; revalidate if relevant inputs change.
-- [x] **Q0** Driver `3dda9c76…` preserved at `evidence/v0.3.0-package3-q0-q1-20261112/q0/measure_e2e`; [hash record](../../evidence/v0.3.0-package3-q0-q1-20261112/q0/SHA256SUMS.txt) matches the manifest.
-- [x] **Q1** [Offline revalidation report](../../evidence/v0.3.0-package3-q0-q1-20261112/q1/REPORT.md): 204 observations revalidated; per-cell dispersion matches all 17 rows.
+- [x] **O3** Candidate container restart/rebuild [transcript](../../../evidence/v0.3.0-package4-local-20261113T063235Z-a076c03/deployment/transcript.txt) recorded; revalidate if relevant inputs change.
+- [x] **Q0** Driver `3dda9c76…` preserved at `evidence/v0.3.0-package3-q0-q1-20261112/q0/measure_e2e`; [hash record](../../../evidence/v0.3.0-package3-q0-q1-20261112/q0/SHA256SUMS.txt) matches the manifest.
+- [x] **Q1** [Offline revalidation report](../../../evidence/v0.3.0-package3-q0-q1-20261112/q1/REPORT.md): 204 observations revalidated; per-cell dispersion matches all 17 rows.
 - [x] **Q2** Two-label collector mode at `580c7e44`, with dry run and collector tests passing.
 
 **3 — Approved performance qualification**

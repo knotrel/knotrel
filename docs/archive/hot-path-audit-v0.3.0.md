@@ -40,22 +40,22 @@ campaign built and measured that final tree.
 
 All measurements in this note come from one campaign in the sibling
 `knotrel-benchmarks` repository:
-[`results/hot-path-audit-20261114/`](../../knotrel-benchmarks/results/hot-path-audit-20261114/README.md). Its tables are generated
+[`results/hot-path-audit-20261114/`](../../../knotrel-benchmarks/results/hot-path-audit-20261114/README.md). Its tables are generated
 from the archived raw data and can be regenerated and checked byte for byte
 with `python3 results/hot-path-audit-20261114/analyze.py --check`.
 
 | Artifact | sha256 |
 | --- | --- |
-| [`REPORT.md`](../../knotrel-benchmarks/results/hot-path-audit-20261114/REPORT.md) | `a0e06a1922140676d4d5a27bb1415ae80ae2a52a2e1bbdbaa8d9077cb2866f72` |
-| [`analysis/summary.json`](../../knotrel-benchmarks/results/hot-path-audit-20261114/analysis/summary.json) | `746dd29c5db7104b8dae1af8b31b3b37038e6cc8c46fd3396d5807f2938ce82d` |
-| [`manifest.json`](../../knotrel-benchmarks/results/hot-path-audit-20261114/manifest.json) (every campaign file with its hash) | `257d6434e7404c9a9f53ac49ece2e3966f7e1c54008004d5673d5200271cc3ac` |
+| [`REPORT.md`](../../../knotrel-benchmarks/results/hot-path-audit-20261114/REPORT.md) | `a0e06a1922140676d4d5a27bb1415ae80ae2a52a2e1bbdbaa8d9077cb2866f72` |
+| [`analysis/summary.json`](../../../knotrel-benchmarks/results/hot-path-audit-20261114/analysis/summary.json) | `746dd29c5db7104b8dae1af8b31b3b37038e6cc8c46fd3396d5807f2938ce82d` |
+| [`manifest.json`](../../../knotrel-benchmarks/results/hot-path-audit-20261114/manifest.json) (every campaign file with its hash) | `257d6434e7404c9a9f53ac49ece2e3966f7e1c54008004d5673d5200271cc3ac` |
 
 - **Identities.** Baseline: `e1e11818a762baf07575719456a2158959b2e2c8`,
   materialized with `git archive`. Candidate: baseline plus the code-only
   patch whose `git diff HEAD -- . ':(exclude)docs'` sha256 is
   `8b579f7d8a8db52d499263870b486d0bbaec1775135c4bb50f8e9005a55cc9d7`; every
   candidate file was checked against the working tree. The campaign's
-  [`provenance/reconstruct_verified_tree.sh`](../../knotrel-benchmarks/results/hot-path-audit-20261114/provenance/reconstruct_verified_tree.sh)
+  [`provenance/reconstruct_verified_tree.sh`](../../../knotrel-benchmarks/results/hot-path-audit-20261114/provenance/reconstruct_verified_tree.sh)
   shows that this is the code verified below (recorded hash
   `b17d7018…20ea36`, `MATCH`). The reverted metric-handle cache is not in the
   candidate.
@@ -145,10 +145,10 @@ consistent with chance or code layout, but it is reported as measured.
 **Re-check (2026-11-15).** A pre-specified re-measurement with the campaign's
 exact binaries (verified by sha256), 24 counterbalanced rounds and the same
 verdict rule —
-[`hot-path-recheck-20261115`](../../knotrel-benchmarks/results/hot-path-recheck-20261115/README.md),
-[`REPORT.md`](../../knotrel-benchmarks/results/hot-path-recheck-20261115/REPORT.md)
+[`hot-path-recheck-20261115`](../../../knotrel-benchmarks/results/hot-path-recheck-20261115/README.md),
+[`REPORT.md`](../../../knotrel-benchmarks/results/hot-path-recheck-20261115/REPORT.md)
 sha256 `ec2b2cd979b97881d863718aee4653002c70533a146aca6c950924a969312d9e`,
-[`analysis/summary.json`](../../knotrel-benchmarks/results/hot-path-recheck-20261115/analysis/summary.json)
+[`analysis/summary.json`](../../../knotrel-benchmarks/results/hot-path-recheck-20261115/analysis/summary.json)
 sha256 `a9e4401108e554c25db63f42a56bde410c89306bc916d96e62855309b7cc6923` —
 measured `connected_total_ns` at +0.83% [+0.10%, +1.78%] against a ±2.14% A/A
 bound: **inconclusive**, so the regression does not reproduce. Whole-workload

@@ -10,7 +10,7 @@ before the campaign, accepts these two outcomes for release with disclosure:
   **-11.46% to +21.97%**.
 
 Neither inconclusive cell is a PASS, and the intervals do not exclude a
-regression. The [decision report](../../evidence/v0.3.0-qualification-20261112T224213Z-6a1267f/final-decision-analysis.json)
+regression. The [decision report](../../../evidence/v0.3.0-qualification-20261112T224213Z-6a1267f/final-decision-analysis.json)
 records all 288 valid observations, the per-cell outcomes and guardrails. The
 qualification covers only the specified cells on the macOS arm64 measurement
 host, using `compact-bfs` and `compact-workspace`; final release-candidate
@@ -19,7 +19,7 @@ applicability remains subject to [the closure plan](release-v0.3.0-closure-plan.
 
 Historical status: P0 coverage increment 1 (`p0-coverage-increment-1-campaign-20261107-2158`)
 qualified 102/102 pairs. P0 was subsequently closed under the approved D3
-coverage exception after offline revalidation ([Q1 report](../../evidence/v0.3.0-package3-q0-q1-20261112/q1/REPORT.md)).
+coverage exception after offline revalidation ([Q1 report](../../../evidence/v0.3.0-package3-q0-q1-20261112/q1/REPORT.md)).
 The earlier Candidate A, visited `put` and production FIFO experiments remain
 historical, not performance qualification. The full original matrix is deferred.
 
