@@ -338,6 +338,42 @@ fn is_process_alive(pid: u32) -> bool {
 struct ExternalServerGuard {
     child: Option<Child>,
     address: SocketAddr,
+    /// Holds the server's captured stderr; removed after the child is reaped.
+    log_dir: TempTestDir,
+}
+
+impl ExternalServerGuard {
+    /// The server's stderr so far, or the I/O error that prevented reading it.
+    fn stderr_text(&self) -> String {
+        match fs::read_to_string(self.log_dir.path.join("server.stderr")) {
+            Ok(text) => text,
+            Err(error) => format!("<could not read captured server stderr: {error}>"),
+        }
+    }
+
+    /// The address from the server's own JSON startup line ("Knotrel
+    /// listening", logged after `bind`), once that complete line is written.
+    /// An I/O error panics instead of being treated as "not yet".
+    fn logged_address(log_dir: &Path) -> Option<SocketAddr> {
+        let stdout = fs::read_to_string(log_dir.join("server.stdout"))
+            .unwrap_or_else(|error| panic!("cannot read captured server stdout: {error}"));
+        stdout
+            .split_inclusive('\n')
+            .filter(|line| line.ends_with('\n'))
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|record| {
+                record["fields"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.starts_with("Knotrel listening"))
+            })
+            .map(|record| {
+                record["fields"]["address"]
+                    .as_str()
+                    .expect("startup line carries an address")
+                    .parse()
+                    .expect("startup address parses")
+            })
+    }
 }
 
 impl ExternalServerGuard {
@@ -345,8 +381,11 @@ impl ExternalServerGuard {
         Self::spawn_with_mode(engine, "source-managed")
     }
 
+    /// Starts the server on an OS-assigned port (`127.0.0.1:0`) and reads the
+    /// bound address from its JSON startup log. Choosing a free port in the
+    /// test and passing it to the server raced with other tests binding the
+    /// same port (observed: the server exited with `AddrInUse`). No retry.
     fn spawn_with_mode(engine: &str, mode: &str) -> Self {
-        let address = free_address();
         let binary = env!("CARGO_BIN_EXE_knotrel-server");
         let mut cmd = Command::new(binary);
         for (key, _) in std::env::vars() {
@@ -354,19 +393,28 @@ impl ExternalServerGuard {
                 cmd.env_remove(key);
             }
         }
-        cmd.env("KNOTREL_ADDR", address.to_string())
+        // Capture both streams so a startup failure reports its cause.
+        let log_dir = TempTestDir::new("knotrel_external_server");
+        let stderr_file = fs::File::create(log_dir.path.join("server.stderr"))
+            .expect("create server stderr file");
+        let stdout_file = fs::File::create(log_dir.path.join("server.stdout"))
+            .expect("create server stdout file");
+        cmd.env("KNOTREL_ADDR", "127.0.0.1:0")
             .env("KNOTREL_ENGINE", engine)
             .env("KNOTREL_MODE", mode)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .env("LOG_FORMAT", "json")
+            .env("RUST_LOG", "info")
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file));
 
         let child = cmd.spawn().expect("spawn external knotrel-server");
         let mut guard = Self {
             child: Some(child),
-            address,
+            address: SocketAddr::from(([127, 0, 0, 1], 0)),
+            log_dir,
         };
 
-        // Poll /v1/info until ready
+        // Wait for the startup line, then poll /v1/info until ready.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut ready = false;
         while std::time::Instant::now() < deadline {
@@ -375,8 +423,21 @@ impl ExternalServerGuard {
                 .as_mut()
                 .and_then(|c| c.try_wait().ok().flatten())
             {
-                panic!("External server died prematurely: {status}");
+                panic!(
+                    "External server died prematurely: {status}\nserver stderr:\n{}",
+                    guard.stderr_text()
+                );
             }
+            if guard.address.port() == 0 {
+                match Self::logged_address(&guard.log_dir.path) {
+                    Some(bound) => guard.address = bound,
+                    None => {
+                        std::thread::sleep(Duration::from_millis(25));
+                        continue;
+                    }
+                }
+            }
+            let address = guard.address;
             if let Ok(mut stream) = std::net::TcpStream::connect(address) {
                 use std::io::{Read, Write};
                 let req = format!(
@@ -392,7 +453,12 @@ impl ExternalServerGuard {
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        assert!(ready, "External server did not become ready on {address}");
+        assert!(
+            ready,
+            "External server did not become ready (address {})\nserver stderr:\n{}",
+            guard.address,
+            guard.stderr_text()
+        );
         guard
     }
 }
@@ -618,6 +684,37 @@ fn test_json_out_write_failure_propagates() {
             || stderr.contains("No such file or directory"),
         "stderr was: {stderr}"
     );
+}
+
+/// A startup failure of the external server must surface its exit status and
+/// its own stderr instead of a bare "died prematurely".
+#[test]
+#[should_panic(expected = "KNOTREL_ENGINE must be compact-bfs, ett or hdt")]
+fn test_external_server_startup_failure_reports_server_stderr() {
+    let _server = ExternalServerGuard::spawn("not-an-engine");
+}
+
+/// The guard uses the address the server itself bound and logged, so the
+/// port is assigned by the OS and never chosen by the test.
+#[test]
+fn test_external_server_uses_its_own_bound_address() {
+    let server = ExternalServerGuard::spawn("compact-bfs");
+    assert_ne!(server.address.port(), 0);
+    assert_eq!(
+        ExternalServerGuard::logged_address(&server.log_dir.path),
+        Some(server.address)
+    );
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(server.address).expect("connect");
+    write!(
+        stream,
+        "GET /v1/info HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        server.address
+    )
+    .expect("write request");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("read response");
+    assert!(response.contains("200 OK"), "{response}");
 }
 
 #[test]
