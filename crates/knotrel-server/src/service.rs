@@ -4222,6 +4222,28 @@ mod tests {
         );
     }
 
+    /// An engine label that does not come from `EngineConfig::as_str` is a
+    /// programming error and fails loudly instead of substituting an engine.
+    #[test]
+    #[should_panic(expected = "does not come from EngineConfig::as_str")]
+    fn unknown_engine_labels_are_never_substituted() {
+        let _ = engine_from_label("not-an-engine");
+    }
+
+    /// The defensive branch of a lifecycle event on a plain graph still
+    /// reports `topology_lifecycle_disabled`.
+    #[test]
+    fn lifecycle_event_on_a_plain_graph_reports_lifecycle_disabled() {
+        let result = lifecycle_event(Err(crate::graph::LifecycleUnsupported));
+        assert_eq!(
+            result,
+            Err((
+                ErrorCode::TopologyLifecycleDisabled,
+                crate::api::LIFECYCLE_DISABLED_MESSAGE.to_owned()
+            ))
+        );
+    }
+
     #[test]
     fn engine_labels_round_trip_for_import_candidates() {
         for engine in [

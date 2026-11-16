@@ -170,3 +170,29 @@ impl From<LifecycleError> for LifecycleFailure {
         Self::Domain(error)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A plain graph has no lifecycle facade; a lifecycle graph routes the
+    /// plain mutations to its registered topology.
+    #[test]
+    fn plain_and_lifecycle_variants_route_operations() {
+        let mut plain =
+            ServiceGraph::empty(EngineConfig::CompactBfs, GraphLimits::default(), false);
+        assert_eq!(plain.lifecycle().err(), Some(LifecycleUnsupported));
+        assert_eq!(plain.lifecycle_mut().err(), Some(LifecycleUnsupported));
+        assert_eq!(
+            LifecycleFailure::from(LifecycleUnsupported),
+            LifecycleFailure::Unsupported
+        );
+        let mut lifecycle =
+            ServiceGraph::empty(EngineConfig::CompactBfs, GraphLimits::default(), true);
+        assert_eq!(lifecycle.link(1, 2), Ok(true));
+        assert_eq!(lifecycle.cut(1, 2), Ok(true));
+        assert_eq!(lifecycle.connected(1, 2), Ok(false));
+        assert!(lifecycle.lifecycle().is_ok());
+        let _ = plain.link(1, 2);
+    }
+}
