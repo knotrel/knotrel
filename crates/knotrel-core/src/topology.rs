@@ -186,6 +186,11 @@ struct Incidence {
 #[derive(Debug, Default)]
 struct NodeRecord {
     active: bool,
+    /// Construction-only degree count used to size `incident` exactly in
+    /// bulk import (saturating; only a capacity hint). Zero otherwise. It
+    /// occupies the record's padding, so the record stays 32 bytes on 64-bit
+    /// targets.
+    pending: u32,
     /// Incident registered edges, strictly sorted by `neighbor`.
     incident: Vec<Incidence>,
 }
@@ -194,6 +199,7 @@ impl NodeRecord {
     fn active() -> Self {
         Self {
             active: true,
+            pending: 0,
             incident: Vec::new(),
         }
     }
@@ -332,6 +338,117 @@ impl LifecycleGraph {
         nodes: &[NodeSpec],
         edges: &[EdgeSpec],
     ) -> Result<Self, LifecycleError> {
+        match Self::catalog_fast(limits, nodes, edges) {
+            Some((catalog, order)) => Ok(Self::finish(engine, limits, catalog, order)),
+            None => Self::catalog_exact(limits, nodes, edges)
+                .map(|(catalog, order)| Self::finish(engine, limits, catalog, order)),
+        }
+    }
+
+    /// Catalog assembly for inputs that cannot fail: returns `None`, without
+    /// side effects, whenever an error could arise (a self-loop, a conflicting
+    /// repeated node or edge, a node limit reached, or more edge entries than
+    /// the edge limit), and [`Self::catalog_exact`] then reproduces the exact
+    /// first error in input order.
+    ///
+    /// Edges are appended without a per-edge duplicate lookup: incident lists
+    /// are sorted once and adjacent repeats are dropped (a repeated edge with a
+    /// different flag returns `None`). Without a node limit each endpoint costs
+    /// one expected O(1) catalog probe. `O(V + E log E)` time overall, the same
+    /// bound as the exact path, with fewer hash probes per edge.
+    fn catalog_fast(
+        limits: GraphLimits,
+        nodes: &[NodeSpec],
+        edges: &[EdgeSpec],
+    ) -> Option<(FxHashMap<NodeId, NodeRecord>, Vec<NodeId>)> {
+        if limits.max_edges.is_some_and(|limit| edges.len() > limit) {
+            return None;
+        }
+        let mut catalog: FxHashMap<NodeId, NodeRecord> = FxHashMap::default();
+        catalog.reserve(nodes.len());
+        let mut order: Vec<NodeId> = Vec::with_capacity(nodes.len());
+        for spec in nodes {
+            match catalog.entry(spec.node) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    if entry.get().active != spec.active {
+                        return None;
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    if limits.max_nodes.is_some_and(|limit| order.len() >= limit) {
+                        return None;
+                    }
+                    entry.insert(NodeRecord {
+                        active: spec.active,
+                        pending: 0,
+                        incident: Vec::new(),
+                    });
+                    order.push(spec.node);
+                }
+            }
+        }
+        for spec in edges {
+            if spec.source == spec.target {
+                return None;
+            }
+            if let Some(limit) = limits.max_nodes {
+                let missing = usize::from(!catalog.contains_key(&spec.source))
+                    + usize::from(!catalog.contains_key(&spec.target));
+                if missing > limit.saturating_sub(order.len()) {
+                    return None;
+                }
+            }
+            // Count degrees first so each incident vector is allocated once,
+            // exactly sized, with no growth or shrink reallocation.
+            for endpoint in [spec.source, spec.target] {
+                let record = catalog.entry(endpoint).or_insert_with(|| {
+                    order.push(endpoint);
+                    NodeRecord::active()
+                });
+                record.pending = record.pending.saturating_add(1);
+            }
+        }
+        for record in catalog.values_mut() {
+            record.incident = Vec::with_capacity(record.pending as usize);
+            record.pending = 0;
+        }
+        for spec in edges {
+            for (endpoint, neighbor) in [(spec.source, spec.target), (spec.target, spec.source)] {
+                catalog
+                    .get_mut(&endpoint)
+                    .expect("endpoint registered by the counting pass")
+                    .incident
+                    .push(Incidence {
+                        neighbor,
+                        enabled: spec.enabled,
+                    });
+            }
+        }
+        for record in catalog.values_mut() {
+            record
+                .incident
+                .sort_unstable_by_key(|incidence| incidence.neighbor);
+            let mut conflict = false;
+            record.incident.dedup_by(|later, kept| {
+                let repeat = later.neighbor == kept.neighbor;
+                conflict |= repeat && later.enabled != kept.enabled;
+                repeat
+            });
+            if conflict {
+                return None;
+            }
+        }
+        Some((catalog, order))
+    }
+
+    /// Exact catalog assembly: processes entries in input order and stops at
+    /// the first failing one (see [`Self::try_from_topology`]). Incident lists
+    /// are sorted here. `O((V + E) log E)` time.
+    fn catalog_exact(
+        limits: GraphLimits,
+        nodes: &[NodeSpec],
+        edges: &[EdgeSpec],
+    ) -> Result<(FxHashMap<NodeId, NodeRecord>, Vec<NodeId>), LifecycleError> {
         let mut catalog: FxHashMap<NodeId, NodeRecord> = FxHashMap::default();
         catalog.reserve(nodes.len());
         let mut order: Vec<NodeId> = Vec::with_capacity(nodes.len());
@@ -352,6 +469,7 @@ impl LifecycleGraph {
                 spec.node,
                 NodeRecord {
                     active: spec.active,
+                    pending: 0,
                     incident: Vec::new(),
                 },
             );
@@ -360,7 +478,6 @@ impl LifecycleGraph {
 
         let mut seen: FxHashMap<(NodeId, NodeId), bool> = FxHashMap::default();
         seen.reserve(edges.len());
-        let mut enabled_edges = 0;
         for spec in edges {
             GraphError::check_distinct(spec.source, spec.target)?;
             let missing = usize::from(!catalog.contains_key(&spec.source))
@@ -392,7 +509,6 @@ impl LifecycleGraph {
                 });
             }
             seen.insert(key, spec.enabled);
-            enabled_edges += usize::from(spec.enabled);
             let incidence = |neighbor| Incidence {
                 neighbor,
                 enabled: spec.enabled,
@@ -410,16 +526,32 @@ impl LifecycleGraph {
         }
         drop(seen);
 
-        let mut effective: Vec<(NodeId, NodeId)> = Vec::new();
-        let mut active_nodes = 0;
-        let mut registered_edges = 0;
-        for &node in &order {
-            let record = catalog.get_mut(&node).expect("ordered node is registered");
+        for record in catalog.values_mut() {
             record
                 .incident
                 .sort_unstable_by_key(|incidence| incidence.neighbor);
+        }
+        Ok((catalog, order))
+    }
+
+    /// Shrinks incident lists, computes counts and builds the engine from the
+    /// effective edges of a validated catalog with sorted, duplicate-free
+    /// incident lists. `O(V + E)` plus the engine's bulk construction.
+    fn finish(
+        engine: EngineConfig,
+        limits: GraphLimits,
+        mut catalog: FxHashMap<NodeId, NodeRecord>,
+        order: Vec<NodeId>,
+    ) -> Self {
+        let mut effective: Vec<(NodeId, NodeId)> = Vec::new();
+        let mut active_nodes = 0;
+        let mut registered_edges = 0;
+        let mut enabled_incidences = 0;
+        for &node in &order {
+            let record = catalog.get_mut(&node).expect("ordered node is registered");
             record.incident.shrink_to_fit();
             registered_edges += record.incident.len();
+            enabled_incidences += record.incident.iter().filter(|i| i.enabled).count();
             active_nodes += usize::from(record.active);
         }
         for &node in &order {
@@ -439,15 +571,15 @@ impl LifecycleGraph {
         let engine_graph =
             ConnectivityGraph::try_from_edges(engine, GraphLimits::default(), &order, &effective)
                 .expect("an unlimited engine accepts a validated simple graph");
-        Ok(Self {
+        Self {
             nodes: catalog,
             engine: engine_graph,
             limits,
             active_nodes,
             registered_edges: registered_edges / 2,
-            enabled_edges,
+            enabled_edges: enabled_incidences / 2,
             effective_edges: effective.len(),
-        })
+        }
     }
 
     /// Returns the configured limits on registered topology.
@@ -940,6 +1072,85 @@ impl LifecycleGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fast catalog path agrees with the exact path: identical catalogs
+    /// and registration order whenever it succeeds, and `None` on every input
+    /// the exact path rejects. Inputs mix duplicates (same and reversed
+    /// endpoints, same and different flags), self-loops and tight limits.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn node_record_degree_hint_fits_in_padding() {
+        assert_eq!(size_of::<NodeRecord>(), 32);
+    }
+
+    #[test]
+    fn fast_catalog_matches_exact_catalog() {
+        let mut seed = 0x51_u64;
+        let mut next = move |bound: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % bound
+        };
+        let mut fast_successes = 0;
+        let mut exact_errors = 0;
+        for case in 0..3_000 {
+            let n = 2 + next(60);
+            let nodes: Vec<NodeSpec> = (0..next(10))
+                .map(|_| NodeSpec {
+                    node: next(n),
+                    active: next(12) != 0,
+                })
+                .collect();
+            let mut edges: Vec<EdgeSpec> = (0..next(25))
+                .map(|_| EdgeSpec {
+                    source: next(n),
+                    target: next(n),
+                    enabled: next(12) != 0,
+                })
+                .collect();
+            for _ in 0..next(4) {
+                // Repeated edges, often reversed, sometimes with a flipped flag.
+                if let Some(&e) = edges.get(next(edges.len().max(1) as u64) as usize) {
+                    let flip = next(5) == 0;
+                    edges.push(EdgeSpec {
+                        source: e.target,
+                        target: e.source,
+                        enabled: e.enabled != flip,
+                    });
+                }
+            }
+            let limits = GraphLimits {
+                max_nodes: (case % 3 == 0).then(|| next(14) as usize),
+                max_edges: (case % 4 == 0).then(|| next(26) as usize),
+            };
+            let exact = LifecycleGraph::catalog_exact(limits, &nodes, &edges);
+            let fast = LifecycleGraph::catalog_fast(limits, &nodes, &edges);
+            match (&exact, fast) {
+                (Ok((exact_catalog, exact_order)), Some((fast_catalog, fast_order))) => {
+                    fast_successes += 1;
+                    assert_eq!(exact_order, &fast_order, "case {case}");
+                    assert_eq!(exact_catalog.len(), fast_catalog.len());
+                    for (node, record) in exact_catalog {
+                        let other = &fast_catalog[node];
+                        assert_eq!(record.active, other.active);
+                        let pairs = |r: &NodeRecord| {
+                            r.incident
+                                .iter()
+                                .map(|i| (i.neighbor, i.enabled))
+                                .collect::<Vec<_>>()
+                        };
+                        assert_eq!(pairs(record), pairs(other), "case {case}");
+                    }
+                }
+                (Err(_), None) => exact_errors += 1,
+                (Ok(_), None) => {}
+                (Err(error), Some(_)) => panic!("case {case}: fast path accepted {error:?}"),
+            }
+        }
+        assert!(fast_successes > 600, "{fast_successes}");
+        assert!(exact_errors > 300, "{exact_errors}");
+    }
 
     /// Random mixed operations, including high-degree hubs, keep every
     /// internal invariant (catalog symmetry, engine edge set, counters).
