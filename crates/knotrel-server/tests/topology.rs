@@ -16,17 +16,16 @@ use knotrel_server::{ServerConfig, ServerMode, router_with_config};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-const ENGINES: [EngineConfig; 3] = [
-    EngineConfig::CompactBfs,
-    EngineConfig::EulerTour,
-    EngineConfig::Hdt,
-];
+/// Engines with lifecycle support in v0.5.0; `ett` and `hdt` lifecycle support
+/// is deferred and rejected at configuration time.
+const ENGINES: [EngineConfig; 1] = [EngineConfig::CompactBfs];
 
 fn config(engine: EngineConfig, lifecycle: bool, mode: ServerMode) -> ServerConfig {
     ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 8)
         .unwrap()
         .with_mode(mode)
         .with_topology_lifecycle(lifecycle)
+        .unwrap()
         .with_metrics_enabled(true)
 }
 
@@ -939,5 +938,48 @@ async fn compaction_under_http_churn_keeps_answers_and_counts() {
         )
         .await;
         assert_eq!(op(&app, connected("1", "2")).await.body["connected"], true);
+    }
+}
+
+/// Lifecycle support cannot be enabled for `ett` or `hdt` through the embedded
+/// API, so no router with such a configuration can serve a request; with
+/// lifecycle disabled those engines keep their v0.4.0 behavior: legacy
+/// operations work, the reported engine is unchanged (no fallback) and
+/// lifecycle requests are rejected as before.
+#[tokio::test]
+async fn deferred_engines_reject_lifecycle_and_keep_non_lifecycle_behavior() {
+    for engine in [EngineConfig::EulerTour, EngineConfig::Hdt] {
+        for mode in [ServerMode::Standalone, ServerMode::SourceManaged] {
+            let error = ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 8)
+                .unwrap()
+                .with_mode(mode)
+                .with_topology_lifecycle(true)
+                .unwrap_err();
+            assert!(error.to_string().contains(engine.as_str()), "{error}");
+        }
+        let app = router_with_config(config(engine, false, ServerMode::Standalone));
+        let info = get(&app, "/v1/info").await;
+        assert_eq!(info["engine"], engine.as_str());
+        assert!(info.get("topology_lifecycle").is_none() || info["topology_lifecycle"] == false);
+        assert_eq!(
+            op(&app, json!({"op":"link","source":"1","target":"2"}))
+                .await
+                .status,
+            StatusCode::OK
+        );
+        let reply = op(&app, json!({"op":"connected","source":"1","target":"2"})).await;
+        assert_eq!(reply.body["connected"], true);
+        let reply = op(
+            &app,
+            json!({"op":"set_node_active","node":"1","active":false}),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::CONFLICT);
+        assert_eq!(reply.body["code"], "topology_lifecycle_disabled");
+        let reply = op(&app, json!({"op":"connected","source":"1","target":"2"})).await;
+        assert_eq!(
+            reply.body["connected"], true,
+            "the rejected request changed nothing"
+        );
     }
 }

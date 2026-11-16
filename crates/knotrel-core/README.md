@@ -77,7 +77,8 @@ assert!(!graph.connected(1, 99)?);
 
 ## Node and Edge Lifecycle
 
-`LifecycleGraph` (since v0.5.0) keeps the **registered** topology with a
+`LifecycleGraph` (since v0.5.0, `compact-bfs` engine only; `ett` and `hdt` are
+rejected with `LifecycleError::UnsupportedEngine`) keeps the **registered** topology with a
 node-active flag per node and an edge-enabled flag per edge, and answers
 `connected` over the **effective** graph: an edge counts only when it is
 enabled and both endpoints are active. Deactivating a node keeps its edges and
@@ -87,7 +88,7 @@ ID creates a fresh isolated node.
 ```rust
 use knotrel_core::{EngineConfig, LifecycleGraph};
 
-let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs);
+let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs)?;
 graph.link(1, 2)?;
 graph.link(2, 3)?;
 graph.set_node_active(2, false)?;
@@ -97,7 +98,8 @@ assert!(graph.connected(1, 3)?);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-It works with every engine, but it is not free: deactivating or removing a
+It is available on `compact-bfs` only (lifecycle support for `ett` and `hdt`
+is deferred), and it is not free: deactivating or removing a
 node costs work proportional to its degree, and the graph keeps a topology
 catalog besides the engine's effective graph. `ConnectivityGraph` is
 unchanged. See the

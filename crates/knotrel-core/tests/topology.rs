@@ -10,11 +10,9 @@ use knotrel_core::{
 };
 use std::collections::BTreeMap;
 
-const ENGINES: [EngineConfig; 3] = [
-    EngineConfig::CompactBfs,
-    EngineConfig::EulerTour,
-    EngineConfig::Hdt,
-];
+/// Engines with lifecycle support in v0.5.0 (`ett` and `hdt` are deferred and
+/// rejected, see `unsupported_engines_are_rejected_without_a_graph`).
+const ENGINES: [EngineConfig; 1] = [EngineConfig::CompactBfs];
 
 #[derive(Default, Clone)]
 struct Oracle {
@@ -243,7 +241,7 @@ fn randomized_mixed_sequences_match_the_oracle_on_every_engine() {
         for (index, universe) in universes.iter().enumerate() {
             for seed in 0..40_u64 {
                 let mut rng = Rng(seed * 7919 + index as u64);
-                let mut graph = LifecycleGraph::new(engine);
+                let mut graph = LifecycleGraph::new(engine).unwrap();
                 let mut oracle = Oracle::default();
                 for _ in 0..250 {
                     step(&mut graph, &mut oracle, &mut rng, universe);
@@ -260,7 +258,7 @@ fn every_step_matches_the_oracle_in_short_sequences() {
     for engine in ENGINES {
         for seed in 0..60_u64 {
             let mut rng = Rng(seed ^ 0x5eed);
-            let mut graph = LifecycleGraph::new(engine);
+            let mut graph = LifecycleGraph::new(engine).unwrap();
             let mut oracle = Oracle::default();
             for _ in 0..60 {
                 step(&mut graph, &mut oracle, &mut rng, &universe);
@@ -279,7 +277,7 @@ fn limits_count_registered_topology_and_cannot_be_bypassed() {
     for engine in ENGINES {
         let mut rng = Rng(99);
         let universe = [1, 2, 3, 4, 5, 6];
-        let mut graph = LifecycleGraph::with_limits(engine, limits);
+        let mut graph = LifecycleGraph::with_limits(engine, limits).unwrap();
         let mut oracle = Oracle {
             limits,
             ..Oracle::default()
@@ -291,7 +289,7 @@ fn limits_count_registered_topology_and_cannot_be_bypassed() {
         assert_matches(&graph, &oracle, &universe);
 
         // Deactivating and disabling never frees capacity.
-        let mut graph = LifecycleGraph::with_limits(engine, limits);
+        let mut graph = LifecycleGraph::with_limits(engine, limits).unwrap();
         for (a, b) in [(1, 2), (2, 3), (3, 4)] {
             graph.link(a, b).unwrap();
         }
@@ -319,7 +317,7 @@ fn limits_count_registered_topology_and_cannot_be_bypassed() {
 fn deactivation_preserves_edge_flags_and_reactivation_respects_them() {
     for engine in ENGINES {
         // Hub 0 with spokes 1..=6 and a ring among the spokes broken at 6-1.
-        let mut graph = LifecycleGraph::new(engine);
+        let mut graph = LifecycleGraph::new(engine).unwrap();
         for spoke in 1..=6 {
             graph.link(0, spoke).unwrap();
         }
@@ -357,7 +355,7 @@ fn deactivation_preserves_edge_flags_and_reactivation_respects_them() {
 #[test]
 fn adjacent_inactive_nodes_and_links_to_inactive_endpoints() {
     for engine in ENGINES {
-        let mut graph = LifecycleGraph::new(engine);
+        let mut graph = LifecycleGraph::new(engine).unwrap();
         graph.link(1, 2).unwrap();
         graph.link(2, 3).unwrap();
         graph.link(3, 4).unwrap();
@@ -391,7 +389,7 @@ fn adjacent_inactive_nodes_and_links_to_inactive_endpoints() {
 #[test]
 fn removal_cascades_and_reused_ids_start_fresh() {
     for engine in ENGINES {
-        let mut graph = LifecycleGraph::new(engine);
+        let mut graph = LifecycleGraph::new(engine).unwrap();
         for spoke in 1..=50 {
             graph.link(0, spoke).unwrap();
         }
@@ -423,7 +421,7 @@ fn removal_cascades_and_reused_ids_start_fresh() {
 
 #[test]
 fn setter_errors_follow_the_documented_precedence_and_change_nothing() {
-    let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs);
+    let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
     graph.link(1, 2).unwrap();
     graph.add_node(3).unwrap();
     let before = counts(&graph);
@@ -492,7 +490,7 @@ fn try_from_topology_matches_incremental_construction() {
         let bulk =
             LifecycleGraph::try_from_topology(engine, GraphLimits::default(), &nodes, &edges)
                 .unwrap();
-        let mut incremental = LifecycleGraph::new(engine);
+        let mut incremental = LifecycleGraph::new(engine).unwrap();
         let mut oracle = Oracle::default();
         for spec in &nodes {
             incremental.add_node(spec.node).unwrap();
@@ -586,7 +584,7 @@ fn try_from_topology_rejects_conflicts_and_limits_in_input_order() {
 #[test]
 fn repeated_remove_and_reinsert_keeps_engine_storage_bounded() {
     for engine in ENGINES {
-        let mut graph = LifecycleGraph::new(engine);
+        let mut graph = LifecycleGraph::new(engine).unwrap();
         for node in 0..64 {
             graph.link(node, node + 1).unwrap();
         }
@@ -606,4 +604,59 @@ fn repeated_remove_and_reinsert_keeps_engine_storage_bounded() {
         assert_eq!(graph.node_count(), 65);
         assert_eq!(graph.edge_count(), 64);
     }
+}
+
+/// v0.5.0 supports lifecycle only on `compact-bfs`. Every constructor rejects
+/// `ett` and `hdt` explicitly (before examining any input) and never falls back
+/// to another engine; the plain engines stay available.
+#[test]
+fn unsupported_engines_are_rejected_without_a_graph() {
+    assert!(LifecycleGraph::supports_engine(EngineConfig::CompactBfs));
+    for engine in [EngineConfig::EulerTour, EngineConfig::Hdt] {
+        assert!(!LifecycleGraph::supports_engine(engine));
+        let expected = LifecycleError::UnsupportedEngine { engine };
+        assert_eq!(LifecycleGraph::new(engine).err(), Some(expected));
+        let limits = GraphLimits {
+            max_nodes: Some(1),
+            max_edges: Some(0),
+        };
+        assert_eq!(
+            LifecycleGraph::with_limits(engine, limits).err(),
+            Some(expected)
+        );
+        // Rejected before entries: a self-loop or a limit violation would
+        // otherwise be reported first.
+        let result = LifecycleGraph::try_from_topology(
+            engine,
+            limits,
+            &[
+                NodeSpec {
+                    node: 1,
+                    active: true,
+                },
+                NodeSpec {
+                    node: 2,
+                    active: true,
+                },
+            ],
+            &[EdgeSpec {
+                source: 3,
+                target: 3,
+                enabled: true,
+            }],
+        );
+        assert_eq!(result.err(), Some(expected));
+        let message = expected.to_string();
+        assert!(
+            message.contains(engine.as_str()) && message.contains("compact-bfs"),
+            "{message}"
+        );
+        // Non-lifecycle use of the same engine is unchanged.
+        let mut plain = knotrel_core::ConnectivityGraph::new(engine);
+        assert_eq!(plain.link(1, 2), Ok(true));
+        assert_eq!(plain.connected(1, 2), Ok(true));
+        assert_eq!(plain.engine(), engine);
+    }
+    let graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
+    assert_eq!(graph.engine(), EngineConfig::CompactBfs);
 }

@@ -28,9 +28,16 @@ pub(crate) enum ServiceGraph {
 
 impl ServiceGraph {
     /// Creates an empty graph for the startup settings.
+    ///
+    /// `lifecycle` with an unsupported engine is unreachable:
+    /// [`ServerConfig::with_topology_lifecycle`](crate::ServerConfig::with_topology_lifecycle)
+    /// rejects it and is the only way to enable lifecycle support.
     pub(crate) fn empty(engine: EngineConfig, limits: GraphLimits, lifecycle: bool) -> Self {
         if lifecycle {
-            Self::Lifecycle(LifecycleGraph::with_limits(engine, limits))
+            Self::Lifecycle(
+                LifecycleGraph::with_limits(engine, limits)
+                    .expect("ServerConfig admits lifecycle support only for supported engines"),
+            )
         } else {
             Self::Plain(ConnectivityGraph::with_limits(engine, limits))
         }

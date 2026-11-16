@@ -86,7 +86,9 @@
 //! # Node and Edge Lifecycle
 //!
 //! [`LifecycleGraph`] adds reversible node activation, reversible edge
-//! enabling and permanent node removal on any engine. It keeps the registered
+//! enabling and permanent node removal on the `compact-bfs` engine (`ett` and
+//! `hdt` lifecycle support is deferred and rejected with
+//! [`LifecycleError::UnsupportedEngine`]). It keeps the registered
 //! topology with flags and answers connectivity over the effective graph:
 //! enabled edges whose endpoints are both active. [`ConnectivityGraph`] is
 //! unchanged and carries no lifecycle bookkeeping.
@@ -94,7 +96,7 @@
 //! ```rust
 //! use knotrel_core::{EngineConfig, LifecycleGraph};
 //!
-//! let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs);
+//! let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs)?;
 //! graph.link(1, 2)?;
 //! graph.set_edge_enabled(1, 2, false)?;
 //! assert!(!graph.connected(1, 2)?);
