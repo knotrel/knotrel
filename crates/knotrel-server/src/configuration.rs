@@ -299,9 +299,26 @@ impl ServerConfig {
     /// feeder events and flagged import entries. When disabled, the plain
     /// engine is used unchanged and those requests are rejected with
     /// `topology_lifecycle_disabled`. See `docs/topology-lifecycle.md`.
-    pub fn with_topology_lifecycle(mut self, enabled: bool) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Enabling it returns [`ConfigError`] unless the configured engine is
+    /// `compact-bfs`: lifecycle support for `ett` and `hdt` is deferred, and
+    /// no other engine is substituted. Disabling always succeeds. The engine
+    /// is fixed by [`Self::new`], so a configuration that passed this check
+    /// keeps a supported engine.
+    pub fn with_topology_lifecycle(mut self, enabled: bool) -> Result<Self, ConfigError> {
+        if enabled && !knotrel_core::LifecycleGraph::supports_engine(self.engine) {
+            return Err(ConfigError(format!(
+                "{} requires {}=compact-bfs; node and edge lifecycle support for {} is not \
+                 available in this release",
+                Setting::TopologyLifecycle,
+                Setting::Engine,
+                self.engine.as_str()
+            )));
+        }
         self.topology_lifecycle = enabled;
-        self
+        Ok(self)
     }
 
     /// Reports whether node and edge lifecycle support is enabled.
@@ -570,7 +587,7 @@ impl ServerConfig {
         Self::build(address, allow_non_loopback, engine, max_pending_jobs)?
             .with_mode(mode)
             .with_metrics_enabled(metrics_enabled)
-            .with_topology_lifecycle(topology_lifecycle)
+            .with_topology_lifecycle(topology_lifecycle)?
             .with_max_import_body_bytes(max_import_body_bytes)?
             .with_dedup_window_size(dedup_window_size)?
             .with_graph_limits(limits)
@@ -733,9 +750,80 @@ mod tests {
                 "{value:?}"
             );
         }
-        let explicit = ServerConfig::default().with_topology_lifecycle(true);
+        let explicit = ServerConfig::default()
+            .with_topology_lifecycle(true)
+            .unwrap();
         assert!(explicit.topology_lifecycle());
-        assert!(!explicit.with_topology_lifecycle(false).topology_lifecycle());
+        assert!(
+            !explicit
+                .with_topology_lifecycle(false)
+                .unwrap()
+                .topology_lifecycle()
+        );
+    }
+
+    /// Every engine/lifecycle combination, from the environment and from the
+    /// embedded builder: lifecycle is accepted only with `compact-bfs`; the
+    /// rejection names both settings and the engine; the engine and the mode
+    /// are never changed, and disabling lifecycle keeps every engine.
+    #[test]
+    fn lifecycle_is_supported_only_on_compact_bfs_without_fallback() {
+        let engines = [
+            ("compact-bfs", EngineConfig::CompactBfs),
+            ("ett", EngineConfig::EulerTour),
+            ("hdt", EngineConfig::Hdt),
+        ];
+        for (name, engine) in engines {
+            for mode in ["standalone", "source_managed"] {
+                for lifecycle in [false, true] {
+                    let variables = [
+                        ("KNOTREL_ENGINE".into(), name.into()),
+                        ("KNOTREL_MODE".into(), mode.into()),
+                        (
+                            "KNOTREL_TOPOLOGY_LIFECYCLE".into(),
+                            lifecycle.to_string().into(),
+                        ),
+                    ];
+                    let from_env = ServerConfig::from_variables(variables);
+                    let embedded = ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 8)
+                        .unwrap()
+                        .with_mode(if mode == "standalone" {
+                            ServerMode::Standalone
+                        } else {
+                            ServerMode::SourceManaged
+                        })
+                        .with_topology_lifecycle(lifecycle);
+                    if lifecycle && engine != EngineConfig::CompactBfs {
+                        for error in [from_env.unwrap_err(), embedded.unwrap_err()] {
+                            assert_eq!(
+                                error.to_string(),
+                                format!(
+                                    "KNOTREL_TOPOLOGY_LIFECYCLE requires KNOTREL_ENGINE=compact-bfs; \
+                                     node and edge lifecycle support for {name} is not available \
+                                     in this release"
+                                )
+                            );
+                        }
+                    } else {
+                        for config in [from_env.unwrap(), embedded.unwrap()] {
+                            assert_eq!(config.engine(), engine, "{name} {mode} {lifecycle}");
+                            assert_eq!(config.topology_lifecycle(), lifecycle);
+                            assert_eq!(
+                                config.mode() == ServerMode::Standalone,
+                                mode == "standalone"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // A rejected request leaves the original configuration usable as is.
+        let ett =
+            ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::EulerTour, 8).unwrap();
+        assert!(ett.clone().with_topology_lifecycle(true).is_err());
+        let kept = ett.with_topology_lifecycle(false).unwrap();
+        assert_eq!(kept.engine(), EngineConfig::EulerTour);
+        assert!(!kept.topology_lifecycle());
     }
 
     #[test]

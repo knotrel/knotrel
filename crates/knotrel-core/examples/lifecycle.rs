@@ -14,7 +14,7 @@ use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("=== Knotrel Node and Edge Lifecycle Example ===\n");
-    let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs);
+    let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs)?;
     // A path 1 - 2 - 3 plus a spur 2 - 4.
     graph.link(1, 2)?;
     graph.link(2, 3)?;

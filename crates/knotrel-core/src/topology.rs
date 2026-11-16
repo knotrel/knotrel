@@ -137,6 +137,13 @@ pub enum LifecycleError {
         /// The second endpoint of the repeated entry, as supplied.
         target: NodeId,
     },
+    /// Lifecycle support is not available for this engine. In v0.5.0 only
+    /// [`EngineConfig::CompactBfs`] is supported; `ett` and `hdt` lifecycle
+    /// support is deferred. No graph is created and no engine is substituted.
+    UnsupportedEngine {
+        /// The requested engine.
+        engine: EngineConfig,
+    },
 }
 
 impl fmt::Display for LifecycleError {
@@ -155,6 +162,12 @@ impl fmt::Display for LifecycleError {
             Self::ConflictingEdge { source, target } => write!(
                 formatter,
                 "edge {source}-{target} is repeated with a different enabled flag"
+            ),
+            Self::UnsupportedEngine { engine } => write!(
+                formatter,
+                "node and edge lifecycle support is not available for engine {}; \
+                 only compact-bfs is supported",
+                engine.as_str()
             ),
         }
     }
@@ -256,7 +269,7 @@ impl NodeRecord {
 /// ```rust
 /// use knotrel_core::{EngineConfig, LifecycleGraph};
 ///
-/// let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs);
+/// let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs)?;
 /// graph.link(1, 2)?;
 /// graph.link(2, 3)?;
 ///
@@ -293,16 +306,43 @@ pub struct LifecycleGraph {
 }
 
 impl LifecycleGraph {
-    /// Creates an empty unlimited graph using `engine` for connectivity.
+    /// Reports whether lifecycle support is available for `engine`.
+    ///
+    /// In v0.5.0 only [`EngineConfig::CompactBfs`] is supported. Lifecycle
+    /// support for the experimental `ett` and `hdt` engines is deferred; their
+    /// plain [`ConnectivityGraph`] use is unaffected.
     #[must_use]
-    pub fn new(engine: EngineConfig) -> Self {
+    pub const fn supports_engine(engine: EngineConfig) -> bool {
+        matches!(engine, EngineConfig::CompactBfs)
+    }
+
+    fn check_engine(engine: EngineConfig) -> Result<(), LifecycleError> {
+        if Self::supports_engine(engine) {
+            Ok(())
+        } else {
+            Err(LifecycleError::UnsupportedEngine { engine })
+        }
+    }
+
+    /// Creates an empty unlimited graph using `engine` for connectivity.
+    ///
+    /// # Errors
+    ///
+    /// [`LifecycleError::UnsupportedEngine`] unless
+    /// [`supports_engine`](Self::supports_engine) holds for `engine`.
+    pub fn new(engine: EngineConfig) -> Result<Self, LifecycleError> {
         Self::with_limits(engine, GraphLimits::default())
     }
 
     /// Creates an empty graph with cardinality limits on registered topology.
-    #[must_use]
-    pub fn with_limits(engine: EngineConfig, limits: GraphLimits) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// [`LifecycleError::UnsupportedEngine`] unless
+    /// [`supports_engine`](Self::supports_engine) holds for `engine`.
+    pub fn with_limits(engine: EngineConfig, limits: GraphLimits) -> Result<Self, LifecycleError> {
+        Self::check_engine(engine)?;
+        Ok(Self {
             nodes: FxHashMap::default(),
             engine: ConnectivityGraph::new(engine),
             limits,
@@ -310,7 +350,7 @@ impl LifecycleGraph {
             registered_edges: 0,
             enabled_edges: 0,
             effective_edges: 0,
-        }
+        })
     }
 
     /// Builds a graph from complete registered topology.
@@ -325,7 +365,10 @@ impl LifecycleGraph {
     ///
     /// # Errors
     ///
-    /// Processing stops at the first failing entry, in input order:
+    /// [`LifecycleError::UnsupportedEngine`] first, before any entry is
+    /// examined, unless [`supports_engine`](Self::supports_engine) holds for
+    /// `engine`. Otherwise processing stops at the first failing entry, in
+    /// input order:
     /// [`LifecycleError::ConflictingNode`] or
     /// [`LifecycleError::ConflictingEdge`] for a repeated entry with a
     /// different flag; [`GraphError::SelfLoop`], then
@@ -338,6 +381,7 @@ impl LifecycleGraph {
         nodes: &[NodeSpec],
         edges: &[EdgeSpec],
     ) -> Result<Self, LifecycleError> {
+        Self::check_engine(engine)?;
         match Self::catalog_fast(limits, nodes, edges) {
             Some((catalog, order)) => Ok(Self::finish(engine, limits, catalog, order)),
             None => Self::catalog_exact(limits, nodes, edges)
@@ -1166,11 +1210,8 @@ mod tests {
     /// internal invariant (catalog symmetry, engine edge set, counters).
     #[test]
     fn random_operations_preserve_internal_invariants() {
-        for engine in [
-            EngineConfig::CompactBfs,
-            EngineConfig::EulerTour,
-            EngineConfig::Hdt,
-        ] {
+        // `ett` and `hdt` lifecycle support is deferred (rejected by the constructors).
+        for engine in [EngineConfig::CompactBfs] {
             let mut state = 0x1234_5678_u64;
             let mut next = move |bound: u64| {
                 state ^= state << 13;
@@ -1178,7 +1219,7 @@ mod tests {
                 state ^= state << 17;
                 state % bound
             };
-            let mut graph = LifecycleGraph::new(engine);
+            let mut graph = LifecycleGraph::new(engine).unwrap();
             for _ in 0..4_000 {
                 // Node 0 is a hub that most edges touch.
                 let a = if next(3) == 0 { 0 } else { next(40) };
@@ -1199,12 +1240,9 @@ mod tests {
 
     #[test]
     fn compaction_bounds_retired_slots_and_preserves_connectivity() {
-        for engine in [
-            EngineConfig::CompactBfs,
-            EngineConfig::EulerTour,
-            EngineConfig::Hdt,
-        ] {
-            let mut graph = LifecycleGraph::new(engine);
+        // `ett` and `hdt` lifecycle support is deferred (rejected by the constructors).
+        for engine in [EngineConfig::CompactBfs] {
+            let mut graph = LifecycleGraph::new(engine).unwrap();
             graph.link(0, 1).unwrap();
             graph.link(1, 2).unwrap();
             graph.set_edge_enabled(1, 2, false).unwrap();

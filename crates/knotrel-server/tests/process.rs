@@ -527,3 +527,58 @@ fn json_logging_startup() {
     server.signal("TERM");
     assert_eq!(server.wait_exit(STEP).code(), Some(0));
 }
+
+/// `KNOTREL_TOPOLOGY_LIFECYCLE=true` with a deferred engine is a startup error:
+/// the process exits with status 1 and an explicit message before it binds or
+/// serves anything, and it never switches to another engine. With lifecycle
+/// disabled the same engines start normally.
+#[test]
+fn lifecycle_with_a_deferred_engine_fails_before_serving() {
+    for engine in ["ett", "hdt"] {
+        let _guard = acquire_start_lock();
+        let address = free_address();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_knotrel-server"))
+            .env_clear()
+            .env("KNOTREL_ADDR", address.to_string())
+            .env("KNOTREL_ENGINE", engine)
+            .env("KNOTREL_TOPOLOGY_LIFECYCLE", "true")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + STEP;
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                panic!("server with lifecycle and {engine} kept running");
+            }
+            sleep(Duration::from_millis(20));
+        };
+        let output = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(status.code(), Some(1), "{status} {stderr}");
+        assert!(
+            stderr.contains("KNOTREL_TOPOLOGY_LIFECYCLE requires KNOTREL_ENGINE=compact-bfs")
+                && stderr.contains(engine),
+            "stderr: {stderr}"
+        );
+        assert!(!stdout.contains("Knotrel listening"), "stdout: {stdout}");
+        assert!(
+            TcpStream::connect(address).is_err(),
+            "nothing may listen on {address}"
+        );
+    }
+    for engine in ["ett", "hdt"] {
+        let server = Server::start(&[
+            ("KNOTREL_ENGINE", engine),
+            ("KNOTREL_TOPOLOGY_LIFECYCLE", "false"),
+        ]);
+        let (status, info) = call(&server, "GET", "/v1/info", "");
+        assert_eq!(status, 200);
+        assert!(info.contains(&format!(r#""engine":"{engine}""#)), "{info}");
+    }
+}
