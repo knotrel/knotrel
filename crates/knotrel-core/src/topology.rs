@@ -54,20 +54,6 @@ use std::{error::Error, fmt};
 /// Minimum number of retired engine slots before a compaction is considered.
 const MIN_RETIRED_BEFORE_COMPACTION: usize = 1024;
 
-/// Compaction runs when retired slots exceed registered nodes divided by
-/// this value (and [`MIN_RETIRED_BEFORE_COMPACTION`]).
-const RETIRED_DIVISOR: usize = 1;
-
-/// Largest number of retired engine slots kept without compaction.
-const fn retired_allowance(registered: usize) -> usize {
-    let share = registered / RETIRED_DIVISOR;
-    if share > MIN_RETIRED_BEFORE_COMPACTION {
-        share
-    } else {
-        MIN_RETIRED_BEFORE_COMPACTION
-    }
-}
-
 /// Smallest incident-vector capacity that is ever shrunk.
 const MIN_SHRINK_CAPACITY: usize = 16;
 
@@ -1064,12 +1050,12 @@ impl LifecycleGraph {
     }
 
     /// Rebuilds the engine when retired slots exceed
-    /// [`retired_allowance`] of the registered nodes, through
+    /// `max(registered nodes, MIN_RETIRED_BEFORE_COMPACTION)`, through
     /// [`Self::build_engine`]. The old engine is dropped after the new one is
     /// built, so both are live at the peak.
     fn compact_if_needed(&mut self) {
         let retired = self.engine.node_count() - self.nodes.len();
-        if retired <= retired_allowance(self.nodes.len()) {
+        if retired <= self.nodes.len().max(MIN_RETIRED_BEFORE_COMPACTION) {
             return;
         }
         let (engine, effective) = Self::build_engine(self.engine.engine(), &mut self.nodes, &[]);
@@ -1153,8 +1139,7 @@ impl LifecycleGraph {
     /// Returns the number of vertices held by the inner engine: every
     /// registered node plus retired slots of removed nodes not yet compacted.
     ///
-    /// It is a storage diagnostic, at most
-    /// `node_count() + max(node_count(), 1024)`.
+    /// It is a storage diagnostic, bounded by `2 × node_count() + 1024`.
     #[must_use]
     pub fn engine_vertex_count(&self) -> usize {
         self.engine.node_count()
@@ -1215,7 +1200,7 @@ impl LifecycleGraph {
         assert_eq!(effective, self.effective_edges);
         assert_eq!(active, self.active_nodes);
         assert_eq!(effective, self.engine.edge_count());
-        assert!(self.engine.node_count() <= self.nodes.len() + retired_allowance(self.nodes.len()));
+        assert!(self.engine.node_count() <= 2 * self.nodes.len() + MIN_RETIRED_BEFORE_COMPACTION);
     }
 }
 
@@ -1500,9 +1485,7 @@ mod tests {
                 assert!(graph.remove_node(node));
                 graph.validate();
             }
-            assert!(
-                graph.engine_vertex_count() <= graph.node_count() + graph.node_count().max(1024)
-            );
+            assert!(graph.engine_vertex_count() <= 2 * graph.node_count() + 1024);
             let storage = graph.storage_stats();
             assert_eq!(storage.catalog_nodes, graph.node_count());
             assert_eq!(storage.incident_entries, 2 * graph.edge_count());
