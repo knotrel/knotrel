@@ -230,6 +230,10 @@ the batch size check (see [Request validation order](#request-validation-order))
 
 ## Node and edge lifecycle (opt-in)
 
+Lifecycle support is available only with `KNOTREL_ENGINE=compact-bfs`; with
+`ett` or `hdt` the server refuses to start (their lifecycle support is
+deferred), and no engine is substituted.
+
 With `KNOTREL_TOPOLOGY_LIFECYCLE=true` the server keeps **registered
 topology** with one flag per node (`active`) and per edge (`enabled`), and
 answers connectivity over the **effective graph**: the active nodes and the
@@ -622,7 +626,7 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_MAX_IMPORT_BODY_BYTES` | ASCII decimal integer from 1 through 1073741824 | `67108864` (64 MiB) |
 | `KNOTREL_DEDUP_WINDOW_SIZE` | ASCII decimal integer from 1 through 1000000 | `10000` |
 | `KNOTREL_METRICS_ENABLED` | Exactly `true` or `false`; `true` serves [`GET /metrics`](#metrics-opt-in) | `false` |
-| `KNOTREL_TOPOLOGY_LIFECYCLE` | Exactly `true` or `false`; `true` enables [node and edge lifecycle](#node-and-edge-lifecycle-opt-in) support | `false` |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | Exactly `true` or `false`; `true` enables [node and edge lifecycle](#node-and-edge-lifecycle-opt-in) support and requires `KNOTREL_ENGINE=compact-bfs` (with `ett` or `hdt` startup fails before binding; their lifecycle support is deferred) | `false` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
 | `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
 | `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |

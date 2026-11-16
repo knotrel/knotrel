@@ -785,7 +785,8 @@ failure marking; merging them would change worker ownership and is not proposed.
 
 ### 9.6 Node and Edge Lifecycle Events and Imports (v0.5.0 M10)
 
-With `KNOTREL_TOPOLOGY_LIFECYCLE=true` the source can describe registered
+With `KNOTREL_TOPOLOGY_LIFECYCLE=true` (supported only with
+`KNOTREL_ENGINE=compact-bfs` in v0.5.0) the source can describe registered
 topology with flags (contract: [topology-lifecycle.md](topology-lifecycle.md);
 wire shapes: [HTTP API](http-api.md#node-and-edge-lifecycle-opt-in)). The
 protocol above is unchanged; this section records what lifecycle support adds.
