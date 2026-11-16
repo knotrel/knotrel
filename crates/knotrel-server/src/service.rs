@@ -2341,19 +2341,16 @@ impl Service {
             lifecycle.check_worker_hook();
             job.import.observe(ImportObservation::begin_prepare);
 
-            // 1. Off-lock JSON parsing. Converting the body reuses its
-            // allocation when it is uniquely owned (otherwise copies it once)
-            // and releases it with the scratch buffer before candidate
-            // building, so peak memory does not hold two body copies alongside
-            // the parsed request and the candidate graph.
+            // 1. Off-lock JSON parsing with a streaming deserializer (see
+            // `parse_import_body`), reading the body in place. The body is
+            // released before candidate building, so peak memory does not
+            // hold it alongside the parsed request and the candidate graph.
             let req: ImportRequest = {
-                let mut buffer = Vec::from(raw_bytes);
-                simd_json::from_slice(&mut buffer).map_err(|err| {
-                    if err.is_data() {
-                        FeederError::UnprocessableJson(crate::api::request_error_message(&err))
-                    } else {
-                        FeederError::MalformedJson
-                    }
+                let parsed = crate::api::parse_import_body(&raw_bytes);
+                drop(raw_bytes);
+                parsed.map_err(|message| match message {
+                    Some(message) => FeederError::UnprocessableJson(message),
+                    None => FeederError::MalformedJson,
                 })?
             };
 
@@ -2422,7 +2419,10 @@ impl Service {
             // 4. ATOMIC PUBLICATION
             let before = state.sync_point();
             state.failed = true;
-            state.graph = candidate;
+            // The replaced graph is destroyed after the lock is released (one
+            // free per adjacency and incident list), not in the critical
+            // section; queued requests already see the new generation.
+            let replaced = std::mem::replace(&mut state.graph, candidate);
             state.generation = next_generation;
             state.version = vec![0];
             state.source_id = Some(req.source_id);
@@ -2487,6 +2487,8 @@ impl Service {
             };
             drop(state);
             lifecycle.check_worker_post_lock_hook();
+            // Still inside the worker: job accounting and drain include it.
+            drop(replaced);
             Ok(response)
         });
         let pending = PendingOutcome::arm(self.telemetry_for(JobEffect::MayChangeState));
