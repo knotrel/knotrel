@@ -91,7 +91,8 @@ impl Level {
     /// singleton without exact-level incidences. Such a record is
     /// indistinguishable from an implicit missing vertex, so queries and
     /// replacement search are unchanged. Dense F_0 records are never released.
-    /// O(1) when `v` still has incidences, else O(log V) for the root lookup.
+    /// One expected O(1) ID-map probe, plus O(log V) for the root lookup
+    /// only when both incidence sets are empty.
     fn release_if_isolated(&mut self, v: usize) {
         if self.dense {
             return;
@@ -172,10 +173,9 @@ impl Level {
         }
         self.refresh(local_a);
         self.refresh(local_b);
-        if !insert {
-            self.release_if_isolated(a);
-            self.release_if_isolated(b);
-        }
+        // No release here: a removed non-tree incidence leaves its endpoints
+        // connected in F_i, and a tree incidence is removed before its forest
+        // cut, which `HdtGraph::cut` follows with the release check.
         (local_a, local_b)
     }
 }
@@ -194,7 +194,8 @@ impl Level {
 /// exact-level incidences. Records that become isolated are released for reuse
 /// and emptied incidence sets free their nodes, so storage follows the live
 /// level structure rather than the history of promotions; arena and vector
-/// capacities still retain their peaks (at most twice the live size after growth).
+/// capacities, and released record slots, still retain their peaks (vector
+/// capacity is at most twice the peak length).
 /// Vertex insertion costs O(1) amortized for base forest, including ID indexing. Upper
 /// levels store only vertices touched by promotions; creating these records is
 /// charged to promotions. Vector reallocations can still cause linear spikes.
@@ -651,12 +652,12 @@ mod tests {
                     for &w in &adjacency[v as usize] {
                         if !off[w as usize] {
                             graph.cut(v, w).unwrap();
+                            validate(&graph);
                         }
                     }
                     off[v as usize] = true;
                 }
             }
-            validate(&graph);
             for v in 0..n {
                 if off[v as usize] {
                     off[v as usize] = false;
@@ -677,7 +678,8 @@ mod tests {
             } else if round > 20 {
                 // Slots are reused: no new slot unless live records need it.
                 let live: usize = graph.levels[1..].iter().map(|l| l.local_ids.len()).sum();
-                assert!(slots <= slots_high_water.max(live) + n as usize);
+                assert!(slots <= slots_high_water.max(live));
+                slots_high_water = slots_high_water.max(slots);
             }
         }
         assert!(released, "the churn must exercise record release");
