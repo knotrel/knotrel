@@ -145,7 +145,13 @@ effective graph in the engine. Structurally this is about twice the plain
 engine's storage for an all-active graph; this is an estimate, and measured
 values are in the v0.5.0 qualification evidence. Vectors and hash maps retain
 capacity after removals up to their peak size; incident lists shrink when
-they fall below a quarter of their capacity.
+they fall below a quarter of their capacity. The `ett` and `hdt` engines free
+an incidence set's storage when it becomes empty, and `hdt` releases an upper
+level's record of a vertex that becomes isolated there, reusing the slot. Under
+sustained churn `hdt` storage still grows until its level structure (spanning
+forest copies of promoted tree edges, `O(V log V)` in total) reaches a steady
+state; that growth also occurs without lifecycle mode. Hash tables under
+delete/insert churn may double once at more than half load.
 
 ## 6. Rust API (`knotrel-core`)
 

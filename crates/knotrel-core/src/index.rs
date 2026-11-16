@@ -9,7 +9,28 @@
 //! powering both deterministic spanning forests ([`crate::ForestGraph`]) and HDT
 //! hierarchical forests ([`crate::HdtGraph`]).
 
-use std::num::NonZeroUsize;
+use std::{collections::BTreeSet, num::NonZeroUsize};
+
+/// Removes `key` from an incidence set and releases the set's node storage
+/// once it becomes empty.
+///
+/// `BTreeSet::remove` keeps an emptied root leaf allocated (104 bytes for
+/// `usize` keys on 64-bit targets). Engines keep one set per vertex, so
+/// without this release every vertex that ever held an incidence would
+/// retain a leaf: storage would track the historical set of incident
+/// vertices instead of the live incidences. Replacing an empty set with
+/// [`BTreeSet::new`] does not allocate; the next insertion allocates one leaf
+/// again. O(log k) for a set of k keys, plus one deallocation when emptied.
+/// Returns whether the set is now empty.
+#[inline]
+pub(crate) fn remove_incidence(set: &mut BTreeSet<usize>, key: usize) -> bool {
+    set.remove(&key);
+    let empty = set.is_empty();
+    if empty {
+        *set = BTreeSet::new();
+    }
+    empty
+}
 
 /// Optional arena index encoded as `index + 1`, reserving zero to denote absence.
 ///

@@ -5,7 +5,7 @@
 //! separately. Each component of F_i has at most U / 2^i vertices, with U the
 //! next power of two of the current vertex count. Growing U only relaxes bounds.
 
-use crate::{GraphError, NodeId, hdt_forest::Forest};
+use crate::{GraphError, NodeId, hdt_forest::Forest, index::remove_incidence};
 use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
 use std::collections::{BTreeSet, hash_map::Entry};
@@ -41,7 +41,12 @@ struct Edge {
 
 // F_0 is dense to keep queries free of an extra translation. Higher levels
 // materialize only touched vertices. Missing vertices are implicit isolated
-// singletons with no incidences. Maps and local handles remain stable after cuts.
+// singletons with no incidences. A sparse record that becomes an isolated
+// singleton with no exact-level incidence is released: its global mapping is
+// removed and its local slot (vertex token, empty sets) waits in `free_locals`
+// for the next materialization. Upper-level records therefore track the
+// vertices currently in F_i or holding level-i incidences, not every vertex
+// ever promoted. Local handles of live records never change.
 #[derive(Debug, Default)]
 struct Level {
     forest: Forest,
@@ -50,6 +55,7 @@ struct Level {
     dense: bool,
     local_ids: IntMap<usize, usize>,
     global_ids: Vec<usize>,
+    free_locals: Vec<usize>,
 }
 impl Level {
     fn local(&self, v: usize) -> Option<usize> {
@@ -63,6 +69,12 @@ impl Level {
         if let Some(local) = self.local(v) {
             return local;
         }
+        if let Some(local) = self.free_locals.pop() {
+            // A released slot is an unmarked singleton with empty sets.
+            self.local_ids.insert(v, local);
+            self.global_ids[local] = v;
+            return local;
+        }
         let local = self.tree.len();
         if self.dense {
             assert_eq!(v, local);
@@ -74,6 +86,27 @@ impl Level {
         self.tree.push(BTreeSet::new());
         self.non_tree.push(BTreeSet::new());
         local
+    }
+    /// Releases global vertex `v`'s sparse record if it is an isolated
+    /// singleton without exact-level incidences. Such a record is
+    /// indistinguishable from an implicit missing vertex, so queries and
+    /// replacement search are unchanged. Dense F_0 records are never released.
+    /// O(1) when `v` still has incidences, else O(log V) for the root lookup.
+    fn release_if_isolated(&mut self, v: usize) {
+        if self.dense {
+            return;
+        }
+        let Some(local) = self.local(v) else {
+            return;
+        };
+        if self.tree[local].is_empty()
+            && self.non_tree[local].is_empty()
+            && self.forest.component_size(local) == 1
+        {
+            self.local_ids.remove(&v);
+            self.global_ids[local] = usize::MAX;
+            self.free_locals.push(local);
+        }
     }
     fn connected(&self, a: usize, b: usize) -> bool {
         if a == b {
@@ -134,11 +167,15 @@ impl Level {
             sets[local_a].insert(b);
             sets[local_b].insert(a);
         } else {
-            sets[local_a].remove(&b);
-            sets[local_b].remove(&a);
+            remove_incidence(&mut sets[local_a], b);
+            remove_incidence(&mut sets[local_b], a);
         }
         self.refresh(local_a);
         self.refresh(local_b);
+        if !insert {
+            self.release_if_isolated(a);
+            self.release_if_isolated(b);
+        }
         (local_a, local_b)
     }
 }
@@ -152,7 +189,12 @@ impl Level {
 /// Queries cost O(log V) algorithmically on the base forest, with expected O(1) hash map ID lookup, and allocate no
 /// scratch. Across a history with at most N registered vertices, edge updates
 /// have O(log² N) amortized cost; one cut may still inspect many edges. Logical
-/// storage is O(E + V log V). Arenas/adjacency capacities retain historical highs.
+/// storage is O(E + V log V): each level holds one spanning-forest copy of its
+/// tree edges and records only for vertices currently in that forest or holding
+/// exact-level incidences. Records that become isolated are released for reuse
+/// and emptied incidence sets free their nodes, so storage follows the live
+/// level structure rather than the history of promotions; arena and vector
+/// capacities still retain their peaks (at most twice the live size after growth).
 /// Vertex insertion costs O(1) amortized for base forest, including ID indexing. Upper
 /// levels store only vertices touched by promotions; creating these records is
 /// charged to promotions. Vector reallocations can still cause linear spikes.
@@ -256,7 +298,10 @@ impl HdtGraph {
         if tree {
             self.stats.tree_cuts = self.stats.tree_cuts.saturating_add(1);
             for (i, arcs) in edge.arcs.into_iter().enumerate() {
-                self.levels[i].forest.cut(arcs);
+                let level = &mut self.levels[i];
+                level.forest.cut(arcs);
+                level.release_if_isolated(a);
+                level.release_if_isolated(b);
             }
             self.replace(a, b, edge.level);
         }
@@ -395,7 +440,9 @@ impl HdtGraph {
             .map(|(i, level)| {
                 let mut storage = level.forest.storage();
                 storage.level = i;
-                storage.mapping_capacity_bytes = level.global_ids.capacity() * size_of::<usize>();
+                storage.mapping_capacity_bytes = (level.global_ids.capacity()
+                    + level.free_locals.capacity())
+                    * size_of::<usize>();
                 storage.mapping_payload_bytes = level.local_ids.len() * size_of::<(usize, usize)>();
                 storage.tree_incidences = level.tree.iter().map(BTreeSet::len).sum();
                 storage.non_tree_incidences = level.non_tree.iter().map(BTreeSet::len).sum();
@@ -464,6 +511,7 @@ mod tests {
         let universe = n.max(1).next_power_of_two();
         for (i, level) in graph.levels.iter().enumerate() {
             level.forest.validate();
+            validate_records(level);
             let mut closure = vec![vec![false; n]; n];
             for (v, row) in closure.iter_mut().enumerate() {
                 row[v] = true;
@@ -528,6 +576,115 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Sparse records: the mapping is a bijection between live records and
+    /// global IDs; every released slot is an unmarked singleton with empty
+    /// sets and no mapping; every live record is non-isolated or has an
+    /// exact-level incidence (no isolated record is retained).
+    fn validate_records(level: &Level) {
+        assert_eq!(level.tree.len(), level.non_tree.len());
+        assert_eq!(level.tree.len(), level.forest.vertex_tokens.len());
+        if level.dense {
+            assert!(level.free_locals.is_empty() && level.local_ids.is_empty());
+            return;
+        }
+        assert_eq!(level.global_ids.len(), level.tree.len());
+        assert_eq!(
+            level.local_ids.len() + level.free_locals.len(),
+            level.tree.len()
+        );
+        for (&v, &local) in &level.local_ids {
+            assert_eq!(level.global_ids[local], v);
+            assert!(
+                !level.tree[local].is_empty()
+                    || !level.non_tree[local].is_empty()
+                    || level.forest.component_size(local) > 1,
+                "retained isolated record for vertex {v}"
+            );
+        }
+        let free: BTreeSet<_> = level.free_locals.iter().copied().collect();
+        assert_eq!(free.len(), level.free_locals.len());
+        for &local in &level.free_locals {
+            assert_eq!(level.global_ids[local], usize::MAX);
+            assert!(level.tree[local].is_empty() && level.non_tree[local].is_empty());
+            assert_eq!(level.forest.component_size(local), 1);
+            assert_eq!(level.forest.marks(local), (false, false));
+        }
+    }
+
+    /// Regression for upper-level record retention: repeatedly isolating
+    /// and restoring vertices (the engine-level effect of node deactivation)
+    /// must not accumulate isolated records. Records of every sparse level
+    /// stay bounded by the vertices currently present in F_i or holding
+    /// level-i incidences, and released slots are reused. Before the fix,
+    /// records grew with the history of promoted vertices.
+    #[test]
+    fn isolating_churn_releases_and_reuses_upper_level_records() {
+        let n = 96_u64;
+        let mut seed = 7_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        let mut adjacency = vec![Vec::new(); n as usize];
+        let mut graph = HdtGraph::new();
+        for v in 0..n {
+            graph.add_node(v);
+        }
+        for _ in 0..3 * n {
+            let (a, b) = (next() % n, next() % n);
+            if a != b && graph.link(a, b).unwrap() {
+                adjacency[a as usize].push(b);
+                adjacency[b as usize].push(a);
+            }
+        }
+        let mut off = vec![false; n as usize];
+        let mut slots_high_water = 0;
+        let mut released = false;
+        for round in 0..60 {
+            let picks: Vec<u64> = (0..8).map(|_| next() % n).collect();
+            for &v in &picks {
+                if !off[v as usize] {
+                    for &w in &adjacency[v as usize] {
+                        if !off[w as usize] {
+                            graph.cut(v, w).unwrap();
+                        }
+                    }
+                    off[v as usize] = true;
+                }
+            }
+            validate(&graph);
+            for v in 0..n {
+                if off[v as usize] {
+                    off[v as usize] = false;
+                    for &w in &adjacency[v as usize] {
+                        if !off[w as usize] {
+                            graph.link(v, w).unwrap();
+                        }
+                    }
+                }
+            }
+            validate(&graph);
+            for level in &graph.levels[1..] {
+                released |= !level.free_locals.is_empty();
+            }
+            let slots: usize = graph.levels[1..].iter().map(|l| l.tree.len()).sum();
+            if round == 20 {
+                slots_high_water = slots;
+            } else if round > 20 {
+                // Slots are reused: no new slot unless live records need it.
+                let live: usize = graph.levels[1..].iter().map(|l| l.local_ids.len()).sum();
+                assert!(slots <= slots_high_water.max(live) + n as usize);
+            }
+        }
+        assert!(released, "the churn must exercise record release");
+        assert!(
+            graph.levels.len() > 2,
+            "the churn must exercise upper levels"
+        );
     }
 
     #[test]

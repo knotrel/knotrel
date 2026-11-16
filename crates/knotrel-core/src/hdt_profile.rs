@@ -30,7 +30,7 @@ pub struct HdtStorageStats {
 pub struct HdtLevelStorage {
     /// Level index.
     pub level: usize,
-    /// Materialized vertex records, including retained isolated records.
+    /// Vertex record slots: live records plus released slots awaiting reuse.
     pub vertices: usize,
     /// Live spanning edges in this forest, including higher-level edges.
     pub tree_edges: usize,
@@ -46,7 +46,7 @@ pub struct HdtLevelStorage {
     pub free_list_capacity_bytes: usize,
     /// Capacity bytes of both vectors of adjacency set headers.
     pub adjacency_capacity_bytes: usize,
-    /// Local-to-global vertex mapping vector capacity bytes.
+    /// Capacity bytes of the local-to-global mapping and released-slot vectors.
     pub mapping_capacity_bytes: usize,
     /// Live global-to-local mapping payload, excluding B-tree overhead.
     pub mapping_payload_bytes: usize,
