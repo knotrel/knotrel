@@ -482,12 +482,12 @@ Deferred from v0.3.0 (not part of its acceptance); assigned to v0.4.0 by the sco
 
 [Design and implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). The plan distinguishes registered topology from effective connectivity: an edge participates only when enabled and both endpoints are active. Deactivating a node preserves independently configured edge flags; removing a node cascades to its incident registered edges. Detailed API and compatibility decisions require M10.1 acceptance before coding.
 
-- [ ] **M10.1 Contract:** Freeze activation/removal, missing-object, query, revision, count/limit and import/event semantics; assess safe deletion on each engine.
-- [ ] **M10.2 Reversible activation:** Shared core node-active and edge-enabled state with filtered-topology oracle tests and compatibility when disabled.
-- [ ] **M10.3 Node removal:** Cascade removal, safe ID reuse, storage reclamation and explicit degree/rebuild costs.
-- [ ] **M10.4 Standalone service:** Atomic per-command visibility, existing batch behavior, coherent revisions and cancellation semantics.
-- [ ] **M10.5 Source integration:** Ordered lifecycle events, deduplication and complete atomic imports including inactive topology; external authority unchanged.
-- [ ] **M10.6 Evidence and operations:** M6 telemetry updates, power-grid tutorial, bounded resource and before/after performance qualification under separately approved criteria.
+- [x] **M10.1 Contract:** Freeze activation/removal, missing-object, query, revision, count/limit and import/event semantics; assess safe deletion on each engine.
+- [x] **M10.2 Reversible activation:** Shared core node-active and edge-enabled state with filtered-topology oracle tests and compatibility when disabled.
+- [x] **M10.3 Node removal:** Cascade removal, safe ID reuse, storage reclamation and explicit degree/rebuild costs.
+- [x] **M10.4 Standalone service:** Atomic per-command visibility, existing batch behavior, coherent revisions and cancellation semantics.
+- [x] **M10.5 Source integration:** Ordered lifecycle events, deduplication and complete atomic imports including inactive topology; external authority unchanged.
+- [ ] **M10.6 Evidence and operations:** M6 telemetry updates, power-grid tutorial, bounded resource and before/after performance qualification under separately approved criteria. Telemetry, tutorial and qualification done (2026-11-16); the qualification did not pass unconditionally and awaits owner decisions ([release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification)).
 - [ ] **Acceptance M10:** Correct core/service behavior across supported engines, preserved source and lifecycle contracts, explicit resource semantics and accepted qualification evidence. No persistence or electrical-simulation guarantee is introduced.
 
 ### M5 — Measured contention, query concurrency and isolation (P1) — Deferred to a later release (not part of v0.3.0 or v0.4.0)
