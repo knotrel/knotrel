@@ -176,6 +176,7 @@ impl LifecycleGraph {
     pub fn node_count / edge_count / active_node_count / enabled_edge_count
         / effective_edge_count(&self) -> usize;
     pub fn engine_vertex_count(&self) -> usize;   // includes retired slots
+    pub fn storage_stats(&self) -> LifecycleStorage; // O(V): sizes and capacities
     pub fn limits(&self) -> GraphLimits;
     pub fn engine(&self) -> EngineConfig;
 }
