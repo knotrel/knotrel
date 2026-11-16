@@ -348,7 +348,7 @@ paths:
                   value:
                     result: error
                     code: topology_lifecycle_disabled
-                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true"
+                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true (requires KNOTREL_ENGINE=compact-bfs)"
         '413':
           description: Request body exceeds 1 MiB limit
           content:
@@ -539,7 +539,7 @@ paths:
                   value:
                     result: error
                     code: topology_lifecycle_disabled
-                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true"
+                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true (requires KNOTREL_ENGINE=compact-bfs)"
         '422':
           description: Invalid batch size (not 1–1024) or invalid operation shape in batch
           content:

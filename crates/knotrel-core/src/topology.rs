@@ -914,13 +914,11 @@ impl LifecycleGraph {
         let Some(record) = self.nodes.remove(&node) else {
             return false;
         };
-        // Descending neighbor order. For `compact-bfs`, whose adjacency vectors
-        // are sorted, this removes from the end of the node's vector, so each
-        // removal shifts no elements instead of up to `d`. For `ett` and `hdt`
-        // the v0.5.0 qualification measured large reductions with this order
-        // on high-degree nodes (for example 7.6x slower than an unordered
-        // application-side equivalent before, 0.7x after, ETT degree 4,096);
-        // the order is a measured choice there, not a proven bound.
+        // Descending neighbor order. For `compact-bfs`, the only engine with
+        // lifecycle support, whose adjacency vectors are sorted, this removes
+        // from the end of the node's vector, so each removal shifts no elements
+        // instead of up to `d`. (Earlier candidates also measured this order on
+        // the now-deferred `ett` and `hdt` lifecycle support.)
         for incidence in record.incident.iter().rev() {
             let neighbor = self
                 .nodes

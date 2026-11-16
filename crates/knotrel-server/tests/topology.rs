@@ -612,7 +612,19 @@ async fn flagged_import_rejects_conflicting_entries() {
 
 #[tokio::test]
 async fn disabled_lifecycle_rejects_flagged_imports_and_events_without_applying_any() {
-    let mut feeder = Feeder::start(EngineConfig::CompactBfs, false).await;
+    // Every engine, including the ones whose lifecycle support is deferred:
+    // with lifecycle off they keep the same source-managed behavior.
+    for engine in [
+        EngineConfig::CompactBfs,
+        EngineConfig::EulerTour,
+        EngineConfig::Hdt,
+    ] {
+        disabled_lifecycle_rejects_flagged_requests(engine).await;
+    }
+}
+
+async fn disabled_lifecycle_rejects_flagged_requests(engine: EngineConfig) {
+    let mut feeder = Feeder::start(engine, false).await;
     for (nodes, edges) in [
         (json!([{"node":"1","active":true}]), json!([])),
         (
@@ -960,7 +972,7 @@ async fn deferred_engines_reject_lifecycle_and_keep_non_lifecycle_behavior() {
         let app = router_with_config(config(engine, false, ServerMode::Standalone));
         let info = get(&app, "/v1/info").await;
         assert_eq!(info["engine"], engine.as_str());
-        assert!(info.get("topology_lifecycle").is_none() || info["topology_lifecycle"] == false);
+        assert!(info.get("topology_lifecycle").is_none(), "{info}");
         assert_eq!(
             op(&app, json!({"op":"link","source":"1","target":"2"}))
                 .await

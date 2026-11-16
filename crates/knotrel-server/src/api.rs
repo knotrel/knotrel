@@ -851,8 +851,7 @@ pub(crate) fn graph_error_code(error: GraphError) -> ErrorCode {
 }
 
 /// Message of the `topology_lifecycle_disabled` rejection.
-pub(crate) const LIFECYCLE_DISABLED_MESSAGE: &str =
-    "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true";
+pub(crate) const LIFECYCLE_DISABLED_MESSAGE: &str = "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true (requires KNOTREL_ENGINE=compact-bfs)";
 
 /// An operation result; batches preserve errors at the corresponding index.
 #[derive(Debug, Serialize)]

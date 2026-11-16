@@ -535,8 +535,11 @@ fn json_logging_startup() {
 #[test]
 fn lifecycle_with_a_deferred_engine_fails_before_serving() {
     for engine in ["ett", "hdt"] {
-        let _guard = acquire_start_lock();
-        let address = free_address();
+        // The address stays occupied while the child runs: had it tried to
+        // bind before validating, it would fail with "address in use"
+        // instead of the configuration error asserted below.
+        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = occupied.local_addr().unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_knotrel-server"))
             .env_clear()
             .env("KNOTREL_ADDR", address.to_string())
@@ -558,19 +561,17 @@ fn lifecycle_with_a_deferred_engine_fails_before_serving() {
             sleep(Duration::from_millis(20));
         };
         let output = child.wait_with_output().unwrap();
+        drop(occupied);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(status.code(), Some(1), "{status} {stderr}");
-        assert!(
-            stderr.contains("KNOTREL_TOPOLOGY_LIFECYCLE requires KNOTREL_ENGINE=compact-bfs")
-                && stderr.contains(engine),
-            "stderr: {stderr}"
+        let expected = format!(
+            "KNOTREL_TOPOLOGY_LIFECYCLE requires KNOTREL_ENGINE=compact-bfs; node and edge \
+             lifecycle support for {engine} is not available in this release"
         );
+        assert!(stderr.contains(&expected), "stderr: {stderr}");
+        assert!(!stderr.contains("AddrInUse"), "stderr: {stderr}");
         assert!(!stdout.contains("Knotrel listening"), "stdout: {stdout}");
-        assert!(
-            TcpStream::connect(address).is_err(),
-            "nothing may listen on {address}"
-        );
     }
     for engine in ["ett", "hdt"] {
         let server = Server::start(&[
