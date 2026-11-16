@@ -439,14 +439,21 @@ impl Graph {
     /// distinct IDs, equal lengths, every list strictly sorted, symmetric
     /// (`j` in `adjacency[i]` iff `i` in `adjacency[j]`) and free of
     /// self-loops; debug builds verify them. Vectors are taken as they are,
-    /// so their capacities are kept.
+    /// so their capacities are kept. The ID map and the outer adjacency
+    /// vector get room for `headroom` further vertices, so that many
+    /// `add_node` calls neither rehash nor reallocate them.
     ///
-    /// `O(V + E)` time plus the ID-map insertions (expected `O(1)` each);
-    /// no adjacency vector is reallocated.
-    pub(crate) fn from_sorted_adjacency(ids: Vec<NodeId>, adjacency: Vec<Vec<usize>>) -> Self {
+    /// `O(V + E + headroom)` time plus the ID-map insertions (expected `O(1)`
+    /// each); no adjacency list is reallocated.
+    pub(crate) fn from_sorted_adjacency(
+        ids: Vec<NodeId>,
+        mut adjacency: Vec<Vec<usize>>,
+        headroom: usize,
+    ) -> Self {
         assert_eq!(ids.len(), adjacency.len(), "one adjacency list per ID");
+        adjacency.reserve_exact(headroom);
         let mut map: IntMap<NodeId, usize> =
-            IntMap::with_capacity_and_hasher(ids.len(), Default::default());
+            IntMap::with_capacity_and_hasher(ids.len() + headroom, Default::default());
         for (index, &node) in ids.iter().enumerate() {
             let previous = map.insert(node, index);
             debug_assert!(previous.is_none(), "distinct IDs");

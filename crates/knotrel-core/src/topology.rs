@@ -642,8 +642,10 @@ impl LifecycleGraph {
     /// construction-only `pending` field, reset to zero afterwards). Each
     /// adjacency vector is allocated once with capacity equal to the node's
     /// enabled registered degree (an upper bound of its effective degree), so
-    /// no vector grows. `O(V log V + E)` time with expected `O(1)` probes;
-    /// scratch memory is the `O(V)` sorted ID vector.
+    /// no vector grows. The engine's ID map and outer vector reserve room for
+    /// [`retired_allowance`] more vertices (at most `max(V / 4, 1024)`
+    /// entries of headroom). `O(V log V + E)` time with expected `O(1)`
+    /// probes; scratch memory is the `O(V)` sorted ID vector.
     ///
     /// Other engines, and catalogs too large for 32-bit indices, use the
     /// incremental [`Self::build_engine_incremental`]. `order` is used only
@@ -686,7 +688,11 @@ impl LifecycleGraph {
         for record in catalog.values_mut() {
             record.pending = 0;
         }
-        let graph = crate::Graph::from_sorted_adjacency(ids, adjacency);
+        // Room for the retired slots allowed before the next compaction, so
+        // removals and re-registrations up to it do not grow the engine's ID
+        // map or outer vector (each would be an `O(V)` rehash or copy).
+        let headroom = retired_allowance(ids.len());
+        let graph = crate::Graph::from_sorted_adjacency(ids, adjacency, headroom);
         (ConnectivityGraph::from(graph), incidences / 2)
     }
 
