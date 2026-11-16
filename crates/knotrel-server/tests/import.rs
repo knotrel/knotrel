@@ -1359,3 +1359,76 @@ async fn test_15_error_classification_malformed_syntax_vs_schema_data() {
     let stats = get(&mut s_stats, "/v1/stats").await;
     assert_eq!(stats.json()["generation"], 0);
 }
+
+// ---------------------------------------------------------------------------
+// 16. The replaced graph is released after the graph lock (v0.6.0, C2)
+// ---------------------------------------------------------------------------
+
+/// A replace import publishes in one critical section and destroys the
+/// replaced graph only after releasing the graph lock, still inside its
+/// worker. While the worker is held at the post-lock hook (before that
+/// destruction), other requests already observe the new generation and the
+/// import is still an outstanding job, so drain accounting covers the
+/// deferred work.
+#[tokio::test]
+async fn test_16_replaced_graph_released_after_lock_inside_worker() {
+    let running = Running::start(config_source_managed()).await;
+    let instance_id = running.instance_id().await;
+    assert_eq!(
+        register_session(&running, "feeder-1", 1, 10000)
+            .await
+            .status,
+        200
+    );
+    let mut stream1 = running.connect().await;
+    let initial_body = format!(
+        r#"{{"mode":"create_only","instance_id":"{instance_id}","graph_id":"default","source_id":"pg-1","source_epoch":"ep-1","source_position":"pos-10","feeder_session_id":"feeder-1","feeder_epoch":1,"nodes":["1","2","3"],"edges":[{{"source":"1","target":"2"}},{{"source":"2","target":"3"}}]}}"#
+    );
+    let r1 = post(
+        &mut stream1,
+        "/v1/feeder/import",
+        &[("x-knotrel-instance-id", &instance_id)],
+        &initial_body,
+    )
+    .await;
+    assert_eq!(r1.status, 201);
+    running.wait_for_jobs(0).await;
+
+    let mut pause = running.lifecycle.pause_next_worker_after_lock();
+    let mut stream_replace = running.connect().await;
+    let replace_body = format!(
+        r#"{{"mode":"replace","instance_id":"{instance_id}","graph_id":"default","source_id":"pg-1","source_epoch":"ep-1","source_position":"pos-20","feeder_session_id":"feeder-1","feeder_epoch":1,"nodes":["10","20"],"edges":[]}}"#
+    );
+    let request = format!(
+        "POST /v1/feeder/import HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\nx-knotrel-instance-id: {instance_id}\r\nif-match: \"1.0.pos-10\"\r\ncontent-length: {}\r\n\r\n{replace_body}",
+        replace_body.len()
+    );
+    stream_replace.write_all(request.as_bytes()).await.unwrap();
+    pause.wait_started().await;
+
+    // Published, lock released, old graph not yet destroyed.
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+    let mut s_stats = running.connect().await;
+    let stats = get(&mut s_stats, "/v1/stats").await;
+    assert_eq!(stats.status, 200);
+    assert_eq!(stats.json()["generation"], 2);
+    assert_eq!(stats.json()["node_count"], 2);
+    assert_eq!(stats.json()["source_position"], "pos-20");
+    let mut s_query = running.connect().await;
+    let query = post(
+        &mut s_query,
+        "/v1/operations",
+        &[],
+        r#"{"op":"connected","source":"10","target":"20"}"#,
+    )
+    .await;
+    assert_eq!(query.status, 200);
+    assert_eq!(query.json()["connected"], false);
+    assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+
+    pause.release();
+    let reply = read_reply(&mut stream_replace).await.unwrap();
+    assert_eq!(reply.status, 201);
+    assert_eq!(reply.json()["generation"], 2);
+    running.wait_for_jobs(0).await;
+}

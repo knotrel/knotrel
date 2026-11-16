@@ -1005,6 +1005,29 @@ pub(crate) fn request_error_message(err: &simd_json::Error) -> String {
     }
 }
 
+/// Parses an import body, the only large request body.
+///
+/// `simd_json` first builds an aligned copy of the body, a string buffer of
+/// its size, a structural index and a tape with one node per structural
+/// character: a working set several times the body (about 87 MiB for an
+/// 8.3 MiB body in the v0.5.0 diagnostics). A valid body is therefore decoded
+/// with `serde_json`'s streaming deserializer, which reads the bytes in place.
+///
+/// The two parsers classify some invalid inputs differently (integer
+/// literals outside the 64-bit range, nesting deeper than `serde_json`'s
+/// recursion limit). To keep the import error contract exactly, a body that
+/// `serde_json` rejects is parsed again with `simd_json`, whose result is
+/// returned: invalid JSON is `Err(None)` (400), a valid document of the wrong
+/// shape is `Err(Some(message))` (422) with [`request_error_message`]. Only
+/// rejected bodies pay the second parse and its working set.
+pub(crate) fn parse_import_body(bytes: &[u8]) -> Result<ImportRequest, Option<String>> {
+    serde_json::from_slice(bytes).or_else(|_| {
+        let mut buffer = bytes.to_vec();
+        simd_json::from_slice(&mut buffer)
+            .map_err(|err| err.is_data().then(|| request_error_message(&err)))
+    })
+}
+
 pub(crate) fn check_json_content_type(headers: &HeaderMap) -> Option<Response> {
     let valid = headers
         .get(CONTENT_TYPE)
@@ -1762,6 +1785,110 @@ pub(crate) fn inject_metadata_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The streaming import parser classifies and reports every body exactly
+    /// as the former `simd_json` path did: the same decoded request, or the
+    /// same 400/422 split with the same stable message.
+    #[test]
+    fn import_body_parser_matches_former_simd_json_classification() {
+        fn former(body: &[u8]) -> Result<String, Option<String>> {
+            let mut buffer = body.to_vec();
+            simd_json::from_slice::<ImportRequest>(&mut buffer)
+                .map(|request| format!("{request:?}"))
+                .map_err(|err| err.is_data().then(|| request_error_message(&err)))
+        }
+        let head = r#""mode":"create_only","instance_id":"i","graph_id":"default","source_id":"s","source_epoch":"e","source_position":"p","feeder_session_id":"f","feeder_epoch":1"#;
+        let with = |rest: &str| format!("{{{head},{rest}}}");
+        let mut cases: Vec<Vec<u8>> = [
+            with(r#""nodes":[],"edges":[]"#),
+            with(r#""nodes":["1","2",{"node":"3","active":false}],"edges":[{"source":"1","target":"2"},{"source":"2","target":"3","enabled":false}]"#),
+            with(r#""nodes":["\u0031\u0032"],"edges":[]"#),
+            with(r#""nodes":["1"]"#),
+            with(r#""nodes":[],"nodes":[],"edges":[]"#),
+            with(r#""nodes":[],"edges":[],"extra":1"#),
+            with(r#""nodes":{},"edges":[]"#),
+            with(r#""nodes":["abc"],"edges":[]"#),
+            with(r#""nodes":["-1"],"edges":[]"#),
+            with(r#""nodes":[""],"edges":[]"#),
+            with(r#""nodes":["99999999999999999999999"],"edges":[]"#),
+            with(r#""nodes":[1],"edges":[]"#),
+            with(r#""nodes":[null],"edges":[]"#),
+            with(r#""nodes":[{"node":"1","active":null}],"edges":[]"#),
+            with(r#""nodes":[{"node":"1","active":"no"}],"edges":[]"#),
+            with(r#""nodes":[{"node":"1"}],"edges":[]"#),
+            with(r#""nodes":[{"node":"1","active":true,"x":1}],"edges":[]"#),
+            with(r#""nodes":[],"edges":[{"source":"1","target":"2","enabled":null}]"#),
+            with(r#""nodes":[],"edges":[{"source":"1"}]"#),
+            with(r#""nodes":[],"edges":[["1","2"]]"#),
+            with(r#""nodes":[],"edges":[],"mode":"replace""#),
+            format!(r#"{{"mode":"upsert",{}}}"#, &head[21..]),
+            format!(r#"{{{}}}"#, head.replace("\"feeder_epoch\":1", "\"feeder_epoch\":-1")),
+            format!(r#"{{{}}}"#, head.replace("\"feeder_epoch\":1", "\"feeder_epoch\":1.5")),
+            format!(r#"{{{}}}"#, head.replace("\"feeder_epoch\":1", "\"feeder_epoch\":18446744073709551616")),
+            format!(r#"{{{},"nodes":[],"edges":[]}}"#, head.replace("\"feeder_epoch\":1", "\"feeder_epoch\":\"1\"")),
+            String::new(),
+            "   ".into(),
+            "[]".into(),
+            "null".into(),
+            "{".into(),
+            with(r#""nodes":[],"edges":[]"#) + " x",
+            with(r#""nodes":[],"edges":[]"#)[..40].into(),
+            with(r#""nodes":["1",],"edges":[]"#),
+            with(r#""nodes":["1"] "edges":[]"#),
+            format!("\u{feff}{}", with(r#""nodes":[],"edges":[]"#)),
+            "[".repeat(200) + &"]".repeat(200),
+        ]
+        .into_iter()
+        .map(String::into_bytes)
+        .collect();
+        cases.push(b"{\"mode\":\"create_only\xff\"}".to_vec());
+        for extra in [
+            r#""nodes":[18446744073709551616],"edges":[]"#,
+            r#""nodes":[-9223372036854775809],"edges":[]"#,
+            r#""nodes":[1e400],"edges":[]"#,
+            r#""nodes":[1.0],"edges":[]"#,
+            r#""nodes":[-0],"edges":[]"#,
+            r#""nodes":[01],"edges":[]"#,
+            r#""nodes":[NaN],"edges":[]"#,
+            r#""nodes":["\ud800"],"edges":[]"#,
+            r#""nodes":["\x"],"edges":[]"#,
+            r#""nodes":["a	b"],"edges":[]"#,
+            r#""nodes":[true],"edges":[]"#,
+            r#""nodes":["0","18446744073709551615"],"edges":[]"#,
+        ] {
+            cases.push(with(extra).into_bytes());
+        }
+        // Accepted bodies with escapes and number spellings decode alike.
+        for epoch in ["0", "-0", "18446744073709551615", "1e2", "1.0"] {
+            cases.push(
+                format!(
+                    r#"{{{},"nodes":[],"edges":[]}}"#,
+                    head.replace("\"feeder_epoch\":1", &format!("\"feeder_epoch\":{epoch}"))
+                )
+                .into_bytes(),
+            );
+        }
+        // Escapes in an accepted body decode alike.
+        let escaped = head.replace(
+            r#""source_position":"p""#,
+            r#""source_position":"a\n\u0000\/\"b""#,
+        );
+        cases.push(format!(r#"{{{escaped},"nodes":["7"],"edges":[]}}"#).into_bytes());
+        let accepted = cases.iter().filter(|body| former(body).is_ok()).count();
+        assert!(accepted >= 6, "{accepted} accepted bodies");
+        let mut differences = Vec::new();
+        for body in &cases {
+            let streaming = parse_import_body(body).map(|request| format!("{request:?}"));
+            let expected = former(body);
+            if streaming != expected {
+                differences.push(format!(
+                    "{:?}: {streaming:?} != {expected:?}",
+                    String::from_utf8_lossy(body)
+                ));
+            }
+        }
+        assert!(differences.is_empty(), "{differences:#?}");
+    }
     use crate::{Lifecycle, ServerConfig, ServerMode};
     use axum::http::HeaderValue;
 
