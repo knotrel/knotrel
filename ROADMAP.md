@@ -27,7 +27,8 @@ An external feeder reads the authoritative database or event stream and supplies
 | **v0.5.0 — Node & Edge Lifecycle** (published 2026-11-16) | Reversible node/edge activation and permanent node removal without losing configured connection state | M10: core facade on `compact-bfs` (lifecycle on experimental `ett`/`hdt` deferred, owner decision B1 2026-11-16), standalone HTTP, ordered feeder events, flagged atomic imports, telemetry, tutorial, independent review and performance qualification | Opt-in (`KNOTREL_TOPOLOGY_LIFECYCLE`); no persistence, multi-graph, electrical simulation or concurrency redesign. Accepted with explicit exceptions (maintainer waivers for v0.5.0 only) |
 | **v0.6.0 — Lifecycle Efficiency & Measured Concurrency** | Lower lifecycle and import costs with stated resource bounds; measure contention and batching before any synchronization change; prepare v1.0 | 0.6.1 baseline and resource model; 0.6.2 lifecycle/import efficiency; 0.6.3 contention and batch evaluation (M5, deferred M3.6); 0.6.4 evidence-driven execution changes (no-change decision valid); 0.6.5 final qualification against published v0.5.0 with a versioned performance diff; 0.6.6 v1.0 readiness assessment | Lifecycle stays `compact-bfs` only; no persistence/WAL, multi-graph, distributed execution, power flow, connectors, automatic backend switching, unrelated API expansion or dependency modernization; no inherited waivers |
 | **Unassigned — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; deferred from v0.5.0 by the 2026-11-16 scope decision; release unassigned |
-| **v1.0.0 — Production Readiness** (via v1.0.0-rc) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. A v0.7.0 exists only for concrete gaps named by the assessment |
+| **v0.7.0 — Measured Concurrency** (planned) | Remove the measured graph-lock bottleneck for read-heavy work without weakening any service invariant | M5 implementation (M5.3–M5.5, Acceptance M5): evaluate the minimal synchronization design from the v0.6.0 contention evidence that preserves panic handling, lease/staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, import publication and shutdown/drain; before/after qualification against v0.6.0 | No mechanism is prescribed in advance (a read-write lock is one option, not a decision); no sharding/RCU/snapshots/lock-free/actors without evidence; the coarse mutex stays if no design meets the invariants |
+| **v1.0.0 — Production Readiness** (v0.6.0 → v0.7.0 → v1.0.0-rc → v1.0.0, each step subject to its stability gates) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. A v0.7.0 exists only for concrete gaps named by the assessment |
 
 **Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
 
@@ -83,10 +84,14 @@ Checks reflect verified implementation and acceptance gates. From v0.6.0 on, eve
 
 - [ ] **0.6.1** Baseline and resource model
 - [ ] **0.6.2** Lifecycle and import efficiency
-- [ ] **0.6.3** Contention and batch evaluation (M5, deferred M3.6)
-- [ ] **0.6.4** Evidence-driven execution improvements
+- [ ] **0.6.3** Contention and batch evaluation (M5 measurement, deferred M3.6)
+- [x] **0.6.4** Evidence-driven execution improvements — decision recorded: no synchronization change in v0.6.0 (maintainer decision B, 2026-11-16); M5 implementation moves to v0.7.0
 - [ ] **0.6.5** Final qualification and operational validation
 - [ ] **0.6.6** v1.0 readiness assessment
+
+### v0.7.0 — Measured Concurrency (planned)
+
+- [ ] **M5 implementation** (M5.3–M5.5, Acceptance M5), from the v0.6.0 contention evidence; see [v0.7.0](#v070--measured-concurrency-planned)
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
 
@@ -512,11 +517,11 @@ Deferred from v0.3.0 (not part of its acceptance); assigned to v0.4.0 by the sco
 - [x] **M10.6 Evidence and operations:** M6 telemetry updates, power-grid tutorial, bounded resource and before/after performance qualification under separately approved criteria. Telemetry, tutorial and qualification done (2026-11-16; final run 4 on candidate `dcd8ccc` with lifecycle scope `compact-bfs` after owner decision B1); the qualification did not pass unconditionally; the remaining results were accepted by explicit maintainer waivers for v0.5.0 only (2026-11-16) ([release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification)). CI, the release dry run (`dry_run=false` run 43960259369) and publication completed 2026-11-16.
 - [x] **Acceptance M10:** Correct core/service behavior across supported engines, preserved source and lifecycle contracts, explicit resource semantics and accepted qualification evidence. No persistence or electrical-simulation guarantee is introduced. **Accepted with explicit exceptions** for v0.5.0 (the waivers above); **Published** 2026-11-16. The failures the waivers covered remain failures: v0.6.0 re-measures each of them under the same rules, and the waivers do not apply to it.
 
-### M5 — Measured contention, query concurrency and isolation (P1) — Assigned to v0.6.0 (increment 0.6.3; not part of v0.3.0–v0.5.0)
+### M5 — Measured contention, query concurrency and isolation (P1) — Measurement in v0.6.0 (0.6.3); implementation assigned to v0.7.0
 
 - [ ] **M5.1 Instrument:** Separate parse/serialize, queue, lock, graph work, candidate build and publication costs. Optional storage I/O is not a prerequisite.
 - [ ] **M5.2 Workloads:** Mixed reads/writes, batch sizes, rebuild/import overlap and feeder catch-up; report tails, fairness and memory with reproducible workloads.
-- [ ] **M5.3 Alternatives:** Keep the coarse mutex if adequate; otherwise evaluate shorter critical sections, read locks only where query implementations permit them, or single-writer execution. No speculative redesign.
+- [ ] **M5.3 Alternatives:** Keep the coarse mutex if adequate; otherwise evaluate shorter critical sections, read locks only where query implementations permit them, or single-writer execution. No speculative redesign. (v0.7.0: start from the v0.6.0 evidence; read-only jobs currently write the panic marker and source-managed lease/staleness state under the lock, so no mechanism is prescribed before that design.)
 - [ ] **M5.4 Invariants:** Preserve coherent graph/generation/revision/cursor observations, legacy batch isolation and import publication; no update to an obsolete generation.
 - [ ] **M5.5 Regression gate:** Require demonstrated benefit without correctness or unacceptable tail-latency regressions. Record a justified no-change decision if the current model meets approved objectives.
 - [ ] **Acceptance M5:** The chosen synchronization design is supported by evidence and the v0.2.0 integration contract remains intact.
@@ -572,17 +577,22 @@ Tasks and acceptance as listed in [M6](#m6--integration-aware-observability-p1--
 
 ### 0.6.2 — Lifecycle and import efficiency (at most three candidates)
 
-- [ ] **C1** one-pass engine construction from the catalog (import and compaction).
-- [ ] **C2** streaming import parse with the former error contract; replaced graph released after the graph lock.
-- [ ] **C3** retired-slot storage release and compaction at `max(V/4, 1024)` retired slots; C3(c) rebuild headroom rejected by diagnostics.
+Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/README.md`; diagnostic results are not qualification results):
+
+- [x] **C1** one-pass engine construction from the catalog (import and compaction) — Implemented, Reviewed; **retained** (core import −14.7% at 100k, −14.3% at 10k, no gain with 60/30 flags; compaction spike 30 → 18 ms).
+- [x] **C2** streaming import parse with the former error contract; replaced graph released after the graph lock — Implemented, Reviewed; **retained** (HTTP import peak 111–130 → 31–50 MiB; HTTP import time −1% to +12% in diagnostics; the diagnostic +25% criterion does not replace the 10% release tolerance).
+- [x] **C3(a)** retired-slot storage release — Implemented, Reviewed; **retained** (fresh-churn compaction peak −17%, churn −6%).
+- **C3(b)** compaction at `max(V/4, 1024)` — **rejected** (fresh churn +86% to +91%); reverted, v0.5.0 threshold restored verbatim. **C3(c)** rebuild headroom — **rejected** (higher steady memory and compaction peak); reverted.
+- Remaining known limit: a one-time catalog hash-table doubling under fresh-ID churn, bounded as stated in the [lifecycle contract](docs/topology-lifecycle.md#hash-table-capacity-under-churn-v060); the qualification's heap-growth check is not reclassified.
 
 ### 0.6.3 — Contention and batch evaluation (M5, M3.6)
 
 - [ ] Bounded matrix (lifecycle off/on, read-heavy and mixed, batch 1/8/64, 1–64 clients, imports and feeder catch-up overlapping queries, 10k/100k nodes) measured with client and server-side phases; decision under the predeclared rule.
+  - Diagnostic D3 (2026-11-16): rule (i) triggered — at 4 or more clients, read-heavy batches spend 61–94% of client latency waiting for the graph lock, and throughput does not grow with clients. The final M_desc/M_reg results are recorded with the qualification. This evaluation does **not** certify that the current model meets any concurrency objective.
 
 ### 0.6.4 — Evidence-driven execution improvements
 
-- [ ] Change or documented no-change decision, from 0.6.3 evidence only.
+- [x] Decision (maintainer, 2026-11-16, option B): the coarse mutex is kept in v0.6.0; the synchronization change is deferred to v0.7.0. This authorizes keeping the mutex; it does not certify that the model meets concurrency objectives and does not pre-approve any regression. M5's implementation tasks (M5.3–M5.5, Acceptance M5) stay open.
 
 ### 0.6.5 — Final qualification and operational validation
 
@@ -593,6 +603,17 @@ Tasks and acceptance as listed in [M6](#m6--integration-aware-observability-p1--
 - [ ] [Assessment](docs/releases/v1.0-readiness.md) of the ten v1.0 criteria with gates for v1.0.0-rc; a v0.7.0 only for concrete gaps.
 
 **Exit gate:** every candidate has a recorded retain/reject decision; every qualification cell is classified under the frozen rules, with failures reported as failures; release artifacts and the v1.0 assessment are ready for maintainer review. Acceptance and publication are maintainer decisions.
+
+---
+
+## v0.7.0 — Measured Concurrency (planned)
+
+**Scope decision (2026-11-16, maintainer option B):** v0.6.0 keeps the coarse graph mutex. v0.7.0 addresses concurrency from the bottleneck measured in v0.6.0: with read-heavy work, the single lock serializes BFS queries and lock wait dominates client latency at four or more clients.
+
+- [ ] **0.7.1 Design:** the minimal change that removes the measured bottleneck while preserving panic handling (a panic makes the graph unavailable, including to queued jobs), lease and staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, atomic import publication and shutdown/drain accounting. Candidates are evaluated, not prescribed (for example read-only jobs under a shared lock with panic state moved out of the guarded state, or shorter critical sections).
+- [ ] **0.7.2 Implementation and deterministic tests** for every boundary the design changes.
+- [ ] **0.7.3 Qualification** against v0.6.0 with the v0.6.0 contention matrix and the existing release cells; no inherited waivers.
+- [ ] **Acceptance M5.** If no design preserves the invariants, the documented outcome is to keep the mutex.
 
 ---
 

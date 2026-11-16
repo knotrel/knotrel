@@ -174,6 +174,56 @@ may retain freed pages. (Independently of lifecycle support, the `ett` and
 releases an upper level's record of a vertex that becomes isolated there,
 reusing the slot.)
 
+### Hash-table capacity under churn (v0.6.0)
+
+This bound follows from the implementation of `std::collections::HashMap`
+(the hashbrown SwissTable; rule checked in the hashbrown 0.17.1 source). It is
+an implementation property, not a documented `std` guarantee, and is stated for
+64-bit targets.
+
+**Variables.** `B` is the table's bucket count (a power of two); its capacity
+is `cap(B) = 7B/8` for `B ≥ 16`. `n` is the number of entries; `N` is the
+largest `n` the table ever holds. The catalog's node map stores a 40-byte
+entry (8-byte key, 32-byte record) plus one control byte per bucket.
+
+**Rule.** Removing an entry turns its slot into an empty slot or a tombstone.
+When an insertion finds no free capacity left (live entries plus tombstones),
+the table either rehashes in place at the same `B` when `n + 1 ≤ cap(B) / 2`,
+which clears every tombstone, or grows to the smallest power of two whose
+capacity is at least `max(n + 1, cap(B) + 1)`, which doubles `B`.
+
+**Bound.** Growth happens only while `cap(B) / 2 < N + 1`. Therefore `B` never
+exceeds the larger of its initial value and the smallest power of two with
+`cap(B) ≥ 2(N + 1)`. The number of removals, insertions, compactions or
+re-registrations does not enter the bound; only `N` does.
+
+**Consequences for each churn pattern:**
+
+- **Fresh-ID churn** at a constant registered count `V` (remove a node,
+  register a never-used ID): tombstones accumulate, so a table that was
+  allocated more than half full doubles once and then only rehashes in place.
+  For `V = 100,000`, import sizes the table at `B = 131,072` (capacity
+  114,688). It grows to `B = 262,144` (capacity 229,376 ≥ 200,002), about
+  5.1 → 10.3 MiB of allocated table memory, observed between cycles 3 and 6
+  of the diagnostic. Whether the doubling happens depends on where `V` falls
+  between powers of two: a table less than half full never doubles.
+- **Same-ID reuse** (remove and re-register the same ID): same rule. The count
+  does not grow, so at most the same single doubling can occur.
+- **Toggling flags** inserts and removes nothing in the map: no growth.
+- **Compaction** rebuilds the engine, not the catalog. The catalog map keeps
+  its capacity. The engine's ID map (16-byte entries) holds up to
+  `2V + 1024` entries before a compaction rebuilds it at capacity `V`, so the
+  same rule bounds it by the table for `2V + 1024` entries.
+
+**Capacity, allocated memory and RSS** are different quantities. Capacity is
+the entry count above. Allocated memory is about `41 × B` bytes for the
+catalog map, plus each record's incident list, which this bound does not
+cover. RSS also includes pages the allocator keeps after the old table is
+freed, and is not bounded by Knotrel. The qualification's heap-growth check
+(C3) counts allocated memory over 30 cycles. A one-time doubling inside that
+window therefore raises the check's slope even though it is bounded; the
+check's verdict stands as measured.
+
 ## 6. Rust API (`knotrel-core`)
 
 Additive; `Graph`, `ConnectivityGraph` and `GraphError` are unchanged.
