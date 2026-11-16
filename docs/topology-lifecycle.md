@@ -115,6 +115,12 @@ Hash-map lookups are expected `O(1)`, not worst case.
 | `remove_node` that triggers compaction | the above plus `O(V + E_eff)` catalog scan and `V + E_eff` engine insertions | adds `O(1 + E_eff / V)` engine insertions per removal, with `V` and `E_eff` taken at rebuild time |
 | `connected` | the engine's query cost plus two flag checks | same |
 
+Deactivation and removal cut effective incident edges in descending neighbor
+order. For `compact-bfs` this removes from the end of the node's sorted
+adjacency vector, so a high-degree removal does not pay `O(d)` shifts per
+edge; for `ett` and `hdt` the order was chosen because it measured much
+faster on high-degree nodes, not because of a proven bound.
+
 None of these is logarithmic in general. Removing or deactivating a
 high-degree hub costs work proportional to its degree, and a compacting
 removal holds the server's graph lock for a whole-graph rebuild. In `ett` and

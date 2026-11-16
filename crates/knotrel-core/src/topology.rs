@@ -43,7 +43,6 @@
 //! engine vertices stay below `2 V + 1024`.
 
 use crate::{ConnectivityGraph, EngineConfig, GraphError, GraphLimits, NodeId};
-use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
 use std::{error::Error, fmt};
 
@@ -275,7 +274,10 @@ impl NodeRecord {
 /// ```
 #[derive(Debug)]
 pub struct LifecycleGraph {
-    nodes: IntMap<NodeId, NodeRecord>,
+    // `FxHashMap`, not the identity-hashed `IntMap`: with hashbrown, identity
+    // hashes of small IDs or IDs sharing their high bits collide in the 7-bit
+    // control tag and degrade probing (measured in the v0.5.0 qualification).
+    nodes: FxHashMap<NodeId, NodeRecord>,
     engine: ConnectivityGraph,
     limits: GraphLimits,
     active_nodes: usize,
@@ -295,7 +297,7 @@ impl LifecycleGraph {
     #[must_use]
     pub fn with_limits(engine: EngineConfig, limits: GraphLimits) -> Self {
         Self {
-            nodes: IntMap::default(),
+            nodes: FxHashMap::default(),
             engine: ConnectivityGraph::new(engine),
             limits,
             active_nodes: 0,
@@ -330,7 +332,7 @@ impl LifecycleGraph {
         nodes: &[NodeSpec],
         edges: &[EdgeSpec],
     ) -> Result<Self, LifecycleError> {
-        let mut catalog: IntMap<NodeId, NodeRecord> = IntMap::default();
+        let mut catalog: FxHashMap<NodeId, NodeRecord> = FxHashMap::default();
         catalog.reserve(nodes.len());
         let mut order: Vec<NodeId> = Vec::with_capacity(nodes.len());
         let node_limit = limits.max_nodes;
@@ -633,8 +635,10 @@ impl LifecycleGraph {
         if record.active == active {
             return Ok(false);
         }
+        // Effective incident edges are visited in descending neighbor order
+        // (see `remove_node` for why).
         let mut affected = Vec::new();
-        for incidence in &record.incident {
+        for incidence in record.incident.iter().rev() {
             if incidence.enabled && self.nodes[&incidence.neighbor].active {
                 affected.push(incidence.neighbor);
             }
@@ -730,7 +734,14 @@ impl LifecycleGraph {
         let Some(record) = self.nodes.remove(&node) else {
             return false;
         };
-        for incidence in &record.incident {
+        // Descending neighbor order. For `compact-bfs`, whose adjacency vectors
+        // are sorted, this removes from the end of the node's vector, so each
+        // removal shifts no elements instead of up to `d`. For `ett` and `hdt`
+        // the v0.5.0 qualification measured large reductions with this order
+        // on high-degree nodes (for example 7.6x slower than an unordered
+        // application-side equivalent before, 0.7x after, ETT degree 4,096);
+        // the order is a measured choice there, not a proven bound.
+        for incidence in record.incident.iter().rev() {
             let neighbor = self
                 .nodes
                 .get_mut(&incidence.neighbor)
