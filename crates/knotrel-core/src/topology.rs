@@ -635,11 +635,11 @@ impl LifecycleGraph {
     ///
     /// For `compact-bfs` (the only engine with lifecycle support) the engine
     /// is built in one pass ([`Graph::from_sorted_adjacency`]): node IDs are
-    /// sorted and receive engine indices in ascending ID order, so each
-    /// node's effective neighbor indices, read in its incident list's
-    /// neighbor-ID order, are already strictly increasing. Each neighbor's
-    /// index and flag come from one catalog probe (the index is parked in the
-    /// construction-only `pending` field, reset to zero afterwards). Each
+    /// sorted and receive engine indices in ascending ID order (the index is
+    /// parked in the construction-only `pending` field, reset to zero
+    /// afterwards). Each effective edge costs one catalog probe, from its
+    /// smaller endpoint, and is appended to both adjacency lists; visiting
+    /// nodes in index order keeps every list strictly sorted. Each
     /// adjacency vector is allocated once with capacity equal to the node's
     /// enabled registered degree (an upper bound of its effective degree), so
     /// no vector grows. `O(V log V + E)` time with expected `O(1)` probes;
@@ -664,30 +664,47 @@ impl LifecycleGraph {
                 .expect("listed node is registered")
                 .pending = u32::try_from(index).expect("node count checked above");
         }
-        let mut adjacency: Vec<Vec<usize>> = Vec::with_capacity(ids.len());
-        let mut incidences = 0;
-        for node in &ids {
-            let record = &catalog[node];
+        let records: Vec<&NodeRecord> = ids.iter().map(|node| &catalog[node]).collect();
+        let mut adjacency: Vec<Vec<usize>> = records
+            .iter()
+            .map(|record| {
+                if record.active {
+                    Vec::with_capacity(record.incident.iter().filter(|i| i.enabled).count())
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        // Each effective edge {u, v} with u < v is found once, from u, and
+        // pushed to both lists. Nodes are visited in ascending index order, so
+        // `adjacency[x]` first receives its smaller neighbors (pushed while
+        // visiting them, in ascending order) and then its larger ones (from
+        // its own sorted incident list): every list ends strictly sorted.
+        let mut edges = 0;
+        for (index, record) in records.iter().enumerate() {
             if !record.active {
-                adjacency.push(Vec::new());
                 continue;
             }
-            let enabled = record.incident.iter().filter(|i| i.enabled).count();
-            let mut neighbors = Vec::with_capacity(enabled);
-            for incidence in record.incident.iter().filter(|i| i.enabled) {
+            let node = ids[index];
+            for incidence in &record.incident {
+                if incidence.neighbor < node || !incidence.enabled {
+                    continue;
+                }
                 let neighbor = &catalog[&incidence.neighbor];
                 if neighbor.active {
-                    neighbors.push(neighbor.pending as usize);
+                    let other = neighbor.pending as usize;
+                    adjacency[index].push(other);
+                    adjacency[other].push(index);
+                    edges += 1;
                 }
             }
-            incidences += neighbors.len();
-            adjacency.push(neighbors);
         }
+        drop(records);
         for record in catalog.values_mut() {
             record.pending = 0;
         }
         let graph = crate::Graph::from_sorted_adjacency(ids, adjacency);
-        (ConnectivityGraph::from(graph), incidences / 2)
+        (ConnectivityGraph::from(graph), edges)
     }
 
     /// Incremental engine construction through
