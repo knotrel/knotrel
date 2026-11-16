@@ -170,6 +170,48 @@ or `hdt`, which remain available without lifecycle. With lifecycle off,
 behavior is unchanged from v0.4.0. Semantics, costs and memory limits are in
 the [lifecycle contract](docs/topology-lifecycle.md).
 
+Over HTTP, from a clone of `main`, take device 2 out of service and bring it
+back (with the `op` helper from the quickstart):
+
+```sh
+KNOTREL_TOPOLOGY_LIFECYCLE=true cargo run --release --locked -p knotrel-server
+```
+
+```sh
+op '{"op":"link","source":"1","target":"2"}'
+op '{"op":"link","source":"2","target":"3"}'
+op '{"op":"set_node_active","node":"2","active":false}'  # {"result":"changed","changed":true}
+op '{"op":"connected","source":"1","target":"3"}'        # {"result":"connected","connected":false}
+op '{"op":"edge_state","source":"1","target":"2"}'       # {"result":"edge_state","registered":true,"enabled":true,"effective":false}
+op '{"op":"set_node_active","node":"2","active":true}'
+op '{"op":"connected","source":"1","target":"3"}'        # {"result":"connected","connected":true}
+op '{"op":"set_edge_enabled","source":"2","target":"3","enabled":false}'
+op '{"op":"remove_node","node":"2"}'                     # removes 2 and its edges
+```
+
+In Rust (`knotrel-core` from `main`; not in the published 0.4.0 crate):
+
+```rust
+use knotrel_core::{EngineConfig, LifecycleGraph};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Fails with `LifecycleError::UnsupportedEngine` for `ett` or `hdt`.
+    let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs)?;
+    graph.link(1, 2)?;
+    graph.link(2, 3)?;
+
+    graph.set_node_active(2, false)?;
+    assert!(!graph.connected(1, 3)?);
+    graph.set_node_active(2, true)?;
+    assert!(graph.connected(1, 3)?);
+
+    graph.set_edge_enabled(2, 3, false)?;
+    assert!(!graph.connected(1, 3)?);
+    assert!(graph.remove_node(2));
+    Ok(())
+}
+```
+
 ## Performance evidence
 
 **[knotrel-benchmarks](https://github.com/knotrel/knotrel-benchmarks)** holds
