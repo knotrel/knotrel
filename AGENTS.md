@@ -12,6 +12,39 @@
 - Keep benchmarks reproducible. Never present unmeasured performance claims or compare different consistency/result contracts.
 - Do not commit or push unless the user explicitly asks for it.
 
+## Before release
+
+Follow [the release procedure](docs/releases/release-procedure.md); this list
+covers what is easy to miss. Check every item on the exact candidate commit.
+
+- **Crate docs (crates.io and docs.rs):** for every item under "What is new"
+  in the release notes, update:
+  - `crates/*/src/lib.rs` crate-level `//!` docs (the docs.rs landing page),
+    with a doctest where an example helps;
+  - `crates/*/README.md` (the crates.io page);
+  - the main `README.md`, `docs/http-api.md` and `docs/openapi.yaml` for any
+    new public type, `KNOTREL_*` variable or HTTP operation.
+  Mark unreleased features as such until publication, and never link to
+  release assets that do not exist yet.
+- **Preview what will be published:** `cargo package --list -p <crate>` and
+  `cargo doc --no-deps -p <crate>`; run `python3 scripts/check-crate-docs.py`
+  (it checks version references only, not coverage).
+- **Versions:** workspace version, the `knotrel-core` dependency version and
+  `Cargo.lock` agree with the release.
+- **User-facing performance pages:** add the release to
+  `docs/performance-by-version.md` and the README performance section, with
+  no claim beyond the qualification and its maintainer decisions.
+- **Release notes:** the "Outstanding release gates" section reflects the
+  current state; drop "draft" only at release.
+- **Evidence:** release code of the final commit identical to the measured
+  candidate (or re-measured); raw evidence stored with checksums.
+- **CI and dry run:** all CI on all three platforms and the release dry run
+  passed on the final commit; the deployment and rebuild smoke test repeated.
+- **Tags:** signed tag (`git tag -s`, `git verify-tag`) in knotrel and the
+  matching tag in knotrel-benchmarks.
+- **After publication:** remove "unreleased" labels, update installation
+  examples and the roadmap.
+
 ## Git & Naming Rulesets
 
 - **Branch Naming**: All branches must follow the pattern:
