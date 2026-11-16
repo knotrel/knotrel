@@ -1,4 +1,4 @@
-# Node and edge lifecycle contract (M10, v0.5.0)
+# Node and edge lifecycle contract (M10, v0.5.0; storage updated in v0.6.0)
 
 **Status:** frozen contract for v0.5.0 implementation (M10.1). It refines the
 [M10 plan](superpowers/plans/2026-11-13-topology-lifecycle.md). Deviations
@@ -121,7 +121,7 @@ Hash-map lookups are expected `O(1)`, not worst case.
 | `set_node_active` | `O(d)` catalog scan plus `d_eff × U` | same |
 | `set_edge_enabled`, `link`, `cut` | `O(d_u + d_v)` catalog work plus at most one `U` | same |
 | `remove_node` without compaction | `O(d + sum of neighbor degrees)` catalog work plus `d_eff × U` | same |
-| `remove_node` that triggers compaction | the above plus `O(V + E_eff)` catalog scan and `V + E_eff` engine insertions | adds `O(1 + E_eff / V)` engine insertions per removal, with `V` and `E_eff` taken at rebuild time |
+| `remove_node` that triggers compaction | the above plus an `O(V log V + E)` one-pass engine rebuild from the catalog | adds `O(1 + E / V)` rebuild work per removal (about four times the v0.5.0 constant, see below), with `V` and `E` taken at rebuild time |
 | `connected` | the engine's query cost plus two flag checks | same |
 
 Deactivation and removal cut effective incident edges in descending neighbor
@@ -135,24 +135,41 @@ removal holds the server's graph lock for a whole-graph rebuild.
 
 **Engine slots and compaction.** The engines do not support vertex deletion
 and key vertices by node ID. A removed node's engine vertex stays as an
-isolated *retired* slot: all its edges were cut, which leaves no adjacency in
-`compact-bfs`. Registering the **same** ID again
-reuses that slot. After every removal, if retired slots exceed
-`max(registered nodes, 1024)`, the facade rebuilds the engine from the
-catalog: all registered nodes (active or not) and all effective edges. More
-than `max(V, 1024)` removals separate two rebuilds, which gives the amortized
-term above. Engine vertices stay at most `2 × registered nodes + 1024`.
+isolated *retired* slot: all its edges were cut, and since v0.6.0 its adjacency
+allocation is released, so a retired slot keeps only its engine ID-map entry
+and an empty vector header. Registering the **same** ID again reuses that
+slot. After every removal, if retired slots exceed `max(⌊V / 4⌋, 1024)`
+(v0.5.0: `max(V, 1024)`), the facade rebuilds the engine from the catalog: all
+registered nodes (active or not) and all effective edges. More than
+`max(⌊V / 4⌋, 1024)` removals separate two rebuilds, which gives the amortized
+term above. Engine vertices stay at most `V + max(⌊V / 4⌋, 1024)` (v0.5.0:
+`2V + 1024`). Rebuilds are four times as frequent as in v0.5.0 for the same
+fresh-ID churn; each one holds the server's graph lock.
 
-**Memory.** Lifecycle mode stores the registered topology in the catalog
-(per node: a flag and a sorted incident list with edge flags) and the
-effective graph in the engine. Structurally this is about twice the plain
-engine's storage for an all-active graph; this is an estimate, and measured
-values are in the v0.5.0 qualification evidence. Vectors and hash maps retain
-capacity after removals up to their peak size; incident lists shrink when
-they fall below a quarter of their capacity. Hash tables under delete/insert
-churn may double once at more than half load. Engine compaction briefly holds
-the old and the new engine together; measured peaks are in the v0.5.0
-qualification evidence. (Independently of lifecycle support, the `ett` and
+**Engine construction.** Bulk construction (`try_from_topology`, flagged
+imports) and compaction build the `compact-bfs` engine in one pass from the
+catalog (since v0.6.0): engine indices follow ascending node IDs, each
+effective edge is found once from its smaller endpoint, and each adjacency
+vector is allocated once with capacity equal to the node's enabled registered
+degree. Index order is internal; no result depends on it.
+
+**Memory.** Quantities are reported separately and never substituted for one
+another: live state, container capacity, temporary peaks, allocator retention
+and RSS.
+
+| Structure | Live state (64-bit) | Retained capacity | Not bounded here |
+| --- | --- | --- | --- |
+| Catalog node map | one 32-byte record per registered node | up to the historical maximum of registered nodes, rounded to the table's power-of-two growth; under fresh-ID delete/insert churn the table may double once at more than half load | allocator overhead |
+| Incident lists | 16 bytes per incidence, two per registered edge | each list at most `max(4 × length, 16)` elements (shrunk below a quarter) | — |
+| Engine | one ID-map entry and one vector header per engine vertex; 8 bytes per effective incidence | per vertex: its historical maximum degree since the last rebuild (cuts do not shrink) | — |
+| Retired slots | at most `max(⌊V / 4⌋, 1024)` ID-map entries and vector headers | — | — |
+| Compaction | the old and the new engine are live together during a rebuild, plus an `O(V)` sorted ID vector | — | — |
+| HTTP import | the request body, the decoded request, the catalog and the new engine, beside the old graph until publication (atomic replace) | — | RSS, allocator retention |
+
+Measured values (allocator byte counts and the qualification results) are in
+the v0.6.0 qualification evidence and release notes; they are observations on
+one host, not ceilings. Process RSS has no bound from Knotrel: the allocator
+may retain freed pages. (Independently of lifecycle support, the `ett` and
 `hdt` engines free an incidence set's storage when it becomes empty, and `hdt`
 releases an upper level's record of a vertex that becomes isolated there,
 reusing the slot.)

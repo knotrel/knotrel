@@ -14,7 +14,7 @@ An external feeder reads the authoritative database or event stream and supplies
 
 **Scope labels:** **REQUIRED** means a release acceptance gate. **OPTIONAL** means a separately enabled capability whose absence does not invalidate the basic product contract. **DEFERRED** means no implementation commitment in that release. A future capability can be optional for operators while its safety criteria are required before shipping it.
 
-> **Execution rule:** Follow dependencies within each release, retain independent review gates, and mark tasks complete only against verified evidence. v0.1.0 is the released baseline. Its historical checklist and evidence below are preserved, including unresolved bookkeeping; this planning update does not certify previously pending platform or publication checks. Release numbers beyond v0.1.0 are planning targets.
+> **Execution rule:** Follow dependencies within each release, retain independent review gates, and mark tasks complete only against verified evidence. v0.1.0 is the released baseline. Its historical checklist and evidence below are preserved, including unresolved bookkeeping; this planning update does not certify previously pending platform or publication checks. Releases v0.2.0–v0.5.0 are published (GitHub Releases; crates.io for v0.3.0 onward as recorded in their release notes); release numbers beyond v0.5.0 are planning targets.
 
 ## Release overview and scope
 
@@ -24,15 +24,24 @@ An external feeder reads the authoritative database or event stream and supplies
 | **v0.2.0 — Integration & Graph Loading** | Rebuildable single-graph accelerator fed by an external authority | Integration contract, atomic HTTP import, identity/version model, ordered events with duplicate/gap detection, synchronization-aware bootstrap/readiness, external feeder and reproducible measurements | Local WAL/AOF, automatic snapshots and disk recovery DEFERRED; export OPTIONAL; embedded provider connectors, multi-graph and advanced concurrency DEFERRED |
 | **v0.3.0 — Operational Service** | Operable integration and measured update/query efficiency | Batch compatibility and integration improvements, lifecycle, deployment, metrics/tracing; evidence-based contention decision | Concurrency redesign only if justified; local persistence not a prerequisite |
 | **v0.4.0 — Observability & Performance** | Close integration-aware observability and ship only validated hot-path optimizations | Acceptance M6 (metrics review, structured logs, alert rules, overhead and series-count qualification); before/after qualification of each included optimization; release candidate, CI, packaging, deployment check and documentation | Local persistence DEFERRED to v0.5.0; M10 node/edge lifecycle and M5 concurrency redesign not required |
-| **v0.5.0 — Node & Edge Lifecycle** | Reversible node/edge activation and permanent node removal without losing configured connection state | M10: core facade on `compact-bfs` (lifecycle on experimental `ett`/`hdt` deferred, owner decision B1 2026-11-16), standalone HTTP, ordered feeder events, flagged atomic imports, telemetry, tutorial, independent review and performance qualification | Opt-in (`KNOTREL_TOPOLOGY_LIFECYCLE`); no persistence, multi-graph, electrical simulation or concurrency redesign |
+| **v0.5.0 — Node & Edge Lifecycle** (published 2026-11-16) | Reversible node/edge activation and permanent node removal without losing configured connection state | M10: core facade on `compact-bfs` (lifecycle on experimental `ett`/`hdt` deferred, owner decision B1 2026-11-16), standalone HTTP, ordered feeder events, flagged atomic imports, telemetry, tutorial, independent review and performance qualification | Opt-in (`KNOTREL_TOPOLOGY_LIFECYCLE`); no persistence, multi-graph, electrical simulation or concurrency redesign. Accepted with explicit exceptions (maintainer waivers for v0.5.0 only) |
+| **v0.6.0 — Lifecycle Efficiency & Measured Concurrency** | Lower lifecycle and import costs with stated resource bounds; measure contention and batching before any synchronization change; prepare v1.0 | 0.6.1 baseline and resource model; 0.6.2 lifecycle/import efficiency; 0.6.3 contention and batch evaluation (M5, deferred M3.6); 0.6.4 evidence-driven execution changes (no-change decision valid); 0.6.5 final qualification against published v0.5.0 with a versioned performance diff; 0.6.6 v1.0 readiness assessment | Lifecycle stays `compact-bfs` only; no persistence/WAL, multi-graph, distributed execution, power flow, connectors, automatic backend switching, unrelated API expansion or dependency modernization; no inherited waivers |
 | **Unassigned — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; deferred from v0.5.0 by the 2026-11-16 scope decision; release unassigned |
-| **v1.0.0 — Production Readiness** | Supported operational, security and compatibility guarantees | Deployment threat model, supported API/integration compatibility, fault tests and runbooks | Multi-graph demand-gated; local persistence need not be enabled or implemented to qualify a volatile deployment; general-purpose/distributed database features excluded |
+| **v1.0.0 — Production Readiness** (via v1.0.0-rc) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. A v0.7.0 exists only for concrete gaps named by the assessment |
 
 **Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
 
 ## Feature Progress Dashboard
 
-Checks reflect verified implementation and acceptance gates. Features 0.2.5+ remain unchecked pending implementation and acceptance.
+Checks reflect verified implementation and acceptance gates. From v0.6.0 on, every item also carries one of these statuses, never a completion percentage:
+
+| Status | Meaning |
+|---|---|
+| Implemented | Code and docs on the release branch; local checks pass. |
+| Reviewed | An independent review of the code (not of a summary) found no open defect. |
+| Qualified | The frozen final campaign classified it under predeclared rules; failures are reported as failures. |
+| Accepted with explicit exceptions | The maintainer accepted it, naming each exception; exceptions apply to that release only and never become general criteria. |
+| Published | Tagged and released (crates.io and GitHub Release). |
 
 ### v0.1.0 — Public Preview
 - [x] **Feature 0.1.1:** Inventory and freeze minimum release scope (P0)
@@ -56,17 +65,28 @@ Checks reflect verified implementation and acceptance gates. Features 0.2.5+ rem
 - [ ] **Feature M3:** Compatible batch processing, retry semantics and update efficiency
 - [ ] **Feature M4:** Operational lifecycle, configuration and deployability
 - [x] **Feature M6:** Integration-aware observability — deferred from v0.3.0 (reduced scope, approved 2026-11-12); delivered in v0.4.0, accepted 2026-11-15
-- [ ] **Feature M5:** Measured contention, query concurrency and isolation — deferred to a later release (reduced v0.3.0 scope, approved 2026-11-12); not a v0.4.0 requirement
+- [ ] **Feature M5:** Measured contention, query concurrency and isolation — deferred to a later release (reduced v0.3.0 scope, approved 2026-11-12); not a v0.4.0 requirement; assigned to v0.6.0 (0.6.3)
 
 ### v0.4.0 — Observability & Performance
 
 - [x] **Feature M6:** Integration-aware observability, through Acceptance M6 (REQUIRED; accepted 2026-11-15); see [M6](#m6--integration-aware-observability-p1--assigned-to-v040)
 - [x] **Feature 0.4.1:** Hot-path optimization review, evidence and inclusion decision (REQUIRED; decided 2026-11-15)
-- [ ] **Feature 0.4.2:** Release candidate, qualification and publication (REQUIRED)
+- [x] **Feature 0.4.2:** Release candidate, qualification and publication (REQUIRED) — published 2026-11-15 (tag `v0.4.0`, `556683c`)
 
 ### v0.5.0 — Node & Edge Lifecycle
 
-- [ ] **Feature M10:** Reversible node/edge activation and permanent node removal — assigned to v0.5.0 on 2026-11-16; [contract](docs/topology-lifecycle.md), [implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). Implementation, review and qualification status: see [M10](#m10--node-and-edge-lifecycle-assigned-to-v050).
+- [x] **Feature M10:** Reversible node/edge activation and permanent node removal — [contract](docs/topology-lifecycle.md), [implementation plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). Status: Implemented, Reviewed, Qualified (not passed unconditionally), **Accepted with explicit exceptions** (maintainer waivers for v0.5.0 only: 2 UNRESOLVED experiment-A metrics, 2 flagged-import REGRESSIONs, 3 heap-growth FAILs, 3 INCONCLUSIVE cells), **Published** 2026-11-16 (tag `v0.5.0`, `51e3b4d`; crates.io 0.5.0). See [M10](#m10--node-and-edge-lifecycle-assigned-to-v050).
+
+### v0.6.0 — Lifecycle Efficiency & Measured Concurrency
+
+[Design and implementation plan](docs/superpowers/plans/2026-11-16-v0.6.0-lifecycle-efficiency.md). Statuses: see [v0.6.0](#v060--lifecycle-efficiency--measured-concurrency).
+
+- [ ] **0.6.1** Baseline and resource model
+- [ ] **0.6.2** Lifecycle and import efficiency
+- [ ] **0.6.3** Contention and batch evaluation (M5, deferred M3.6)
+- [ ] **0.6.4** Evidence-driven execution improvements
+- [ ] **0.6.5** Final qualification and operational validation
+- [ ] **0.6.6** v1.0 readiness assessment
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
 
@@ -434,7 +454,7 @@ Evidence: commit `c6dc3e1` (existing shared path confirmed; no production change
 - [x] **M3.5 Tests:** Failure at every index, duplicate/no-op events, concurrent queries, disconnect/restart and source rebuild; preserve existing batch isolation and error-continuation tests.
 
 Evidence: failure at first/middle/last index (`events.rs` `test_20`); duplicate/no-op/progress (`events.rs` `test_22`); concurrent queries, batch isolation and error continuation ([`tests/batch.rs`](crates/knotrel-server/tests/batch.rs)); disconnect/restart/takeover (`e2e_rebuild.rs` `test_15`); source rebuild (`e2e_rebuild.rs` `test_23`). Functional acceptance recorded 2026-11-12 (closure plan D2); no new tests were required.
-- **M3.6 Measurement:** Deferred to a later release. v0.3.0 qualifies legacy batch sizes 1/8/64/256 for regression only; batching benefit, fairness and queue depth are not evaluated.
+- **M3.6 Measurement:** Deferred from v0.3.0; assigned to v0.6.0 (increment 0.6.3), measured together with M5. v0.3.0 qualifies legacy batch sizes 1/8/64/256 for regression only; batching benefit, fairness and queue depth are not evaluated there.
 - [x] **Acceptance M3:** Clients can identify which operations were applied and how to resume/reconcile; no breaking batch change or durability claim is introduced. Functional acceptance 2026-11-12 on the M3.1–M3.5 evidence above; the bounded P1/P3 result is recorded separately above.
 
 ### M4 — Operational lifecycle, configuration and deployability (P1)
@@ -489,10 +509,10 @@ Deferred from v0.3.0 (not part of its acceptance); assigned to v0.4.0 by the sco
 - [x] **M10.3 Node removal:** Cascade removal, safe ID reuse, storage reclamation and explicit degree/rebuild costs.
 - [x] **M10.4 Standalone service:** Atomic per-command visibility, existing batch behavior, coherent revisions and cancellation semantics.
 - [x] **M10.5 Source integration:** Ordered lifecycle events, deduplication and complete atomic imports including inactive topology; external authority unchanged.
-- [ ] **M10.6 Evidence and operations:** M6 telemetry updates, power-grid tutorial, bounded resource and before/after performance qualification under separately approved criteria. Telemetry, tutorial and qualification done (2026-11-16; final run 4 on candidate `dcd8ccc` with lifecycle scope `compact-bfs` after owner decision B1); the qualification did not pass unconditionally; the remaining results were accepted by explicit maintainer waivers for v0.5.0 only (2026-11-16); CI, release dry run and publication approval remain open ([release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification)).
-- [ ] **Acceptance M10:** Correct core/service behavior across supported engines, preserved source and lifecycle contracts, explicit resource semantics and accepted qualification evidence. No persistence or electrical-simulation guarantee is introduced.
+- [x] **M10.6 Evidence and operations:** M6 telemetry updates, power-grid tutorial, bounded resource and before/after performance qualification under separately approved criteria. Telemetry, tutorial and qualification done (2026-11-16; final run 4 on candidate `dcd8ccc` with lifecycle scope `compact-bfs` after owner decision B1); the qualification did not pass unconditionally; the remaining results were accepted by explicit maintainer waivers for v0.5.0 only (2026-11-16) ([release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification)). CI, the release dry run (`dry_run=false` run 43960259369) and publication completed 2026-11-16.
+- [x] **Acceptance M10:** Correct core/service behavior across supported engines, preserved source and lifecycle contracts, explicit resource semantics and accepted qualification evidence. No persistence or electrical-simulation guarantee is introduced. **Accepted with explicit exceptions** for v0.5.0 (the waivers above); **Published** 2026-11-16. The failures the waivers covered remain failures: v0.6.0 re-measures each of them under the same rules, and the waivers do not apply to it.
 
-### M5 — Measured contention, query concurrency and isolation (P1) — Deferred to a later release (not part of v0.3.0 or v0.4.0)
+### M5 — Measured contention, query concurrency and isolation (P1) — Assigned to v0.6.0 (increment 0.6.3; not part of v0.3.0–v0.5.0)
 
 - [ ] **M5.1 Instrument:** Separate parse/serialize, queue, lock, graph work, candidate build and publication costs. Optional storage I/O is not a prerequisite.
 - [ ] **M5.2 Workloads:** Mixed reads/writes, batch sizes, rebuild/import overlap and feeder catch-up; report tails, fairness and memory with reproducible workloads.
@@ -537,6 +557,42 @@ Tasks and acceptance as listed in [M6](#m6--integration-aware-observability-p1--
 - [ ] **0.4.2.5 Documentation and publication:** Release notes, observability contract, HTTP API and deployment docs updated; tag, packages and changelog published only on explicit approval.
 
 **Exit gate:** Acceptance M6, a recorded inclusion decision for every optimization, a passing performance gate with disclosed inconclusive cells, and complete release documentation. Persistence, M10 and M5 are out of scope; their absence does not block this release.
+
+---
+
+## v0.6.0 — Lifecycle Efficiency & Measured Concurrency
+
+**Scope decision (2026-11-16):** v0.6.0 lowers the measured costs of lifecycle support and imports, states resource bounds with their variables and exclusions, measures contention and batching (M5, deferred M3.6) before changing any synchronization, qualifies the result against the **published** v0.5.0 and assesses the path to v1.0. Knotrel stays an in-memory connectivity accelerator with external authority. Lifecycle stays `compact-bfs` only with the explicit `ett`/`hdt` rejection; persistence/WAL, multi-graph, distributed execution, power flow, connectors, automatic backend switching, unrelated API expansion and dependency modernization are out of scope. The v0.5.0 waivers do not carry over: every result they covered is re-measured under the same rules.
+
+[Design and implementation plan](docs/superpowers/plans/2026-11-16-v0.6.0-lifecycle-efficiency.md) (costs, hypotheses, invariants, trade-offs, retain/reject criteria). Qualification protocol and matrix: knotrel-benchmarks `results/v0.6.0-qualification/`.
+
+### 0.6.1 — Baseline and resource model
+
+- [ ] Published v0.5.0 identities recorded separately for product and benchmarks; resource model with live state, container capacity, temporary peaks, allocator retention and RSS kept apart ([design §4](docs/superpowers/plans/2026-11-16-v0.6.0-lifecycle-efficiency.md#4-resource-model-061)); qualification matrix frozen before timed runs.
+
+### 0.6.2 — Lifecycle and import efficiency (at most three candidates)
+
+- [ ] **C1** one-pass engine construction from the catalog (import and compaction).
+- [ ] **C2** streaming import parse with the former error contract; replaced graph released after the graph lock.
+- [ ] **C3** retired-slot storage release and compaction at `max(V/4, 1024)` retired slots; C3(c) rebuild headroom rejected by diagnostics.
+
+### 0.6.3 — Contention and batch evaluation (M5, M3.6)
+
+- [ ] Bounded matrix (lifecycle off/on, read-heavy and mixed, batch 1/8/64, 1–64 clients, imports and feeder catch-up overlapping queries, 10k/100k nodes) measured with client and server-side phases; decision under the predeclared rule.
+
+### 0.6.4 — Evidence-driven execution improvements
+
+- [ ] Change or documented no-change decision, from 0.6.3 evidence only.
+
+### 0.6.5 — Final qualification and operational validation
+
+- [ ] Frozen candidate; experiments A, B/C, R, Rmem, M_desc, M_reg; versioned diff against published v0.5.0 in knotrel-benchmarks; deployment and rebuild smoke test; tag mapping prepared (no tags created).
+
+### 0.6.6 — v1.0 readiness assessment
+
+- [ ] [Assessment](docs/releases/v1.0-readiness.md) of the ten v1.0 criteria with gates for v1.0.0-rc; a v0.7.0 only for concrete gaps.
+
+**Exit gate:** every candidate has a recorded retain/reject decision; every qualification cell is classified under the frozen rules, with failures reported as failures; release artifacts and the v1.0 assessment are ready for maintainer review. Acceptance and publication are maintainer decisions.
 
 ---
 

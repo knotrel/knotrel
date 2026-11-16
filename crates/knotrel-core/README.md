@@ -77,7 +77,7 @@ assert!(!graph.connected(1, 99)?);
 
 ## Node and Edge Lifecycle
 
-`LifecycleGraph` (since v0.5.0, `compact-bfs` engine only; `ett` and `hdt` are
+`LifecycleGraph` (`compact-bfs` engine only; `ett` and `hdt` are
 rejected with `LifecycleError::UnsupportedEngine`) keeps the **registered** topology with a
 node-active flag per node and an edge-enabled flag per edge, and answers
 `connected` over the **effective** graph: an edge counts only when it is
