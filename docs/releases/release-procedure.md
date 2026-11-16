@@ -173,6 +173,9 @@ publication.
 ## 5. Final Review & Authorization Checklist
 
 Before tagging and publishing:
+- [ ] The release performance diff against the previous published release is committed in `knotrel-benchmarks` and linked from the release notes (requirements below).
+- [ ] The full release commit SHA in each repository is recorded, together with the measured product/tooling SHAs and any verified evidence-transfer justification.
+- [ ] Matching signed version tags are planned for both `knotrel/knotrel` and `knotrel/knotrel-benchmarks`; neither existing tag will be moved or overwritten.
 - [ ] Working tree is clean and `git status` shows no uncommitted files.
 - [ ] Workspace and inherited crate versions are `0.5.0`, and the core dependency and lockfile agree.
 - [ ] Release notes in `docs/releases/v0.5.0-release-notes.md` report the v0.5.0 performance qualification (existing behavior against v0.4.0, lifecycle cost and sustained resources), every disclosed or owner-accepted non-PASS result, and all operational limitations.
@@ -187,6 +190,41 @@ Before tagging and publishing:
 - [ ] Explicit maintainer authorization has been granted.
 
 ---
+
+### Per-release performance diff and paired tags
+
+For every release, retain a versioned performance comparison in
+`knotrel-benchmarks` and link it from the product release notes. Include:
+
+- Previous release and candidate versions, full commit SHAs, measured binary
+  hashes, harness/collector revisions, host, toolchain and runtime configuration.
+- Comparable workload cells with absolute baseline/candidate values, percentage
+  changes, uncertainty intervals, approved thresholds and original verdicts.
+- Missing coverage and changes in semantics or methodology that prevent direct
+  comparison. Mark unmeasured cells explicitly; do not infer their performance.
+- Regressions, inconclusive results and maintainer dispositions, preserved as
+  such rather than relabelled PASS, with links to durable raw evidence and its
+  checksum manifest. Private evidence must remain private.
+
+Reuse valid qualification evidence; producing this report does not itself
+require a new benchmark campaign. If the final commit differs from the measured
+candidate, document why the evidence applies or perform the required
+requalification before release.
+
+Use the same release tag name (for example `v0.5.0`) in both repositories, each
+pointing to its own recorded commit. The benchmark tag pins the report and
+reproduction tooling; it does not imply that the benchmark crate has the same
+package version. Record measured tooling revisions separately when they differ
+from the report/tag commit. A sibling path dependency is not pinned by tagging:
+reproduction instructions must specify both repository revisions explicitly.
+
+After authorization, create, verify and push the signed benchmark tag first,
+then the signed product tag using the publication procedure below. Check the
+workflows triggered by each tag before pushing; the product tag can start
+publication. Verify both remote tags resolve to the intended commits and record
+both links in the release notes. If publication stops between tags, retain the
+existing tag and resume on the same commits; do not move tags to hide the partial
+state. Paired tags alone do not prove qualification or release completion.
 
 ## 6. Authorized Release Publication
 
