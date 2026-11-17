@@ -192,10 +192,11 @@ No speedup is claimed for either release. The v0.5.0 qualification
 did not pass unconditionally: its regressions and unresolved or inconclusive
 results are accepted by maintainer waivers for v0.5.0 only, as recorded in the
 [release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification);
-no speedup is claimed. The v0.6.0 candidate (unreleased) reduces import memory
+no speedup is claimed. v0.6.0 (accepted, not yet published) reduces import memory
 and makes core flagged imports and fresh-ID churn measurably faster, but its
-qualification did not pass unconditionally and awaits maintainer decisions
-([draft release notes](docs/releases/v0.6.0-release-notes.md#performance-qualification)).
+qualification did not pass unconditionally; its non-PASS results are accepted
+as disclosed limitations
+([release notes](docs/releases/v0.6.0-release-notes.md#performance-qualification)).
 
 ## Installing a release
 
