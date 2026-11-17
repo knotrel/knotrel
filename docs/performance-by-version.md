@@ -8,7 +8,7 @@ release qualification bundles. The release notes remain the authoritative
 statement for each release.
 
 **Short version:**
-- **v0.6.0 (accepted 2026-11-17, publication pending) is not demonstrated to be
+- **v0.6.0 (released 2026-11-17) is not demonstrated to be
   faster in general than v0.5.0.** With lifecycle off: no regression, two
   unresolved and two disclosed inconclusive results. With lifecycle on:
   imports use much less memory (HTTP import peak −61% to −76%), and core
