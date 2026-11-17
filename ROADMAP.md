@@ -588,7 +588,7 @@ Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/READM
 ### 0.6.3 — Contention and batch evaluation (M5, M3.6)
 
 - [x] Bounded matrix (lifecycle off/on, read-heavy and mixed, batch 1/8/64, 1–64 clients, imports and feeder catch-up overlapping queries, 10k/100k nodes) measured with client and server-side phases; decision under the predeclared rule.
-  - Final (M_desc/M_reg on `48bc82f`): rule (i) holds in 32 of 32 saturated read-heavy configurations; 5 of 6 regression cells against v0.5.0 PASS, the sixth did not measure its declared feeder catch-up. **Coverage defect:** at 100k nodes the probe's feeder catch-up and `mixed50` link toggles exceeded the server's default node limit, so catch-up overlapping queries was not measured at 100k (knotrel-benchmarks comparison §7).
+  - Final (M_desc/M_reg on `48bc82f`): rule (i) holds in 32 of 32 saturated read-heavy configurations; 5 of 6 regression cells against v0.5.0 PASS, the sixth did not measure its declared feeder catch-up. **Coverage defect:** at 100k nodes the probe's feeder catch-up and `mixed50` link toggles exceeded the server's default node limit, so catch-up overlapping queries was not measured at 100k; at 10k the background imports failed with 16 and 64 clients (knotrel-benchmarks comparison §7).
   - Diagnostic D3 (2026-11-16): rule (i) triggered — at 4 or more clients, read-heavy batches spend 61–94% of client latency waiting for the graph lock, and throughput does not grow with clients. The final M_desc/M_reg results are recorded with the qualification. This evaluation does **not** certify that the current model meets any concurrency objective.
 
 ### 0.6.4 — Evidence-driven execution improvements
@@ -597,7 +597,7 @@ Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/READM
 
 ### 0.6.5 — Final qualification and operational validation
 
-- [x] Frozen candidate `48bc82f` (tooling `54dcfc5`, freeze `7635846`); experiments A, B/C, R, Rmem, M_desc, M_reg run 2026-11-16 in about 60 minutes on AC power; [versioned diff](https://github.com/knotrel/knotrel-benchmarks/blob/feature/v0.6.0-qualification/results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md) (knotrel-benchmarks report commit `ad0ebd0a`, branch not yet pushed); release-binary smoke tests passed for both measured servers; tag mapping prepared in the release notes (no tags created).
+- [x] Frozen candidate `48bc82f` (tooling `54dcfc5`, freeze `7635846`); experiments A, B/C, R, Rmem, M_desc, M_reg run 2026-11-16 in about 60 minutes on AC power; [versioned diff](https://github.com/knotrel/knotrel-benchmarks/blob/feature/v0.6.0-qualification/results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md) (knotrel-benchmarks report commit `04cb25d7`, branch not yet pushed); release-binary smoke tests passed for both measured servers; tag mapping prepared in the release notes (no tags created).
   - Outcome, not passed unconditionally:
     - A (lifecycle off): 5 PASS, 2 INCONCLUSIVE_DISCLOSED, 2 UNRESOLVED.
     - R (lifecycle on): 10 PASS (6 improved), 1 REGRESSION (HTTP import 60/30, +13.4%).
