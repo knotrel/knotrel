@@ -630,9 +630,16 @@ retry policy. Source: knotrel-benchmarks
 design should state its effect on feeder catch-up under query load, and 0.7.3
 should measure it with probe revision 2.
 
-- [ ] **0.7.1 Design:** the minimal change that removes the measured bottleneck while preserving panic handling (a panic makes the graph unavailable, including to queued jobs), lease and staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, atomic import publication and shutdown/drain accounting. Candidates are evaluated, not prescribed (for example read-only jobs under a shared lock with panic state moved out of the guarded state, or shorter critical sections).
-- [ ] **0.7.2 Implementation and deterministic tests** for every boundary the design changes.
-- [ ] **0.7.3 Qualification** against v0.6.0 with the v0.6.0 contention matrix (probe revision 2, which fixes the frozen v0.6.0 probe's coverage defects) and the existing release cells; no inherited waivers.
+**Status (2026-11-17): implementation done; qualification not conforming, maintainer decision pending.**
+- **Design and implementation:** 0.7.1 and 0.7.2 are complete on branch `feature/v0.7.0-measured-concurrency` (candidate `e75ff6a`).
+- **The frozen 0.7.3 campaign ran,** but its experimental conformance is **not met**: user applications and an interactive burst ran during the chain, against the frozen operator rule.
+  - No result of that campaign can be accepted.
+  - A conforming re-collection of the whole campaign is proposed (knotrel-benchmarks `results/v0.7.0-requalification/RERUN-PROPOSAL.md`) and not started.
+  - Report: knotrel-benchmarks `results/v0.7.0-qualification/COMPARISON-v0.6.0-v0.7.0.md`.
+
+- [x] **0.7.1 Design:** the minimal change that removes the measured bottleneck while preserving panic handling (a panic makes the graph unavailable, including to queued jobs), lease and staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, atomic import publication and shutdown/drain accounting. Candidates are evaluated, not prescribed (for example read-only jobs under a shared lock with panic state moved out of the guarded state, or shorter critical sections).
+- [x] **0.7.2 Implementation and deterministic tests** for every boundary the design changes.
+- [ ] **0.7.3 Qualification** (first campaign non-conforming; conforming re-collection proposed, not started) against v0.6.0 with the v0.6.0 contention matrix (probe revision 2, which fixes the frozen v0.6.0 probe's coverage defects) and the existing release cells; no inherited waivers.
 - [ ] **Acceptance M5.** If no design preserves the invariants, the documented outcome is to keep the mutex.
 
 ### 0.7.4 Performance candidates (evaluated, not prescribed)
