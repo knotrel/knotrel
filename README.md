@@ -10,83 +10,88 @@
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=knotrel_knotrel&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=knotrel_knotrel)
 [![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=knotrel_knotrel&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=knotrel_knotrel)
 
-Knotrel is an in-memory engine for **exact connectivity in undirected graphs
-whose edges change over time**. Use it as a Rust library (`knotrel-core`) or as
-an HTTP service (`knotrel-server`).
+**Know whether your network stays connected as its topology changes.**
 
-**Example:** a network of devices and links. Links are added when cables, radio
-paths or tunnels come up and removed when they fail. The application repeatedly
-asks: *are device A and device B still connected, through any path?* Knotrel
-keeps the graph current and answers each question exactly, without
-approximation or cached staleness.
+Knotrel is an in-memory engine for exact connectivity in undirected graphs.
+Add or remove connections, take nodes offline and restore them, then check
+whether two endpoints remain connected. Use it as a Rust library or an HTTP
+service alongside your existing database.
 
-**Status:** v0.4.0 is the latest published preview on crates.io and the
-[GitHub Releases page](https://github.com/knotrel/knotrel/releases). The `main`
-branch carries the **unreleased v0.5.0 candidate** (opt-in node and edge
-lifecycle); see the [draft release notes](docs/releases/v0.5.0-release-notes.md).
+**Published preview: [v0.5.0](https://github.com/knotrel/knotrel/releases/tag/v0.5.0).**
+Node/edge lifecycle is opt-in and supported on `compact-bfs` only.
+The v0.6.0 work described in this repository remains unreleased.
+
+## Quickstart: a failure and a recovery
+
+Two routes connect a source to a destination:
+
+```text
+             A (2)
+            /     \
+Source (1)         Destination (4)
+            \     /
+             B (3)
+```
+
+Take A offline: B keeps the endpoints connected. Take B offline too: the
+connection is lost. Restore A: the connection returns without recreating its
+configured edges.
+
+Download and extract the **v0.5.0** server for your platform from the
+[release assets](https://github.com/knotrel/knotrel/releases/tag/v0.5.0),
+[verify its checksum](#installing-a-release), and clone this repository for the
+example. With Python 3.9 or newer, run from the repository root:
+
+```sh
+python3 examples/quickstart/network_demo.py /absolute/path/to/knotrel-server
+# Windows: py examples/quickstart/network_demo.py C:\path\to\knotrel-server.exe
+```
+
+Expected output:
+
+```text
+Two available paths: connected=true
+A offline; B still available: connected=true
+A and B offline: connected=false
+A restored: connected=true
+PASS: all expected responses verified; temporary server will stop.
+```
+
+The [script](examples/quickstart/network_demo.py) checks every HTTP response,
+starts its own server on an automatically assigned loopback port, and stops it
+on completion or failure. It explicitly uses standalone mode, `compact-bfs`
+and `KNOTREL_TOPOLOGY_LIFECYCLE=true`. No existing graph is modified. This is
+volatile demo state: exiting the process loses the graph.
+
+To build the current checkout instead, use
+`cargo build --release --locked -p knotrel-server`, then pass
+`target/release/knotrel-server` to the same script (`.exe` on Windows).
+CI runs this exact script against the built server.
+
+This demonstrates **topological connectivity**, not electrical power flow,
+voltage, protection behavior or whether a customer actually has power. The
+[power-grid tutorial](docs/tutorials/power-grid.md) provides a larger example.
 
 ## When Knotrel helps
 
-- Edges are both **inserted and deleted**, and connectivity is queried
-  repeatedly between changes.
-- You need exact yes/no answers for arbitrary pairs, not a periodic batch
-  recomputation.
-- You want an embeddable synchronous Rust library or a small local HTTP
-  service with bounded limits.
-- *(Unreleased v0.5.0 candidate)* Devices or links go out of service and come
-  back, or are retired, and queries must ignore them meanwhile: see
-  [node and edge lifecycle](#node-and-edge-lifecycle-unreleased).
+- Devices and connections go out of service and return, while applications
+  repeatedly ask whether endpoints still have a path between them.
+- You need exact connectivity in the currently applied graph, with explicit
+  versions and source synchronization rather than periodic recomputation.
+- You want an embedded Rust library or a local HTTP service alongside your
+  authoritative database.
 
-### When something simpler may suffice
+For insertion-only graphs, union-find may suffice. For infrequent queries,
+BFS or DFS over your existing data may be simpler. Knotrel does not provide
+persistent graph storage, directed reachability or electrical simulation.
 
-- **Insertion-only graphs:** a union-find (disjoint-set) structure answers
-  connectivity without supporting deletions.
-- **Infrequent queries:** a breadth-first or depth-first search over your
-  own adjacency data, run on demand, may be enough.
-- **Durable or distributed graph storage:** Knotrel is not a database; see the
-  integration model below.
-
-## Quickstart
-
-### HTTP service
-
-From a clone of this repository:
-
-```sh
-cargo run --release --locked -p knotrel-server
-```
-
-The server listens on `127.0.0.1:8080`. In another terminal, connect three
-devices, ask a question, remove a link and ask again:
-
-```sh
-op() {
-  curl -sS http://127.0.0.1:8080/v1/operations \
-    -H 'Content-Type: application/json' -d "$1"; echo
-}
-op '{"op":"link","source":"1","target":"2"}'       # {"result":"changed","changed":true}
-op '{"op":"link","source":"2","target":"3"}'
-op '{"op":"connected","source":"1","target":"3"}'  # {"result":"connected","connected":true}
-op '{"op":"cut","source":"2","target":"3"}'
-op '{"op":"connected","source":"1","target":"3"}'  # {"result":"connected","connected":false}
-```
-
-IDs are decimal strings over HTTP, preserving the full `u64` range. Links create
-absent endpoints. Repeated links and cuts are idempotent; cuts retain vertices.
-Self-loops are rejected. Queries involving unknown vertices return an error.
-See the [HTTP API](docs/http-api.md) for batches, errors and limits.
-
-For a guided scenario, the [power-grid tutorial](docs/tutorials/power-grid.md)
-opens and closes connections in a small synthetic distribution network and
-checks which customers keep a path to the source.
-
-### Rust library
+## Rust library
 
 `knotrel-core` is synchronous and has no HTTP or async dependencies.
 
 ```toml
 [dependencies]
-knotrel-core = "0.4.0"
+knotrel-core = "0.5.0"
 ```
 
 ```rust
@@ -160,57 +165,17 @@ are not per-request latency guarantees. Only `compact-bfs` and its workspace
 variant were measured in v0.3.0 release qualification. See
 [startup engine configuration](docs/architecture/0007-startup-engine-configuration.md).
 
-### Node and edge lifecycle (unreleased)
+### Node and edge lifecycle
 
-The unreleased v0.5.0 candidate adds reversible node activation, reversible
-edge enabling and permanent node removal. It is **opt-in**
-(`KNOTREL_TOPOLOGY_LIFECYCLE=true`, or `knotrel_core::LifecycleGraph`) and supported
-**only on `compact-bfs`**: the server refuses to start with lifecycle on `ett`
-or `hdt`, which remain available without lifecycle. With lifecycle off,
-behavior is unchanged from v0.4.0. Semantics, costs and memory limits are in
-the [lifecycle contract](docs/topology-lifecycle.md).
+Since v0.5.0, opt-in lifecycle supports reversible node activation, reversible
+edge enabling and permanent node removal, **only on `compact-bfs`**. Select
+`KNOTREL_TOPOLOGY_LIFECYCLE=true` for the server or `LifecycleGraph` in Rust.
+The server rejects lifecycle with experimental `ett` or `hdt` engines.
 
-Over HTTP, from a clone of `main`, take device 2 out of service and bring it
-back (with the `op` helper from the quickstart):
-
-```sh
-KNOTREL_TOPOLOGY_LIFECYCLE=true cargo run --release --locked -p knotrel-server
-```
-
-```sh
-op '{"op":"link","source":"1","target":"2"}'
-op '{"op":"link","source":"2","target":"3"}'
-op '{"op":"set_node_active","node":"2","active":false}'  # {"result":"changed","changed":true}
-op '{"op":"connected","source":"1","target":"3"}'        # {"result":"connected","connected":false}
-op '{"op":"edge_state","source":"1","target":"2"}'       # {"result":"edge_state","registered":true,"enabled":true,"effective":false}
-op '{"op":"set_node_active","node":"2","active":true}'
-op '{"op":"connected","source":"1","target":"3"}'        # {"result":"connected","connected":true}
-op '{"op":"set_edge_enabled","source":"2","target":"3","enabled":false}'
-op '{"op":"remove_node","node":"2"}'                     # removes 2 and its edges
-```
-
-In Rust (`knotrel-core` from `main`; not in the published 0.4.0 crate):
-
-```rust
-use knotrel_core::{EngineConfig, LifecycleGraph};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Fails with `LifecycleError::UnsupportedEngine` for `ett` or `hdt`.
-    let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs)?;
-    graph.link(1, 2)?;
-    graph.link(2, 3)?;
-
-    graph.set_node_active(2, false)?;
-    assert!(!graph.connected(1, 3)?);
-    graph.set_node_active(2, true)?;
-    assert!(graph.connected(1, 3)?);
-
-    graph.set_edge_enabled(2, 3, false)?;
-    assert!(!graph.connected(1, 3)?);
-    assert!(graph.remove_node(2));
-    Ok(())
-}
-```
+See the [lifecycle contract](docs/topology-lifecycle.md) for operations,
+configured versus effective edges, errors, costs and resource limits, and the
+[HTTP API](docs/http-api.md) for request formats. HTTP node IDs are decimal
+strings preserving the full `u64` range.
 
 ## Performance evidence
 
@@ -223,7 +188,7 @@ release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 → v0.6
 their limits. The authoritative statements are in the release notes for
 [v0.4.0](docs/releases/v0.4.0-release-notes.md#regression-qualification-against-v030)
 and [v0.3.0](docs/releases/v0.3.0-release-notes.md#performance-qualification).
-No speedup is claimed for either release. The v0.5.0 candidate's qualification
+No speedup is claimed for either release. The v0.5.0 qualification
 did not pass unconditionally: its regressions and unresolved or inconclusive
 results are accepted by maintainer waivers for v0.5.0 only, as recorded in the
 [release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification);
@@ -240,28 +205,28 @@ the SHA-256 checksum before running.
 
 ```sh
 # Verify checksum on Linux:
-sha256sum -c knotrel-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c knotrel-server-v0.5.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 # Or on macOS:
-# shasum -a 256 -c knotrel-server-v0.4.0-aarch64-apple-darwin.tar.gz.sha256
+# shasum -a 256 -c knotrel-server-v0.5.0-aarch64-apple-darwin.tar.gz.sha256
 
 # Extract and start on Linux (x86_64):
-tar -xzf knotrel-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz
-cd knotrel-server-v0.4.0-x86_64-unknown-linux-gnu
+tar -xzf knotrel-server-v0.5.0-x86_64-unknown-linux-gnu.tar.gz
+cd knotrel-server-v0.5.0-x86_64-unknown-linux-gnu
 ./knotrel-server
 
 # Or on macOS (Apple Silicon):
-# tar -xzf knotrel-server-v0.4.0-aarch64-apple-darwin.tar.gz
-# cd knotrel-server-v0.4.0-aarch64-apple-darwin
+# tar -xzf knotrel-server-v0.5.0-aarch64-apple-darwin.tar.gz
+# cd knotrel-server-v0.5.0-aarch64-apple-darwin
 # ./knotrel-server
 ```
 
 On Windows (PowerShell):
 ```powershell
 # Compare the displayed hash with the downloaded .sha256 file before extracting.
-Get-FileHash -Algorithm SHA256 knotrel-server-v0.4.0-x86_64-pc-windows-msvc.zip
-Get-Content knotrel-server-v0.4.0-x86_64-pc-windows-msvc.zip.sha256
-Expand-Archive knotrel-server-v0.4.0-x86_64-pc-windows-msvc.zip -DestinationPath .
-cd knotrel-server-v0.4.0-x86_64-pc-windows-msvc
+Get-FileHash -Algorithm SHA256 knotrel-server-v0.5.0-x86_64-pc-windows-msvc.zip
+Get-Content knotrel-server-v0.5.0-x86_64-pc-windows-msvc.zip.sha256
+Expand-Archive knotrel-server-v0.5.0-x86_64-pc-windows-msvc.zip -DestinationPath .
+cd knotrel-server-v0.5.0-x86_64-pc-windows-msvc
 .\knotrel-server.exe
 ```
 
@@ -280,7 +245,7 @@ startup.
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges (registered edges with lifecycle support); zero allowed; `unlimited` opts out |
-| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | *Unreleased v0.5.0 candidate.* `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
 | `RUST_LOG` | `info` | Logging filter |
 
 For example, to opt into the experimental forest:
@@ -319,11 +284,11 @@ Further timeouts and size limits are listed under
 
 - [HTTP API](docs/http-api.md) and [OpenAPI specification](docs/openapi.yaml): operations, batch semantics, limits and errors.
 - [Power-grid tutorial](docs/tutorials/power-grid.md): runnable topology demonstration of connectivity loss and restoration over the HTTP API.
-- [Node and edge lifecycle contract](docs/topology-lifecycle.md) (unreleased v0.5.0 candidate): opt-in activation, enabling and removal semantics, costs and limits.
+- [Node and edge lifecycle contract](docs/topology-lifecycle.md): opt-in activation, enabling and removal semantics, costs and limits.
 - [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
-- [v0.5.0 release notes](docs/releases/v0.5.0-release-notes.md) (draft), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
+- [v0.5.0 release notes](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
 - [Release procedure](docs/releases/release-procedure.md): verification, packaging and authorized publication.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.
