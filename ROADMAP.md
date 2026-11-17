@@ -618,9 +618,18 @@ Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/READM
 
 **Scope decision (2026-11-16, maintainer option B):** v0.6.0 keeps the coarse graph mutex. v0.7.0 addresses concurrency from the bottleneck measured in v0.6.0: with read-heavy work, the single lock serializes BFS queries and lock wait dominates client latency at four or more clients.
 
+**Additional input (v0.6.0 M supplement, 2026-11-17):** the feeder has no
+priority over queries. At 100k nodes, catch-up falls 8–11× from 4 to 16 query
+clients, because each event batch waits about one query batch for the lock.
+At 64 clients, most feeder requests are refused by admission
+(`503 import_in_progress`). Source: knotrel-benchmarks
+`results/v0.6.0-qualification/supplement-M/REPORT-M-SUPPLEMENT.md`. The 0.7.1
+design should state its effect on feeder catch-up under query load, and 0.7.3
+should measure it with probe revision 2.
+
 - [ ] **0.7.1 Design:** the minimal change that removes the measured bottleneck while preserving panic handling (a panic makes the graph unavailable, including to queued jobs), lease and staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, atomic import publication and shutdown/drain accounting. Candidates are evaluated, not prescribed (for example read-only jobs under a shared lock with panic state moved out of the guarded state, or shorter critical sections).
 - [ ] **0.7.2 Implementation and deterministic tests** for every boundary the design changes.
-- [ ] **0.7.3 Qualification** against v0.6.0 with the v0.6.0 contention matrix and the existing release cells; no inherited waivers.
+- [ ] **0.7.3 Qualification** against v0.6.0 with the v0.6.0 contention matrix (probe revision 2, which fixes the frozen v0.6.0 probe's coverage defects) and the existing release cells; no inherited waivers.
 - [ ] **Acceptance M5.** If no design preserves the invariants, the documented outcome is to keep the mutex.
 
 ---
