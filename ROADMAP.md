@@ -86,7 +86,7 @@ Checks reflect verified implementation and acceptance gates. From v0.6.0 on, eve
 - [x] **0.6.2** Lifecycle and import efficiency — Implemented, Reviewed, Qualified (not passed unconditionally; decisions pending)
 - [x] **0.6.3** Contention and batch evaluation (M5 measurement, deferred M3.6) — measured; feeder catch-up at 100k not covered (tooling defect)
 - [x] **0.6.4** Evidence-driven execution improvements — decision recorded: no synchronization change in v0.6.0 (maintainer decision B, 2026-11-16); M5 implementation moves to v0.7.0
-- [x] **0.6.5** Final qualification and operational validation — Qualified on `48bc82f`; release gates (CI, dry run, tags) open; not accepted
+- [x] **0.6.5** Final qualification and operational validation — Qualified on `48bc82f` (`4148e47` on `main`, identical tree; executed code identical at `main` `121d248`); release gates (dry run, tags) open; not accepted
 - [x] **0.6.6** v1.0 readiness assessment — draft for maintainer review
 
 ### v0.7.0 — Measured Concurrency (planned)
@@ -598,7 +598,7 @@ Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/READM
 
 ### 0.6.5 — Final qualification and operational validation
 
-- [x] Frozen candidate `48bc82f` (tooling `54dcfc5`, freeze `7635846`); experiments A, B/C, R, Rmem, M_desc, M_reg run 2026-11-16 in about 60 minutes on AC power; [versioned diff](https://github.com/knotrel/knotrel-benchmarks/blob/feature/v0.6.0-qualification/results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md) (knotrel-benchmarks report commit `04cb25d7`, branch not yet pushed); release-binary smoke tests passed for both measured servers; tag mapping prepared in the release notes (no tags created).
+- [x] Frozen candidate `48bc82f` (tooling `54dcfc5`, freeze `7635846`); experiments A, B/C, R, Rmem, M_desc, M_reg run 2026-11-16 in about 60 minutes on AC power; [versioned diff](https://github.com/knotrel/knotrel-benchmarks/blob/feature/v0.6.0-qualification/results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md) (knotrel-benchmarks, in knotrel/knotrel-benchmarks#11); release-binary smoke tests passed for both measured servers; tag mapping prepared in the release notes (no tags created).
   - Outcome, not passed unconditionally:
     - A (lifecycle off): 5 PASS, 2 INCONCLUSIVE_DISCLOSED, 2 UNRESOLVED.
     - R (lifecycle on): 10 PASS (6 improved), 1 REGRESSION (HTTP import 60/30, +13.4%).
