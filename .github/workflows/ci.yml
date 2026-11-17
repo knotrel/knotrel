@@ -49,6 +49,12 @@ jobs:
         run: cargo run -p knotrel-core --example bulk_import
       - name: Run example (engine_selection)
         run: cargo run -p knotrel-core --example engine_selection
+      - name: Run README network quickstart (unix)
+        if: runner.os != 'Windows'
+        run: python3 examples/quickstart/network_demo.py target/release/knotrel-server
+      - name: Run README network quickstart (windows)
+        if: runner.os == 'Windows'
+        run: python examples/quickstart/network_demo.py target/release/knotrel-server.exe
       - name: Run release binary smoke test (unix)
         if: runner.os != 'Windows'
         run: ./scripts/smoke-test-release-binary.sh target/release/knotrel-server
