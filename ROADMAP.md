@@ -27,7 +27,7 @@ An external feeder reads the authoritative database or event stream and supplies
 | **v0.5.0 — Node & Edge Lifecycle** (published 2026-11-16) | Reversible node/edge activation and permanent node removal without losing configured connection state | M10: core facade on `compact-bfs` (lifecycle on experimental `ett`/`hdt` deferred, owner decision B1 2026-11-16), standalone HTTP, ordered feeder events, flagged atomic imports, telemetry, tutorial, independent review and performance qualification | Opt-in (`KNOTREL_TOPOLOGY_LIFECYCLE`); no persistence, multi-graph, electrical simulation or concurrency redesign. Accepted with explicit exceptions (maintainer waivers for v0.5.0 only) |
 | **v0.6.0 — Lifecycle Efficiency & Measured Concurrency** | Lower lifecycle and import costs with stated resource bounds; measure contention and batching before any synchronization change; prepare v1.0 | 0.6.1 baseline and resource model; 0.6.2 lifecycle/import efficiency; 0.6.3 contention and batch evaluation (M5, deferred M3.6); 0.6.4 evidence-driven execution changes (no-change decision valid); 0.6.5 final qualification against published v0.5.0 with a versioned performance diff; 0.6.6 v1.0 readiness assessment | Lifecycle stays `compact-bfs` only; no persistence/WAL, multi-graph, distributed execution, power flow, connectors, automatic backend switching, unrelated API expansion or dependency modernization; no inherited waivers |
 | **Unassigned — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; deferred from v0.5.0 by the 2026-11-16 scope decision; release unassigned |
-| **v0.7.0 — Measured Concurrency** (planned) | Remove the measured graph-lock bottleneck for read-heavy work without weakening any service invariant | M5 implementation (M5.3–M5.5, Acceptance M5): evaluate the minimal synchronization design from the v0.6.0 contention evidence that preserves panic handling, lease/staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, import publication and shutdown/drain; before/after qualification against v0.6.0 | No mechanism is prescribed in advance (a read-write lock is one option, not a decision); no sharding/RCU/snapshots/lock-free/actors without evidence; the coarse mutex stays if no design meets the invariants |
+| **v0.7.0 — Measured Concurrency** (planned) | Remove the measured graph-lock bottleneck for read-heavy work without weakening any service invariant | M5 implementation (M5.3–M5.5, Acceptance M5): evaluate the minimal synchronization design from the v0.6.0 contention evidence that preserves panic handling, lease/staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, import publication and shutdown/drain; measured evaluation of the 0.7.4 performance candidates (libraries and layouts aimed at the v0.6.0 non-PASS results); before/after qualification against v0.6.0 | No mechanism is prescribed in advance (a read-write lock is one option, not a decision); no sharding/RCU/snapshots/lock-free/actors without evidence; the coarse mutex stays if no design meets the invariants |
 | **v1.0.0 — Production Readiness** (v0.6.0 → v0.7.0 → v1.0.0-rc → v1.0.0, each step subject to its stability gates) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. A v0.7.0 exists only for concrete gaps named by the assessment |
 
 **Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
@@ -92,6 +92,7 @@ Checks reflect verified implementation and acceptance gates. From v0.6.0 on, eve
 ### v0.7.0 — Measured Concurrency (planned)
 
 - [ ] **M5 implementation** (M5.3–M5.5, Acceptance M5), from the v0.6.0 contention evidence; see [v0.7.0](#v070--measured-concurrency-planned)
+- [ ] **0.7.4 Performance candidates** (evaluated, not prescribed): read concurrency (`arc-swap` snapshots or a read-write lock), flagged-import parse cost (`sonic-rs` or a hand-written visitor), global allocator for RSS (`mimalloc`/`jemalloc`), CSR adjacency for BFS; see [v0.7.0](#v070--measured-concurrency-planned)
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
 
@@ -633,6 +634,38 @@ should measure it with probe revision 2.
 - [ ] **0.7.2 Implementation and deterministic tests** for every boundary the design changes.
 - [ ] **0.7.3 Qualification** against v0.6.0 with the v0.6.0 contention matrix (probe revision 2, which fixes the frozen v0.6.0 probe's coverage defects) and the existing release cells; no inherited waivers.
 - [ ] **Acceptance M5.** If no design preserves the invariants, the documented outcome is to keep the mutex.
+
+### 0.7.4 Performance candidates (evaluated, not prescribed)
+
+**Planning decision (maintainer, 2026-11-17):** these are candidates that
+address problems measured in v0.6.0. Each is a test to run, not a decision to
+adopt.
+
+**Method** (the v0.6.0 method):
+- **Design first:** state the expected effect and the invariants at risk.
+- **Diagnostics:** a bounded diagnostic measurement against v0.6.0 on the
+  cells the candidate targets.
+- **Selection:** at most three candidates go on to the frozen qualification.
+  A candidate is dropped if it does not improve its target cell beyond
+  noise, or if it regresses another gated cell.
+- **New dependencies** need a review of:
+  - MSRV (`knotrel-core` 1.98.1, workspace 1.100.0);
+  - license (Apache-2.0 compatible);
+  - maintenance and supply chain (`cargo deny`/advisories);
+  - platform support (Linux, macOS, Windows; x86-64 and ARM64).
+- **Library-level changes:** no library change to `knotrel-core`'s public
+  API.
+
+| # | Problem measured in v0.6.0 | Candidate(s) | Success criterion (against v0.6.0) | Invariants and risks to test |
+|---|---|---|---|---|
+| 0.7.4a | Single graph lock serializes BFS queries. Lock wait is 85–101% of client latency at 16+ clients, throughput does not scale, and the feeder has no priority (comparison §7, M supplement) | Read concurrency: published read-only snapshots (`arc-swap`), or `parking_lot::RwLock` with panic, lease and staleness state moved out of the guarded data. Part of the 0.7.1 design | Read-heavy throughput grows with clients. Client p99 at 16 clients improves beyond the interval. Feeder catch-up under 16 query clients improves | Panic handling, lease/staleness transitions, coherent generation/revision/position tuples, batch isolation, atomic import publication, shutdown/drain. Snapshot memory: at most one extra graph during publication |
+| 0.7.4b | R HTTP import 100k 60/30 REGRESSION, +13.4% (cost of the streaming parse); B4 `import-high` REGRESSION | `sonic-rs`, or a hand-written `serde` visitor for flagged node and edge entries | R HTTP import 60/30 back within 10% of v0.5.0. Rmem import peak stays within 20% of v0.6.0, keeping the 61–76% reduction | Byte-identical error statuses and messages (the existing parser-parity corpus). No return of the tape-sized working set. SIMD and platform support |
+| 0.7.4c | C4 RSS above the disclosure budget in 8 of 15 cells (allocator retention); C3 heap-growth FAIL ×3 | Global allocator for the `knotrel-server` binary only: `mimalloc` or `jemalloc` (`tikv-jemallocator`) | C4 RSS within budget in more cells. No timing regression in A, B and R | Build and packaging on all three platforms, binary size, deployment documentation. It changes every measurement, so it needs a full qualification. It never applies to the library crate |
+| 0.7.4d | BFS cost per `connected` under the lock (0.59–0.74 ms at 100k) | CSR (compressed sparse row) adjacency for `compact-bfs`. This is in-house code, not a dependency | Lower traversal time in A and R traversal cells, and lower lock hold time per query | Lifecycle mutations and compaction on a CSR layout. Memory per edge. The `2V + 1024` vertex bound |
+
+Hash maps (`FxHashMap`, `nohash-hasher`) and the visited bitset
+(`fixedbitset`) already use specialized libraries. No candidate is listed
+for them.
 
 ---
 
