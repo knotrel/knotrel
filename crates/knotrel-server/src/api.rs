@@ -1876,18 +1876,15 @@ mod tests {
         cases.push(format!(r#"{{{escaped},"nodes":["7"],"edges":[]}}"#).into_bytes());
         let accepted = cases.iter().filter(|body| former(body).is_ok()).count();
         assert!(accepted >= 6, "{accepted} accepted bodies");
-        let mut differences = Vec::new();
         for body in &cases {
             let streaming = parse_import_body(body).map(|request| format!("{request:?}"));
-            let expected = former(body);
-            if streaming != expected {
-                differences.push(format!(
-                    "{:?}: {streaming:?} != {expected:?}",
-                    String::from_utf8_lossy(body)
-                ));
-            }
+            assert_eq!(
+                streaming,
+                former(body),
+                "{:?}",
+                String::from_utf8_lossy(body)
+            );
         }
-        assert!(differences.is_empty(), "{differences:#?}");
     }
     use crate::{Lifecycle, ServerConfig, ServerMode};
     use axum::http::HeaderValue;
