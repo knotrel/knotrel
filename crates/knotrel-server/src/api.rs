@@ -1060,21 +1060,31 @@ pub(crate) fn request_error_message(err: &simd_json::Error) -> String {
 /// its size, a structural index and a tape with one node per structural
 /// character: a working set several times the body (about 87 MiB for an
 /// 8.3 MiB body in the v0.5.0 diagnostics). A valid body is therefore decoded
-/// with `serde_json`'s streaming deserializer, which reads the bytes in place.
+/// by a deserializer that reads the bytes in place: `sonic_rs` (SIMD
+/// scanning; v0.7.0 candidate 0.7.4b), then `serde_json`'s streaming
+/// deserializer for any body `sonic_rs` rejects.
 ///
-/// The two parsers classify some invalid inputs differently (integer
-/// literals outside the 64-bit range, nesting deeper than `serde_json`'s
-/// recursion limit). To keep the import error contract exactly, a body that
-/// `serde_json` rejects is parsed again with `simd_json`, whose result is
-/// returned: invalid JSON is `Err(None)` (400), a valid document of the wrong
-/// shape is `Err(Some(message))` (422) with [`request_error_message`]. Only
-/// rejected bodies pay the second parse and its working set.
+/// `sonic_rs` and `serde_json` accept exactly the same import bodies, with
+/// identical decoded requests, on the parser-parity corpus and a seeded
+/// mutation sweep (tests below); falling through to `serde_json` keeps a body
+/// valid even if `sonic_rs` ever rejected one that `serde_json` accepts.
+///
+/// `simd_json` and `serde_json` classify some invalid inputs differently
+/// (integer literals outside the 64-bit range, nesting deeper than
+/// `serde_json`'s recursion limit). To keep the import error contract
+/// exactly, a body that both reject is parsed again with `simd_json`, whose
+/// result is returned: invalid JSON is `Err(None)` (400), a valid document of
+/// the wrong shape is `Err(Some(message))` (422) with
+/// [`request_error_message`]. Only rejected bodies pay the extra parses and
+/// the `simd_json` working set.
 pub(crate) fn parse_import_body(bytes: &[u8]) -> Result<ImportRequest, Option<String>> {
-    serde_json::from_slice(bytes).or_else(|_| {
-        let mut buffer = bytes.to_vec();
-        simd_json::from_slice(&mut buffer)
-            .map_err(|err| err.is_data().then(|| request_error_message(&err)))
-    })
+    sonic_rs::from_slice(bytes)
+        .or_else(|_| serde_json::from_slice(bytes))
+        .or_else(|_| {
+            let mut buffer = bytes.to_vec();
+            simd_json::from_slice(&mut buffer)
+                .map_err(|err| err.is_data().then(|| request_error_message(&err)))
+        })
 }
 
 pub(crate) fn check_json_content_type(headers: &HeaderMap) -> Option<Response> {
@@ -1923,6 +1933,64 @@ mod tests {
             r#""source_position":"a\n\u0000\/\"b""#,
         );
         cases.push(format!(r#"{{{escaped},"nodes":["7"],"edges":[]}}"#).into_bytes());
+        for extra in [
+            r#""nodes":["\ud800\u0041"],"edges":[]"#,
+            r#""nodes":["\udc00"],"edges":[]"#,
+            r#""nodes":["1"],"edges":[{"source":"1","target":"2","source":"3"}]"#,
+            r#""nodes":[{"node":"1","active":false,"node":"2"}],"edges":[]"#,
+            r#""nodes":["1"],"edges":[],"edges":[]"#,
+            r#""nodes":["1"],"edges":[{"source":"1","target":"2","enabled":0}]"#,
+            r#""nodes":["1\u0000"],"edges":[]"#,
+            r#""nodes":["1"],"edges":[]  "#,
+            r#""nodes":["１"],"edges":[]"#,
+            r#""nodes":["1"],"edges":[{"source":"1","target":"2","enabled":true}]"#,
+            r#""nodes":["1"],"edges":[{"target":"2","source":"1"}]"#,
+            r#""nodes":["1"],"edges":[["1","2",false]]"#,
+            r#""nodes":["1"],"edges":[["1"]]"#,
+            r#""nodes":["1"],"edges":[["1","2",false,1]]"#,
+        ] {
+            cases.push(with(extra).into_bytes());
+        }
+        cases.push(
+            with(r#""nodes":["1"],"edges":[]"#)
+                .into_bytes()
+                .into_iter()
+                .chain(*b"\n\t ")
+                .collect(),
+        );
+        cases.push(
+            with(r#""nodes":["1"],"edges":[]"#)
+                .into_bytes()
+                .into_iter()
+                .chain(*b"\0")
+                .collect(),
+        );
+        cases.push(b"{\"mode\":\"create_only\",\"instance_id\":\"\xc3\x28\"}".to_vec());
+        cases.push(b"{\"mode\":\"create_only\",\"instance_id\":\"\xed\xa0\x80\"}".to_vec());
+        cases.push(("{".repeat(300) + &"}".repeat(300)).into_bytes());
+        cases.push(
+            with(r#""nodes":["1"],"edges":[]"#)
+                .replace(':', " : ")
+                .into_bytes(),
+        );
+        cases.push(
+            with(r#""nodes":["1"],"edges":[]"#)
+                .replace(',', "\r\n,")
+                .into_bytes(),
+        );
+        // The fast path must classify every body as serde_json does.
+        for body in &cases {
+            assert_eq!(
+                sonic_rs::from_slice::<ImportRequest>(body)
+                    .map(|r| format!("{r:?}"))
+                    .ok(),
+                serde_json::from_slice::<ImportRequest>(body)
+                    .map(|r| format!("{r:?}"))
+                    .ok(),
+                "{:?}",
+                String::from_utf8_lossy(body)
+            );
+        }
         let accepted = cases.iter().filter(|body| former(body).is_ok()).count();
         assert!(accepted >= 6, "{accepted} accepted bodies");
         for body in &cases {
@@ -1935,6 +2003,50 @@ mod tests {
             );
         }
     }
+    /// Seeded byte mutations of valid bodies: `sonic_rs` accepts exactly
+    /// what `serde_json` accepts and decodes it identically.
+    #[test]
+    fn import_fast_parser_matches_serde_json_under_mutation() {
+        let seeds: [&[u8]; 2] = [
+            br#"{"mode":"create_only","instance_id":"i","graph_id":"default","source_id":"s","source_epoch":"e","source_position":"p","feeder_session_id":"f","feeder_epoch":1,"nodes":["1",{"node":"2","active":false},"3"],"edges":[{"source":"1","target":"2"},{"source":"2","target":"3","enabled":false}]}"#,
+            br#"{"mode":"replace","instance_id":"i\n\u00e9","graph_id":"default","source_id":"s","source_epoch":"e","source_position":"p\"q","feeder_session_id":"f","feeder_epoch":18446744073709551615,"nodes":["1",{"node":"2","active":true}],"edges":[["1","2"],{"source":"2","target":"1","enabled":false}]}"#,
+        ];
+        let alphabet = b"{}[]\",:0123456789-+.eE \\/ubnrtfx\x00\x7f\xc3\xa9\xffnodeactivesourcetargetenabledtruefalsenull";
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut accepted = 0;
+        for i in 0..20_000 {
+            let mut body = seeds[i % seeds.len()].to_vec();
+            for _ in 0..1 + next() % 3 {
+                let at = (next() as usize) % body.len();
+                let byte = alphabet[(next() as usize) % alphabet.len()];
+                match next() % 3 {
+                    0 => body[at] = byte,
+                    1 => body.insert(at, byte),
+                    _ => {
+                        body.remove(at);
+                    }
+                }
+            }
+            let fast = sonic_rs::from_slice::<ImportRequest>(&body).map(|r| format!("{r:?}"));
+            let reference =
+                serde_json::from_slice::<ImportRequest>(&body).map(|r| format!("{r:?}"));
+            accepted += usize::from(reference.is_ok());
+            assert_eq!(
+                fast.ok(),
+                reference.ok(),
+                "{:?}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        assert!(accepted > 100, "{accepted} mutated bodies accepted");
+    }
+
     use crate::{Lifecycle, ServerConfig, ServerMode};
     use axum::http::HeaderValue;
 
