@@ -9,6 +9,12 @@
 - Inherit workspace lints in every crate. Do not suppress missing documentation or introduce unsafe code.
 - Preserve Cargo.lock. Use stable Rust features and minimal dependencies.
 - Verify formatting, Clippy with warnings denied, workspace tests/doctests, and Rustdoc with warnings denied.
+- Every server HTTP API change must update `docs/openapi.yaml` in the same
+  change: routes, methods, request/response schemas, headers, status/error codes,
+  defaults, limits and conditional behavior. Keep it aligned with the
+  implementation and `docs/http-api.md`; Markdown documentation alone is not
+  sufficient. Validate the specification and relevant API contract tests before
+  considering the change complete.
 - Keep benchmarks reproducible. Never present unmeasured performance claims or compare different consistency/result contracts.
 - Do not commit or push unless the user explicitly asks for it.
 

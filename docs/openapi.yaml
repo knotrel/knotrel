@@ -594,6 +594,546 @@ paths:
                     code: request_timeout
                     message: "request exceeded the server time limit; its effect is unknown"
 
+  /v1/feeder/session:
+    post:
+      operationId: feeder_session
+      summary: Acquire or supersede a feeder session
+      tags:
+      - Feeder
+      description: "Register a monotonic feeder epoch with a lease of 1000\u201360000 ms. Session ownership does not\
+        \ itself publish a graph or establish readiness. Available only in source_managed mode. Both the header and\
+        \ body instance_id must match the serving process. This is fencing, not authentication. Except for import,\
+        \ request bodies have a fixed 1 MiB limit. See http-api.md and integration-contract.md for validation order\
+        \ and recovery semantics."
+      parameters:
+      - name: X-Knotrel-Instance-Id
+        in: header
+        required: true
+        description: Current process instance ID from GET /v1/info.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionRequest'
+      responses:
+        '200':
+          description: Successful feeder operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
+            invalid lease duration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '409':
+          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
+            See ErrorCode for identifiers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '413':
+          description: Request body exceeds its limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '415':
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '422':
+          description: Invalid payload shape, operands or domain operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '503':
+          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
+            (a dispatched worker may still complete; outcome is uncertain).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+  /v1/feeder/heartbeat:
+    post:
+      operationId: feeder_heartbeat
+      summary: Renew the current feeder lease
+      tags:
+      - Feeder
+      description: Renews the matching session lease. A heartbeat does not restore ready after lease expiry; recovery
+        requires a new epoch and a verified barrier. Available only in source_managed mode. Both the header and body
+        instance_id must match the serving process. This is fencing, not authentication. Except for import, request
+        bodies have a fixed 1 MiB limit. See http-api.md and integration-contract.md for validation order and recovery
+        semantics.
+      parameters:
+      - name: X-Knotrel-Instance-Id
+        in: header
+        required: true
+        description: Current process instance ID from GET /v1/info.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+      responses:
+        '200':
+          description: Successful feeder operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+        '400':
+          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
+            invalid lease duration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '409':
+          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
+            See ErrorCode for identifiers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '413':
+          description: Request body exceeds its limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '415':
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '422':
+          description: Invalid payload shape, operands or domain operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '503':
+          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
+            (a dispatched worker may still complete; outcome is uncertain).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+  /v1/feeder/import:
+    post:
+      operationId: feeder_import
+      summary: Publish a complete graph atomically
+      tags:
+      - Feeder
+      description: Builds a candidate before atomic publication. create_only requires generation 0; replace requires
+        an exact composite If-Match token from GET /v1/stats. Successful publication advances generation, resets local
+        revision and delivery sequence, and enters catching_up. One import permit is acquired before body consumption;
+        the configurable KNOTREL_MAX_IMPORT_BODY_BYTES limit defaults to 64 MiB. Conflicting repeated node/edge flags
+        are rejected. A timeout after worker dispatch can leave publication uncertain; reconcile before retrying.
+        Available only in source_managed mode. Both the header and body instance_id must match the serving process.
+        This is fencing, not authentication. Except for import, request bodies have a fixed 1 MiB limit. See http-api.md
+        and integration-contract.md for validation order and recovery semantics.
+      parameters:
+      - name: X-Knotrel-Instance-Id
+        in: header
+        required: true
+        description: Current process instance ID from GET /v1/info.
+        schema:
+          type: string
+      - name: If-Match
+        in: header
+        required: false
+        description: Required for mode=replace; one exact quoted composite ETag from /v1/stats. Missing or mismatching
+          replacement preconditions return 412.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+      responses:
+        '201':
+          description: Published graph.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResponse'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+        '400':
+          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
+            invalid lease duration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '409':
+          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
+            See ErrorCode for identifiers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '413':
+          description: Request body exceeds its limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '415':
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '422':
+          description: Invalid payload shape, operands or domain operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '503':
+          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
+            (a dispatched worker may still complete; outcome is uncertain).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '412':
+          description: Missing or mismatching replacement precondition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+  /v1/feeder/events:
+    post:
+      operationId: feeder_events
+      summary: Apply ordered source events
+      tags:
+      - Feeder
+      description: "Accepts 1\u20131024 events, with source continuity, generation/session fencing and bounded duplicate\
+        \ verification. Multi-event execution stops at the first error and preserves the applied prefix; no rollback.\
+        \ The source position never advances ahead of applied events. Exact single-event retries can return duplicate;\
+        \ retained matching duplicates in batches are skipped and events_applied counts only newly applied events.\
+        \ Whole-request validation failures apply no events. Timeouts can leave the applied prefix uncertain. This\
+        \ differs from the legacy /v1/batch continue-on-error contract. Available only in source_managed mode. Both\
+        \ the header and body instance_id must match the serving process. This is fencing, not authentication. Except\
+        \ for import, request bodies have a fixed 1 MiB limit. See http-api.md and integration-contract.md for validation\
+        \ order and recovery semantics."
+      parameters:
+      - name: X-Knotrel-Instance-Id
+        in: header
+        required: true
+        description: Current process instance ID from GET /v1/info.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeederEventsRequest'
+      responses:
+        '200':
+          description: Successful feeder operation.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/FeederEventsResponse'
+                - $ref: '#/components/schemas/FeederDuplicateResponse'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+        '400':
+          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
+            invalid lease duration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '409':
+          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
+            See ErrorCode for identifiers. Partial failures include coherent version headers; pre-execution rejections
+            do not necessarily include them.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ErrorOutcome'
+                - $ref: '#/components/schemas/PartialBatchFailure'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+        '413':
+          description: Request body exceeds its limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '415':
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '422':
+          description: Invalid payload shape, operands or domain operation. Partial failures include coherent version
+            headers; pre-execution rejections do not necessarily include them.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ErrorOutcome'
+                - $ref: '#/components/schemas/PartialBatchFailure'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+        '503':
+          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
+            (a dispatched worker may still complete; outcome is uncertain).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+  /v1/feeder/gap:
+    post:
+      operationId: feeder_gap
+      summary: Declare an unrecoverable source gap
+      tags:
+      - Feeder
+      description: Marks the published graph desynchronized without advancing the applied source frontier. Retains
+        topology for diagnostics; an atomic replacement import is required for recovery. Available only in source_managed
+        mode. Both the header and body instance_id must match the serving process. This is fencing, not authentication.
+        Except for import, request bodies have a fixed 1 MiB limit. See http-api.md and integration-contract.md for
+        validation order and recovery semantics.
+      parameters:
+      - name: X-Knotrel-Instance-Id
+        in: header
+        required: true
+        description: Current process instance ID from GET /v1/info.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GapRequest'
+      responses:
+        '200':
+          description: Successful feeder operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GapResponse'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+        '400':
+          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
+            invalid lease duration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '409':
+          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
+            See ErrorCode for identifiers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '413':
+          description: Request body exceeds its limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '415':
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '422':
+          description: Invalid payload shape, operands or domain operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '503':
+          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
+            (a dispatched worker may still complete; outcome is uncertain).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+  /v1/feeder/barrier:
+    post:
+      operationId: feeder_barrier
+      summary: Verify synchronization completion
+      tags:
+      - Feeder
+      description: 'Verification-only: does not advance the source frontier. The delivery sequence must equal the
+        applied sequence; if supplied, the source position must match exactly. A valid barrier promotes catching_up/stale
+        to ready or acknowledges already_synchronized. An expired epoch cannot restore readiness; a newly registered
+        epoch is required. Available only in source_managed mode. Both the header and body instance_id must match
+        the serving process. This is fencing, not authentication. Except for import, request bodies have a fixed 1
+        MiB limit. See http-api.md and integration-contract.md for validation order and recovery semantics.'
+      parameters:
+      - name: X-Knotrel-Instance-Id
+        in: header
+        required: true
+        description: Current process instance ID from GET /v1/info.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BarrierRequest'
+      responses:
+        '200':
+          description: Successful feeder operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BarrierResponse'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+        '400':
+          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
+            invalid lease duration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '409':
+          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
+            See ErrorCode for identifiers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '413':
+          description: Request body exceeds its limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '415':
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '422':
+          description: Invalid payload shape, operands or domain operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+        '503':
+          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
+            (a dispatched worker may still complete; outcome is uncertain).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOutcome'
+
 components:
   headers:
     ETag:
@@ -923,6 +1463,8 @@ components:
         - code
         - message
       properties:
+        expected_sequence:
+          $ref: '#/components/schemas/FeederU64'
         result:
           type: string
           enum: [error]
@@ -1089,8 +1631,7 @@ components:
       minimum: 0
       description: Lifecycle support only. Edges that are enabled and whose endpoints are both active.
 
-    # Feeder payloads. The feeder routes (`/v1/feeder/*`) are specified in http-api.md and
-    # integration-contract.md; the schemas below describe the lifecycle-relevant payloads.
+    # Feeder payloads; operational recovery details are in integration-contract.md.
 
     ImportNode:
       description: |
@@ -1274,3 +1815,381 @@ components:
         enabled:
           type: boolean
           description: Required on `set_edge_enabled`; forbidden on every other operation.
+
+    FeederU64:
+      type: integer
+      minimum: 0
+      maximum: 18446744073709551615
+    FeederSyncStatus:
+      type: string
+      enum:
+      - uninitialized
+      - loading
+      - catching_up
+      - ready
+      - stale
+      - desynchronized
+    SessionRequest:
+      type: object
+      required:
+      - instance_id
+      - feeder_session_id
+      - feeder_epoch
+      - lease_duration_ms
+      properties:
+        instance_id:
+          type: string
+        feeder_session_id:
+          type: string
+        feeder_epoch:
+          $ref: '#/components/schemas/FeederU64'
+        lease_duration_ms:
+          type: integer
+          minimum: 1000
+          maximum: 60000
+      additionalProperties: false
+    HeartbeatRequest:
+      type: object
+      required:
+      - instance_id
+      - feeder_session_id
+      - feeder_epoch
+      properties:
+        instance_id:
+          type: string
+        feeder_session_id:
+          type: string
+        feeder_epoch:
+          $ref: '#/components/schemas/FeederU64'
+      additionalProperties: false
+    SessionResponse:
+      type: object
+      required:
+      - result
+      - instance_id
+      - feeder_session_id
+      - feeder_epoch
+      - lease_duration_ms
+      - generation
+      - applied_delivery_sequence
+      - applied_source_position
+      - status
+      properties:
+        result:
+          type: string
+          enum:
+          - session_acquired
+        instance_id:
+          type: string
+        feeder_session_id:
+          type: string
+        feeder_epoch:
+          $ref: '#/components/schemas/FeederU64'
+        lease_duration_ms:
+          $ref: '#/components/schemas/FeederU64'
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+        applied_delivery_sequence:
+          $ref: '#/components/schemas/FeederU64'
+        applied_source_position:
+          type:
+          - string
+          - 'null'
+        status:
+          $ref: '#/components/schemas/FeederSyncStatus'
+    HeartbeatResponse:
+      type: object
+      required:
+      - result
+      - instance_id
+      - feeder_session_id
+      - feeder_epoch
+      - lease_expires_in_ms
+      - status
+      properties:
+        result:
+          type: string
+          enum:
+          - heartbeat_acknowledged
+        instance_id:
+          type: string
+        feeder_session_id:
+          type: string
+        feeder_epoch:
+          $ref: '#/components/schemas/FeederU64'
+        lease_expires_in_ms:
+          $ref: '#/components/schemas/FeederU64'
+        status:
+          $ref: '#/components/schemas/FeederSyncStatus'
+    FeederEventsRequest:
+      type: object
+      required:
+      - instance_id
+      - feeder_session_id
+      - feeder_epoch
+      - graph_id
+      - generation
+      - source_id
+      - source_epoch
+      - events
+      properties:
+        instance_id:
+          type: string
+        feeder_session_id:
+          type: string
+        feeder_epoch:
+          $ref: '#/components/schemas/FeederU64'
+        graph_id:
+          type: string
+          const: default
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+        source_id:
+          type: string
+        source_epoch:
+          type: string
+        events:
+          type: array
+          minItems: 1
+          maxItems: 1024
+          items:
+            $ref: '#/components/schemas/FeederEvent'
+      additionalProperties: false
+    FeederEventsResponse:
+      type: object
+      required:
+      - result
+      - instance_id
+      - generation
+      - applied_delivery_sequence
+      - applied_source_position
+      - state_version
+      - events_applied
+      properties:
+        result:
+          type: string
+          enum:
+          - applied
+        instance_id:
+          type: string
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+        applied_delivery_sequence:
+          $ref: '#/components/schemas/FeederU64'
+        applied_source_position:
+          type: string
+        state_version:
+          type: string
+          pattern: ^[0-9]+$
+        events_applied:
+          type: integer
+          minimum: 0
+    FeederDuplicateResponse:
+      type: object
+      required:
+      - result
+      - status
+      - instance_id
+      - generation
+      - event_id
+      - delivery_sequence
+      - historical_outcome
+      - current_applied_delivery_sequence
+      - current_applied_source_position
+      - current_state_version
+      properties:
+        result:
+          type: string
+          enum:
+          - duplicate
+        status:
+          type: string
+          enum:
+          - already_applied
+        instance_id:
+          type: string
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+        event_id:
+          type: string
+        delivery_sequence:
+          $ref: '#/components/schemas/FeederU64'
+        historical_outcome:
+          type: object
+          required:
+          - changed
+          properties:
+            changed:
+              type: boolean
+        current_applied_delivery_sequence:
+          $ref: '#/components/schemas/FeederU64'
+        current_applied_source_position:
+          type: string
+        current_state_version:
+          type: string
+          pattern: ^[0-9]+$
+    PartialBatchFailure:
+      type: object
+      required:
+      - result
+      - code
+      - message
+      - instance_id
+      - generation
+      - applied_delivery_sequence
+      - applied_source_position
+      - state_version
+      - failed_batch_index
+      - failed_delivery_sequence
+      - failed_event_id
+      - error
+      properties:
+        result:
+          type: string
+          enum:
+          - partial_failure
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+        instance_id:
+          type: string
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+        applied_delivery_sequence:
+          $ref: '#/components/schemas/FeederU64'
+        applied_source_position:
+          type: string
+        state_version:
+          type: string
+          pattern: ^[0-9]+$
+        failed_batch_index:
+          type: integer
+          minimum: 0
+        failed_delivery_sequence:
+          $ref: '#/components/schemas/FeederU64'
+        failed_event_id:
+          type: string
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+    GapRequest:
+      type: object
+      required:
+      - instance_id
+      - feeder_session_id
+      - feeder_epoch
+      - graph_id
+      - generation
+      - failed_delivery_sequence
+      properties:
+        instance_id:
+          type: string
+        feeder_session_id:
+          type: string
+        feeder_epoch:
+          $ref: '#/components/schemas/FeederU64'
+        graph_id:
+          type: string
+          const: default
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+        failed_delivery_sequence:
+          $ref: '#/components/schemas/FeederU64'
+        reason:
+          type:
+          - string
+          - 'null'
+      additionalProperties: false
+    GapResponse:
+      type: object
+      required:
+      - result
+      - instance_id
+      - generation
+      - status
+      - action_required
+      properties:
+        result:
+          type: string
+          enum:
+          - gap_acknowledged
+        instance_id:
+          type: string
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+        status:
+          type: string
+          enum:
+          - desynchronized
+        action_required:
+          type: string
+          enum:
+          - full_rebuild_required
+    BarrierRequest:
+      type: object
+      required:
+      - instance_id
+      - feeder_session_id
+      - feeder_epoch
+      - graph_id
+      - generation
+      - barrier_delivery_sequence
+      properties:
+        instance_id:
+          type: string
+        feeder_session_id:
+          type: string
+        feeder_epoch:
+          $ref: '#/components/schemas/FeederU64'
+        graph_id:
+          type: string
+          const: default
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+        barrier_delivery_sequence:
+          $ref: '#/components/schemas/FeederU64'
+        barrier_source_position:
+          type:
+          - string
+          - 'null'
+      additionalProperties: false
+    BarrierResponse:
+      type: object
+      required:
+      - result
+      - instance_id
+      - graph_id
+      - generation
+      - state_version
+      - applied_source_position
+      - status
+      properties:
+        result:
+          type: string
+          enum:
+          - synchronized
+          - already_synchronized
+        instance_id:
+          type: string
+        graph_id:
+          type: string
+          const: default
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+        state_version:
+          type: string
+          pattern: ^[0-9]+$
+        applied_source_position:
+          type: string
+        status:
+          type: string
+          enum:
+          - ready
