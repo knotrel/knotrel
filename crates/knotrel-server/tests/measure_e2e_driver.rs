@@ -105,11 +105,6 @@ fn find_example_measure_e2e_with_test_support() -> PathBuf {
     example_bin
 }
 
-fn free_address() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().expect("local addr")
-}
-
 struct TempTestDir {
     path: PathBuf,
 }
@@ -233,6 +228,16 @@ impl CancellableProcess {
             watchdog_handle: Some(watchdog),
             start,
         }
+    }
+
+    /// Whether the child has exited (normally, by signal, or by the watchdog).
+    fn has_exited(&mut self) -> bool {
+        self.child
+            .as_mut()
+            .expect("child exists")
+            .try_wait()
+            .expect("poll child under watchdog")
+            .is_some()
     }
 
     fn send_signal(&self, signal_flag: &str) {
@@ -910,11 +915,21 @@ fn test_engine_propagation_json_schema_and_markdown_agreement() {
         assert!((p50_ns as f64 / 1_000.0 - lat_us["p50"].as_f64().unwrap()).abs() < 1e-4);
         assert!((p95_ns as f64 / 1_000.0 - lat_us["p95"].as_f64().unwrap()).abs() < 1e-4);
 
-        // Memory
-        let final_rss = r["memory"]["sampled_final_rss_kib"].as_u64().unwrap();
-        let final_bytes = r["memory"]["sampled_final_rss_bytes"].as_u64().unwrap();
-        assert!(final_rss > 0);
+        // Memory. The harness samples RSS with `ps` from a background task
+        // every 25 ms and, when the query phase ends, reads the latest sample
+        // without taking a final one. If the first `ps` call has not returned
+        // by then (a short run on a loaded runner), the report legitimately
+        // carries 0, meaning "no sample". It does not guarantee a nonzero
+        // value, nor final <= max (the task can store one more sample
+        // between the two reads), so only the unit relations are asserted.
+        let memory = &r["memory"];
+        let final_rss = memory["sampled_final_rss_kib"].as_u64().unwrap();
+        let final_bytes = memory["sampled_final_rss_bytes"].as_u64().unwrap();
+        let max_rss = memory["sampled_max_rss_kib"].as_u64().unwrap();
+        let max_bytes = memory["sampled_max_rss_bytes"].as_u64().unwrap();
         assert_eq!(final_bytes, final_rss * 1024);
+        assert_eq!(max_bytes, max_rss * 1024);
+        assert_eq!(memory["sampling_interval_ms"], 25);
 
         // Restart recovery
         let rec_ns = r["restart_recovery"]["duration_ns"].as_u64().unwrap();
@@ -1279,7 +1294,10 @@ exit 77
         "5",
     ]);
 
-    let w_out = run_with_watchdog(cmd, Duration::from_secs(5));
+    // Hang guard only. Early detection is asserted from the driver's own
+    // diagnostic below, so the guard need not sit at the driver's 5 s
+    // startup deadline, where a correct but slow-starting driver raced it.
+    let w_out = run_with_watchdog(cmd, Duration::from_secs(30));
 
     if let Some(pid) = fs::read_to_string(&pid_file)
         .ok()
@@ -1289,11 +1307,6 @@ exit 77
     }
 
     assert!(!w_out.timed_out, "Driver hung during early child exit");
-    assert!(
-        w_out.elapsed < Duration::from_millis(1500),
-        "Driver should detect premature exit immediately without waiting for 5s deadline (Elapsed: {:.2}s)",
-        w_out.elapsed.as_secs_f64()
-    );
     assert!(!w_out.output.status.success());
 
     let all_out = format!(
@@ -1302,9 +1315,24 @@ exit 77
         String::from_utf8_lossy(&w_out.output.stderr)
     );
 
+    // The driver must detect the exit itself, not wait for its 5 s startup
+    // deadline. Its startup loop polls the child before every probe and
+    // reports "exited prematurely" only from that check; the deadline path
+    // reports "Timed out after 5s". This replaces a 1.5 s bound on the
+    // driver's wall-clock time, which also counted the driver's own process
+    // start and failed once at 1.59 s under parallel test load.
     assert!(
-        all_out.contains("status exit status: 77"),
-        "Must report exit code 77: {all_out}"
+        all_out.contains("Server process exited prematurely with status exit status: 77"),
+        "Driver must detect the premature exit and report code 77: {all_out}"
+    );
+    assert!(
+        !all_out.contains("Timed out after"),
+        "Driver must not wait for its startup deadline: {all_out}"
+    );
+    assert!(
+        w_out.elapsed < Duration::from_secs(5),
+        "Driver exit took {:.2}s, not shorter than its 5 s startup deadline",
+        w_out.elapsed.as_secs_f64()
     );
     assert!(
         all_out.contains("FATAL_CONFIG_ERROR: invalid journal offset at block 4096"),
@@ -1611,24 +1639,29 @@ fn test_regression_cancellation_does_not_kill_externally_managed_server() {
     let temp_dir = TempTestDir::new("knotrel_cancel_external");
     let mut cleaner = ProcessCleaner::new();
 
-    let pid_file = temp_dir.path.join("external.pid");
+    let ready_file = temp_dir.path.join("external.ready");
     let marker_file = temp_dir.path.join("driver_connected.marker");
     let script_path = temp_dir.path.join("mock_external_server.sh");
+    let stderr_path = temp_dir.path.join("mock_external_server.stderr");
     let json_out = temp_dir.path.join("should_not_exist.json");
-    let address = free_address();
 
-    // Mock external server starts HTTP service and signals when driver connects
+    // Mock external server starts HTTP service and signals when driver connects.
+    //
+    // It binds `127.0.0.1:0` and publishes "<pid> <host>:<port>" only after
+    // the socket is listening. Choosing a free port in the test and passing
+    // it in raced with the loopback connections of concurrent tests:
+    // `socketserver.TCPServer` does not set `SO_REUSEADDR`, so `bind` fails
+    // with `EADDRINUSE` when the port is the local port of a live connection
+    // or of one in `TIME_WAIT`. The file is written to a temporary name and
+    // renamed, so a reader never sees a partial line.
     let script_content = format!(
         r#"#!/bin/sh
 export PATH="/bin:/usr/bin"
 exec python3 -u -c '
 import os, sys, http.server, socketserver, time
 
-pid_file = "{pid_file}"
+ready_file = "{ready_file}"
 marker_file = "{marker_file}"
-addr = "{address}"
-host, port = addr.split(":")
-port = int(port)
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -1654,19 +1687,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-server = socketserver.TCPServer((host, port), Handler)
+server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+host, port = server.server_address[:2]
 
-# Publish the pid only once the socket is bound and listening, so the test
-# never starts the driver against a server that is not yet accepting.
-with open(pid_file, "w") as f:
-    f.write(str(os.getpid()))
+tmp = ready_file + ".tmp"
+with open(tmp, "w") as f:
+    f.write("%d %s:%d\n" % (os.getpid(), host, port))
+os.rename(tmp, ready_file)
 
 server.serve_forever()
 '
 "#,
-        pid_file = pid_file.display(),
+        ready_file = ready_file.display(),
         marker_file = marker_file.display(),
-        address = address
     );
 
     fs::write(&script_path, script_content).expect("write mock script");
@@ -1674,27 +1707,51 @@ server.serve_forever()
     perms.set_mode(0o755);
     fs::set_permissions(&script_path, perms).expect("set executable");
 
-    // Spawn externally managed server under watchdog
+    // Spawn the externally managed server; keep its stderr so a startup
+    // failure (for example a Python traceback) is reported, not discarded.
+    let stderr_file = fs::File::create(&stderr_path).expect("create mock stderr file");
     let mut ext_cmd = Command::new(&script_path);
-    ext_cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    ext_cmd
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr_file));
     let mut ext_child = ext_cmd.spawn().expect("spawn mock external server");
+    cleaner.track(ext_child.id());
 
-    // Synchronize on observable external server readiness
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut ext_pid: Option<u32> = None;
-    while std::time::Instant::now() < deadline {
-        if let Some(pid) = fs::read_to_string(&pid_file)
-            .ok()
-            .and_then(|t| t.trim().parse::<u32>().ok())
-            .filter(|&pid| is_process_alive(pid))
-        {
-            ext_pid = Some(pid);
-            break;
+    // Synchronize on observable readiness: the ready file, or the mock's exit
+    // (reported at once with its stderr). The deadline is only a hang guard
+    // for an interpreter that neither starts nor exits. It is 60 s, not the
+    // former 5 s, because a cold `python3` start on a hosted runner, while
+    // the other tests and an in-test `cargo build` share the CPUs, can take
+    // seconds; a failed start does not wait for it.
+    let hang_guard = std::time::Instant::now() + Duration::from_secs(60);
+    let (ext_pid, address) = loop {
+        if let Some((pid, address)) = fs::read_to_string(&ready_file).ok().and_then(|text| {
+            let (pid, address) = text.trim().split_once(' ')?;
+            Some((
+                pid.parse::<u32>().ok()?,
+                address.parse::<SocketAddr>().ok()?,
+            ))
+        }) {
+            break (pid, address);
         }
+        if let Some(status) = ext_child.try_wait().expect("poll mock external server") {
+            panic!(
+                "External server exited before becoming ready: {status}\nmock stderr:\n{}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        assert!(
+            std::time::Instant::now() < hang_guard,
+            "External server neither became ready nor exited within 60 s\nmock stderr:\n{}",
+            fs::read_to_string(&stderr_path).unwrap_or_default()
+        );
         std::thread::sleep(Duration::from_millis(20));
-    }
-    let ext_pid = ext_pid.expect("External server failed to start within deadline");
-    cleaner.track(ext_pid);
+    };
+    assert_eq!(
+        ext_pid,
+        ext_child.id(),
+        "ready file must come from the spawned mock (the script execs python3)"
+    );
 
     let mut cmd = Command::new(&example);
     cmd.args([
@@ -1710,22 +1767,22 @@ server.serve_forever()
         json_out.to_str().unwrap(),
     ]);
 
-    let proc = CancellableProcess::spawn(cmd, Duration::from_secs(10));
+    let mut proc = CancellableProcess::spawn(cmd, Duration::from_secs(10));
 
-    // Synchronize on observable connection marker evidence
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut connected = false;
-    while std::time::Instant::now() < deadline {
-        if marker_file.exists() {
-            connected = true;
-            break;
+    // Synchronize on observable connection marker evidence, or on the driver
+    // exiting first. The process watchdog bounds this wait.
+    while !marker_file.exists() {
+        if proc.has_exited() {
+            let w_out = proc.wait_for_completion();
+            panic!(
+                "Driver exited before connecting to the external server (watchdog fired: {})\nstdout:\n{}\nstderr:\n{}",
+                w_out.timed_out,
+                String::from_utf8_lossy(&w_out.output.stdout),
+                String::from_utf8_lossy(&w_out.output.stderr)
+            );
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(
-        connected,
-        "Driver did not connect to external server within deadline"
-    );
 
     // Send SIGINT to measure_e2e while connected to external server
     proc.send_signal("-2");
