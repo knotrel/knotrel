@@ -193,8 +193,9 @@ errors. Earlier successes remain applied: **batches do not provide rollback**.
 An invalid envelope, malformed operation or invalid batch size rejects the whole
 request before any graph operation executes.
 
-One mutex spans the entire batch, so other graph requests cannot interleave with
-it. Separate requests execute in lock-acquisition order, not necessarily arrival
+One lock acquisition spans the entire batch, so other graph requests cannot
+interleave with it: a batch with a mutation holds the graph lock exclusively,
+and a query-only batch holds it shared, which excludes every mutation. Separate requests execute in lock-acquisition order, not necessarily arrival
 order. A connectivity result reflects all earlier operations in that order.
 
 Batch response headers (`ETag`, `X-Knotrel-State-Version`, `X-Knotrel-Generation`,
@@ -328,13 +329,19 @@ the graph lock is requested; `knotrel_imports_total` classifies it as
 
 ## Concurrency and order
 
-Every graph operation, including queries and `GET /v1/stats`, takes the same
-mutex. Overlapping requests are therefore serialized: the outcome equals some
-sequential order of whole requests (a batch is one indivisible unit in that
-order). Queries are not run in parallel with each other or with mutations. The
-order is the order of lock acquisition and is not otherwise specified, so
-clients must not infer ordering between requests that overlap in time. A
-request that is admitted but whose client disconnects can still complete.
+Every graph request, including queries and `GET /v1/stats`, takes the same
+graph lock (unreleased, v0.7.0: a read-write lock). A request whose operations
+are all queries (`connected`, `node_state`, `edge_state`) and `GET /v1/stats`
+take it shared and can run in parallel with each other; any request with a
+mutation, and every feeder and import request, takes it exclusively. The
+outcome still equals some sequential order of whole requests (a batch is one
+indivisible unit in that order): a query request sees no part of a concurrent
+mutation, and parallel query requests do not change state. While a mutation
+waits for the lock, new query requests wait behind it, so queries cannot
+starve the feeder. The order is the order of lock acquisition and is not
+otherwise specified, so clients must not infer ordering between requests that
+overlap in time. A request that is admitted but whose client disconnects can
+still complete.
 
 ## Admission and cancellation
 
@@ -655,7 +662,7 @@ provide the same exact graph and batch semantics. None caches query answers;
 the indexed engines maintain their connectivity structures on updates.
 
 The job limit covers admitted queued plus running graph work, including
-`GET /v1/stats`, not concurrent mutation workers. All graph operations still acquire the same mutex. Body
+`GET /v1/stats`, not concurrent mutation workers. All graph operations still acquire the same graph lock (see [Concurrency and order](#concurrency-and-order)). Body
 size (1 MiB) and batch size (1–1024) are fixed in this version.
 
 `GET /v1/info` returns HTTP 200 and immutable effective settings, for example:
@@ -726,7 +733,7 @@ share one instance. No hierarchy or typed-node model is introduced.
 | Contract | `GET /v1/info` | `GET /v1/stats` |
 | --- | --- | --- |
 | Purpose | Effective immutable configuration | Current coherent graph state |
-| Graph mutex | Not acquired | Acquired on a blocking worker |
+| Graph lock | Not acquired | Acquired shared on a blocking worker |
 | Admission permit | Not required | Shares the graph job limit |
 | Saturated graph workers | Still available | HTTP 503 `busy` |
 | State changes | No live fields | Reflects completed effective mutations |
@@ -789,7 +796,11 @@ when all permits are occupied. A panic while executing a graph job permanently
 marks this service instance unavailable: queued and subsequently admitted graph
 jobs return HTTP 503 `unavailable`,
 using the existing error envelope, even if the original caller disconnected.
-The marker is protected by the graph mutex and does not depend on mutex poisoning.
+A state-changing job sets the marker under the exclusive graph lock; a
+read-only job that panics sets it before releasing its shared lock (unreleased,
+v0.7.0). Read-only requests already running in parallel with a panicking
+read-only request complete normally: it could not change the state they read.
+The marker does not depend on lock poisoning.
 A partial mutation is not rolled back and cannot be read through `/v1/stats`.
 Recover by replacing/restarting the service; in-memory data is not persisted.
 Disconnecting an admitted stats caller does not release its permit before its worker finishes. `/v1/info`

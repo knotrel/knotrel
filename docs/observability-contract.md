@@ -92,7 +92,9 @@ the excluded part is transmission only.
 either accepted or rejected. Once accepted, time is split into:
 
 - **queue:** from `spawn_blocking` until the closure starts (blocking-pool scheduling);
-- **lock wait:** from the start of `graph.lock()` until it is acquired;
+- **lock wait:** from the graph-lock request until it is acquired (shared for
+  query-only `operation`/`batch` jobs and `stats`, exclusive for every other
+  kind; unreleased, v0.7.0);
 - **execution:** time holding the graph lock.
 
 Import preparation (parse and candidate construction) runs on the worker

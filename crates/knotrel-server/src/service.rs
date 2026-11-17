@@ -9,18 +9,18 @@ use crate::{
         GapResponse, HeartbeatRequest, HeartbeatResponse, HistoricalOutcome, ImportMode,
         ImportRequest, ImportResponse, MAX_EVENT_ID_BYTES, MAX_LEASE_DURATION_MS,
         MAX_SOURCE_POSITION_BYTES, MIN_LEASE_DURATION_MS, Operation, Outcome, PartialBatchFailure,
-        RequiredAction, SessionRequest, SessionResponse, WireOp,
+        Query, RequiredAction, SessionRequest, SessionResponse, WireOp,
     },
     metrics::{
         CatchupInterval, CatchupKind, CatchupRecorder, CompletedCatchup, Desynchronization,
         FeederEventResult, FeederRejection, GraphOp, ImportObservation, JobClock, JobKind,
-        PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed,
+        PendingOutcome, Rejection, ServiceTelemetry, Uncertainty, lock_timed, read_timed,
     },
 };
 #[cfg(test)]
 use knotrel_core::ConnectivityGraph;
 use knotrel_core::{EngineConfig, GraphError};
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::{
     sync::{
         Arc,
@@ -778,7 +778,7 @@ impl std::ops::Deref for Service {
 
 /// State shared by every clone of a [`Service`].
 pub(crate) struct ServiceInner {
-    graph: Arc<Mutex<GraphState>>,
+    graph: Arc<RwLock<GraphState>>,
     permits: Arc<Semaphore>,
     import_permits: Arc<Semaphore>,
     // Lock-free mirror of GraphState::failed so readiness never waits for graph work.
@@ -794,8 +794,8 @@ pub(crate) struct ServiceInner {
     telemetry: Option<Arc<ServiceTelemetry>>,
 }
 
-/// Graph and revision share one mutex: snapshots cannot split a batch or observe
-/// a mutation without its revision increment. Version starts at zero even when
+/// Graph and revision share one read-write lock: snapshots cannot split a batch
+/// or observe a mutation without its revision increment. Version starts at zero even when
 /// embedding a pre-populated graph; it counts this service instance's changes.
 struct GraphState {
     graph: ServiceGraph,
@@ -866,6 +866,46 @@ impl GraphState {
         let deadline_ms = self.lease_deadline.map(instant_to_millis).unwrap_or(0);
         self.publication_seq = self.publication_seq.wrapping_add(1);
         PublishedReadiness::pack(self.sync_status, self.publication_seq, deadline_ms)
+    }
+
+    /// In source-managed mode, refuses every operation of a request while the
+    /// graph has no usable generation: one error outcome per operation and the
+    /// current metadata, or `None` when the request may run. Reads only, so
+    /// readers and writers share it.
+    fn refuse_unsynchronized(
+        &self,
+        mode: ServerMode,
+        instance_id: &str,
+        count: usize,
+    ) -> Option<ExecutionResult> {
+        if mode != ServerMode::SourceManaged {
+            return None;
+        }
+        let (code, message) =
+            if self.generation == 0 || self.sync_status == SyncStatus::Uninitialized {
+                (
+                    ErrorCode::Uninitialized,
+                    "graph is uninitialized; baseline import required",
+                )
+            } else if self.sync_status == SyncStatus::Loading {
+                (ErrorCode::Loading, "graph baseline import is in progress")
+            } else if self.sync_status == SyncStatus::Desynchronized {
+                (
+                    ErrorCode::Desynchronized,
+                    "graph is desynchronized; full rebuild required",
+                )
+            } else {
+                return None;
+            };
+        let outcomes = (0..count)
+            .map(|_| Outcome::Error {
+                code,
+                message: message.into(),
+                expected_sequence: None,
+            })
+            .collect();
+        let metadata = self.response_metadata(mode, instance_id);
+        Some(ExecutionResult { outcomes, metadata })
     }
 
     fn apply(&mut self, operation: Operation) -> Outcome {
@@ -2011,7 +2051,7 @@ impl Service {
                 instance_id: inst_id_opt,
                 topology_lifecycle,
             },
-            graph: Arc::new(Mutex::new(GraphState::new(
+            graph: Arc::new(RwLock::new(GraphState::new(
                 graph,
                 config.dedup_window_size(),
             ))),
@@ -2074,33 +2114,33 @@ impl Service {
 
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn seed_version_for_test(&self, decimal_str: &str) {
-        let mut state = self.graph.lock();
+        let mut state = self.graph.write();
         state.version = decimal_str.bytes().rev().map(|b| b - b'0').collect();
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn seed_sequence_for_test(&self, sequence: u64) {
-        let mut state = self.graph.lock();
+        let mut state = self.graph.write();
         state.applied_delivery_sequence = sequence;
     }
 
     #[cfg(any(test, feature = "test-support"))]
     #[allow(dead_code)]
     pub(crate) fn seed_generation_for_test(&self, generation: u64) {
-        let mut state = self.graph.lock();
+        let mut state = self.graph.write();
         state.generation = generation;
     }
 
     #[cfg(any(test, feature = "test-support"))]
     #[allow(dead_code)]
     pub(crate) fn applied_delivery_sequence(&self) -> u64 {
-        self.graph.lock().applied_delivery_sequence
+        self.graph.read().applied_delivery_sequence
     }
 
     #[cfg(any(test, feature = "test-support"))]
     #[allow(dead_code)]
     pub(crate) fn set_sync_status_for_test(&self, status: SyncStatus) {
-        let mut state = self.graph.lock();
+        let mut state = self.graph.write();
         state.sync_status = status;
         let current = self.published_readiness();
         self.published_readiness.store(
@@ -2112,7 +2152,7 @@ impl Service {
     #[cfg(any(test, feature = "test-support"))]
     #[allow(dead_code)]
     pub(crate) fn set_published_readiness_for_test(&self, status: SyncStatus, deadline_ms: u64) {
-        let mut state = self.graph.lock();
+        let mut state = self.graph.write();
         state.sync_status = status;
         let current = self.published_readiness();
         self.published_readiness.store(
@@ -2271,7 +2311,7 @@ impl Service {
         let instance_id = Arc::clone(&self.instance_id);
 
         let is_initial = {
-            let state = self.graph.lock();
+            let state = self.graph.read();
             state.generation == 0
         };
         if is_initial {
@@ -2505,10 +2545,11 @@ impl Service {
     ///
     /// Admission is nonblocking: rejected work never enters Tokio's blocking
     /// queue. Moving the permit into the closure bounds queued plus running
-    /// jobs even if the caller drops its future. The mutex is acquired only
-    /// inside that closure, keeping traversal and lock contention off async
-    /// executor threads. One guard spans the entire batch, so no other request
-    /// can observe its intermediate states. Per-operation errors do not roll
+    /// jobs even if the caller drops its future. The graph lock is acquired
+    /// only inside that closure, keeping traversal and lock contention off
+    /// async executor threads: shared when every operation is a query,
+    /// exclusive otherwise. One guard spans the entire batch, so no other
+    /// request can observe its intermediate states. Per-operation errors do not roll
     /// back earlier updates. A panic permanently marks the graph unavailable,
     /// including to queued jobs, until this service instance is replaced.
     pub(crate) async fn execute(
@@ -2534,49 +2575,38 @@ impl Service {
         let mode = self.mode;
         let instance_id = Arc::clone(&self.instance_id);
         let telemetry = self.telemetry.clone();
-        let effect = if operations.iter().all(Operation::is_query) {
-            JobEffect::ReadOnly
-        } else {
-            JobEffect::MayChangeState
-        };
-        self.run(kind, effect, move |state| {
-            if mode == ServerMode::SourceManaged {
-                if state.generation == 0 || state.sync_status == SyncStatus::Uninitialized {
-                    let outcomes = operations
+        // A request whose operations are all queries runs under the shared
+        // guard; one mutation makes the whole request a writer.
+        let queries: Option<Vec<Query>> = operations.iter().map(Operation::as_query).collect();
+        if let Some(queries) = queries {
+            return self
+                .run_read(kind, move |state| {
+                    if let Some(refused) =
+                        state.refuse_unsynchronized(mode, &instance_id, queries.len())
+                    {
+                        return refused;
+                    }
+                    let outcomes = queries
                         .into_iter()
-                        .map(|_| Outcome::Error {
-                            code: ErrorCode::Uninitialized,
-                            message: "graph is uninitialized; baseline import required".into(),
-                            expected_sequence: None,
+                        .map(|query| match telemetry.as_deref() {
+                            None => query.evaluate(&state.graph),
+                            Some(telemetry) => {
+                                let op = GraphOp::of(&Operation::from(query));
+                                let outcome = query.evaluate(&state.graph);
+                                telemetry.count_operation(op, &outcome);
+                                outcome
+                            }
                         })
                         .collect();
                     let metadata = state.response_metadata(mode, &instance_id);
-                    return ExecutionResult { outcomes, metadata };
-                }
-                if state.sync_status == SyncStatus::Loading {
-                    let outcomes = operations
-                        .into_iter()
-                        .map(|_| Outcome::Error {
-                            code: ErrorCode::Loading,
-                            message: "graph baseline import is in progress".into(),
-                            expected_sequence: None,
-                        })
-                        .collect();
-                    let metadata = state.response_metadata(mode, &instance_id);
-                    return ExecutionResult { outcomes, metadata };
-                }
-                if state.sync_status == SyncStatus::Desynchronized {
-                    let outcomes = operations
-                        .into_iter()
-                        .map(|_| Outcome::Error {
-                            code: ErrorCode::Desynchronized,
-                            message: "graph is desynchronized; full rebuild required".into(),
-                            expected_sequence: None,
-                        })
-                        .collect();
-                    let metadata = state.response_metadata(mode, &instance_id);
-                    return ExecutionResult { outcomes, metadata };
-                }
+                    ExecutionResult { outcomes, metadata }
+                })
+                .await;
+        }
+        self.run(kind, JobEffect::MayChangeState, move |state| {
+            if let Some(refused) = state.refuse_unsynchronized(mode, &instance_id, operations.len())
+            {
+                return refused;
             }
             // Each operation is counted once when it returns, so a panic keeps
             // earlier counts and invents no outcome for the interrupted one.
@@ -2598,12 +2628,13 @@ impl Service {
         .await
     }
 
-    /// Takes a coherent snapshot through the same bounded worker path as writes.
+    /// Takes a coherent snapshot through the same bounded admission as writes,
+    /// under the shared graph guard.
     pub(crate) async fn stats(&self) -> Result<StatsResult, ServiceError> {
         let mode = self.mode;
         let instance_id = Arc::clone(&self.instance_id);
         let current_sync_status = self.sync_status();
-        self.run(JobKind::Stats, JobEffect::ReadOnly, move |state| {
+        self.run_read(JobKind::Stats, move |state| {
             let mut snapshot = state.snapshot(mode, &instance_id);
             if current_sync_status == SyncStatus::Loading && state.generation == 0 {
                 snapshot.sync_status = Some(SyncStatus::Loading);
@@ -2785,19 +2816,22 @@ impl Service {
         marked
     }
 
-    // One admission/cancellation/poisoning policy for reads and writes. The
-    // owned permit stays with the blocking closure even if its caller is gone.
-    async fn run<R: Send + 'static>(
+    /// Admits one graph job: refuses it when the service is unavailable or
+    /// every pending-job permit is taken, otherwise returns the owned permit
+    /// and the shutdown job guard, both to be moved into the worker.
+    fn admit(
         &self,
-        kind: JobKind,
-        effect: JobEffect,
-        work: impl FnOnce(&mut GraphState) -> R + Send + 'static,
-    ) -> Result<R, ServiceError> {
+    ) -> Result<
+        (
+            tokio::sync::OwnedSemaphorePermit,
+            crate::lifecycle::JobGuard,
+        ),
+        ServiceError,
+    > {
         if self.is_unavailable() {
             self.count_rejection(Rejection::Unavailable);
             return Err(ServiceError::Unavailable);
         }
-
         let permit = self.permits.clone().try_acquire_owned().map_err(|_| {
             tracing::warn!(
                 capacity = self.info.max_pending_jobs,
@@ -2806,7 +2840,37 @@ impl Service {
             self.count_rejection(Rejection::Busy);
             ServiceError::Busy
         })?;
-        let job_guard = self.lifecycle.track_job();
+        Ok((permit, self.lifecycle.track_job()))
+    }
+
+    /// Awaits a graph worker. A worker that panicked or was aborted marks the
+    /// service unavailable; its error is never logged, because a panic
+    /// message may embed request data.
+    async fn join_worker<R>(
+        &self,
+        effect: JobEffect,
+        handle: tokio::task::JoinHandle<Result<R, ServiceError>>,
+    ) -> Result<R, ServiceError> {
+        let pending = PendingOutcome::arm(self.telemetry_for(effect));
+        let joined = handle.await;
+        pending.disarm();
+        joined.map_err(|error| {
+            tracing::error!(panicked = error.is_panic(), "graph worker thread failed");
+            self.unavailable.store(true, Ordering::Release);
+            ServiceError::Unavailable
+        })?
+    }
+
+    // One admission/cancellation/poisoning policy for reads and writes. The
+    // owned permit stays with the blocking closure even if its caller is gone.
+    // Exclusive path: every state-changing job.
+    async fn run<R: Send + 'static>(
+        &self,
+        kind: JobKind,
+        effect: JobEffect,
+        work: impl FnOnce(&mut GraphState) -> R + Send + 'static,
+    ) -> Result<R, ServiceError> {
+        let (permit, job_guard) = self.admit()?;
         // One shared handle gives the worker the graph, lifecycle, failure
         // flag and telemetry with a single reference-count increment.
         let service = self.clone();
@@ -2853,15 +2917,85 @@ impl Service {
             panic_guard.success = true;
             Ok(result)
         });
-        let pending = PendingOutcome::arm(self.telemetry_for(effect));
-        let joined = handle.await;
-        pending.disarm();
-        joined.map_err(|error| {
-            // Never log the error itself: a panic message may embed request data.
-            tracing::error!(panicked = error.is_panic(), "graph worker thread failed");
-            self.unavailable.store(true, Ordering::Release);
-            ServiceError::Unavailable
-        })?
+        self.join_worker(effect, handle).await
+    }
+
+    /// Shared path for read-only jobs (all-query requests and stats).
+    ///
+    /// Admission, accounting and cancellation are those of [`Service::run`].
+    /// Readers cannot write the `failed` marker, so a [`ReaderPanicMarker`]
+    /// declared after the shared guard marks the service unavailable while
+    /// unwinding, *before* the guard is released: every job that acquires the
+    /// lock afterwards, queued or newly admitted, is refused. Readers already
+    /// holding the shared guard finish normally; a reader cannot have changed
+    /// the state they observe.
+    async fn run_read<R: Send + 'static>(
+        &self,
+        kind: JobKind,
+        work: impl FnOnce(&GraphState) -> R + Send + 'static,
+    ) -> Result<R, ServiceError> {
+        let (permit, job_guard) = self.admit()?;
+        let service = self.clone();
+        let clock = JobClock::submit(self.telemetry.as_ref(), kind);
+        let span = tracing::Span::current();
+        let handle = tokio::task::spawn_blocking(move || {
+            let _span = span.enter();
+            JobClock::start(clock.as_ref());
+            let _job_guard = job_guard;
+            let _permit = permit;
+            let mut panic_guard = WorkerPanicGuard {
+                unavailable: Arc::clone(&service.unavailable),
+                panic_telemetry: None,
+                success: false,
+            };
+            let lifecycle = &service.lifecycle;
+            lifecycle.check_worker_hook();
+            let graph = read_timed(&service.graph, clock.as_ref(), lifecycle);
+            if graph.failed || service.unavailable.load(Ordering::Acquire) {
+                tracing::warn!("graph worker state marked as failed; rejecting work");
+                panic_guard.unavailable.store(true, Ordering::Release);
+                if let Some(telemetry) = service.telemetry.as_deref() {
+                    telemetry.reject(Rejection::Unavailable);
+                }
+                return Err(ServiceError::Unavailable);
+            }
+            let graph = ReadJobGuard {
+                _marker: ReaderPanicMarker(&service.unavailable),
+                guard: graph,
+            };
+            let result = work(&graph.guard);
+            drop(graph);
+            lifecycle.check_worker_post_lock_hook();
+            panic_guard.success = true;
+            Ok(result)
+        });
+        self.join_worker(JobEffect::ReadOnly, handle).await
+    }
+}
+
+/// Marks the service unavailable if a reader unwinds while it holds the
+/// shared graph guard.
+///
+/// It must be dropped before that guard: the store (Release) then precedes
+/// the unlock, and the lock's release/acquire ordering makes it visible to
+/// every job that acquires the lock later, which checks it before any work.
+/// This replaces the `failed` bit that writers set inside the guarded state.
+struct ReaderPanicMarker<'a>(&'a AtomicBool);
+
+/// A reader's shared guard with its panic marker.
+///
+/// Struct fields drop in declaration order, also when unwinding, so the
+/// marker always stores before the guard releases the lock.
+struct ReadJobGuard<'a, G> {
+    _marker: ReaderPanicMarker<'a>,
+    guard: G,
+}
+
+impl Drop for ReaderPanicMarker<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -2908,7 +3042,7 @@ mod tests {
         // Hold the graph from a dedicated thread so the worker stays pending
         // without blocking the async test executor or depending on a large graph.
         let holder = std::thread::spawn(move || {
-            let _guard = graph.lock();
+            let _guard = graph.write();
             locked_tx.send(()).unwrap();
             let _ = release_rx.recv();
         });
@@ -2934,7 +3068,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(service.graph.lock().graph.connected(7, 7), Ok(true));
+        assert_eq!(service.graph.write().graph.connected(7, 7), Ok(true));
     }
 
     #[test]
@@ -3126,7 +3260,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(service.graph.lock().graph.node_count(), 1);
+        assert_eq!(service.graph.write().graph.node_count(), 1);
         assert_eq!(service.info().engine, "compact-bfs");
     }
 
@@ -3344,7 +3478,7 @@ mod tests {
         let service = Service::new(ConnectivityGraph::default(), 1, lifecycle.clone());
 
         // Mark graph as failed directly.
-        service.graph.lock().failed = true;
+        service.graph.write().failed = true;
 
         // Submitting an operation must be rejected with Unavailable.
         let result = service.execute(vec![add(1)]).await;
@@ -3362,7 +3496,7 @@ mod tests {
         let telemetry = Arc::clone(service.telemetry().unwrap());
 
         // Passes the entry check; the worker refuses under the graph lock.
-        service.graph.lock().failed = true;
+        service.graph.write().failed = true;
         let result = service.execute(vec![add(1)]).await;
         assert!(matches!(result, Err(ServiceError::Unavailable)));
         assert_eq!(telemetry.rejected_count(Rejection::Unavailable), 1);
@@ -3391,7 +3525,7 @@ mod tests {
     async fn disabled_metrics_create_no_service_telemetry() {
         let service = Service::new(ConnectivityGraph::default(), 1, Lifecycle::ready());
         assert!(service.telemetry().is_none());
-        service.graph.lock().failed = true;
+        service.graph.write().failed = true;
         let result = service.execute(vec![add(1)]).await;
         assert!(matches!(result, Err(ServiceError::Unavailable)));
         assert!(service.telemetry().is_none());
@@ -3478,7 +3612,7 @@ mod tests {
         let source_id = "stream-alpha".to_string();
         let source_position = "pos-initial".to_string();
         {
-            let mut state = service.graph.lock();
+            let mut state = service.graph.write();
             state.graph.link(1, 2).unwrap();
             state.generation = u64::MAX;
             state.version = "42".bytes().rev().map(|b| b - b'0').collect();
@@ -3524,7 +3658,7 @@ mod tests {
         );
 
         // Topology preserved: 1 and 2 connected, 10 and 20 NOT published
-        let state = service.graph.lock();
+        let state = service.graph.write();
         assert_eq!(state.graph.connected(1, 2), Ok(true));
         assert_eq!(state.graph.node_count(), 2);
         assert_eq!(state.graph.edge_count(), 1);
@@ -3558,7 +3692,7 @@ mod tests {
         // Seed revision to a 22-digit number beyond u64::MAX ending in 599
         let seed_version = "1844674407370955161599";
         {
-            let mut state = service.graph.lock();
+            let mut state = service.graph.write();
             state.version = seed_version.bytes().rev().map(|b| b - b'0').collect();
         }
 
@@ -4106,7 +4240,7 @@ mod tests {
 
         // Seed generation 1 in Ready
         {
-            let mut state = service.graph.lock();
+            let mut state = service.graph.write();
             state.generation = 1;
             state.sync_status = SyncStatus::Ready;
             state.applied_delivery_sequence = 10;
@@ -5014,13 +5148,13 @@ mod tests {
                 }
             });
             locked_rx.await.unwrap();
-            assert!(service.graph.try_lock().is_none());
+            assert!(service.graph.try_write().is_none());
 
             let scraped = tokio::time::timeout(Duration::from_secs(5), scrape_counts(&app))
                 .await
                 .expect("scrape must not wait for the graph lock");
             assert_eq!(scraped, counts("0", "0"));
-            assert!(service.graph.try_lock().is_none());
+            assert!(service.graph.try_write().is_none());
 
             release_tx.send(()).unwrap();
             worker.await.unwrap().unwrap();
@@ -5041,7 +5175,7 @@ mod tests {
             let service =
                 Service::with_config(ConnectivityGraph::default(), 2, Lifecycle::ready(), &config);
             {
-                let mut state = service.graph.lock();
+                let mut state = service.graph.write();
                 state.generation = 1;
                 state.source_id = Some("pg-1".into());
                 state.source_epoch = Some("ep-1".into());
@@ -5092,7 +5226,10 @@ mod tests {
             let service = seeded(false, Some(lease));
             assert!(service.telemetry().is_none());
             service.declare_gap(gap(&service)).await.unwrap();
-            assert_eq!(service.graph.lock().sync_status, SyncStatus::Desynchronized);
+            assert_eq!(
+                service.graph.write().sync_status,
+                SyncStatus::Desynchronized
+            );
             let result = service.declare_gap(crate::api::GapRequest {
                 generation: 7,
                 ..gap(&service)
@@ -5207,7 +5344,7 @@ mod tests {
         #[tokio::test]
         async fn worker_rejection_under_the_lock_is_timed_and_admission_rejection_is_not() {
             let service = timed_service(Lifecycle::ready());
-            service.graph.lock().failed = true;
+            service.graph.write().failed = true;
             assert!(matches!(
                 service.execute(vec![add(1)]).await,
                 Err(ServiceError::Unavailable)
@@ -5240,13 +5377,13 @@ mod tests {
                 }
             });
             locked_rx.await.unwrap();
-            assert!(service.graph.try_lock().is_none());
+            assert!(service.graph.try_write().is_none());
             let observed = tokio::time::timeout(Duration::from_secs(5), phases(&service, "stats"))
                 .await
                 .expect("scrape must not wait for the graph lock")
                 .map(|phase| phase.0);
             assert_eq!(observed, [1, 0, 0]);
-            assert!(service.graph.try_lock().is_none());
+            assert!(service.graph.try_write().is_none());
 
             release_tx.send(()).unwrap();
             worker.await.unwrap().unwrap();
@@ -5304,7 +5441,7 @@ mod tests {
             let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
             let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
             let holder = std::thread::spawn(move || {
-                let _guard = graph.lock();
+                let _guard = graph.write();
                 locked_tx.send(()).unwrap();
                 let _ = release_rx.recv();
             });
@@ -5568,7 +5705,7 @@ mod tests {
                     }
                 });
                 locked_rx.await.unwrap();
-                assert!(self.service.graph.try_lock().is_none());
+                assert!(self.service.graph.try_write().is_none());
                 (release_tx, holder)
             }
         }
@@ -5607,7 +5744,7 @@ mod tests {
         /// a feeder worker does under the graph lock, with status `Ready`
         /// and an active session `s`/1.
         fn publish_deadline(service: &Service, deadline: Instant) {
-            let mut state = service.graph.lock();
+            let mut state = service.graph.write();
             state.feeder_session_id = Some("s".into());
             state.feeder_epoch = 1;
             state.lease_deadline = Some(deadline);
@@ -5631,7 +5768,7 @@ mod tests {
             assert_eq!(app.get("/ready").await.0, StatusCode::OK);
             assert!(!app.service.is_lease_expired());
             {
-                let mut state = app.service.graph.lock();
+                let mut state = app.service.graph.write();
                 assert!(!state.is_lease_expired_internal());
                 assert!(state.validate_session_and_lease("s", 1).is_ok());
             }
@@ -5644,7 +5781,7 @@ mod tests {
             assert!(lease <= -0.002 && lease > -1.0, "{lease}");
             assert_eq!(app.get("/ready").await.0, StatusCode::SERVICE_UNAVAILABLE);
             assert!(app.service.is_lease_expired());
-            let mut state = app.service.graph.lock();
+            let mut state = app.service.graph.write();
             assert!(state.is_lease_expired_internal());
             assert!(matches!(
                 state.validate_session_and_lease("s", 1),
@@ -5909,7 +6046,7 @@ mod tests {
                 .await
                 .expect("scrape must not wait for the graph lock");
             assert!(matches!(gauges, (Some(_), Some(_))), "{gauges:?}");
-            assert!(app.service.graph.try_lock().is_none());
+            assert!(app.service.graph.try_write().is_none());
             release.send(()).unwrap();
             holder.await.unwrap().unwrap();
         }
@@ -6914,13 +7051,13 @@ mod tests {
                 assert!(app.service.telemetry().is_none());
                 started(&app).await;
                 {
-                    let state = app.service.graph.lock();
+                    let state = app.service.graph.write();
                     assert!(state.catchup.is_none(), "no clock read, no interval");
                 }
                 let (status, body) = app.barrier(1, 1, 0).await;
                 assert_eq!(status, StatusCode::OK, "{body}");
                 assert_eq!(body["result"], "synchronized");
-                let state = app.service.graph.lock();
+                let state = app.service.graph.write();
                 assert!(state.catchup.is_none() && state.completed_catchup.is_none());
             }
 
@@ -6959,7 +7096,7 @@ mod tests {
                     }
                 });
                 locked_rx.await.unwrap();
-                assert!(app.service.graph.try_lock().is_none());
+                assert!(app.service.graph.try_write().is_none());
                 let scrape = tokio::time::timeout(Duration::from_secs(5), app.scrape())
                     .await
                     .expect("scrape must not wait for the graph lock");
@@ -7090,6 +7227,408 @@ mod tests {
                     assert_eq!(scrape.catchup_counts(), [1, 0]);
                     assert!(steps(scrape.catchup("initial").1, 1));
                 }
+            }
+        }
+    }
+}
+
+/// Boundaries changed by the shared read path (v0.7.0 design §5, T1–T7, T9).
+///
+/// Waits are on channels, `recv_timeout` bounds that turn a would-be deadlock
+/// into a failure, or observable lock state (`try_read` fails once a writer
+/// is pending); nothing sleeps or retries.
+#[cfg(test)]
+mod read_lock_tests {
+    use super::*;
+    use crate::api::WireNode;
+    use std::sync::mpsc;
+
+    const BOUND: Duration = Duration::from_secs(5);
+
+    fn add(node: u64) -> Operation {
+        Operation::AddNode {
+            node: WireNode(node),
+        }
+    }
+
+    fn connected(source: u64, target: u64) -> Operation {
+        Operation::Connected {
+            source: WireNode(source),
+            target: WireNode(target),
+        }
+    }
+
+    /// Yields until a writer is pending: with readers holding the lock,
+    /// `try_read` fails only once a writer has claimed it (task-fair lock).
+    async fn until_writer_pending(service: &Service) {
+        tokio::time::timeout(BOUND, async {
+            while service.graph.try_read().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("writer becomes pending");
+    }
+
+    /// A reader job, its entry signal and its release handle.
+    type HeldReader = (
+        tokio::task::JoinHandle<Result<(String, String), ServiceError>>,
+        tokio::sync::oneshot::Receiver<()>,
+        mpsc::Sender<()>,
+    );
+
+    /// Spawns a reader that reports entry, then holds the shared guard until
+    /// released, returning the revision it saw on entry and on exit.
+    fn held_reader(service: &Service) -> HeldReader {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let reader = service.clone();
+        let job = tokio::spawn(async move {
+            reader
+                .run_read(JobKind::Batch, move |state| {
+                    let first = state.version_string();
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(BOUND).unwrap();
+                    (first, state.version_string())
+                })
+                .await
+        });
+        (job, entered_rx, release_tx)
+    }
+
+    /// T1: two readers hold the shared guard at the same time. Under an
+    /// exclusive lock the second could never enter, and both waits time out.
+    #[tokio::test]
+    async fn readers_hold_the_graph_lock_concurrently() {
+        let service = Service::new(ConnectivityGraph::default(), 4, Lifecycle::new());
+        let (a_tx, a_rx) = mpsc::channel::<()>();
+        let (b_tx, b_rx) = mpsc::channel::<()>();
+        let rendezvous = |service: &Service, tx: mpsc::Sender<()>, rx: mpsc::Receiver<()>| {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .run_read(JobKind::Batch, move |_| {
+                        tx.send(()).unwrap();
+                        rx.recv_timeout(BOUND).is_ok()
+                    })
+                    .await
+            })
+        };
+        let first = rendezvous(&service, a_tx, b_rx);
+        let second = rendezvous(&service, b_tx, a_rx);
+        assert!(first.await.unwrap().unwrap(), "first reader met the second");
+        assert!(
+            second.await.unwrap().unwrap(),
+            "second reader met the first"
+        );
+    }
+
+    /// T2 and T5: a reader's whole batch sees one revision; a pending writer
+    /// waits only for it, and a reader arriving after the writer is pending
+    /// does not overtake it.
+    #[tokio::test]
+    async fn pending_writer_blocks_new_readers_and_waits_only_for_current_ones() {
+        let service = Service::new(ConnectivityGraph::default(), 4, Lifecycle::new());
+        let (first, entered, release) = held_reader(&service);
+        entered.await.unwrap();
+
+        let writer = service.clone();
+        let write = tokio::spawn(async move { writer.execute(vec![add(1)]).await });
+        until_writer_pending(&service).await;
+
+        let reader = service.clone();
+        let late = tokio::spawn(async move { reader.execute(vec![connected(1, 1)]).await });
+
+        release.send(()).unwrap();
+        assert_eq!(
+            first.await.unwrap().unwrap(),
+            ("0".to_string(), "0".to_string())
+        );
+        assert_eq!(write.await.unwrap().unwrap().metadata.state_version, "1");
+        let late = late.await.unwrap().unwrap();
+        assert_eq!(late.metadata.state_version, "1");
+        assert!(matches!(
+            late.outcomes.as_slice(),
+            [Outcome::Connected { connected: true }]
+        ));
+    }
+
+    /// T3: a reader that panics while a writer is queued makes the graph
+    /// unavailable to that writer and to every later job.
+    #[tokio::test]
+    async fn reader_panic_refuses_the_queued_writer_and_later_jobs() {
+        let service = Service::new(ConnectivityGraph::default(), 4, Lifecycle::new());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let reader = service.clone();
+        let panicking = tokio::spawn(async move {
+            reader
+                .run_read(JobKind::Batch, move |_| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(BOUND).unwrap();
+                    panic!("reader panic");
+                })
+                .await
+        });
+        entered_rx.await.unwrap();
+        let writer = service.clone();
+        let queued = tokio::spawn(async move { writer.execute(vec![add(1)]).await });
+        until_writer_pending(&service).await;
+
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            panicking.await.unwrap(),
+            Err(ServiceError::Unavailable)
+        ));
+        assert!(matches!(
+            queued.await.unwrap(),
+            Err(ServiceError::Unavailable)
+        ));
+        assert!(service.is_unavailable());
+        assert!(matches!(
+            service.execute(vec![connected(1, 1)]).await,
+            Err(ServiceError::Unavailable)
+        ));
+        assert!(matches!(
+            service.stats().await,
+            Err(ServiceError::Unavailable)
+        ));
+        assert_eq!(
+            crate::lifecycle::readiness(&crate::Lifecycle::ready(), &service)
+                .await
+                .status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        // The queued writer never ran.
+        assert_eq!(service.graph.read().graph.node_count(), 0);
+        assert_eq!(service.permits.available_permits(), 4);
+    }
+
+    /// T4: a reader already inside the shared guard when another reader
+    /// panics completes normally; the next job is refused.
+    #[tokio::test]
+    async fn concurrent_reader_of_a_panicking_reader_completes() {
+        let service = Service::new(ConnectivityGraph::default(), 4, Lifecycle::new());
+        let (survivor, entered, release) = held_reader(&service);
+        entered.await.unwrap();
+
+        let reader = service.clone();
+        let panicking = tokio::spawn(async move {
+            reader
+                .run_read(JobKind::Batch, |_| -> () { panic!("reader panic") })
+                .await
+        });
+        // The panicking reader entered the shared guard while the survivor
+        // holds it (T1), so it has finished before the survivor is released.
+        assert!(matches!(
+            panicking.await.unwrap(),
+            Err(ServiceError::Unavailable)
+        ));
+        assert!(service.is_unavailable());
+
+        release.send(()).unwrap();
+        assert_eq!(
+            survivor.await.unwrap().unwrap(),
+            ("0".to_string(), "0".to_string())
+        );
+        assert!(matches!(
+            service.execute(vec![connected(1, 1)]).await,
+            Err(ServiceError::Unavailable)
+        ));
+    }
+
+    async fn source_managed_session() -> (Service, String) {
+        let config = crate::ServerConfig::default().with_mode(ServerMode::SourceManaged);
+        let service =
+            Service::with_config(ConnectivityGraph::default(), 4, Lifecycle::new(), &config);
+        let instance_id = service.instance_id().to_string();
+        service
+            .register_session(crate::api::SessionRequest {
+                instance_id: instance_id.clone(),
+                feeder_session_id: "f-1".into(),
+                feeder_epoch: 1,
+                lease_duration_ms: 10_000,
+            })
+            .await
+            .expect("session");
+        (service, instance_id)
+    }
+
+    fn create_import(instance_id: &str) -> axum::body::Bytes {
+        axum::body::Bytes::from(format!(
+            r#"{{"mode":"create_only","instance_id":"{instance_id}","graph_id":"default","source_id":"pg-1","source_epoch":"ep-1","source_position":"pos-0","feeder_session_id":"f-1","feeder_epoch":1,"nodes":["1","2"],"edges":[["1","2"]]}}"#
+        ))
+    }
+
+    /// T6: an import cannot publish while a reader holds the shared guard;
+    /// that reader reports the old generation/revision/position tuple on
+    /// entry and exit, and the next reader reports the new one whole.
+    #[tokio::test]
+    async fn import_publication_waits_for_readers_and_readers_see_whole_tuples() {
+        let _clock = lock_clock_for_test().await;
+        let (service, instance_id) = source_managed_session().await;
+        let tuple = |state: &GraphState| {
+            (
+                state.generation,
+                state.version_string(),
+                state.source_position.clone(),
+                state.graph.node_count(),
+            )
+        };
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let reader = service.clone();
+        let held = tokio::spawn(async move {
+            reader
+                .run_read(JobKind::Batch, move |state| {
+                    let first = tuple(state);
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(BOUND).unwrap();
+                    (first, tuple(state))
+                })
+                .await
+        });
+        entered_rx.await.unwrap();
+
+        let importer = service.clone();
+        let permit = service.acquire_import_permit().expect("import permit");
+        let body = create_import(&instance_id);
+        let import = tokio::spawn(async move { importer.import(permit, body, None).await });
+        until_writer_pending(&service).await;
+
+        release_tx.send(()).unwrap();
+        let old = (0, "0".to_string(), None, 0);
+        assert_eq!(held.await.unwrap().unwrap(), (old.clone(), old));
+        let published = import.await.unwrap().expect("import");
+        assert_eq!(published.generation, 1);
+
+        let after = service.execute(vec![connected(1, 2)]).await.expect("query");
+        assert_eq!(after.metadata.generation, 1);
+        assert_eq!(after.metadata.state_version, "0");
+        assert_eq!(after.metadata.source_position.as_deref(), Some("pos-0"));
+        assert!(matches!(
+            after.outcomes.as_slice(),
+            [Outcome::Connected { connected: true }]
+        ));
+    }
+
+    /// T7: after the lease deadline a read reports `stale` without storing
+    /// the transition; only a later writer (heartbeat) stores it.
+    #[tokio::test]
+    async fn read_path_derives_staleness_without_storing_it() {
+        let _clock = lock_clock_for_test().await;
+        let (service, instance_id) = source_managed_session().await;
+        let permit = service.acquire_import_permit().expect("import permit");
+        service
+            .import(permit, create_import(&instance_id), None)
+            .await
+            .expect("import");
+        advance_clock(Duration::from_millis(10_001));
+
+        let read = service.execute(vec![connected(1, 2)]).await.expect("query");
+        assert_eq!(read.metadata.sync_status, Some(SyncStatus::Stale));
+        assert_eq!(
+            service.stats().await.expect("stats").snapshot.sync_status,
+            Some(SyncStatus::Stale)
+        );
+        assert_eq!(service.graph.read().sync_status, SyncStatus::CatchingUp);
+
+        let _ = service
+            .heartbeat(crate::api::HeartbeatRequest {
+                instance_id: instance_id.clone(),
+                feeder_session_id: "f-1".into(),
+                feeder_epoch: 1,
+            })
+            .await;
+        assert_eq!(service.graph.read().sync_status, SyncStatus::Stale);
+        reset_clock();
+    }
+
+    /// T3 (ordering): when a reader unwinds, the service is marked
+    /// unavailable before its shared guard is released.
+    #[test]
+    fn reader_panic_marker_stores_before_the_guard_releases() {
+        struct ReleaseProbe<'a> {
+            unavailable: &'a AtomicBool,
+            seen_at_release: &'a AtomicBool,
+        }
+        impl Drop for ReleaseProbe<'_> {
+            fn drop(&mut self) {
+                let seen = self.unavailable.load(Ordering::Acquire);
+                self.seen_at_release.store(seen, Ordering::Release);
+            }
+        }
+        let unavailable = AtomicBool::new(false);
+        let seen_at_release = AtomicBool::new(false);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = ReadJobGuard {
+                _marker: ReaderPanicMarker(&unavailable),
+                guard: ReleaseProbe {
+                    unavailable: &unavailable,
+                    seen_at_release: &seen_at_release,
+                },
+            };
+            panic!("reader panic");
+        }));
+        assert!(unwound.is_err());
+        assert!(seen_at_release.load(Ordering::Acquire));
+
+        // Normal completion leaves the service available.
+        let unavailable = AtomicBool::new(false);
+        drop(ReadJobGuard {
+            _marker: ReaderPanicMarker(&unavailable),
+            guard: (),
+        });
+        assert!(!unavailable.load(Ordering::Acquire));
+    }
+
+    /// T9: exactly the three query variants take the read path, and the
+    /// conversion back to an operation is lossless.
+    #[test]
+    fn query_classification_is_exact_and_lossless() {
+        let n = WireNode;
+        let operations = [
+            add(1),
+            Operation::Link {
+                source: n(1),
+                target: n(2),
+            },
+            Operation::Cut {
+                source: n(1),
+                target: n(2),
+            },
+            Operation::SetNodeActive {
+                node: n(1),
+                active: false,
+            },
+            Operation::SetEdgeEnabled {
+                source: n(1),
+                target: n(2),
+                enabled: false,
+            },
+            Operation::RemoveNode { node: n(1) },
+            connected(1, 2),
+            Operation::NodeState { node: n(1) },
+            Operation::EdgeState {
+                source: n(1),
+                target: n(2),
+            },
+        ];
+        for operation in operations {
+            let expect_query = matches!(
+                operation,
+                Operation::Connected { .. }
+                    | Operation::NodeState { .. }
+                    | Operation::EdgeState { .. }
+            );
+            let query = operation.as_query();
+            assert_eq!(query.is_some(), expect_query, "{operation:?}");
+            if let Some(query) = query {
+                assert_eq!(
+                    format!("{:?}", Operation::from(query)),
+                    format!("{operation:?}")
+                );
             }
         }
     }
