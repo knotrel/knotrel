@@ -80,7 +80,9 @@ const MAX_BATCH_OPERATIONS: usize = 1024;
 /// `POST /v1/operations` and `POST /v1/batch`. Request
 /// bodies are limited to 1 MiB; batches contain 1–1024 operations. At most 32
 /// graph jobs may be queued or running. Excess graph requests receive HTTP 503.
-/// A graph mutex isolates each request, including all operations in a batch.
+/// A graph lock isolates each request, including all operations in a batch:
+/// query-only requests and stats share it, every other request holds it
+/// exclusively.
 /// Cloned routers share graph state; separate calls construct separate graphs.
 ///
 /// The supplied graph keeps its own cardinality limits (unlimited for a plain

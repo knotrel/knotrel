@@ -734,10 +734,22 @@ pub(crate) enum Operation {
 impl Operation {
     /// Whether this operation only reads the graph.
     pub(crate) fn is_query(&self) -> bool {
-        matches!(
-            self,
-            Self::Connected { .. } | Self::NodeState { .. } | Self::EdgeState { .. }
-        )
+        self.as_query().is_some()
+    }
+
+    /// The read-only form of this operation, or `None` for a mutation.
+    pub(crate) fn as_query(&self) -> Option<Query> {
+        match *self {
+            Self::Connected { source, target } => Some(Query::Connected { source, target }),
+            Self::NodeState { node } => Some(Query::NodeState { node }),
+            Self::EdgeState { source, target } => Some(Query::EdgeState { source, target }),
+            Self::AddNode { .. }
+            | Self::Link { .. }
+            | Self::Cut { .. }
+            | Self::SetNodeActive { .. }
+            | Self::SetEdgeEnabled { .. }
+            | Self::RemoveNode { .. } => None,
+        }
     }
 
     /// Whether this operation needs lifecycle support.
@@ -763,10 +775,9 @@ impl Operation {
             Self::AddNode { node } => changed(graph.add_node(node.0)),
             Self::Link { source, target } => changed(graph.link(source.0, target.0)),
             Self::Cut { source, target } => changed(graph.cut(source.0, target.0)),
-            Self::Connected { source, target } => graph
-                .connected(source.0, target.0)
-                .map(|connected| Outcome::Connected { connected })
-                .unwrap_or_else(Outcome::from),
+            Self::Connected { source, target } => {
+                Query::Connected { source, target }.evaluate(graph)
+            }
             Self::SetNodeActive { node, active } => lifecycle_outcome(
                 graph
                     .lifecycle_mut()
@@ -789,6 +800,34 @@ impl Operation {
                     .map_err(LifecycleFailure::from)
                     .map(|graph| graph.remove_node(node.0)),
             ),
+            Self::NodeState { node } => Query::NodeState { node }.evaluate(graph),
+            Self::EdgeState { source, target } => {
+                Query::EdgeState { source, target }.evaluate(graph)
+            }
+        }
+    }
+}
+
+/// A read-only operation: the only kind a shared graph guard may execute.
+///
+/// Read-only jobs evaluate queries through `&ServiceGraph`, so they can run
+/// under a shared lock; [`Operation::apply`] evaluates the same variants
+/// through [`Query::evaluate`], so both paths give identical outcomes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Query {
+    Connected { source: WireNode, target: WireNode },
+    NodeState { node: WireNode },
+    EdgeState { source: WireNode, target: WireNode },
+}
+
+impl Query {
+    /// Evaluates this query, keeping graph errors local to it.
+    pub(crate) fn evaluate(self, graph: &ServiceGraph) -> Outcome {
+        match self {
+            Self::Connected { source, target } => graph
+                .connected(source.0, target.0)
+                .map(|connected| Outcome::Connected { connected })
+                .unwrap_or_else(Outcome::from),
             Self::NodeState { node } => match graph.lifecycle() {
                 Err(_) => Outcome::lifecycle_disabled(),
                 Ok(graph) => {
@@ -813,6 +852,16 @@ impl Operation {
                     }
                 }
             },
+        }
+    }
+}
+
+impl From<Query> for Operation {
+    fn from(query: Query) -> Self {
+        match query {
+            Query::Connected { source, target } => Self::Connected { source, target },
+            Query::NodeState { node } => Self::NodeState { node },
+            Query::EdgeState { source, target } => Self::EdgeState { source, target },
         }
     }
 }

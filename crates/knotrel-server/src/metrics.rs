@@ -1274,19 +1274,39 @@ impl JobClock {
     }
 }
 
-/// Acquires `mutex`, timing the wait when `clock` is present.
+/// Acquires the graph lock exclusively, timing the wait when `clock` is present.
 ///
 /// The returned guard records lock wait and execution only after it has
 /// released the lock, on normal drop, early return or unwinding alike, so
 /// histogram synchronization stays outside the critical section.
 pub(crate) fn lock_timed<'a, T>(
-    mutex: &'a parking_lot::Mutex<T>,
+    lock: &'a parking_lot::RwLock<T>,
     clock: Option<&'a JobClock>,
     lifecycle: &Lifecycle,
-) -> TimedGuard<'a, T> {
+) -> TimedGuard<'a, parking_lot::RwLockWriteGuard<'a, T>> {
+    acquire_timed(clock, lifecycle, || lock.write())
+}
+
+/// Acquires the graph lock shared, for read-only jobs; see [`lock_timed`].
+///
+/// `parking_lot::RwLock` is task-fair: while a writer waits, this call blocks
+/// even if only readers hold the lock, so readers cannot starve writers.
+pub(crate) fn read_timed<'a, T>(
+    lock: &'a parking_lot::RwLock<T>,
+    clock: Option<&'a JobClock>,
+    lifecycle: &Lifecycle,
+) -> TimedGuard<'a, parking_lot::RwLockReadGuard<'a, T>> {
+    acquire_timed(clock, lifecycle, || lock.read())
+}
+
+fn acquire_timed<'a, G>(
+    clock: Option<&'a JobClock>,
+    lifecycle: &Lifecycle,
+    acquire: impl FnOnce() -> G,
+) -> TimedGuard<'a, G> {
     let requested = clock.map(|_| timing_now());
     lifecycle.check_lock_request_hook();
-    let guard = mutex.lock();
+    let guard = acquire();
     let timing = clock.zip(requested).map(|(clock, requested)| {
         let acquired = timing_now();
         LockTiming {
@@ -1307,27 +1327,27 @@ struct LockTiming<'a> {
     acquired: Instant,
 }
 
-/// Graph-lock guard from [`lock_timed`].
-pub(crate) struct TimedGuard<'a, T> {
-    guard: Option<parking_lot::MutexGuard<'a, T>>,
+/// Graph-lock guard from [`lock_timed`] or [`read_timed`].
+pub(crate) struct TimedGuard<'a, G> {
+    guard: Option<G>,
     timing: Option<LockTiming<'a>>,
 }
 
-impl<T> Deref for TimedGuard<'_, T> {
-    type Target = T;
+impl<G: Deref> Deref for TimedGuard<'_, G> {
+    type Target = G::Target;
 
-    fn deref(&self) -> &T {
+    fn deref(&self) -> &G::Target {
         self.guard.as_deref().expect("guard is held until drop")
     }
 }
 
-impl<T> DerefMut for TimedGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T {
+impl<G: DerefMut> DerefMut for TimedGuard<'_, G> {
+    fn deref_mut(&mut self) -> &mut G::Target {
         self.guard.as_deref_mut().expect("guard is held until drop")
     }
 }
 
-impl<T> Drop for TimedGuard<'_, T> {
+impl<G> Drop for TimedGuard<'_, G> {
     fn drop(&mut self) {
         drop(self.guard.take());
         if let Some(LockTiming {
