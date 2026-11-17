@@ -622,7 +622,7 @@ impl LifecycleGraph {
     /// exactly the effective edges; returns it with the effective edge count.
     ///
     /// For `compact-bfs` (the only engine with lifecycle support) the engine
-    /// is built in one pass ([`Graph::from_sorted_adjacency`]): node IDs are
+    /// is built in one pass ([`Graph::from_sorted_adjacency`](crate::Graph::from_sorted_adjacency)): node IDs are
     /// sorted and receive engine indices in ascending ID order (the index is
     /// parked in the construction-only `pending` field, reset to zero
     /// afterwards). Each effective edge costs one catalog probe, from its
