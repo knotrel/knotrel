@@ -17,9 +17,8 @@ Add or remove connections, take nodes offline and restore them, then check
 whether two endpoints remain connected. Use it as a Rust library or an HTTP
 service alongside your existing database.
 
-**Published preview: [v0.5.0](https://github.com/knotrel/knotrel/releases/tag/v0.5.0).**
+**Published preview: [v0.6.0](https://github.com/knotrel/knotrel/releases/tag/v0.6.0).**
 Node/edge lifecycle is opt-in and supported on `compact-bfs` only.
-The v0.6.0 work described in this repository remains unreleased.
 
 ## Quickstart: a failure and a recovery
 
@@ -37,8 +36,8 @@ Take A offline: B keeps the endpoints connected. Take B offline too: the
 connection is lost. Restore A: the connection returns without recreating its
 configured edges.
 
-Download and extract the **v0.5.0** server for your platform from the
-[release assets](https://github.com/knotrel/knotrel/releases/tag/v0.5.0),
+Download and extract the **v0.6.0** server for your platform from the
+[release assets](https://github.com/knotrel/knotrel/releases/tag/v0.6.0),
 [verify its checksum](#installing-a-release), and clone this repository for the
 example. With Python 3.9 or newer, run from the repository root:
 
@@ -91,7 +90,7 @@ persistent graph storage, directed reachability or electrical simulation.
 
 ```toml
 [dependencies]
-knotrel-core = "0.5.0"
+knotrel-core = "0.6.0"
 ```
 
 ```rust
@@ -184,7 +183,7 @@ the reproducible workloads, methodology and published reports: release
 regression qualification, engine/competitor comparisons and algorithm
 experiments, each labelled with the version and host it actually measured.
 [Performance by version](docs/performance-by-version.md) summarizes the
-release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 → v0.6.0 candidate) for users, with
+release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 → v0.6.0) for users, with
 their limits. The authoritative statements are in the release notes for
 [v0.4.0](docs/releases/v0.4.0-release-notes.md#regression-qualification-against-v030)
 and [v0.3.0](docs/releases/v0.3.0-release-notes.md#performance-qualification).
@@ -192,7 +191,7 @@ No speedup is claimed for either release. The v0.5.0 qualification
 did not pass unconditionally: its regressions and unresolved or inconclusive
 results are accepted by maintainer waivers for v0.5.0 only, as recorded in the
 [release notes](docs/releases/v0.5.0-release-notes.md#performance-qualification);
-no speedup is claimed. v0.6.0 (accepted, not yet published) reduces import memory
+no speedup is claimed. v0.6.0 reduces import memory
 and makes core flagged imports and fresh-ID churn measurably faster, but its
 qualification did not pass unconditionally; its non-PASS results are accepted
 as disclosed limitations
@@ -206,28 +205,28 @@ the SHA-256 checksum before running.
 
 ```sh
 # Verify checksum on Linux:
-sha256sum -c knotrel-server-v0.5.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c knotrel-server-v0.6.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 # Or on macOS:
-# shasum -a 256 -c knotrel-server-v0.5.0-aarch64-apple-darwin.tar.gz.sha256
+# shasum -a 256 -c knotrel-server-v0.6.0-aarch64-apple-darwin.tar.gz.sha256
 
 # Extract and start on Linux (x86_64):
-tar -xzf knotrel-server-v0.5.0-x86_64-unknown-linux-gnu.tar.gz
-cd knotrel-server-v0.5.0-x86_64-unknown-linux-gnu
+tar -xzf knotrel-server-v0.6.0-x86_64-unknown-linux-gnu.tar.gz
+cd knotrel-server-v0.6.0-x86_64-unknown-linux-gnu
 ./knotrel-server
 
 # Or on macOS (Apple Silicon):
-# tar -xzf knotrel-server-v0.5.0-aarch64-apple-darwin.tar.gz
-# cd knotrel-server-v0.5.0-aarch64-apple-darwin
+# tar -xzf knotrel-server-v0.6.0-aarch64-apple-darwin.tar.gz
+# cd knotrel-server-v0.6.0-aarch64-apple-darwin
 # ./knotrel-server
 ```
 
 On Windows (PowerShell):
 ```powershell
 # Compare the displayed hash with the downloaded .sha256 file before extracting.
-Get-FileHash -Algorithm SHA256 knotrel-server-v0.5.0-x86_64-pc-windows-msvc.zip
-Get-Content knotrel-server-v0.5.0-x86_64-pc-windows-msvc.zip.sha256
-Expand-Archive knotrel-server-v0.5.0-x86_64-pc-windows-msvc.zip -DestinationPath .
-cd knotrel-server-v0.5.0-x86_64-pc-windows-msvc
+Get-FileHash -Algorithm SHA256 knotrel-server-v0.6.0-x86_64-pc-windows-msvc.zip
+Get-Content knotrel-server-v0.6.0-x86_64-pc-windows-msvc.zip.sha256
+Expand-Archive knotrel-server-v0.6.0-x86_64-pc-windows-msvc.zip -DestinationPath .
+cd knotrel-server-v0.6.0-x86_64-pc-windows-msvc
 .\knotrel-server.exe
 ```
 
@@ -289,7 +288,7 @@ Further timeouts and size limits are listed under
 - [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
-- [v0.5.0 release notes](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
+- [v0.6.0 release notes](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
 - [Release procedure](docs/releases/release-procedure.md): verification, packaging and authorized publication.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.
