@@ -619,10 +619,12 @@ Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/READM
 **Scope decision (2026-11-16, maintainer option B):** v0.6.0 keeps the coarse graph mutex. v0.7.0 addresses concurrency from the bottleneck measured in v0.6.0: with read-heavy work, the single lock serializes BFS queries and lock wait dominates client latency at four or more clients.
 
 **Additional input (v0.6.0 M supplement, 2026-11-17):** the feeder has no
-priority over queries. At 100k nodes, catch-up falls 8–11× from 4 to 16 query
-clients, because each event batch waits about one query batch for the lock.
-At 64 clients, most feeder requests are refused by admission
-(`503 import_in_progress`). Source: knotrel-benchmarks
+priority over queued queries. At 100k nodes, catch-up falls 8–11× from 4 to
+16 query clients, because each event batch waits behind about one round of
+queued query batches for the lock. Admission reserves no permit for feeder
+requests: with 64 hot-retrying query clients, most feeder requests are refused
+(`503 import_in_progress`). That last measurement mostly reflects the probe's
+retry policy. Source: knotrel-benchmarks
 `results/v0.6.0-qualification/supplement-M/REPORT-M-SUPPLEMENT.md`. The 0.7.1
 design should state its effect on feeder catch-up under query load, and 0.7.3
 should measure it with probe revision 2.
