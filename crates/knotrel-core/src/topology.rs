@@ -1439,6 +1439,43 @@ mod tests {
         }
     }
 
+    /// The incremental fallback of `build_engine` (non-`compact-bfs`
+    /// engines) registers every catalog node, whether it receives the full
+    /// insertion order or the empty slice that compaction passes, and agrees
+    /// with the one-pass `compact-bfs` build on edges and connectivity.
+    #[test]
+    fn fallback_engine_build_registers_every_catalog_node() {
+        let nodes: Vec<NodeSpec> = [(9, true), (3, false), (7, true), (1, true), (5, true)]
+            .into_iter()
+            .map(|(node, active)| NodeSpec { node, active })
+            .collect();
+        let edges: Vec<EdgeSpec> = [(9, 7, true), (7, 1, true), (3, 9, true), (5, 1, false)]
+            .into_iter()
+            .map(|(source, target, enabled)| EdgeSpec {
+                source,
+                target,
+                enabled,
+            })
+            .collect();
+        let (mut catalog, order) =
+            LifecycleGraph::catalog_exact(GraphLimits::default(), &nodes, &edges).unwrap();
+        let (compact, compact_edges) =
+            LifecycleGraph::build_engine(EngineConfig::CompactBfs, &mut catalog, &order);
+        for given in [&order[..], &[][..]] {
+            let (fallback, fallback_edges) =
+                LifecycleGraph::build_engine(EngineConfig::EulerTour, &mut catalog, given);
+            assert_eq!(fallback.engine(), EngineConfig::EulerTour);
+            assert_eq!(fallback.node_count(), catalog.len());
+            assert_eq!(fallback_edges, compact_edges);
+            assert_eq!(fallback.edge_count(), compact.edge_count());
+            for &a in &order {
+                for &b in &order {
+                    assert_eq!(fallback.connected(a, b), compact.connected(a, b), "{a}-{b}");
+                }
+            }
+        }
+    }
+
     /// Random mixed operations, including high-degree hubs, keep every
     /// internal invariant (catalog symmetry, engine edge set, counters).
     #[test]

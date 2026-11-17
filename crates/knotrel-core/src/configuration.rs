@@ -316,3 +316,33 @@ impl ConnectivityGraph {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Releasing storage is a no-op for a vertex with edges, for an absent
+    /// node and for engines other than `compact-bfs`, which report no
+    /// adjacency capacity.
+    #[test]
+    fn release_isolated_storage_is_a_no_op_outside_isolated_compact_vertices() {
+        let mut compact = ConnectivityGraph::new(EngineConfig::CompactBfs);
+        for leaf in 1..=8 {
+            compact.link(0, leaf).unwrap();
+        }
+        let before = compact.adjacency_capacity(0).unwrap();
+        compact.release_isolated_storage(0);
+        assert_eq!(compact.adjacency_capacity(0), Some(before));
+        compact.release_isolated_storage(99);
+        assert_eq!(compact.adjacency_capacity(99), None);
+        assert!(compact.connected(0, 8).unwrap());
+
+        for engine in [EngineConfig::EulerTour, EngineConfig::Hdt] {
+            let mut other = ConnectivityGraph::new(engine);
+            other.add_node(5).unwrap();
+            other.release_isolated_storage(5);
+            assert_eq!(other.adjacency_capacity(5), None);
+            assert!(other.contains_node(5));
+        }
+    }
+}
