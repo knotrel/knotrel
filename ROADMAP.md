@@ -598,14 +598,14 @@ Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/READM
 
 ### 0.6.5 — Final qualification and operational validation
 
-- [x] Frozen candidate `48bc82f` (tooling `54dcfc5`, freeze `7635846`); experiments A, B/C, R, Rmem, M_desc, M_reg run 2026-11-16 in about 60 minutes on AC power; [versioned diff](https://github.com/knotrel/knotrel-benchmarks/blob/feature/v0.6.0-qualification/results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md) (knotrel-benchmarks, in knotrel/knotrel-benchmarks#11); release-binary smoke tests passed for both measured servers; tag mapping prepared in the release notes (no tags created).
+- [x] Frozen candidate `48bc82f` (tooling `54dcfc5`, freeze `7635846`); experiments A, B/C, R, Rmem, M_desc, M_reg run 2026-11-16 in about 60 minutes on AC power; [versioned diff](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md) (knotrel-benchmarks, in knotrel/knotrel-benchmarks#11); release-binary smoke tests passed for both measured servers; tag mapping in the release notes.
   - Outcome, not passed unconditionally:
     - A (lifecycle off): 5 PASS, 2 INCONCLUSIVE_DISCLOSED, 2 UNRESOLVED.
     - R (lifecycle on): 10 PASS (6 improved), 1 REGRESSION (HTTP import 60/30, +13.4%).
     - Rmem: 10 of 10 PASS.
     - B1–B4: 59 PASS, 1 REGRESSION (`import-high`), 1 INCONCLUSIVE (`metrics-ops`).
     - C3: 3 FAIL (fresh-ID churn); C4: 8 RSS disclosures.
-    - No waiver applied; decisions listed in the [release notes](docs/releases/v0.6.0-release-notes.md#outstanding-decisions).
+    - Non-PASS results accepted as disclosed limitations by the maintainer (2026-11-17); see the [release notes](docs/releases/v0.6.0-release-notes.md#maintainer-decisions).
 
 ### 0.6.6 — v1.0 readiness assessment
 

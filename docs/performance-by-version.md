@@ -8,14 +8,14 @@ release qualification bundles. The release notes remain the authoritative
 statement for each release.
 
 **Short version:**
-- **v0.6.0 (unreleased candidate, not accepted) is not demonstrated to be
+- **v0.6.0 (accepted 2026-11-17, publication pending) is not demonstrated to be
   faster in general than v0.5.0.** With lifecycle off: no regression, two
   unresolved and two disclosed inconclusive results. With lifecycle on:
   imports use much less memory (HTTP import peak −61% to −76%), and core
   flagged imports and fresh-ID churn are confirmed faster (−5.6% to −13.6%).
   One flagged HTTP import regressed (+13.4%), and earlier lifecycle failures
-  recur. Maintainer decisions are pending. See
-  [v0.6.0 compared with v0.5.0](#v060-candidate-compared-with-v050).
+  recur. The maintainer accepted these results as disclosed limitations. See
+  [v0.6.0 compared with v0.5.0](#v060-compared-with-v050).
 - **v0.5.0 (released 2026-11-16) is not demonstrated to be faster than
   v0.4.0.** With lifecycle off, no workload regressed; two results are
   unresolved and accepted by maintainer waivers. See
@@ -61,15 +61,15 @@ statement for each release.
   measured.
 - **v0.5.0** was measured on candidate `dcd8ccc`; its release builds contain
   the same executed code (release notes).
-- **v0.6.0 is a candidate.** Its column describes the measured candidate
-  `48bc82f`. The page will be revised if the released commit's executed code
-  differs or the maintainer's decisions change its status.
+- **v0.6.0** was measured on candidate `48bc82f`; `main` at `8d21f38`, which
+  the documentation-only release commit follows, has the same executed code
+  (release notes, release gates).
 
 ## Release-to-release results
 
 Primary metric per cell, median paired change [interval] and outcome:
 
-| Workload | v0.3.0 vs v0.2.0 | v0.4.0 vs v0.3.0 | v0.5.0 vs v0.4.0 | v0.6.0 (candidate) vs v0.5.0 |
+| Workload | v0.3.0 vs v0.2.0 | v0.4.0 vs v0.3.0 | v0.5.0 vs v0.4.0 | v0.6.0 vs v0.5.0 |
 |---|---|---|---|---|
 | Core sparse traversal, `compact-bfs` | +0.10% [−21.95%, +6.14%] PASS | +8.71% [−2.34%, +31.89%] **UNRESOLVED**¹ | −7.23% [−33.47%, +2.83%] PASS | −0.95% [−3.78%, +2.92%] PASS |
 | Core sparse traversal, `compact-workspace` | −2.26% [−11.13%, +9.41%] PASS | **+28.90% [+15.44%, +35.73%] REGRESSION**² | −1.94% [−9.87%, +6.00%] PASS⁴ | +6.20% [−1.72%, +19.43%] INCONCLUSIVE, disclosed |
@@ -126,7 +126,7 @@ two.
   (`556683c`), with lifecycle disabled. The `main` commits checked since then
   contain the same executed code in release builds.
 
-### v0.6.0 (candidate) compared with v0.5.0
+### v0.6.0 compared with v0.5.0
 
 Candidate `48bc82f` against published v0.5.0 (`51e3b4d`), 2026-11-16. Full
 report: `results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md` in
@@ -310,8 +310,8 @@ qualification.**
 
 ## Sources
 
-- **v0.6.0 (candidate):** [draft release notes](releases/v0.6.0-release-notes.md#performance-qualification)
-  and knotrel-benchmarks `results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md`.
+- **v0.6.0:** [release notes](releases/v0.6.0-release-notes.md#performance-qualification)
+  and [knotrel-benchmarks `results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md`](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md).
 - **v0.5.0:** [release notes](releases/v0.5.0-release-notes.md#performance-qualification)
   and [knotrel-benchmarks `results/lifecycle-qualification-v0.5.0`](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/lifecycle-qualification-v0.5.0/README.md)
   (protocol, run reports, experiment A on `dcd8ccc` and the maintainer
