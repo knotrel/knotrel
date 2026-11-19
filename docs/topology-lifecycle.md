@@ -152,10 +152,11 @@ hash table can leave a tombstone that uses insert headroom without holding an
 entry. Under fresh-ID churn the headroom runs out while the number of live
 nodes stays constant, and the table would double although it is far from full
 (at 100,000 nodes, from 131,072 to 262,144 buckets). Before an insert that
-would grow the table, the catalog is instead rebuilt into a fresh table of the
-same size when live entries are at most 90% of the table's full capacity (its
-capacity right after its last growth or rebuild). Entries move, no incident
-vector is copied, and the old table is freed when the rebuild ends. At least
+would grow the table, the catalog is instead rebuilt into a fresh table sized
+for its live entries when they are at most 90% of the table's full capacity
+(its capacity right after its last growth or rebuild). Under churn this is the
+same bucket count; it is never larger. Entries move, no incident vector is
+copied, and the old table is freed when the rebuild ends. At least
 10% of the full capacity is consumed by tombstones between two rebuilds, so
 the amortized cost is `O(1)` per insertion. A rebuild holds the server's graph
 lock, as compaction does; it is a table rebuild only, much shorter than an
