@@ -46,6 +46,25 @@
 //! `V + max(V, 1024)`, where `V` is the registered node count. (A
 //! `max(V / 4, 1024)` threshold was evaluated for v0.6.0 and rejected: it
 //! made fresh-ID churn about 90% slower in diagnostics.)
+//!
+//! # Catalog tombstones
+//!
+//! Removing a node from the catalog hash table can leave a tombstone, which
+//! uses insert headroom without holding an entry. Under fresh-ID churn the
+//! headroom runs out while live entries stay constant, and the table would
+//! double although it is far from full (at 100,000 nodes, from 131,072 to
+//! 262,144 buckets within a few percent of churn). Before an insert that would
+//! grow the table, the catalog is instead rebuilt into a fresh table of the
+//! same size when live entries are at most 90% of the table's full capacity
+//! (its capacity right after its last growth or rebuild): entries move, no
+//! incident vector is copied, and the tombstones are dropped. A rebuild costs
+//! `O(V)` and runs only after at least 10% of the full capacity has been
+//! consumed by tombstones since the last one, so its amortized cost is `O(1)`
+//! per insertion; it holds the old and the new table only while it runs, as a
+//! growth does, with the new table no larger than the old one. Otherwise the
+//! table grows as usual. (Diagnostic D2c of the v0.7.0 qualification: at
+//! 100,000 nodes this removes the growth, lowers peak and steady-state heap by
+//! about 5 MiB, and leaves construction unchanged.)
 
 use crate::{ConnectivityGraph, EngineConfig, GraphError, GraphLimits, NodeId};
 use rustc_hash::FxHashMap;
@@ -56,6 +75,12 @@ const MIN_RETIRED_BEFORE_COMPACTION: usize = 1024;
 
 /// Smallest incident-vector capacity that is ever shrunk.
 const MIN_SHRINK_CAPACITY: usize = 16;
+
+/// A catalog insert that would grow the table rebuilds it instead when live
+/// entries are at most `REBUILD_LIVE_NUMERATOR / REBUILD_LIVE_DENOMINATOR` of
+/// the table's full capacity (see the module documentation).
+const REBUILD_LIVE_NUMERATOR: usize = 9;
+const REBUILD_LIVE_DENOMINATOR: usize = 10;
 
 /// One registered node for [`LifecycleGraph::try_from_topology`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,6 +334,9 @@ pub struct LifecycleGraph {
     registered_edges: usize,
     enabled_edges: usize,
     effective_edges: usize,
+    /// The catalog's `capacity()` right after its last growth or rebuild;
+    /// tombstones lower `capacity()` below it.
+    catalog_full_capacity: usize,
 }
 
 impl LifecycleGraph {
@@ -356,6 +384,7 @@ impl LifecycleGraph {
             registered_edges: 0,
             enabled_edges: 0,
             effective_edges: 0,
+            catalog_full_capacity: 0,
         })
     }
 
@@ -607,6 +636,7 @@ impl LifecycleGraph {
             active_nodes += usize::from(record.active);
         }
         let (engine_graph, effective_edges) = Self::build_engine(engine, &mut catalog, &order);
+        let catalog_full_capacity = catalog.capacity();
         Self {
             nodes: catalog,
             engine: engine_graph,
@@ -615,6 +645,7 @@ impl LifecycleGraph {
             registered_edges: registered_edges / 2,
             enabled_edges: enabled_incidences / 2,
             effective_edges,
+            catalog_full_capacity,
         }
     }
 
@@ -772,12 +803,34 @@ impl LifecycleGraph {
 
     /// Registers a node known to be absent and within limits.
     fn register(&mut self, node: NodeId) {
+        self.reserve_catalog_slot();
         self.nodes.insert(node, NodeRecord::active());
         // A retired engine slot for `node` is isolated and is reused as is.
         self.engine
             .add_node(node)
             .expect("an unlimited engine accepts any vertex");
         self.active_nodes += 1;
+    }
+
+    /// Makes room for one new catalog entry without growing a table whose
+    /// headroom was consumed by tombstones (see the module documentation):
+    /// when the next insert would grow the table and live entries are at most
+    /// 90% of its full capacity, the catalog is rebuilt into a fresh table
+    /// sized for its live entries. `O(V)` when it rebuilds, `O(1)` otherwise.
+    fn reserve_catalog_slot(&mut self) {
+        let capacity = self.nodes.capacity();
+        self.catalog_full_capacity = self.catalog_full_capacity.max(capacity);
+        let live = self.nodes.len();
+        if capacity == live
+            && live * REBUILD_LIVE_DENOMINATOR
+                <= self.catalog_full_capacity * REBUILD_LIVE_NUMERATOR
+        {
+            let mut fresh: FxHashMap<NodeId, NodeRecord> =
+                FxHashMap::with_capacity_and_hasher(live, Default::default());
+            fresh.extend(self.nodes.drain());
+            self.nodes = fresh;
+            self.catalog_full_capacity = self.nodes.capacity();
+        }
     }
 
     /// Registers the undirected edge `{source, target}` as enabled.
@@ -1538,5 +1591,69 @@ mod tests {
                 Some(false)
             );
         }
+    }
+
+    /// Fresh-ID churn at constant size: tombstones never make the catalog grow;
+    /// rebuilds happen and keep every entry, flag, incidence and connectivity.
+    #[test]
+    fn fresh_id_churn_rebuilds_the_catalog_instead_of_growing_it() {
+        // 3,200 entries fill a 4,096-bucket table (capacity 3,584) to 78% of its buckets
+        // and 89% of its capacity, as at 100,000 nodes (131,072 buckets: 76%, 87%):
+        // removals leave tombstones, and live entries are within the 90% rebuild bound. A
+        // lightly loaded table mostly frees slots outright and never needs a rebuild; above
+        // 90% of capacity the table grows, as before.
+        const N: u64 = 3_200;
+        let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
+        for v in 0..N {
+            graph.add_node(v).unwrap();
+        }
+        for v in 1..N {
+            graph.link(0, v).unwrap();
+        }
+        graph.set_node_active(N - 1, false).unwrap();
+        let full = graph.nodes.capacity();
+        assert_eq!(graph.catalog_full_capacity, full);
+        // Node 0 (the hub) and node N - 1 (inactive) stay; the others are churned.
+        let mut live: std::collections::VecDeque<u64> = (1..N - 1).collect();
+        let mut rebuilds = 0;
+        for round in 0..(8 * N) {
+            let before = graph.nodes.capacity();
+            let old = live.pop_front().unwrap();
+            assert!(graph.remove_node(old));
+            let fresh = 10 * N + round;
+            graph.link(0, fresh).unwrap();
+            live.push_back(fresh);
+            let after = graph.nodes.capacity();
+            assert!(after <= full, "round {round}: the catalog grew to {after}");
+            if after > before {
+                rebuilds += 1;
+            }
+            if round % 1_024 == 0 {
+                graph.validate();
+            }
+        }
+        graph.validate();
+        assert!(rebuilds > 0, "the churn produced no tombstone rebuild");
+        assert_eq!(graph.catalog_full_capacity, full);
+        assert_eq!(graph.node_count(), N as usize);
+        assert_eq!(graph.node_active(N - 1), Some(false));
+        assert!(graph.connected(0, *live.back().unwrap()).unwrap());
+        assert!(!graph.connected(0, N - 1).unwrap());
+    }
+
+    /// Growing the number of live entries still grows the catalog.
+    #[test]
+    fn live_growth_still_grows_the_catalog() {
+        let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
+        for v in 0..1_000 {
+            graph.add_node(v).unwrap();
+        }
+        let first = graph.nodes.capacity();
+        for v in 1_000..10_000 {
+            graph.add_node(v).unwrap();
+        }
+        assert!(graph.nodes.capacity() > first);
+        assert!(graph.catalog_full_capacity >= graph.nodes.capacity());
+        graph.validate();
     }
 }
