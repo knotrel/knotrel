@@ -54,10 +54,15 @@
 //! headroom runs out while live entries stay constant, and the table would
 //! double although it is far from full (at 100,000 nodes, from 131,072 to
 //! 262,144 buckets within a few percent of churn). Before an insert that would
-//! grow the table, the catalog is instead rebuilt into a fresh table of the
-//! same size when live entries are at most 90% of the table's full capacity
+//! grow the table, the catalog is instead rebuilt into a fresh table sized for
+//! its live entries when they are at most 90% of the table's full capacity
 //! (its capacity right after its last growth or rebuild): entries move, no
-//! incident vector is copied, and the tombstones are dropped. A rebuild costs
+//! incident vector is copied, and the tombstones are dropped. A table sized
+//! for the live entries has the same bucket count whenever they exceed half
+//! of the old capacity (the case under churn), and fewer buckets otherwise; it
+//! is never larger. In the rare case where the live entries exactly fill the
+//! new table's capacity, the pending insert then grows it, which costs a
+//! second `O(V)` pass. A rebuild costs
 //! `O(V)` and runs only after at least 10% of the full capacity has been
 //! consumed by tombstones since the last one, so its amortized cost is `O(1)`
 //! per insertion; it holds the old and the new table only while it runs, as a
@@ -816,7 +821,8 @@ impl LifecycleGraph {
     /// headroom was consumed by tombstones (see the module documentation):
     /// when the next insert would grow the table and live entries are at most
     /// 90% of its full capacity, the catalog is rebuilt into a fresh table
-    /// sized for its live entries. `O(V)` when it rebuilds, `O(1)` otherwise.
+    /// sized for its live entries (never larger than the old one). `O(V)` when
+    /// it rebuilds, `O(1)` otherwise.
     fn reserve_catalog_slot(&mut self) {
         let capacity = self.nodes.capacity();
         self.catalog_full_capacity = self.catalog_full_capacity.max(capacity);
@@ -1625,7 +1631,9 @@ mod tests {
             live.push_back(fresh);
             let after = graph.nodes.capacity();
             assert!(after <= full, "round {round}: the catalog grew to {after}");
-            if after > before {
+            // A rebuild restores the headroom that tombstones had consumed: a jump
+            // of more than one (a plain insert into a tombstone slot adds at most one).
+            if after > before + 1 {
                 rebuilds += 1;
             }
             if round % 1_024 == 0 {
