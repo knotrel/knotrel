@@ -122,6 +122,7 @@ Hash-map lookups are expected `O(1)`, not worst case.
 | `set_edge_enabled`, `link`, `cut` | `O(d_u + d_v)` catalog work plus at most one `U` | same |
 | `remove_node` without compaction | `O(d + sum of neighbor degrees)` catalog work plus `d_eff × U` | same |
 | `remove_node` that triggers compaction | the above plus an `O(V log V + E)` one-pass engine rebuild from the catalog | adds `O(log V + E / V)` rebuild work per removal, with `V` and `E` taken at rebuild time |
+| `add_node`, or `link` with a new endpoint, that rebuilds the catalog | an `O(V)` rebuild of the catalog table (see "Catalog tombstones") | adds `O(1)` per insertion |
 | `connected` | the engine's query cost plus two flag checks | same |
 
 Deactivation and removal cut effective incident edges in descending neighbor
@@ -145,6 +146,20 @@ which gives the amortized term above. Engine vertices stay at most
 `V + max(V, 1024)`, that is at most `2V + 1024`. Each rebuild holds the
 server's graph lock. (v0.6.0 evaluated a `max(V / 4, 1024)` threshold and
 rejected it: fresh-ID churn became about 90% slower.)
+
+**Catalog tombstones** (unreleased, v0.7.0). Removing a node from the catalog
+hash table can leave a tombstone that uses insert headroom without holding an
+entry. Under fresh-ID churn the headroom runs out while the number of live
+nodes stays constant, and the table would double although it is far from full
+(at 100,000 nodes, from 131,072 to 262,144 buckets). Before an insert that
+would grow the table, the catalog is instead rebuilt into a fresh table of the
+same size when live entries are at most 90% of the table's full capacity (its
+capacity right after its last growth or rebuild). Entries move, no incident
+vector is copied, and the old table is freed when the rebuild ends. At least
+10% of the full capacity is consumed by tombstones between two rebuilds, so
+the amortized cost is `O(1)` per insertion. A rebuild holds the server's graph
+lock, as compaction does; it is a table rebuild only, much shorter than an
+engine compaction.
 
 **Engine construction.** Bulk construction (`try_from_topology`, flagged
 imports) and compaction build the `compact-bfs` engine in one pass from the
