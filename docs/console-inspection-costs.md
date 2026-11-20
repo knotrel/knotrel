@@ -54,9 +54,11 @@ reinterpreted.
 
 **Environment.**
 - Machine: macOS 26.5.2, arm64, 8 CPUs; one developer laptop.
-- Build: release, from `feature/console-data-browser` on top of `6cf9be2`, with
-  the inspection changes uncommitted. Re-measure on the final commit before
-  relying on these numbers.
+- Build: release, from the working tree that became commit `b85e22f`
+  (`feature/console-data-browser`). Between the measurement and that commit
+  only two lint fixes were made: query-parameter errors became messages, and a
+  loop counter became `enumerate`. There was no algorithmic change. Re-measure
+  on the release candidate before relying on these numbers.
 - Graph: 500 000 nodes, 1 500 000 random edges plus a hub of 20 000
   neighbors, loaded in 3.5 s (inspection off) and 3.6 s (on).
 
