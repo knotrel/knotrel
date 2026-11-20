@@ -9,11 +9,11 @@ status.
 The console works with any server. Three optional server flags unlock more of
 it (the Compose example turns them all on):
 
-| Server flag | Unlocks | Default |
-| --- | --- | --- |
-| `KNOTREL_INSPECTION=true` | The node and edge browser | off (no cost when off) |
-| `KNOTREL_TOPOLOGY_LIFECYCLE=true` | Active/enabled/effective states and their actions | off |
-| `KNOTREL_METRICS_ENABLED=true` | The Performance page | off |
+| Server flag                       | Unlocks                                           | Default                |
+| --------------------------------- | ------------------------------------------------- | ---------------------- |
+| `KNOTREL_INSPECTION=true`         | The node and edge browser                         | off (no cost when off) |
+| `KNOTREL_TOPOLOGY_LIFECYCLE=true` | Active/enabled/effective states and their actions | off                    |
+| `KNOTREL_METRICS_ENABLED=true`    | The Performance page                              | off                    |
 
 Why each is optional, and what it costs: [docs/console.md](../docs/console.md#server-flags-in-short).
 
