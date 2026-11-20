@@ -1,13 +1,17 @@
 /**
- * Bounded, in-memory history of operations performed during this UI session.
+ * Console history: requests sent from this browser tab, kept in memory only.
  *
- * The history is never persisted. Appending is O(limit) because the array is
- * copied to keep React state immutable; with the default limit of 50 this is
- * negligible.
+ * It is not the server's activity log and not an audit trail: other clients,
+ * other tabs and the feeder are invisible here. Appending is O(limit) because
+ * the array is copied to keep React state immutable.
  */
-import type { MutationVerdict } from './outcomes';
+import type { Severity } from './sync';
 
-/** One recorded operation. */
+/** A request that can be loaded back into the Workbench. */
+export type ReplayableRequest =
+  { path: 'v1/operations'; body: unknown } | { path: 'v1/batch'; body: unknown };
+
+/** One recorded request. */
 export interface HistoryEntry {
   /** Monotonic local identifier. */
   id: number;
@@ -15,8 +19,14 @@ export interface HistoryEntry {
   at: Date;
   /** Human description with exact IDs. */
   description: string;
-  /** Classified verdict. */
-  verdict: MutationVerdict;
+  /** Short outcome, e.g. "Effective", "Connected", "3 ok, 1 error". */
+  summary: string;
+  /** Severity of the outcome, shown with an icon and text. */
+  severity: Severity;
+  /** Whether the request could change the graph. */
+  mutating: boolean;
+  /** The request, for replay in the Workbench (no credentials). */
+  request: ReplayableRequest | undefined;
   /** Server instance that answered, when known. */
   instanceId: string | undefined;
   /** Browser-measured duration in milliseconds. */
@@ -24,7 +34,7 @@ export interface HistoryEntry {
 }
 
 /** Default number of entries retained. */
-export const HISTORY_LIMIT = 50;
+export const HISTORY_LIMIT = 100;
 
 /** Returns a new history with `entry` first, keeping at most `limit` entries. */
 export function appendHistory(

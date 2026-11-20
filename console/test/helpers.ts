@@ -33,6 +33,7 @@ export function ok<T>(value: T, patch: Partial<VersionMetadata> = {}, status = 2
     metadata: metadata(patch),
     durationMs: 12,
     receivedAt: new Date('2026-11-20T10:00:00Z'),
+    raw: JSON.stringify(value),
   };
 }
 
@@ -52,6 +53,7 @@ export function info(patch: Partial<ServerInfo> = {}): ServerInfo {
     mode: 'standalone',
     instanceId: undefined,
     topologyLifecycle: true,
+    inspection: true,
     ...patch,
   };
 }
@@ -92,6 +94,62 @@ export function fakeApi(
     operation: vi.fn(async () =>
       ok({ result: 'changed' as const, changed: true }, { stateVersion: '2' }),
     ),
+    batch: vi.fn(async () =>
+      ok([{ ok: true as const, outcome: { result: 'changed' as const, changed: true } }]),
+    ),
+    listNodes: vi.fn(async () =>
+      ok({
+        nodes: [
+          { node: '1', active: true, degree: '1' },
+          { node: '18446744073709551615', active: false, degree: '1' },
+        ],
+        nextAfter: null,
+      }),
+    ),
+    getNode: vi.fn(async (node: string) => ok({ node, active: true, degree: '1' })),
+    listNodeEdges: vi.fn(async (node: string) =>
+      ok({
+        node: { node, active: true, degree: '1' },
+        edges: [
+          {
+            neighbor: node === '1' ? '18446744073709551615' : '1',
+            enabled: true,
+            effective: false,
+          },
+        ],
+        nextAfter: null,
+      }),
+    ),
+    listEdges: vi.fn(async () =>
+      ok({
+        edges: [{ source: '1', target: '18446744073709551615', enabled: true, effective: false }],
+        nextAfterSource: null,
+        nextAfterTarget: null,
+      }),
+    ),
+    metrics: vi.fn(async () => failed<string>({ kind: 'http', status: 404 })),
     ...overrides,
   };
+}
+
+/** A minimal Prometheus exposition for the Performance view. */
+export function exposition(requests: number, bucketCounts: [number, number, number]): string {
+  return [
+    '# TYPE knotrel_http_requests_total counter',
+    `knotrel_http_requests_total{route="/v1/stats",method="GET",status_class="2xx"} ${requests}`,
+    `knotrel_http_requests_total{route="/v1/stats",method="GET",status_class="5xx"} 1`,
+    `knotrel_http_request_duration_seconds_bucket{route="/v1/stats",le="0.001"} ${bucketCounts[0]}`,
+    `knotrel_http_request_duration_seconds_bucket{route="/v1/stats",le="0.01"} ${bucketCounts[1]}`,
+    `knotrel_http_request_duration_seconds_bucket{route="/v1/stats",le="+Inf"} ${bucketCounts[2]}`,
+    `knotrel_requests_rejected_total{reason="busy"} ${Math.floor(requests / 10)}`,
+    'knotrel_graph_jobs_outstanding 2',
+    'knotrel_graph_job_capacity 2',
+    `knotrel_graph_job_execution_seconds_bucket{kind="stats",le="0.0001"} ${bucketCounts[0]}`,
+    `knotrel_graph_job_execution_seconds_bucket{kind="stats",le="+Inf"} ${bucketCounts[2]}`,
+    `knotrel_graph_job_queue_seconds_bucket{kind="stats",le="+Inf"} ${bucketCounts[2]}`,
+    `knotrel_graph_lock_wait_seconds_bucket{kind="stats",le="+Inf"} ${bucketCounts[2]}`,
+    'knotrel_feeder_lease_remaining_seconds 12.5',
+    'knotrel_feeder_last_applied_age_seconds 3',
+    '',
+  ].join('\n');
 }
