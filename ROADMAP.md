@@ -28,6 +28,7 @@ An external feeder reads the authoritative database or event stream and supplies
 | **v0.6.0 — Lifecycle Efficiency & Measured Concurrency** (published 2026-11-17) | Lower lifecycle and import costs with stated resource bounds; measure contention and batching before any synchronization change; prepare v1.0 | 0.6.1 baseline and resource model; 0.6.2 lifecycle/import efficiency; 0.6.3 contention and batch evaluation (M5, deferred M3.6); 0.6.4 evidence-driven execution changes (no-change decision valid); 0.6.5 final qualification against published v0.5.0 with a versioned performance diff; 0.6.6 v1.0 readiness assessment | Lifecycle stays `compact-bfs` only; no persistence/WAL, multi-graph, distributed execution, power flow, connectors, automatic backend switching, unrelated API expansion or dependency modernization; no inherited waivers |
 | **Unassigned — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; deferred from v0.5.0 by the 2026-11-16 scope decision; release unassigned |
 | **v0.7.0 — Measured Concurrency** (qualification accepted with exceptions 2026-11-20; unreleased) | Remove the measured graph-lock bottleneck for read-heavy work without weakening any service invariant | M5 implementation (M5.3–M5.5, Acceptance M5): evaluate the minimal synchronization design from the v0.6.0 contention evidence that preserves panic handling, lease/staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, import publication and shutdown/drain; measured evaluation of the 0.7.4 performance candidates (libraries and layouts aimed at the v0.6.0 non-PASS results); before/after qualification against v0.6.0 | No mechanism is prescribed in advance (a read-write lock is one option, not a decision); no sharding/RCU/snapshots/lock-free/actors without evidence; the coarse mutex stays if no design meets the invariants |
+| **Operational Console — console 0.1.0** (implemented on a branch; unreleased) | Operate one server from a browser through the existing HTTP API, as a separate artifact | Read-only diagnostics (connectivity, liveness versus readiness, configuration, counts, identity and version, synchronization); standalone operations with structured outcomes and no automatic retries; container image and reproducible static archive; CI, coverage, SonarCloud and dry-run release workflow | No server endpoint or engine change; no authentication, visualization, multi-server, bulk import or metrics history; npm `npx` launcher DEFERRED; no performance qualification. Independent of server correctness, feeder fairness and v1.0 gates |
 | **v1.0.0 — Production Readiness** (v0.6.0 → v0.7.0 → v1.0.0-rc → v1.0.0, each step subject to its stability gates) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. A v0.7.0 exists only for concrete gaps named by the assessment |
 
 **Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
@@ -93,6 +94,15 @@ Checks reflect verified implementation and acceptance gates. From v0.6.0 on, eve
 
 - [ ] **M5 implementation** (M5.3–M5.5, Acceptance M5), from the v0.6.0 contention evidence; see [v0.7.0](#v070--measured-concurrency-planned)
 - [ ] **0.7.4 Performance candidates** (evaluated, not prescribed): read concurrency (`arc-swap` snapshots or a read-write lock), flagged-import parse cost (`sonic-rs` or a hand-written visitor), global allocator for RSS (`mimalloc`/`jemalloc`), CSR adjacency for BFS; see [v0.7.0](#v070--measured-concurrency-planned)
+
+### Operational Console — console 0.1.0
+
+[Design and plan](docs/superpowers/plans/2026-11-20-operational-console.md); [console documentation](docs/console.md). Statuses: see [Operational Console](#operational-console-console-010).
+
+- [x] **C1** Read-only console (Overview, Graph/Queries, Synchronization) — Implemented, locally validated
+- [x] **C2** Standalone operations, uncertain outcomes and session history — Implemented, locally validated
+- [x] **C3** Container image, static archive, CI and dry-run release workflow — Implemented, locally validated; external CI, SonarCloud and publication pending
+- [ ] **C4** Release (RC, then stable) — awaiting maintainer setup and authorization
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
 
@@ -680,6 +690,19 @@ Hash maps (`FxHashMap`, `nohash-hasher`) and the visited bitset
 for them.
 
 ---
+
+## Operational Console (console 0.1.0)
+
+**Scope:** a static React console for one Knotrel server, distributed as the container image `ghcr.io/knotrel/knotrel-console` and a versioned static archive. It is versioned independently (`console-v*` tags) and declares its supported servers (`>=0.7.0 <0.9.0`). It uses only the existing HTTP API; the only server-side change is documentation that brings `docs/openapi.yaml` in line with the implemented behavior. Server correctness, feeder fairness and the v1.0 checklist are separate work; this milestone neither satisfies nor blocks them.
+
+**Status (2026-11-20):** C1–C3 implemented on `feature/v0.8.0-operational-console` and validated locally. External CI, the SonarCloud quality gate, the release dry run and publication are pending. Not accepted.
+
+- [x] **C1 — Read-only console.** Connectivity, liveness and readiness as separate states, effective configuration, graph counts exposed by the API, instance identity, generation, exact revision and source position, connectivity and lifecycle-state queries, synchronization status with guidance, last refresh, stale data and connection errors. Unexposed fields shown as unavailable.
+- [x] **C2 — Standalone operations.** Add, link, cut, activate/deactivate, enable/disable and permanent removal with typed confirmation. Results are effective, no-op, rejected or uncertain; there is no automatic retry, and read-back is offered after uncertain outcomes. A bounded in-memory session history. Source-managed servers get diagnostics only.
+- [x] **C3 — Distribution and quality.** Unprivileged nginx image with a route allowlist and `Host`/`Origin` protection; Compose example; reproducible archive with checksums; console CI with a stable `console-status` aggregate; Codecov flag `console`; one combined SonarCloud scan; Dependabot for npm and Docker; `console-release` workflow (dry run by default, publishes the tested bytes).
+- [ ] **C4 — Release.** Maintainer setup ([console release procedure](docs/releases/console-release.md)), RC, post-publication checks and stable.
+
+**Acceptance:** console CI green on all jobs; SonarCloud quality gate passed in authorized CI; dry run passed on the release commit; published image and archive verified (digest, checksums, provenance, start-up). The npm launcher, a dedicated repository and the server API gaps listed in the design (software version, execution time, source lag) are separate decisions.
 
 ## Unassigned — Optional Local Persistence & Fast Recovery
 
