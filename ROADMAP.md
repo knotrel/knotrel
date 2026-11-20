@@ -102,6 +102,7 @@ Checks reflect verified implementation and acceptance gates. From v0.6.0 on, eve
 - [x] **C1** Read-only console (Overview, Graph/Queries, Synchronization) — Implemented, locally validated
 - [x] **C2** Standalone operations, uncertain outcomes and session history — Implemented, locally validated
 - [x] **C3** Container image, static archive, CI and dry-run release workflow — Implemented, locally validated; external CI, SonarCloud and publication pending
+- [x] **C5** Data browser, workbench and diagnostics, with the opt-in read-only inspection API — implemented on `feature/console-data-browser`, locally validated; [plan](docs/superpowers/plans/2026-11-20-console-data-browser.md)
 - [ ] **C4** Release (RC, then stable) — awaiting maintainer setup and authorization
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
@@ -700,6 +701,12 @@ for them.
 - [x] **C1 — Read-only console.** Connectivity, liveness and readiness as separate states, effective configuration, graph counts exposed by the API, instance identity, generation, exact revision and source position, connectivity and lifecycle-state queries, synchronization status with guidance, last refresh, stale data and connection errors. Unexposed fields shown as unavailable.
 - [x] **C2 — Standalone operations.** Add, link, cut, activate/deactivate, enable/disable and permanent removal with typed confirmation. Results are effective, no-op, rejected or uncertain; there is no automatic retry, and read-back is offered after uncertain outcomes. A bounded in-memory session history. Source-managed servers get diagnostics only.
 - [x] **C3 — Distribution and quality.** Unprivileged nginx image with a route allowlist and `Host`/`Origin` protection; Compose example; reproducible archive with checksums; console CI with a stable `console-status` aggregate; Codecov flag `console`; one combined SonarCloud scan; Dependabot for npm and Docker; `console-release` workflow (dry run by default, publishes the tested bytes).
+- [x] **C5 — Data browser and diagnostics.**
+  - Node and edge browser with cursor paging, state filters, exact lookup, a detail pane with navigation and contextual operations.
+  - Workbench with contract-checked batches, raw views, saved requests, console history and `curl` equivalents.
+  - Performance view from `/metrics`; condensed overview; synchronization with lease information.
+  - Server side: the opt-in read-only inspection routes (`KNOTREL_INSPECTION`), with a targeted cost check that passed its pre-declared criteria ([results](docs/console-inspection-costs.md)).
+  - The `compact-bfs` index→ID vector changes the node-registration path: re-qualify node-registering workloads before the next server release.
 - [ ] **C4 — Release.** Maintainer setup ([console release procedure](docs/releases/console-release.md)), RC, post-publication checks and stable.
 
 **Acceptance:** console CI green on all jobs; SonarCloud quality gate passed in authorized CI; dry run passed on the release commit; published image and archive verified (digest, checksums, provenance, start-up). The npm launcher, a dedicated repository and the server API gaps listed in the design (software version, execution time, source lag) are separate decisions.

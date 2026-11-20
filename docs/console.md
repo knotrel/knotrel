@@ -1,9 +1,17 @@
 # Knotrel Console
 
-The Knotrel Console is a browser UI for operating one Knotrel server. It shows
-liveness, readiness, configuration, graph counts, identity and version
-metadata and synchronization status. It runs connectivity and lifecycle
-queries and, on standalone servers, topology operations.
+The Knotrel Console is a browser tool for exploring, querying and diagnosing
+one Knotrel server, modeled on the workflow of data browsers such as Redis
+Insight:
+
+- **Browser:** list nodes and edges without knowing their IDs, filter by state,
+  find an exact ID, inspect a node's incident edges and act on the selection.
+- **Workbench:** connectivity and state queries, a batch editor validated against
+  the contract, raw responses, saved requests, console history and `curl`
+  equivalents.
+- **Performance:** request and error rates, admission rejections, latency and
+  saturation computed from `/metrics`.
+- **Overview** and, for source-managed servers, **Synchronization.**
 
 > **Status: unreleased.** Console 0.1.0 is prepared for the Operational
 > Console milestone. No container image or archive is published yet.
@@ -23,6 +31,18 @@ The server binary, the console image and the archive are independent
 artifacts. Cargo builds and server installations never need Node.js, and the
 Rust binary embeds no console assets.
 
+## Server settings for the full console
+
+The console uses only the Knotrel HTTP API. Some views need optional server
+features:
+
+| View | Server setting | Without it |
+| --- | --- | --- |
+| Browser lists and node detail | `KNOTREL_INSPECTION=true` | The browser explains how to enable it; queries and operations still work |
+| Incident edges, edge list | `KNOTREL_INSPECTION=true` and `KNOTREL_ENGINE=compact-bfs` | Node list only, explained |
+| Active/enabled/effective states, activation, enable/disable, removal | `KNOTREL_TOPOLOGY_LIFECYCLE=true` | Every node active, every edge effective; those actions are hidden with the reason |
+| Performance, lease information | `KNOTREL_METRICS_ENABLED=true` | Shown as disabled |
+
 ## Choose a path
 
 - **[Local start with Docker](#local-start-with-docker):** a few commands start
@@ -39,7 +59,8 @@ docker compose -f console/deploy/compose.yaml up --build
 ```
 
 Open <http://127.0.0.1:7380/>. The example starts a standalone server with
-lifecycle support enabled. Only the console port is published, on loopback;
+lifecycle support, inspection and metrics enabled. `console/scripts/start-local.sh`
+and `stop-local.sh` wrap the same commands. Only the console port is published, on loopback;
 the server is reachable only from the console container. Graph state is in
 memory and lost when the server stops. Stop with Ctrl+C, then:
 
@@ -92,17 +113,18 @@ about the server.
 3. On the **same origin**, forward exactly these routes to one Knotrel server,
    stripping the `/api` prefix:
 
-   | Console request | Server request |
-   | --- | --- |
-   | `GET /api/health` | `GET /health` |
-   | `GET /api/ready` | `GET /ready` |
-   | `GET /api/v1/info` | `GET /v1/info` |
-   | `GET /api/v1/stats` | `GET /v1/stats` |
-   | `POST /api/v1/operations` | `POST /v1/operations` |
+   | Console request | Server request | Used by |
+   | --- | --- | --- |
+   | `GET /api/health`, `GET /api/ready` | `GET /health`, `GET /ready` | Overview |
+   | `GET /api/v1/info`, `GET /api/v1/stats` | `GET /v1/info`, `GET /v1/stats` | Overview, Browser counts |
+   | `POST /api/v1/operations` | `POST /v1/operations` | Queries and operations |
+   | `POST /api/v1/batch` | `POST /v1/batch` (allow 1 MiB bodies) | Workbench batches |
+   | `GET /api/v1/nodes`, `GET /api/v1/nodes/{id}`, `GET /api/v1/nodes/{id}/edges`, `GET /api/v1/edges` | Same paths without `/api` | Browser |
+   | `GET /api/metrics` | `GET /metrics` | Performance, Synchronization |
 
-   Forward nothing else: feeder endpoints, `/v1/batch` and `/metrics` must not be
-   reachable through the console origin. Do not retry upstream requests
-   (`proxy_next_upstream off` in nginx): a retried mutation could be applied twice.
+   Forward nothing else: feeder endpoints must not be reachable through the
+   console origin. Do not retry upstream requests (`proxy_next_upstream off`
+   in nginx): a retried mutation could be applied twice.
 4. Put TLS and access control in front of both the UI and `/api`.
 5. Optionally serve `console-config.json` next to `index.html`, for example
    `{"serverLabel":"knotrel-prod-1"}`, to show which server the gateway uses.
@@ -133,15 +155,17 @@ answer to a mutation is then treated as uncertain.
   it. Expose it only through a gateway that provides TLS and access control, or
   keep it on loopback for one trusted user.
 - **The upstream is fixed by operator configuration.** The browser cannot name a
-  server. Only the allowlisted routes are forwarded, without cookies,
-  `Authorization` or forwarding headers.
+  server. Only the allowlisted routes are forwarded (the console's reads,
+  operations, batches, inspection routes and `/metrics`), without cookies,
+  `Authorization` or forwarding headers. Feeder routes are never forwarded.
 - **Browser-origin attacks.** Binding to loopback does not stop a malicious web
   page from sending requests to `127.0.0.1`. The container answers only requests
   whose `Host` is an accepted name (421 otherwise), which defeats DNS rebinding.
   It rejects API requests whose `Origin` names another host or whose
   `Sec-Fetch-Site` is not `same-origin`, which defeats cross-site request forgery.
   A strict Content Security Policy forbids inline scripts and framing.
-- **Bounds.** Request bodies are limited to 64 KiB. Upstream connect (5 s), send
+- **Bounds.** Request bodies are limited to 64 KiB (1 MiB for batches, the
+  server's own limit). Upstream connect (5 s), send
   and read timeouts are bounded. Upstream responses are not size-limited by the
   container; the server's own responses are small.
 - **Logs.** The container logs client address, method, path without query string,
@@ -155,22 +179,24 @@ answer to a mutation is then treated as uncertain.
 Every value comes from these endpoints. Values the API does not expose are
 shown as "Unavailable", with the reason; they are never inferred.
 
-| Screen | Endpoint | Fields used |
+| View | Endpoint | Fields used |
 | --- | --- | --- |
-| Overview: connection | all reads | transport result, `X-Knotrel-Console-Proxy`, time of the last success and failure count |
-| Overview: liveness | `GET /health` | HTTP status, `status` |
-| Overview: readiness | `GET /ready` | HTTP status (200/503), `status` (all nine labels) |
-| Overview: server | `GET /v1/info` | `engine`, `experimental`, `mode` (absent means standalone), `topology_lifecycle`, `max_pending_jobs`, `max_body_bytes`, `max_batch_operations` |
-| Overview: graph | `GET /v1/stats` | `node_count`, `edge_count`, `active_node_count`, `enabled_edge_count`, `effective_edge_count`, `max_*`, `remaining_*`, `state_version`, `sync_status` |
-| Overview: identity and version | `GET /v1/stats` headers | `X-Knotrel-Instance-Id`, `X-Knotrel-Generation`, `X-Knotrel-State-Version`, `X-Knotrel-Source-Position` (decoded), `X-Knotrel-Sync-Status` |
-| Graph/Queries | `POST /v1/operations` | `connected`, `node_state`, `edge_state` outcomes and the version headers of the same response |
-| Synchronization | `GET /v1/stats`, `GET /ready`, `GET /v1/info` | `sync_status`, `generation`, `source_position`, `instance_id`, readiness label |
-| Operations | `POST /v1/operations` | `add_node`, `link`, `cut`, `set_node_active`, `set_edge_enabled`, `remove_node`; `changed`, error envelope, `X-Knotrel-State-Version` |
+| Overview | `GET /health`, `GET /ready`, `GET /v1/info`, `GET /v1/stats` | Liveness, readiness label, mode, engine, `topology_lifecycle`, `inspection`, counts, capacity; attention items derived from these and from metrics availability |
+| Browser: lists | `GET /v1/nodes`, `GET /v1/edges` | Pages of nodes (ID, `active`, `degree`) and edges (`enabled`, `effective`), cursors, version headers per page |
+| Browser: counts | `GET /v1/stats` | `node_count`, `active_node_count`, `edge_count`, `enabled_edge_count`, `effective_edge_count` |
+| Browser: node detail | `GET /v1/nodes/{id}`, `GET /v1/nodes/{id}/edges` | Flags, registered degree, incident edges with `enabled`/`effective` |
+| Browser: edge detail | `edge_state` via `POST /v1/operations`, `GET /v1/nodes/{id}` for both endpoints | Desired state (`enabled`) and effectiveness with the endpoints' `active` flags |
+| Browser and Workbench operations | `POST /v1/operations`, `POST /v1/batch` | `changed`, error envelopes, per-operation batch results, `X-Knotrel-State-Version` |
+| Workbench queries | `POST /v1/operations` | `connected`, `node_state`, `edge_state` and the version headers of the same response |
+| Performance | `GET /metrics` | `knotrel_http_requests_total`, `knotrel_http_request_duration_seconds`, `knotrel_requests_rejected_total`, `knotrel_requests_outcome_uncertain_total`, `knotrel_graph_jobs_outstanding`, `knotrel_graph_job_capacity`, job queue/lock-wait/execution histograms |
+| Synchronization | `GET /v1/stats`, `GET /ready`, `GET /v1/info`, `GET /metrics` | `sync_status`, `generation`, `source_position`, state version, readiness label, `knotrel_feeder_lease_remaining_seconds`, `knotrel_feeder_last_applied_age_seconds` |
 
-Not exposed by the HTTP API, so shown as unavailable: the server software
-version, server execution time, source lag, feeder lease remaining time and
-last-event age. The last two are Prometheus metrics when
-`KNOTREL_METRICS_ENABLED=true`; the console does not read `/metrics`.
+Not exposed, so shown as unavailable:
+- the server software version;
+- per-request server processing time (only aggregate job histograms exist);
+- source lag (an opaque source position cannot be subtracted from a local
+  revision);
+- a request ID (the server logs one but does not return it).
 
 ### Mode and capability rules
 
@@ -184,6 +210,34 @@ Unsupported actions are disabled with an explanation. They are not hidden
 silently.
 
 ## Behavior
+
+- **Browser lists are paged, never complete downloads.** Pages of 100 are loaded
+  on demand, up to 5000 rows; empty pages produced by the server's scan budget
+  are followed automatically (up to five per click). Each page is a coherent
+  read with its own version headers, but the list is not a snapshot: elements
+  present for the whole traversal appear exactly once, and elements changed
+  meanwhile may or may not appear. If the instance or generation changes
+  between pages, the list is flagged as mixing graphs and offers a restart.
+  Lists are not refreshed automatically; after an operation from the console
+  the list is marked as possibly out of date.
+- **Selections and filters are in the URL** (`#/browser?view=edges&state=disabled&edge=1-2`),
+  so a view can be shared and survives navigation between pages.
+- **Contextual operations** are offered only when the mode and configuration
+  allow them, with the reason otherwise. After each mutation the affected detail
+  is read again; a node or edge that no longer exists is reported as such.
+- **Batches** are validated before sending (shape, node IDs as strings within
+  u64, self-loops, lifecycle and mode restrictions). Results are shown per
+  operation as the server returns them: there is no rollback and no isolation
+  beyond the single lock acquisition the server documents.
+- **Console history** lists the requests sent from this browser tab (in memory,
+  last 100). It is not the server's activity log and not an audit trail.
+  **Saved requests** are kept in this browser's storage and contain no
+  credentials. **Copy as curl** targets the console origin, never the upstream.
+- **Performance** numbers come only from scrapes taken by this tab (every 5 s
+  while visible, at most 15 minutes kept). Rates use reset-corrected counter
+  increases and flag resets; latency quantiles are estimated from histogram
+  bucket deltas over the chosen window. When `/metrics` answers 404, polling
+  stops and the view says metrics are disabled.
 
 - **Exact values.** Responses are parsed losslessly: JSON numbers keep their
   source text. Generations, counts and limits are shown as exact decimal strings,
@@ -208,13 +262,11 @@ silently.
   Outcomes are *effective* (`changed: true`, with the new state version), *no-op*,
   *rejected* (structured error or not delivered) or *uncertain*: a timeout,
   connection loss after sending, server `request_timeout` or an undecodable
-  success. A timeout is not a rollback. For uncertain outcomes the console offers
-  a read-back query and explains its limits. For example, connectivity does not
-  prove that a specific edge exists.
+  success. A timeout is not a rollback. After every mutation from the Browser
+  the affected node or edge is read again, which shows the actual state when the
+  outcome was uncertain.
 - **Restarts.** A change of `X-Knotrel-Instance-Id` is announced. Earlier
   results describe the previous, in-memory instance.
-- **History.** The last 50 operations of the browser session are kept in memory
-  only.
 
 ## Compatibility
 
@@ -231,14 +283,15 @@ compatibility at runtime; it reports incompatible responses instead.
 
 | Area | Coverage |
 | --- | --- |
-| Browsers | Playwright on Linux: Chromium and Firefox (CI matrix). WebKit/Safari is not tested. |
+| Browsers | Playwright against real servers on Linux: Chromium and Firefox (CI matrix). Locally also macOS. WebKit/Safari is not tested. |
 | Container | Linux runners (amd64); the release builds linux/amd64 and linux/arm64, and smoke-tests the amd64 image. |
 | Static build and archive | Built and unit-tested on Linux, macOS and Windows. CI checks that the three archives are byte-identical. |
 | Accessibility | axe-core checks (WCAG 2 A/AA, serious and critical findings fail) and keyboard-only flows. This is not a full manual audit. |
 
-Out of scope: graph visualization, path reconstruction, multi-server
-management, bulk import, log ingestion, historical metrics, authentication in
-the server, persistence and multi-graph.
+Out of scope: global graph visualization (a local neighborhood view is not
+implemented yet), path reconstruction, multi-server management, bulk import,
+log streaming or search, a request profiler, historical metrics, an audit
+system, authentication in the server, persistence and multi-graph.
 
 ## Development
 

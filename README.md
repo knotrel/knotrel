@@ -257,6 +257,7 @@ startup.
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges (registered edges with lifecycle support); zero allowed; `unlimited` opts out |
 | `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
+| `KNOTREL_INSPECTION` | `false` | `true` enables the read-only inspection routes (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges`) used by the console's data browser; unreleased; see [Inspection](docs/http-api.md#inspection-opt-in) |
 | `RUST_LOG` | `info` | Logging filter |
 
 For example, to opt into the experimental forest:

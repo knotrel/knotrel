@@ -1,9 +1,12 @@
 # Knotrel Console
 
-Browser console for operating one [Knotrel](https://github.com/knotrel/knotrel)
-server: liveness and readiness, configuration, graph counts, identity and
-version metadata, synchronization status, connectivity and lifecycle queries,
-and topology operations on standalone servers.
+Browser console for exploring, querying and diagnosing one
+[Knotrel](https://github.com/knotrel/knotrel) server: a node and edge browser
+with a detail pane and contextual operations, a workbench for queries and
+batches, a performance view from metrics, an overview and synchronization
+status. For the full console, run the server with `KNOTREL_INSPECTION=true`,
+`KNOTREL_TOPOLOGY_LIFECYCLE=true` and `KNOTREL_METRICS_ENABLED=true`, as the
+Compose example does.
 
 > **Status: unreleased.** Version 0.1.0 is not published yet. Until the first
 > release, build the image locally (see [Get the image](#get-the-image)). The
@@ -126,8 +129,9 @@ read-only filesystem with a tmpfs at `/tmp`.
 The console adds **no authentication**, and the Knotrel API has none. Keep
 the published port on `127.0.0.1`. For remote access, put a gateway with TLS
 and access control in front of it; see [docs/console.md](../docs/console.md#trust-boundary).
-Only the console's own API routes are forwarded; feeder endpoints,
-`/v1/batch` and `/metrics` are never reachable through it.
+Only the console's own API routes are forwarded (reads, operations, batches,
+inspection routes and `/metrics`); feeder endpoints are never reachable
+through it.
 
 ## Troubleshooting
 

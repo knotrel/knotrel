@@ -576,8 +576,13 @@ pre.code {
 
 .curl {
   display: grid;
+  justify-items: start;
   gap: 6px;
   margin-top: 8px;
+}
+
+.curl textarea {
+  justify-self: stretch;
 }
 
 .flags {

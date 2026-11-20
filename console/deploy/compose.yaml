@@ -21,6 +21,9 @@ services:
     environment:
       KNOTREL_MODE: standalone
       KNOTREL_TOPOLOGY_LIFECYCLE: 'true'
+      # Data browser (node and edge listing) and the Performance view.
+      KNOTREL_INSPECTION: 'true'
+      KNOTREL_METRICS_ENABLED: 'true'
     read_only: true
     cap_drop: [ALL]
     security_opt: ['no-new-privileges:true']
