@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Console version, equal to console/package.json (e.g. 0.1.0 or 0.1.0-rc.1)"
+        description: "Console version, equal to console/package.json (e.g. 0.8.0 or 0.8.0-rc.1); its major.minor must match the server workspace version"
         required: true
       commit_sha:
         description: "Full 40-character commit SHA on main to build"
@@ -84,6 +84,12 @@ jobs:
           [[ "$manifest_version" == "$VERSION" ]] || { echo "::error::console/package.json is $manifest_version"; exit 1; }
           lock_version="$(node -p 'require("./console/package-lock.json").version')"
           [[ "$lock_version" == "$VERSION" ]] || { echo "::error::package-lock.json is $lock_version"; exit 1; }
+          # Console X.Y goes with server X.Y (docs/releases/console-release.md).
+          server_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          base="${VERSION%%-*}"   # drop a prerelease suffix such as -rc.1
+          [[ "${base%.*}" == "${server_version%.*}" ]] || {
+            echo "::error::console $VERSION does not match the server major.minor ($server_version)"; exit 1;
+          }
           git fetch --quiet origin main
           git merge-base --is-ancestor "$COMMIT_SHA" origin/main || { echo "::error::commit is not on main"; exit 1; }
           echo "source_date_epoch=$(git log -1 --format=%ct "$COMMIT_SHA")" >> "$GITHUB_OUTPUT"

@@ -13,7 +13,14 @@ Workflow: [`.github/workflows/console-release.yml`](../../.github/workflows/cons
 ## Versioning
 
 - The console has its own SemVer version in `console/package.json` and
-  `console/package-lock.json`. The first release is `0.1.0`.
+  `console/package-lock.json`, aligned with the server on major.minor:
+  console X.Y.z goes with server X.Y.x. The first release is `0.8.0`, together
+  with server 0.8.0. A new server minor brings a console release with the same
+  major.minor (even without UI changes); patch releases are independent.
+- The release workflow refuses a version whose major.minor differs from the
+  server workspace version (`Cargo.toml`) at the same commit.
+- Update the compatibility table in [docs/console.md](../console.md#compatibility)
+  and `console/README.md` with every console minor.
 - Release candidates use `X.Y.Z-rc.N`. They become GitHub prereleases and never
   move `latest`.
 - `knotrel.supportedServer` in `console/package.json` states the compatible
@@ -81,8 +88,8 @@ Run it for every candidate commit before tagging:
 Download the artifact and inspect it if needed:
 
 ```sh
-sha256sum -c knotrel-console-0.1.0.tar.gz.sha256
-node console/scripts/package-static.mjs --verify knotrel-console-0.1.0.tar.gz
+sha256sum -c knotrel-console-0.8.0.tar.gz.sha256
+node console/scripts/package-static.mjs --verify knotrel-console-0.8.0.tar.gz
 cat release-manifest.json
 ```
 
@@ -92,24 +99,24 @@ Equivalent local commands (no publication):
 cd console
 npm ci && npm run check
 npm run archive -- --out .artifacts
-node scripts/package-static.mjs --verify .artifacts/knotrel-console-0.1.0.tar.gz
-docker build -t knotrel-console:dev --build-arg VERSION=0.1.0 .
+node scripts/package-static.mjs --verify .artifacts/knotrel-console-0.8.0.tar.gz
+docker build -t knotrel-console:dev --build-arg VERSION=0.8.0 .
 docker build -f ../examples/container/Dockerfile -t knotrel-server:example ..
 scripts/smoke-container.sh knotrel-console:dev knotrel-server:example dist
 ```
 
 ## Release candidate, then stable
 
-1. Set the version (for example `0.1.0-rc.1`) in `console/package.json`. Run
+1. Set the version (for example `0.8.0-rc.1`) in `console/package.json`. Run
    `npm install --package-lock-only` in `console/`, then merge the change to
    `main`.
 2. Dry run on the merge commit and check that it passes.
 3. Create and push the signed tag on that exact commit:
 
    ```sh
-   git tag -s console-v0.1.0-rc.1 <commit> -m "Knotrel Console 0.1.0-rc.1"
-   git verify-tag console-v0.1.0-rc.1
-   git push origin console-v0.1.0-rc.1
+   git tag -s console-v0.8.0-rc.1 <commit> -m "Knotrel Console 0.8.0-rc.1"
+   git verify-tag console-v0.8.0-rc.1
+   git push origin console-v0.8.0-rc.1
    ```
 
 4. Run the workflow with `dry_run` = false, the same version and commit, and
@@ -124,22 +131,22 @@ scripts/smoke-container.sh knotrel-console:dev knotrel-server:example dist
      RCs) with the archive and its checksum;
    - moves `latest` only for a stable version with `update_latest` = true.
 6. Perform the post-publication checks, then publish the draft release.
-7. For the stable release, repeat from step 1 with `0.1.0` and choose
+7. For the stable release, repeat from step 1 with `0.8.0` and choose
    `update_latest` = true if this should become the default stable reference.
 
 ## Post-publication checks
 
 ```sh
-docker pull ghcr.io/knotrel/knotrel-console:0.1.0
-docker buildx imagetools inspect ghcr.io/knotrel/knotrel-console:0.1.0   # index digest = release-manifest.json
-gh attestation verify oci://ghcr.io/knotrel/knotrel-console:0.1.0 --repo knotrel/knotrel
-gh release download console-v0.1.0 --repo knotrel/knotrel
-sha256sum -c knotrel-console-0.1.0.tar.gz.sha256
-gh attestation verify knotrel-console-0.1.0.tar.gz --repo knotrel/knotrel
+docker pull ghcr.io/knotrel/knotrel-console:0.8.0
+docker buildx imagetools inspect ghcr.io/knotrel/knotrel-console:0.8.0   # index digest = release-manifest.json
+gh attestation verify oci://ghcr.io/knotrel/knotrel-console:0.8.0 --repo knotrel/knotrel
+gh release download console-v0.8.0 --repo knotrel/knotrel
+sha256sum -c knotrel-console-0.8.0.tar.gz.sha256
+gh attestation verify knotrel-console-0.8.0.tar.gz --repo knotrel/knotrel
 ```
 
 Then start the published image with the Compose example: replace the console
-`build:` with `image: ghcr.io/knotrel/knotrel-console:0.1.0`. Open the UI and
+`build:` with `image: ghcr.io/knotrel/knotrel-console:0.8.0`. Open the UI and
 check Overview, a query and, on standalone, one operation.
 
 The image is pulled from GHCR, not served by it. Publishing the image and the
