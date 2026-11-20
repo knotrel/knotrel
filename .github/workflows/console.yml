@@ -208,11 +208,12 @@ jobs:
         shell: bash
         env:
           SOURCE_DATE_EPOCH: "0"
-        run: npm run archive -- --out .artifacts --revision "$GITHUB_SHA"
+        # Not a dot-directory: upload-artifact skips hidden paths by default.
+        run: npm run archive -- --out archive-digest --revision "$GITHUB_SHA"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archive-digest-${{ matrix.os }}
-          path: console/.artifacts/*.sha256
+          path: console/archive-digest/*.sha256
           if-no-files-found: error
 
   reproducibility:
