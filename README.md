@@ -19,6 +19,8 @@ service alongside your existing database.
 
 **Published preview: [v0.6.0](https://github.com/knotrel/knotrel/releases/tag/v0.6.0).**
 Node/edge lifecycle is opt-in and supported on `compact-bfs` only.
+The v0.7.0 work described in this repository (parallel read-only requests)
+remains unreleased.
 
 ## Quickstart: a failure and a recovery
 
@@ -183,7 +185,7 @@ the reproducible workloads, methodology and published reports: release
 regression qualification, engine/competitor comparisons and algorithm
 experiments, each labelled with the version and host it actually measured.
 [Performance by version](docs/performance-by-version.md) summarizes the
-release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 → v0.6.0) for users, with
+release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 → v0.6.0 → v0.7.0 candidate) for users, with
 their limits. The authoritative statements are in the release notes for
 [v0.4.0](docs/releases/v0.4.0-release-notes.md#regression-qualification-against-v030)
 and [v0.3.0](docs/releases/v0.3.0-release-notes.md#performance-qualification).
@@ -196,6 +198,13 @@ and makes core flagged imports and fresh-ID churn measurably faster, but its
 qualification did not pass unconditionally; its non-PASS results are accepted
 as disclosed limitations
 ([release notes](docs/releases/v0.6.0-release-notes.md#performance-qualification)).
+v0.7.0 (unreleased) runs read-only requests in parallel: read-heavy
+throughput is about 2× v0.6.0 with 4 clients, and 4.5–5× for queries during
+imports or feeder events at 100k nodes. Its qualification was **accepted
+with exceptions**, not passed unconditionally. Three inconclusive results
+and two unqualified lifecycle requirements on a hub topology are accepted
+for v0.7.0 only
+([release notes](docs/releases/v0.7.0-release-notes.md#performance-qualification)).
 
 ## Installing a release
 

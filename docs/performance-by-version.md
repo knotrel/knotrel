@@ -8,6 +8,16 @@ release qualification bundles. The release notes remain the authoritative
 statement for each release.
 
 **Short version:**
+- **v0.7.0 (unreleased; qualification accepted with exceptions on
+  2026-11-20) is not demonstrated to be faster in general than v0.6.0.**
+  Read-heavy concurrent requests are much faster (up to 2.1× the throughput
+  with 4 clients, 4.5–5.2× for queries during imports or feeder events at
+  100k nodes). Lifecycle HTTP imports are 16–20% faster, compaction pauses
+  6–11% shorter, and the v0.6.0 heap-growth failures under churn are
+  resolved. Not every gate passed: three inconclusive results and two
+  unqualified lifecycle requirements on a hub topology are accepted by the
+  maintainer for v0.7.0 only. See
+  [v0.7.0 compared with v0.6.0](#v070-compared-with-v060).
 - **v0.6.0 (released 2026-11-17) is not demonstrated to be
   faster in general than v0.5.0.** With lifecycle off: no regression, two
   unresolved and two disclosed inconclusive results. With lifecycle on:
@@ -64,22 +74,25 @@ statement for each release.
 - **v0.6.0** was measured on candidate `48bc82f`; `main` at `8d21f38`, which
   the documentation-only release commit follows, has the same executed code
   (release notes, release gates).
+- **v0.7.0** was measured on candidate `fa5f3a9`; the release commit's
+  `crates/`, `Cargo.toml` and `Cargo.lock` are identical to it (release
+  notes).
 
 ## Release-to-release results
 
 Primary metric per cell, median paired change [interval] and outcome:
 
-| Workload | v0.3.0 vs v0.2.0 | v0.4.0 vs v0.3.0 | v0.5.0 vs v0.4.0 | v0.6.0 vs v0.5.0 |
-|---|---|---|---|---|
-| Core sparse traversal, `compact-bfs` | +0.10% [−21.95%, +6.14%] PASS | +8.71% [−2.34%, +31.89%] **UNRESOLVED**¹ | −7.23% [−33.47%, +2.83%] PASS | −0.95% [−3.78%, +2.92%] PASS |
-| Core sparse traversal, `compact-workspace` | −2.26% [−11.13%, +9.41%] PASS | **+28.90% [+15.44%, +35.73%] REGRESSION**² | −1.94% [−9.87%, +6.00%] PASS⁴ | +6.20% [−1.72%, +19.43%] INCONCLUSIVE, disclosed |
-| Core sustained churn, `compact-bfs` | −0.01% [−1.76%, +8.01%] PASS | +1.08% [−1.72%, +5.18%] PASS | −1.02% [−3.67%, +0.64%] PASS | −0.34% [−1.17%, +0.09%] PASS |
-| Core sustained churn, `compact-workspace` | −0.46% [−5.30%, +0.76%] PASS | +0.57% [−0.40%, +2.52%] PASS | +0.19% [−1.38%, +2.28%] PASS | −0.27% [−4.75%, +1.71%] PASS |
-| HTTP batch, size 1 | −0.71% [−7.37%, +7.69%] PASS | +5.89% [−3.34%, +8.52%] **UNRESOLVED**³ | +0.04% [−5.57%, +5.32%] **UNRESOLVED**⁵ | +0.30% [−5.15%, +4.15%] **UNRESOLVED**⁷ |
-| HTTP batch, size 8 | −1.42% [−15.63%, +12.09%] INCONCLUSIVE | +1.47% [−7.64%, +14.12%] INCONCLUSIVE | −0.42% [−5.05%, +8.17%] PASS | +0.40% [−9.43%, +2.05%] PASS |
-| HTTP batch, size 64 | −0.83% [−7.56%, +5.08%] PASS | +1.10% [−3.83%, +9.68%] PASS | −2.11% [−4.01%, +1.96%] **UNRESOLVED**⁶ | −0.73% [−7.81%, +6.96%] PASS |
-| HTTP batch, size 256 | +0.08% [−1.55%, +6.98%] PASS | −2.29% [−8.98%, +4.93%] PASS | −1.72% [−3.13%, +6.84%] PASS | −0.93% [−2.75%, +0.60%] **UNRESOLVED**⁸ |
-| HTTP lifecycle, time to ready | +8.02% [−11.46%, +21.97%] INCONCLUSIVE | −12.86% [−21.83%, +23.21%] INCONCLUSIVE | +5.14% [−17.35%, +22.13%] INCONCLUSIVE | +7.18% [−18.30%, +24.15%] INCONCLUSIVE, disclosed |
+| Workload | v0.3.0 vs v0.2.0 | v0.4.0 vs v0.3.0 | v0.5.0 vs v0.4.0 | v0.6.0 vs v0.5.0 | v0.7.0 vs v0.6.0 |
+|---|---|---|---|---|---|
+| Core sparse traversal, `compact-bfs` | +0.10% [−21.95%, +6.14%] PASS | +8.71% [−2.34%, +31.89%] **UNRESOLVED**¹ | −7.23% [−33.47%, +2.83%] PASS | −0.95% [−3.78%, +2.92%] PASS | +3.35% [−4.18%, +6.49%] PASS |
+| Core sparse traversal, `compact-workspace` | −2.26% [−11.13%, +9.41%] PASS | **+28.90% [+15.44%, +35.73%] REGRESSION**² | −1.94% [−9.87%, +6.00%] PASS⁴ | +6.20% [−1.72%, +19.43%] INCONCLUSIVE, disclosed | +2.30% [−16.32%, +8.84%] PASS |
+| Core sustained churn, `compact-bfs` | −0.01% [−1.76%, +8.01%] PASS | +1.08% [−1.72%, +5.18%] PASS | −1.02% [−3.67%, +0.64%] PASS | −0.34% [−1.17%, +0.09%] PASS | −1.94% [−4.98%, +4.25%] PASS |
+| Core sustained churn, `compact-workspace` | −0.46% [−5.30%, +0.76%] PASS | +0.57% [−0.40%, +2.52%] PASS | +0.19% [−1.38%, +2.28%] PASS | −0.27% [−4.75%, +1.71%] PASS | −3.46% [−8.34%, +5.21%] PASS |
+| HTTP batch, size 1 | −0.71% [−7.37%, +7.69%] PASS | +5.89% [−3.34%, +8.52%] **UNRESOLVED**³ | +0.04% [−5.57%, +5.32%] **UNRESOLVED**⁵ | +0.30% [−5.15%, +4.15%] **UNRESOLVED**⁷ | −0.24% [−2.59%, +3.21%] PASS |
+| HTTP batch, size 8 | −1.42% [−15.63%, +12.09%] INCONCLUSIVE | +1.47% [−7.64%, +14.12%] INCONCLUSIVE | −0.42% [−5.05%, +8.17%] PASS | +0.40% [−9.43%, +2.05%] PASS | +3.62% [−1.95%, +8.12%] PASS |
+| HTTP batch, size 64 | −0.83% [−7.56%, +5.08%] PASS | +1.10% [−3.83%, +9.68%] PASS | −2.11% [−4.01%, +1.96%] **UNRESOLVED**⁶ | −0.73% [−7.81%, +6.96%] PASS | −0.11% [−4.80%, +5.53%] PASS |
+| HTTP batch, size 256 | +0.08% [−1.55%, +6.98%] PASS | −2.29% [−8.98%, +4.93%] PASS | −1.72% [−3.13%, +6.84%] PASS | −0.93% [−2.75%, +0.60%] **UNRESOLVED**⁸ | +0.28% [−3.82%, +4.53%] PASS |
+| HTTP lifecycle, time to ready | +8.02% [−11.46%, +21.97%] INCONCLUSIVE | −12.86% [−21.83%, +23.21%] INCONCLUSIVE | +5.14% [−17.35%, +22.13%] INCONCLUSIVE | +7.18% [−18.30%, +24.15%] INCONCLUSIVE, disclosed | −3.08% [−7.24%, +1.17%] PASS |
 
 ¹ The primary median is within tolerance, but the connectivity-query p99 is
 unresolved: +2.02% [−4.97%, +28.53%].
@@ -111,7 +124,7 @@ v0.3.0 was recovered: releases cannot be chained (see above).
 - **v0.4.0:** requires every gated p99 and memory metric to PASS as well. That
   is why two v0.4.0 cells are UNRESOLVED even though their primary metric
   median is within tolerance.
-- **v0.5.0 and v0.6.0:** use the v0.4.0 design and rules on the same nine workloads.
+- **v0.5.0, v0.6.0 and v0.7.0:** use the v0.4.0 design and rules on the same nine workloads.
 
 Outcomes in the v0.3.0 column are therefore less strict than in the other
 two.
@@ -126,12 +139,65 @@ two.
   (`556683c`), with lifecycle disabled. The `main` commits checked since then
   contain the same executed code in release builds.
 
+### v0.7.0 compared with v0.6.0
+
+Candidate `fa5f3a9` against published v0.6.0 (`5db9ec4`), 2026-11-20,
+qualification 3 attempt q3-3 (conforming). Decision record:
+`results/v0.7.0-qualification-3/DECISIONS.md` in knotrel-benchmarks.
+**Outcome: accepted with exceptions, for v0.7.0 only.** This is not "all
+gates PASS".
+
+**Lifecycle off** (table above): 9/9 PASS.
+
+**Concurrency** (contention cells, 10% throughput and 25% p99 tolerance;
+v0.6.0 → v0.7.0):
+
+| Workload | Throughput | p99 | Outcome |
+|---|---|---|---|
+| Read-heavy (95% queries), size 1, 4 clients, 10k | 15,289 → 32,232 req/s | 0.53 → 0.26 ms | PASS, improved |
+| Read-heavy, size 8, 16 clients, 100k | 213 → 350 req/s | 91.1 → 90.7 ms | PASS, improved |
+| Mixed 50%, size 64, 16 clients, 100k | 51 → 51 req/s | 346 → 353 ms | PASS |
+| Lifecycle 50%, size 8, 16 clients, 100k | 399 → 399 req/s | 54.7 → 54.1 ms | PASS |
+| Queries during a source import, 100k | 204 → 1,053 req/s | 92.2 → 77.0 ms | PASS, improved |
+| Queries during feeder events, 100k | 206 → 938 req/s | 91.3 → 50.5 ms | PASS, improved |
+
+**Lifecycle on:**
+- **R, flagged imports and churn** (10% tolerance):
+  - HTTP imports: −16% to −20%, PASS, improved;
+  - core imports at 100k: PASS;
+  - fresh-ID churn: −4% to −5%, PASS, improved;
+  - two core imports at 10k (sparse, hub) are **INCONCLUSIVE**, accepted
+    for v0.7.0 only.
+- **Rmem:** 10/10 PASS. Churn heap peaks are 12–17% lower.
+- **Heap growth under churn (C3):** 15/15 PASS. The three v0.6.0 failures
+  are resolved by the catalog tombstone handling.
+- **Compaction pauses (T5,** new, 25% tolerance against v0.7.0 without the
+  tombstone handling): 6/6 PASS, 6–11% shorter. P_max at 100k sparse is
+  17.3 → 15.6 ms.
+- **B/C lifecycle cells:** 58 deciding timing cells PASS; one is
+  INCONCLUSIVE and accepted. B4 metrics overhead on lifecycle batches,
+  sparse 10k: +6.5% [+1.7%, +7.4%] against a 6% budget.
+
+**Not qualified, accepted exception:** lifecycle batches and feeder events
+on the `hub` 10k topology.
+- v0.6.0 cannot offer the same atomicity there, so no equivalent reference
+  exists.
+- Comparisons against references that are not atomic are indicative only:
+  +4.0% or −6.8% (batches), +5.0% or −6.4% (events).
+
+**Disclosed:**
+- **RSS retention under churn:** 6 of 15 cells exceed the RSS budget, a
+  disclosure category.
+- **Imports dominated by inactive entries:** about 5× an import of the
+  effective graph only (+408%, recurring since v0.5.0), and +58% against a
+  capability-equivalent reference (PASS at 100%).
+
 ### v0.6.0 compared with v0.5.0
 
 Candidate `48bc82f` against published v0.5.0 (`51e3b4d`), 2026-11-16. Full
 report: `results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md` in
-knotrel-benchmarks. No maintainer decision has been taken yet; nothing below
-is accepted.
+knotrel-benchmarks. The maintainer accepted the non-PASS results as
+disclosed limitations ([v0.6.0 release notes](releases/v0.6.0-release-notes.md#performance-qualification)).
 
 **Lifecycle off** (table above): 5 PASS, 2 INCONCLUSIVE (disclosed),
 2 UNRESOLVED, no REGRESSION.
@@ -279,7 +345,18 @@ qualification.**
 
 ## What this means for you
 
-**v0.6.0 (unreleased candidate; maintainer decisions pending):**
+**v0.7.0 (unreleased; accepted with exceptions):**
+
+| If you… | What the evidence supports |
+|---|---|
+| Run many concurrent read-heavy clients | Query-only requests now run in parallel: about 2× the throughput with 4 clients at 10k nodes, and 4.5–5× for queries during imports or feeder events at 100k nodes, with lower p99 |
+| Keep lifecycle off (the default) | No workload regressed against v0.6.0 in the nine release cells |
+| Enable lifecycle with fresh-ID churn | Heap growth between compactions is within its rule, and compaction pauses are shorter. RSS can still grow through allocator retention |
+| Send large lifecycle batches or feeder events on hub-like graphs | Not qualified against v0.6.0. Indicative medians are within ±7% of non-atomic references |
+| Import graphs dominated by inactive entries | Still about 5× the cost of importing only the effective graph, a few ms per 10k-node import on the measured host |
+| Expect v0.7.0 to be faster overall | Not supported for write-heavy or mixed workloads, which are unchanged within tolerance |
+
+**v0.6.0 (released 2026-11-17; non-PASS results accepted as disclosed limitations):**
 
 | If you… | What the evidence supports |
 |---|---|
@@ -310,6 +387,9 @@ qualification.**
 
 ## Sources
 
+- **v0.7.0:** [release notes](releases/v0.7.0-release-notes.md#performance-qualification)
+  and knotrel-benchmarks `results/v0.7.0-qualification-3/DECISIONS.md`
+  (with the analyses in `results/v0.7.0-qualification-3/analysis/q3-3/`).
 - **v0.6.0:** [release notes](releases/v0.6.0-release-notes.md#performance-qualification)
   and [knotrel-benchmarks `results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md`](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/v0.6.0-qualification/COMPARISON-v0.5.0-v0.6.0.md).
 - **v0.5.0:** [release notes](releases/v0.5.0-release-notes.md#performance-qualification)
