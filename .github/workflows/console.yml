@@ -1,0 +1,265 @@
+name: console
+
+# Validation of the operational console (console/). Rust checks live in ci.yml
+# and are unaffected. Every job runs on GitHub-hosted runners without secrets
+# except the optional Codecov token; fork pull requests run the same checks
+# unprivileged. `console-status` is the stable aggregate to require in rulesets:
+# it succeeds when the console jobs pass or were skipped because nothing
+# relevant changed, so a path filter never leaves a required check pending.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: console-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUST_TOOLCHAIN: 1.100.0
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: console
+
+jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      console: ${{ steps.filter.outputs.console }}
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Detect console-relevant changes
+        id: filter
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" != "pull_request" ]]; then
+            echo "console=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The console depends on its own sources, the OpenAPI contract, the
+          # server it is tested against and this workflow.
+          pattern='^(console/|docs/openapi\.yaml$|\.github/workflows/console(-release)?\.yml$|crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|examples/container/)'
+          if git diff --name-only "$BASE_SHA...$HEAD_SHA" | grep -Eq "$pattern"; then
+            echo "console=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "console=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  checks:
+    name: checks
+    needs: changes
+    if: needs.changes.outputs.console == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: console/.nvmrc
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Formatting
+        run: npm run format:check
+      - name: ESLint
+        run: npm run lint
+      - name: TypeScript
+        run: npm run typecheck
+      - name: OpenAPI generated types are current
+        run: npm run check:api
+      - name: Unit and component tests with coverage gates
+        run: npm run test:coverage
+      - name: Production build
+        run: npm run build
+      - name: Dependency advisories
+        run: npm audit --audit-level=high
+      - name: Static archive (build and verify)
+        run: |
+          npm run archive -- --out .artifacts --revision "$GITHUB_SHA"
+          node scripts/package-static.mjs --verify ".artifacts/knotrel-console-$(node -p 'require("./package.json").version').tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: console-dist
+          path: console/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: console-coverage
+          path: console/coverage/lcov.info
+          if-no-files-found: error
+      - name: Upload console coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: console/coverage/lcov.info
+          flags: console
+          disable_search: true
+          fail_ci_if_error: false
+
+  e2e:
+    name: e2e (${{ matrix.browser }})
+    needs: changes
+    if: needs.changes.outputs.console == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build knotrel-server
+        working-directory: .
+        run: cargo build -p knotrel-server --locked
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: console/.nvmrc
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Install ${{ matrix.browser }}
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      - run: npm run build
+      - name: Browser integration tests against real servers
+        run: npx playwright test --project=${{ matrix.browser }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: |
+            console/playwright-report/
+            console/test-results/
+
+  container:
+    name: container
+    needs: [changes, checks]
+    if: needs.changes.outputs.console == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: console-dist
+          path: console/.expected-dist
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build example knotrel-server image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: examples/container/Dockerfile
+          tags: knotrel-server:example
+          load: true
+          push: false
+          cache-from: type=gha,scope=knotrel-server-example
+          cache-to: type=gha,mode=max,scope=knotrel-server-example
+      - name: Build console image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: console
+          tags: knotrel-console:ci
+          load: true
+          push: false
+          build-args: |
+            REVISION=${{ github.sha }}
+      - name: Container smoke test (assets identical to the checks build)
+        run: scripts/smoke-container.sh knotrel-console:ci knotrel-server:example .expected-dist
+
+  portability:
+    name: portability (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.console == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: console/.nvmrc
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npm run build
+      - name: Static archive
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: "0"
+        run: npm run archive -- --out .artifacts --revision "$GITHUB_SHA"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archive-digest-${{ matrix.os }}
+          path: console/.artifacts/*.sha256
+          if-no-files-found: error
+
+  reproducibility:
+    name: reproducibility
+    needs: [changes, portability]
+    if: needs.changes.outputs.console == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archive-digest-*
+          path: digests
+      - name: Archives are identical on Linux, macOS and Windows
+        run: |
+          find digests -name '*.sha256' -exec sh -c 'printf "%s  " "$1"; cat "$1"' _ {} \;
+          test "$(find digests -name '*.sha256' | wc -l)" -eq 3
+          test "$(find digests -name '*.sha256' -exec cut -d' ' -f1 {} \; | sort -u | wc -l)" -eq 1
+
+  console-status:
+    name: console-status
+    if: always()
+    needs: [changes, checks, e2e, container, portability, reproducibility]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate console results
+        working-directory: .
+        env:
+          RELEVANT: ${{ needs.changes.outputs.console }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "::error::change detection failed"; exit 1
+          fi
+          failed="$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key')"
+          if [[ -n "$failed" ]]; then
+            echo "::error::failed console jobs: $failed"; exit 1
+          fi
+          if [[ "$RELEVANT" == "true" ]]; then
+            skipped="$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result == "skipped") | .key')"
+            if [[ -n "$skipped" ]]; then
+              echo "::error::console jobs skipped although relevant files changed: $skipped"; exit 1
+            fi
+            echo "All console jobs passed."
+          else
+            echo "No console-relevant changes; console jobs skipped."
+          fi

@@ -35,5 +35,9 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
+          # Rust and console reports are uploaded separately (console coverage
+          # comes from console.yml with flags: console).
+          flags: rust
+          disable_search: true
           fail_ci_if_error: false
           verbose: true
