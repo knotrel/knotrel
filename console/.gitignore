@@ -6,3 +6,4 @@ test-results/
 *.tgz
 .pack/
 .artifacts/
+archive-digest/
