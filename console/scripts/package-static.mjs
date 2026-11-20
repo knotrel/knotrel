@@ -16,12 +16,13 @@
  *     console-manifest.json     version, source revision, OpenAPI digest, compatibility
  *     SHA256SUMS                checksums of every other file
  *
- * The archive is reproducible: entries are sorted, owners are 0, modes are fixed,
- * every timestamp is SOURCE_DATE_EPOCH (default: the commit time, else 0) and the
- * gzip header carries no time or OS. Building twice from the same `dist/` yields
- * identical bytes.
+ * The archive is reproducible: entries are sorted by UTF-16 code unit (not by
+ * locale), owners are 0, modes are fixed, every timestamp is
+ * --source-date-epoch or SOURCE_DATE_EPOCH (default 0) and the gzip header
+ * carries no time or OS. Building twice from the same `dist/` yields identical
+ * bytes. The revision comes from --revision or GITHUB_SHA (default "unknown");
+ * the script spawns no processes.
  */
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -34,6 +35,15 @@ const arg = (/** @type {string} */ name) => {
   return i === -1 ? undefined : process.argv[i + 1];
 };
 const sha256 = (/** @type {Buffer} */ data) => createHash('sha256').update(data).digest('hex');
+
+/**
+ * Orders strings by UTF-16 code unit. Deliberately not `localeCompare`: locale
+ * collation varies between systems and ICU versions, which would make the
+ * archive differ between platforms.
+ * @param {string} a
+ * @param {string} b
+ */
+export const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
  * Encodes one ustar header block (POSIX.1-1988).
@@ -86,9 +96,7 @@ function header(name, size, mtime, directory) {
 export function createTarGz(entries, mtime) {
   /** @type {Buffer[]} */
   const parts = [];
-  for (const entry of [...entries].sort((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-  )) {
+  for (const entry of [...entries].sort((a, b) => byCodeUnit(a.name, b.name))) {
     const directory = entry.data === undefined;
     const size = entry.data?.length ?? 0;
     parts.push(header(entry.name, size, mtime, directory));
@@ -117,11 +125,12 @@ export function readTarGz(archive) {
   while (offset + 512 <= tar.length) {
     const block = tar.subarray(offset, offset + 512);
     if (block.every((b) => b === 0)) break;
-    const text = (/** @type {number} */ start, /** @type {number} */ length) =>
-      block
-        .subarray(start, start + length)
-        .toString('utf8')
-        .replace(/\0.*$/s, '');
+    const text = (/** @type {number} */ start, /** @type {number} */ length) => {
+      // Fields are NUL-terminated (or fill their whole width).
+      const field = block.subarray(start, start + length);
+      const end = field.indexOf(0);
+      return field.subarray(0, end === -1 ? field.length : end).toString('utf8');
+    };
     const prefix = text(345, 155);
     const name = prefix ? `${prefix}/${text(0, 100)}` : text(0, 100);
     const size = Number.parseInt(text(124, 12).trim() || '0', 8);
@@ -139,7 +148,7 @@ export function readTarGz(archive) {
 function walk(/** @type {string} */ dir, /** @type {string} */ rel = '') {
   /** @type {string[]} */
   const out = [];
-  for (const name of readdirSync(path.join(dir, rel)).sort()) {
+  for (const name of readdirSync(path.join(dir, rel)).sort(byCodeUnit)) {
     const child = rel ? `${rel}/${name}` : name;
     if (statSync(path.join(dir, child)).isDirectory()) out.push(...walk(dir, child));
     else out.push(child);
@@ -178,17 +187,8 @@ function build() {
   if (!htmlFiles.includes('index.html'))
     throw new Error('dist/index.html missing: run npm run build');
 
-  let revision = arg('--revision');
-  let epoch = arg('--source-date-epoch') ?? process.env.SOURCE_DATE_EPOCH;
-  try {
-    revision ??= execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-    epoch ??= execFileSync('git', ['log', '-1', '--format=%ct'], {
-      cwd: root,
-      encoding: 'utf8',
-    }).trim();
-  } catch {
-    // Not a git checkout: leave unknown values explicit.
-  }
+  const revision = arg('--revision') ?? process.env.GITHUB_SHA;
+  const epoch = arg('--source-date-epoch') ?? process.env.SOURCE_DATE_EPOCH;
   const mtime = Number(epoch ?? '0');
   if (!Number.isSafeInteger(mtime) || mtime < 0)
     throw new Error(`invalid source date epoch: ${epoch}`);
@@ -221,7 +221,7 @@ function build() {
     ),
   );
   const sums = [...files.keys()]
-    .sort()
+    .sort(byCodeUnit)
     .map((name) => `${sha256(/** @type {Buffer} */ (files.get(name)))}  ${name}`)
     .join('\n');
   files.set('SHA256SUMS', Buffer.from(`${sums}\n`));
