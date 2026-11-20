@@ -69,7 +69,23 @@ curl -sf "$base/api/v1/nodes/18446744073709551615/edges" | grep -q '"neighbor":"
 curl -sf "$base/api/v1/edges" | grep -q '"source":"1"' || fail "edge listing"
 [[ "$(status "$base/api/v1/nodes/999")" == 404 ]] || fail "unknown node passes through"
 [[ "$(header x-knotrel-console-proxy "$base/api/v1/nodes/999")" == "" ]] || fail "server 404 is not a gateway answer"
-curl -sf "$base/api/metrics" | grep -q '^knotrel_http_requests_total' || fail "metrics forwarded"
+# Consume the full metrics response: grep -q can close the pipe early and
+# make curl fail under pipefail even when the expected metric is present.
+# A few short retries absorb a slow first scrape on shared CI runners; a real
+# failure prints the status and the start of the response for diagnosis.
+metrics_ok=false
+for _ in 1 2 3 4 5; do
+    if curl -sf "$base/api/metrics" | grep '^knotrel_http_requests_total' >/dev/null; then
+        metrics_ok=true
+        break
+    fi
+    sleep 1
+done
+if [[ "$metrics_ok" != true ]]; then
+    echo "metrics: HTTP $(status "$base/api/metrics")" >&2
+    curl -s "$base/api/metrics" | head -n 20 >&2 || true
+    fail "metrics forwarded"
+fi
 big_batch="$(python3 -c 'import json;print(json.dumps({"operations":[{"op":"connected","source":"1","target":"18446744073709551615"}]*1024}))')"
 [[ "$(status -X POST -H 'content-type: application/json' --data-binary "$big_batch" "$base/api/v1/batch")" == 200 ]] || fail "full batch accepted"
 pass "API forwarding with exact IDs, version headers and server errors"
