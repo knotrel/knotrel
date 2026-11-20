@@ -15,13 +15,13 @@ Insight:
 
 ![Browser: the node list fills the height; the selected node shows its state, neighbors and a connectivity check](images/console/browser.jpg)
 
-> **Status: unreleased.** Console 0.1.0 is prepared for the Operational
-> Console milestone. No container image or archive is published yet.
-> Commands that reference `ghcr.io/knotrel/knotrel-console:0.1.0` or a
-> release archive work only after the first authorized release.
+> **Status: unreleased.** Console 0.8.0 will be released together with server
+> 0.8.0. No container image or archive is published yet. Commands that
+> reference `ghcr.io/knotrel/knotrel-console:0.8.0` or a release archive work
+> only after that release.
 
-The console is a static React application. It is versioned independently of
-the Rust crates and distributed in two forms:
+The console is a static React application, released as its own artifacts
+(never inside the Rust crates or binary) and distributed in two forms:
 
 | Distribution | Use | Status |
 | --- | --- | --- |
@@ -85,7 +85,7 @@ image (after the first release, or with an image built by
 docker run --rm -p 127.0.0.1:7380:8080 \
   -e KNOTREL_UPSTREAM=http://host.docker.internal:8080 \
   --read-only --tmpfs /tmp --cap-drop ALL \
-  ghcr.io/knotrel/knotrel-console:0.1.0
+  ghcr.io/knotrel/knotrel-console:0.8.0
 ```
 
 The server must be reachable from the container. A server bound to the host's
@@ -113,9 +113,9 @@ about the server.
    GitHub Release `console-v<version>`, then verify and extract them:
 
    ```sh
-   sha256sum -c knotrel-console-0.1.0.tar.gz.sha256
-   tar -xzf knotrel-console-0.1.0.tar.gz
-   (cd knotrel-console-0.1.0 && sha256sum -c SHA256SUMS)
+   sha256sum -c knotrel-console-0.8.0.tar.gz.sha256
+   tar -xzf knotrel-console-0.8.0.tar.gz
+   (cd knotrel-console-0.8.0 && sha256sum -c SHA256SUMS)
    ```
 
 2. Serve `knotrel-console-<version>/html/` as static files.
@@ -327,6 +327,19 @@ what needs attention.
   results describe the previous, in-memory instance.
 
 ## Compatibility
+
+**Versioning rule.** The console follows the server's major.minor: console
+X.Y.z is released together with server X.Y.0 and supports server X.Y.x. Patch
+releases are independent (a console fix does not need a server release, and
+the reverse). The console may also work, with fewer features, with the
+previous server minor:
+
+| Console | Server 0.7.x | Server 0.8.x |
+| --- | --- | --- |
+| 0.8.x | Overview, Workbench (queries, batch), Performance and Synchronization work. The Browser is unavailable: server 0.7 has no inspection API, and the console says so. | All features (Browser needs `KNOTREL_INSPECTION=true`) |
+
+Within a supported server version, the server flags decide what is available;
+see [Server flags, in short](#server-flags-in-short).
 
 The console declares the server versions it supports in
 `console/package.json` (`knotrel.supportedServer`, currently `>=0.7.0 <0.9.0`).

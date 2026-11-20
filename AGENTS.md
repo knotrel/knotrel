@@ -22,8 +22,9 @@
 
 - Keep the console outside the Cargo workspace. Cargo builds, server
   installation and the Rust binary must never require Node.js or embed console
-  assets. The console is versioned independently (`console/package.json`, tags
-  `console-v*`) and is released only through
+  assets. The console has its own version (`console/package.json`, tags
+  `console-v*`) aligned with the server on major.minor (console X.Y goes with
+  server X.Y; patches are independent), and is released only through
   [the console release procedure](docs/releases/console-release.md).
 - Toolchain: Node 24.22.3 LTS (`console/.nvmrc`) with npm 11; exact dependency
   versions and the committed `package-lock.json`. npm is development tooling

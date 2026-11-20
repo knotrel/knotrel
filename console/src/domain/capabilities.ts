@@ -84,7 +84,7 @@ export function deriveCapabilities(info: ServerInfo | undefined): Capabilities {
     browseNodes: info.inspection,
     browseEdges: info.inspection && info.engine === 'compact-bfs',
     browseBlockedReason: !info.inspection
-      ? 'The server does not expose the inspection routes. Start it with KNOTREL_INSPECTION=true to browse nodes and edges.'
+      ? 'The server does not expose the inspection routes. Browsing nodes and edges needs server 0.8 or later started with KNOTREL_INSPECTION=true.'
       : info.engine !== 'compact-bfs'
         ? `The ${info.engine} engine keeps no per-node adjacency: nodes can be listed, but incident edges and the edge list need compact-bfs.`
         : undefined,

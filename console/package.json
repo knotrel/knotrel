@@ -1,6 +1,6 @@
 {
   "name": "@knotrel/console",
-  "version": "0.1.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Knotrel operational console: a static React application distributed as a container image and a versioned static archive.",
   "license": "Elastic-2.0",

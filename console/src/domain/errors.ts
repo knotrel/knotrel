@@ -26,7 +26,7 @@ const EXPLANATIONS: Record<ErrorCode, string> = {
   graph_uninitialized: 'No baseline has been imported yet.',
   import_in_progress: 'An import is in progress; retry after it completes.',
   inspection_disabled:
-    'The data browser needs the inspection routes: start the server with KNOTREL_INSPECTION=true.',
+    'The data browser needs the inspection routes: server 0.8 or later with KNOTREL_INSPECTION=true.',
   inspection_unsupported:
     'This engine keeps no per-node adjacency (ett, hdt): incident and edge listing need compact-bfs.',
   invalid_batch_size: 'The batch size is outside the accepted range.',

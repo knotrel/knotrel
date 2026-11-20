@@ -78,7 +78,7 @@ export function attentionItems(
   if (info && !info.inspection) {
     items.push({
       severity: 'unknown',
-      text: 'The data browser is limited: the server runs without KNOTREL_INSPECTION=true.',
+      text: 'The data browser is limited: it needs server 0.8 or later with KNOTREL_INSPECTION=true.',
     });
   }
   if (metrics.availability === 'disabled') {
