@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -271,6 +271,65 @@ describe('data browser lists', () => {
     fireEvent.pointerUp(splitter, { pointerId: 1 });
     fireEvent.pointerMove(splitter, { pointerId: 1, clientX: 100 });
     expect(splitter).toHaveAttribute('aria-valuenow', '500');
+  });
+});
+
+describe('browser edge cases', () => {
+  it('reports a failed node page and switches between nodes and edges', async () => {
+    const user = userEvent.setup();
+    const listNodes = vi.fn(async () => failed<NodePage>({ kind: 'http', status: 503 }));
+    render(<Harness api={fakeApi({ listNodes })} />);
+    expect(await screen.findByText('HTTP 503')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Edges/ }));
+    const table = await screen.findByRole('table');
+    await user.click(within(table).getByRole('button', { name: `1 – ${MAX}` }));
+    expect(await screen.findByRole('region', { name: `Edge 1 – ${MAX}` })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Nodes/ }));
+    expect(listNodes).toHaveBeenCalledTimes(2);
+  });
+
+  it('works without storage and bounds the pane by the measured width', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    let report: ((entries: { contentRect: { width: number } }[]) => void) | undefined;
+    const disconnect = vi.fn();
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: typeof report) {
+          report = callback;
+        }
+        observe() {}
+        disconnect = disconnect;
+      },
+    );
+    const user = userEvent.setup();
+    const { unmount } = render(<Harness api={fakeApi()} initial={{ node: '1' }} />);
+    const splitter = await screen.findByRole('separator', { name: 'Resize detail pane' });
+    expect(splitter).toHaveAttribute('aria-valuenow', String(DETAIL_DEFAULT));
+    act(() => report?.([{ contentRect: { width: 900 } }]));
+    expect(splitter).toHaveAttribute('aria-valuemax', '540');
+    splitter.focus();
+    await user.keyboard('{Home}');
+    expect(splitter).toHaveAttribute('aria-valuenow', '540');
+    act(() => report?.([{ contentRect: { width: 0 } }]));
+    expect(splitter).toHaveAttribute('aria-valuemax', '540');
+    unmount();
+    expect(disconnect).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('opens a neighbor from the node pane', async () => {
+    const user = userEvent.setup();
+    render(<Harness api={fakeApi()} initial={{ node: '1' }} />);
+    const pane = await screen.findByRole('region', { name: 'Node 1' });
+    const list = await within(pane).findByRole('list', { name: 'Neighbors of node 1' });
+    await user.click(within(list).getByRole('button', { name: MAX }));
+    expect(await screen.findByRole('region', { name: `Node ${MAX}` })).toBeInTheDocument();
   });
 });
 

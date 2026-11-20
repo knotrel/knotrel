@@ -5,6 +5,7 @@ import type { ConsoleApi, RuntimeConfig } from '../../src/api/endpoints';
 import { MetricsStore } from '../../src/state/metrics';
 import { INITIAL_OVERVIEW, OverviewStore } from '../../src/state/overview';
 import { App } from '../../src/ui/App';
+import { connectionStatus } from '../../src/ui/Connection';
 import { attentionItems } from '../../src/ui/OverviewPage';
 import { exposition, failed, fakeApi, info, ok, stats } from '../helpers';
 
@@ -195,6 +196,61 @@ describe('App shell and overview', () => {
     await user.click(connection);
     await user.click(document.body);
     expect(connection).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('names every connection state', () => {
+    const now = new Date('2026-11-20T10:00:00Z');
+    const health = (failure: Parameters<typeof failed>[0]) => ({
+      ...INITIAL_OVERVIEW,
+      health: failed<{ status: 'ok' }>(failure),
+    });
+    expect(connectionStatus(INITIAL_OVERVIEW, now)).toEqual({
+      label: 'Connecting',
+      tone: 'progress',
+    });
+    expect(connectionStatus(health({ kind: 'console-unreachable', message: 'x' }), now).label).toBe(
+      'Console host unreachable',
+    );
+    expect(
+      connectionStatus(health({ kind: 'server-unreachable', delivered: 'no', status: 502 }), now)
+        .label,
+    ).toBe('Server unreachable');
+    expect(
+      connectionStatus(health({ kind: 'incompatible', status: 200, reason: 'x' }), now).label,
+    ).toBe('Incompatible server responses');
+    expect(connectionStatus(health({ kind: 'http', status: 500 }), now)).toEqual({
+      label: 'Degraded',
+      tone: 'warning',
+    });
+    const stale = {
+      ...INITIAL_OVERVIEW,
+      health: ok({ status: 'ok' as const }),
+      lastSuccessAt: new Date('2026-11-20T09:00:00Z'),
+    };
+    expect(connectionStatus(stale, now).label).toBe('Connected, stale data');
+  });
+
+  it('carries a connectivity check from the browser to the workbench and its history', async () => {
+    const user = userEvent.setup();
+    const api = fakeApi({
+      operation: vi.fn(async () => ok({ result: 'connected' as const, connected: true })),
+    });
+    renderApp(api, '#/browser?node=1');
+    const pane = await within(panel('browser')).findByRole('region', { name: 'Node 1' });
+    await user.type(await within(pane).findByLabelText('Target node'), '7');
+    await user.click(within(pane).getByRole('button', { name: 'Check' }));
+    await within(pane).findByText(/^Connected to/);
+    await user.click(within(pane).getByRole('button', { name: 'Open in Workbench' }));
+    expect(screen.getByRole('tab', { name: 'Workbench' })).toHaveAttribute('aria-selected', 'true');
+    const query = within(panel('workbench')).getByRole('region', { name: 'Query' });
+    expect(within(query).getByLabelText('Source')).toHaveValue('1');
+    expect(within(query).getByLabelText('Target')).toHaveValue('7');
+    const history = within(panel('workbench')).getByRole('region', { name: 'Console history' });
+    await user.clear(within(query).getByLabelText('Target'));
+    await user.click(within(history).getByRole('button', { name: 'Load' }));
+    expect(within(query).getByLabelText('Target')).toHaveValue('7');
+    await user.click(within(history).getByRole('button', { name: 'Clear history' }));
+    expect(within(history).queryByRole('button', { name: 'Load' })).toBeNull();
   });
 
   it('starts dark and switches theme, remembering the choice', async () => {

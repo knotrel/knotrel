@@ -1,4 +1,4 @@
-import { act, screen } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 
 it('mounts the console into #root and polls the same-origin API', async () => {
@@ -9,7 +9,9 @@ it('mounts the console into #root and polls the same-origin API', async () => {
   document.body.append(root);
   const { mount } = await import('../src/main');
   expect(await screen.findByRole('heading', { name: 'Knotrel Console' })).toBeInTheDocument();
-  expect(fetch).toHaveBeenCalledWith('api/health', expect.objectContaining({ method: 'GET' }));
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith('api/health', expect.objectContaining({ method: 'GET' })),
+  );
   const second = document.createElement('div');
   document.body.append(second);
   const extra = mount(second);

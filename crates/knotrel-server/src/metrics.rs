@@ -1686,4 +1686,12 @@ mod tests {
         let request = Request::new(axum::body::Body::empty());
         assert_eq!(route_label(&request), "unmatched");
     }
+
+    #[test]
+    fn job_kind_labels_are_unique() {
+        let labels: std::collections::BTreeSet<_> =
+            JobKind::ALL.iter().map(|kind| kind.label()).collect();
+        assert_eq!(labels.len(), JobKind::ALL.len());
+        assert!(labels.contains("inspect"));
+    }
 }
