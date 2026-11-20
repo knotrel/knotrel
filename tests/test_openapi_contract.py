@@ -14,6 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = yaml.safe_load((ROOT / 'docs/openapi.yaml').read_text())
 API = (ROOT / 'crates/knotrel-server/src/api.rs').read_text()
 SERVICE = (ROOT / 'crates/knotrel-server/src/service.rs').read_text()
+LIB = (ROOT / 'crates/knotrel-server/src/lib.rs').read_text()
+GRAPH = (ROOT / 'crates/knotrel-server/src/graph.rs').read_text()
+LIFECYCLE = (ROOT / 'crates/knotrel-server/src/lifecycle.rs').read_text()
+
+
+def struct_fields(name, source):
+    match = re.search(r'struct ' + name + r' \{(.*?)\n\}', source, re.S)
+    assert match, name
+    return re.findall(r'^\s*(?:pub\(crate\) )?(\w+): ', match[1], re.M)
 
 
 class OpenApiContract(unittest.TestCase):
@@ -44,6 +53,49 @@ class OpenApiContract(unittest.TestCase):
                 # fields may be omitted. All other wire fields are required.
                 self.assertEqual(fields - (optional if name.endswith('Request') else set()),
                                  set(schema['required']))
+
+    def test_info_and_stats_fields_match(self):
+        # The operational console reads these objects; every serialized field must be
+        # documented (optional ones are absent in standalone mode or without lifecycle).
+        info = set(struct_fields('ServerInfo', LIB))
+        self.assertEqual(info, set(SPEC['components']['schemas']['ServerInfo']['properties']))
+        stats = struct_fields('GraphSnapshot', SERVICE)
+        self.assertIn('lifecycle', stats)  # flattened LifecycleCounts
+        expected = (set(stats) - {'lifecycle'}) | set(struct_fields('LifecycleCounts', GRAPH))
+        self.assertEqual(expected,
+                         set(SPEC['components']['schemas']['GraphSnapshot']['properties']))
+
+    def test_discriminators_map_wire_values(self):
+        # Without an explicit mapping, OpenAPI implies schema names as wire values.
+        schemas = SPEC['components']['schemas']
+        for name, field in [('Operation', 'op'), ('Outcome', 'result')]:
+            with self.subTest(name=name):
+                disc = schemas[name]['discriminator']
+                self.assertEqual(disc['propertyName'], field)
+                refs = {item['$ref'] for item in schemas[name]['oneOf']}
+                self.assertEqual(set(disc['mapping'].values()), refs)
+                for value, ref in disc['mapping'].items():
+                    target = schemas[ref.rsplit('/', 1)[1]]
+                    self.assertEqual(target['properties'][field]['enum'], [value])
+
+    def test_readiness_states_match(self):
+        body = LIFECYCLE.split('pub(crate) enum ReadinessState {', 1)[1].split('}', 1)[0]
+        snake = {re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
+                 for name in re.findall(r'(\w+),', body)}
+        schemas = SPEC['components']['schemas']
+        documented = (set(schemas['ReadinessReadyResponse']['properties']['status']['enum'])
+                      | set(schemas['ReadinessNotReadyResponse']['properties']['status']['enum']))
+        self.assertEqual(snake, documented)
+
+    def test_version_headers_on_console_reads(self):
+        for path in ['/v1/stats', '/v1/operations', '/v1/batch']:
+            method = 'get' if path == '/v1/stats' else 'post'
+            with self.subTest(path=path):
+                headers = SPEC['paths'][path][method]['responses']['200']['headers']
+                for name in ['ETag', 'X-Knotrel-Instance-Id', 'X-Knotrel-Generation',
+                             'X-Knotrel-State-Version', 'X-Knotrel-Source-Position',
+                             'X-Knotrel-Sync-Status']:
+                    self.assertIn(name, headers)
 
     def test_feeder_headers_and_timeout_contract(self):
         for path, item in SPEC['paths'].items():
