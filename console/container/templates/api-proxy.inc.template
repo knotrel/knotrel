@@ -1,0 +1,39 @@
+# Shared settings of every forwarded API route. Rendered by envsubst at startup
+# (only KNOTREL_* variables are substituted).
+include /etc/nginx/knotrel/security-headers.conf;
+
+# Cross-site request forgery: same-origin requests only (see the maps in
+# default.conf.template). A request without Origin or Sec-Fetch-Site (curl, a
+# health checker) is accepted: it cannot be issued cross-site by a browser.
+if ($knotrel_bad_origin) {
+    return 403;
+}
+if ($knotrel_cross_site) {
+    return 403;
+}
+
+# Forward only what the Knotrel API needs: no cookies, Authorization, Origin or
+# forwarding headers reach the server.
+proxy_pass_request_headers off;
+proxy_set_header Accept "application/json";
+proxy_set_header Content-Type $content_type;
+proxy_http_version 1.1;
+proxy_set_header Connection "";
+proxy_next_upstream off;
+proxy_intercept_errors off;
+proxy_connect_timeout 5s;
+proxy_send_timeout ${KNOTREL_UPSTREAM_TIMEOUT};
+proxy_read_timeout ${KNOTREL_UPSTREAM_TIMEOUT};
+proxy_buffering on;
+proxy_max_temp_file_size 0;
+proxy_hide_header Set-Cookie;
+proxy_hide_header Server;
+
+# Gateway-generated failures carry X-Knotrel-Console-Proxy so the console can
+# tell them apart from server responses. Server 502/504 responses are passed
+# through unchanged (proxy_intercept_errors off).
+error_page 403 = @knotrel_rejected;
+error_page 405 = @knotrel_method;
+error_page 413 = @knotrel_too_large;
+error_page 502 = @knotrel_upstream_502;
+error_page 504 = @knotrel_upstream_504;

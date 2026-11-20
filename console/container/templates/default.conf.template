@@ -1,0 +1,166 @@
+# Rendered at startup by envsubst (NGINX_ENVSUBST_FILTER=KNOTREL_). Variables:
+#   KNOTREL_UPSTREAM               Knotrel server base URL (validated at startup).
+#   KNOTREL_CONSOLE_SERVER_NAMES   Accepted Host names (space separated).
+#   KNOTREL_UPSTREAM_TIMEOUT       Upstream send/read timeout (nginx time).
+
+# --- Cross-origin protection ------------------------------------------------
+# Browsers send Sec-Fetch-Site; only same-origin (or none, typed URL) passes.
+map $http_sec_fetch_site $knotrel_cross_site {
+    default 1;
+    "" 0;
+    same-origin 0;
+    none 0;
+}
+# Origin, when present, must name the same host:port the request was sent to.
+# Comparing hosts only keeps this correct behind a TLS-terminating gateway.
+map $http_origin $knotrel_origin_host {
+    "" "-";
+    "~^https?://(?<origin_host>[^/]+)$" $origin_host;
+    default "!invalid";
+}
+map "$knotrel_origin_host|$http_host" $knotrel_bad_origin {
+    "~^-\|" 0;
+    "~*^([^|]+)\|\1$" 0;
+    default 1;
+}
+# A 502 or 504 from nginx with zero bytes sent upstream means the request was
+# never delivered (connection refused or connect timeout); otherwise the server
+# may have received it, and the console reports the outcome as uncertain.
+map $upstream_bytes_sent $knotrel_502_condition {
+    "" upstream_unreachable;
+    "0" upstream_unreachable;
+    default upstream_failed;
+}
+map $upstream_bytes_sent $knotrel_504_condition {
+    "" upstream_unreachable;
+    "0" upstream_unreachable;
+    default upstream_timeout;
+}
+
+# --- Unknown Host headers (DNS rebinding) -----------------------------------
+server {
+    listen 8080 default_server;
+    listen [::]:8080 default_server;
+    server_name _;
+    default_type application/json;
+
+    # Container health check; reveals nothing about the server or the graph.
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+    location / {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header X-Knotrel-Console-Proxy rejected always;
+        add_header Cache-Control no-store always;
+        return 421 '{"result":"error","code":"console_rejected","message":"unexpected Host header"}';
+    }
+}
+
+# --- The console ------------------------------------------------------------
+server {
+    listen 8080;
+    listen [::]:8080;
+    server_name ${KNOTREL_CONSOLE_SERVER_NAMES};
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location = /console-config.json {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header Cache-Control no-store always;
+        default_type application/json;
+        alias /tmp/knotrel-console/console-config.json;
+    }
+
+    location /assets/ {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    location / {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header Cache-Control no-cache always;
+        limit_except GET { deny all; }
+        try_files $uri $uri/index.html =404;
+    }
+
+    # Allowlisted API routes. Everything else under /api/ is rejected: feeder
+    # endpoints, /v1/batch and /metrics are never reachable through the console.
+    location /api/ {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header X-Knotrel-Console-Proxy rejected always;
+        add_header Cache-Control no-store always;
+        default_type application/json;
+        return 404 '{"result":"error","code":"console_rejected","message":"route not available through the console"}';
+    }
+    location = /api/health {
+        if ($request_method != GET) { return 405; }
+        include /tmp/knotrel-console/api-proxy.inc;
+        proxy_pass ${KNOTREL_UPSTREAM}/health;
+    }
+    location = /api/ready {
+        if ($request_method != GET) { return 405; }
+        include /tmp/knotrel-console/api-proxy.inc;
+        proxy_pass ${KNOTREL_UPSTREAM}/ready;
+    }
+    location = /api/v1/info {
+        if ($request_method != GET) { return 405; }
+        include /tmp/knotrel-console/api-proxy.inc;
+        proxy_pass ${KNOTREL_UPSTREAM}/v1/info;
+    }
+    location = /api/v1/stats {
+        if ($request_method != GET) { return 405; }
+        include /tmp/knotrel-console/api-proxy.inc;
+        proxy_pass ${KNOTREL_UPSTREAM}/v1/stats;
+    }
+    location = /api/v1/operations {
+        if ($request_method != POST) { return 405; }
+        include /tmp/knotrel-console/api-proxy.inc;
+        proxy_pass ${KNOTREL_UPSTREAM}/v1/operations;
+    }
+
+    # Gateway-generated answers (see api-proxy.inc).
+    location @knotrel_rejected {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header X-Knotrel-Console-Proxy rejected always;
+        add_header Cache-Control no-store always;
+        default_type application/json;
+        return 403 '{"result":"error","code":"console_rejected","message":"cross-origin requests are not accepted"}';
+    }
+    location @knotrel_method {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header X-Knotrel-Console-Proxy rejected always;
+        add_header Cache-Control no-store always;
+        default_type application/json;
+        return 405 '{"result":"error","code":"console_rejected","message":"method not allowed"}';
+    }
+    location @knotrel_too_large {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header X-Knotrel-Console-Proxy rejected always;
+        add_header Cache-Control no-store always;
+        default_type application/json;
+        return 413 '{"result":"error","code":"console_rejected","message":"request body exceeds 64 KiB"}';
+    }
+    location @knotrel_upstream_502 {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header X-Knotrel-Console-Proxy $knotrel_502_condition always;
+        add_header Cache-Control no-store always;
+        default_type application/json;
+        return 502 '{"result":"error","code":"console_$knotrel_502_condition","message":"connection to the Knotrel server failed"}';
+    }
+    location @knotrel_upstream_504 {
+        include /etc/nginx/knotrel/security-headers.conf;
+        add_header X-Knotrel-Console-Proxy $knotrel_504_condition always;
+        add_header Cache-Control no-store always;
+        default_type application/json;
+        return 504 '{"result":"error","code":"console_$knotrel_504_condition","message":"the Knotrel server did not answer in time"}';
+    }
+}
