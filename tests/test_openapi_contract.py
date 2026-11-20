@@ -78,6 +78,18 @@ class OpenApiContract(unittest.TestCase):
                     target = schemas[ref.rsplit('/', 1)[1]]
                     self.assertEqual(target['properties'][field]['enum'], [value])
 
+    def test_inspection_payloads_match(self):
+        pairs = {'WireNodeRecord': 'InspectedNode', 'WireNodePage': 'NodePage',
+                 'WireIncidentEdge': 'IncidentEdge', 'WireIncidentPage': 'IncidentEdgePage',
+                 'WirePairRecord': 'InspectedEdge', 'WireEdgePage': 'EdgePage'}
+        schemas = SPEC['components']['schemas']
+        for rust, schema in pairs.items():
+            with self.subTest(rust=rust):
+                fields = set(struct_fields(rust, API))
+                self.assertEqual(fields, set(schemas[schema]['properties']))
+                # Every field is always serialized (null when absent).
+                self.assertEqual(fields, set(schemas[schema]['required']))
+
     def test_readiness_states_match(self):
         body = LIFECYCLE.split('pub(crate) enum ReadinessState {', 1)[1].split('}', 1)[0]
         snake = {re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()

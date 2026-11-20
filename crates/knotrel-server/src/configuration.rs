@@ -42,10 +42,11 @@ enum Setting {
     DedupWindowSize,
     MetricsEnabled,
     TopologyLifecycle,
+    Inspection,
 }
 
 impl Setting {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::Address,
         Self::Engine,
         Self::MaxPendingJobs,
@@ -61,6 +62,7 @@ impl Setting {
         Self::DedupWindowSize,
         Self::MetricsEnabled,
         Self::TopologyLifecycle,
+        Self::Inspection,
     ];
 
     const fn as_str(self) -> &'static str {
@@ -80,6 +82,7 @@ impl Setting {
             Self::DedupWindowSize => "KNOTREL_DEDUP_WINDOW_SIZE",
             Self::MetricsEnabled => "KNOTREL_METRICS_ENABLED",
             Self::TopologyLifecycle => "KNOTREL_TOPOLOGY_LIFECYCLE",
+            Self::Inspection => "KNOTREL_INSPECTION",
         }
     }
 
@@ -116,6 +119,7 @@ pub struct ServerConfig {
     dedup_window_size: usize,
     metrics_enabled: bool,
     topology_lifecycle: bool,
+    inspection: bool,
 }
 
 /// A malformed or unsupported startup setting.
@@ -146,6 +150,7 @@ impl Default for ServerConfig {
             dedup_window_size: Self::DEFAULT_DEDUP_WINDOW_SIZE,
             metrics_enabled: false,
             topology_lifecycle: false,
+            inspection: false,
         }
     }
 }
@@ -253,6 +258,7 @@ impl ServerConfig {
             dedup_window_size: Self::DEFAULT_DEDUP_WINDOW_SIZE,
             metrics_enabled: false,
             topology_lifecycle: false,
+            inspection: false,
         })
     }
 
@@ -324,6 +330,26 @@ impl ServerConfig {
     /// Reports whether node and edge lifecycle support is enabled.
     pub fn topology_lifecycle(&self) -> bool {
         self.topology_lifecycle
+    }
+
+    /// Enables or disables the read-only inspection routes (`GET /v1/nodes`,
+    /// `GET /v1/nodes/{node}`, `GET /v1/nodes/{node}/edges`, `GET /v1/edges`).
+    ///
+    /// When enabled, the service keeps an ordered index of registered node IDs
+    /// (about 10–20 bytes per node and an `O(log V)` update whenever a node is
+    /// registered or removed) so that nodes can be listed in ascending ID
+    /// order with stable cursors. When disabled (the default) no index is kept
+    /// and the routes answer 409 `inspection_disabled`. Every engine supports
+    /// node listing; incident and edge listing need `compact-bfs`. See
+    /// `docs/http-api.md`.
+    pub fn with_inspection(mut self, enabled: bool) -> Self {
+        self.inspection = enabled;
+        self
+    }
+
+    /// Reports whether the inspection routes are enabled.
+    pub fn inspection(&self) -> bool {
+        self.inspection
     }
 
     /// Returns the operating mode of the server.
@@ -506,6 +532,16 @@ impl ServerConfig {
                 )));
             }
         };
+        let inspection = match settings.get(&Setting::Inspection).map(String::as_str) {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(_) => {
+                return Err(ConfigError(format!(
+                    "{} must be true or false",
+                    Setting::Inspection
+                )));
+            }
+        };
         let engine = match settings.get(&Setting::Engine).map(String::as_str) {
             None | Some("compact-bfs") => EngineConfig::CompactBfs,
             Some("ett") => EngineConfig::EulerTour,
@@ -588,6 +624,7 @@ impl ServerConfig {
             .with_mode(mode)
             .with_metrics_enabled(metrics_enabled)
             .with_topology_lifecycle(topology_lifecycle)?
+            .with_inspection(inspection)
             .with_max_import_body_bytes(max_import_body_bytes)?
             .with_dedup_window_size(dedup_window_size)?
             .with_graph_limits(limits)
@@ -687,6 +724,7 @@ mod tests {
                 "KNOTREL_DEDUP_WINDOW_SIZE",
                 "KNOTREL_METRICS_ENABLED",
                 "KNOTREL_TOPOLOGY_LIFECYCLE",
+                "KNOTREL_INSPECTION",
             ]
         );
         for (setting, name) in Setting::ALL.into_iter().zip(names) {
@@ -722,6 +760,33 @@ mod tests {
         let explicit = ServerConfig::default().with_metrics_enabled(true);
         assert!(explicit.metrics_enabled());
         assert!(!explicit.with_metrics_enabled(false).metrics_enabled());
+    }
+
+    #[test]
+    fn inspection_is_disabled_by_default_and_strictly_validated() {
+        assert!(!ServerConfig::default().inspection());
+        let enabled =
+            ServerConfig::from_variables([("KNOTREL_INSPECTION".into(), "true".into())]).unwrap();
+        assert!(enabled.inspection());
+        let disabled =
+            ServerConfig::from_variables([("KNOTREL_INSPECTION".into(), "false".into())]).unwrap();
+        assert!(!disabled.inspection());
+        for value in ["", "TRUE", "1", " true"] {
+            let error = ServerConfig::from_variables([("KNOTREL_INSPECTION".into(), value.into())])
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "KNOTREL_INSPECTION must be true or false"
+            );
+        }
+        // Inspection works with every engine; only incident listing needs compact-bfs.
+        let ett = ServerConfig::from_variables([
+            ("KNOTREL_ENGINE".into(), "ett".into()),
+            ("KNOTREL_INSPECTION".into(), "true".into()),
+        ])
+        .unwrap();
+        assert!(ett.inspection());
+        assert!(ServerConfig::default().with_inspection(true).inspection());
     }
 
     #[test]

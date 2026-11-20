@@ -182,10 +182,11 @@ pub(crate) enum JobKind {
     FeederGap,
     FeederBarrier,
     ImportPublish,
+    Inspect,
 }
 
 impl JobKind {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Operation,
         Self::Batch,
         Self::Stats,
@@ -195,6 +196,7 @@ impl JobKind {
         Self::FeederGap,
         Self::FeederBarrier,
         Self::ImportPublish,
+        Self::Inspect,
     ];
 
     pub(crate) fn label(self) -> &'static str {
@@ -208,14 +210,20 @@ impl JobKind {
             Self::FeederGap => "feeder_gap",
             Self::FeederBarrier => "feeder_barrier",
             Self::ImportPublish => "import_publish",
+            Self::Inspect => "inspect",
         }
     }
 
     /// Whether HTTP can create this job in `mode`; feeder and import
-    /// endpoints answer `mode_conflict` in standalone mode before admission.
-    fn reachable_in(self, mode: ServerMode) -> bool {
-        mode == ServerMode::SourceManaged
-            || matches!(self, Self::Operation | Self::Batch | Self::Stats)
+    /// endpoints answer `mode_conflict` in standalone mode before admission,
+    /// and inspection routes answer `inspection_disabled` before admission
+    /// unless `inspection` is enabled.
+    fn reachable_in(self, mode: ServerMode, inspection: bool) -> bool {
+        match self {
+            Self::Inspect => inspection,
+            Self::Operation | Self::Batch | Self::Stats => true,
+            _ => mode == ServerMode::SourceManaged,
+        }
     }
 }
 
@@ -704,7 +712,7 @@ pub(crate) struct ServiceTelemetry {
 }
 
 impl ServiceTelemetry {
-    pub(crate) fn new(mode: ServerMode, lifecycle: bool) -> Arc<Self> {
+    pub(crate) fn new(mode: ServerMode, lifecycle: bool, inspection: bool) -> Arc<Self> {
         let rejected_family = Family::<OutcomeLabels, Counter>::default();
         let uncertain_family = Family::<OutcomeLabels, Counter>::default();
         let rejected = Rejection::ALL.map(|reason| {
@@ -721,7 +729,7 @@ impl ServiceTelemetry {
         let lock_wait_family: PhaseFamily = Family::new_with_constructor(job_phase_histogram);
         let execution_family: PhaseFamily = Family::new_with_constructor(job_phase_histogram);
         let phases = JobKind::ALL.map(|kind| {
-            kind.reachable_in(mode).then(|| {
+            kind.reachable_in(mode, inspection).then(|| {
                 let labels = [("kind", kind.label())];
                 PhaseHistograms {
                     queue: queue_family.get_or_create(&labels).clone(),

@@ -198,7 +198,7 @@ durable state. "Replacement" means publication of a new generation by import.
 | `requests_outcome_uncertain_total` | counter | How often may a state change have happened without its caller learning the result? | One per **observation**, not per distinct request (section 8): a caller stopped waiting for an admitted state-changing job (`request_timeout`, `cancelled`), or such a job's worker panicked (`worker_panic`). One request can contribute a caller observation and later a `worker_panic`. `http_requests_total{status_class="cancelled"}` is unchanged and counts every dropped request, including probes and reads. | `cause` ∈ {`request_timeout`, `cancelled`, `worker_panic`} | continues | **implemented** | E |
 | `graph_jobs_outstanding` | gauge, jobs | How deep is the backlog? | `Lifecycle::outstanding_jobs` read at scrape: queued plus running, including import, and including jobs whose caller timed out or was cancelled. Not bounded by `max_pending_jobs`: an import can add one, and a finishing worker releases its admission permit just before its `JobGuard` (drop order in `Service::run` and `execute_feeder_worker`), so a newly admitted job can briefly be counted alongside it. Do not alert on `outstanding / capacity > 1`. | none | unaffected | **implemented** | E |
 | `graph_job_capacity` | gauge, jobs | What is the admission limit? | Graph-job admission permit limit (`max_pending_jobs`), constant after startup. Not a bound on `graph_jobs_outstanding`: imports and worker teardown can make outstanding jobs exceed it (see that row). | none | constant | **implemented** | E |
-| `graph_job_queue_seconds`, `graph_lock_wait_seconds`, `graph_job_execution_seconds` | histograms, s | Is latency queueing, contention or work? | Section 2 split, recorded inside the worker closure, so it is observed even when the caller has gone. Exact boundaries in section 11. | `kind` ∈ {`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`, `feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`} | continues | **implemented** | E |
+| `graph_job_queue_seconds`, `graph_lock_wait_seconds`, `graph_job_execution_seconds` | histograms, s | Is latency queueing, contention or work? | Section 2 split, recorded inside the worker closure, so it is observed even when the caller has gone. Exact boundaries in section 11. | `kind` ∈ {`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`, `feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`, `inspect`} | continues | **implemented** | E |
 | `graph_operations_total` | counter | What mix of operations runs, and how many change the graph? | One per executed operation (section 3), counted by the worker when `GraphState::apply` returns, under the graph lock (section 12). Feeder events and imports are never counted here. | `op` ∈ {`add_node`, `link`, `cut`, `connected`, and with lifecycle support `set_node_active`, `set_edge_enabled`, `remove_node`, `node_state`, `edge_state`}; `outcome` ∈ {`changed`, `unchanged`, `error`} for mutations, {`true`, `false`, `error`} for `connected`, {`registered`, `unregistered`, `error`} for `node_state` and `edge_state` (section 19) | continues | **implemented** | E |
 | `graph_nodes`, `graph_edges` | gauges | How big is the graph? | Published by the worker, under the graph lock, when a state-changing job's graph work returns and at import publication; initialized at construction. Retains the last published values; not rolled back by a later worker panic. Read at scrape without the graph lock. Not a coherent pair (section 10). With lifecycle support they are registered counts, whatever the flags (section 19). | none | jump to published import counts | **implemented** | E |
 | `graph_active_nodes`, `graph_enabled_edges`, `graph_effective_edges` | gauges | How much of the registered topology takes part in connectivity? | Registered nodes whose flag is active; registered edges whose flag is enabled; edges in the effective graph (enabled, both endpoints active). Published together with `graph_nodes` and `graph_edges` at the same boundaries; same failure and coherence rules. Lifecycle support only (section 19). | none | jump to published import counts | **implemented** | E |
@@ -359,8 +359,10 @@ metrics therefore see `shutting_down` and `request_timeout` responses.
 - `route`: the matched router template — `/health`, `/ready`, `/metrics`,
   `/v1/info`, `/v1/stats`, `/v1/operations`, `/v1/batch`,
   `/v1/feeder/session`, `/v1/feeder/heartbeat`, `/v1/feeder/import`,
-  `/v1/feeder/events`, `/v1/feeder/gap`, `/v1/feeder/barrier` — or
-  `unmatched` (14 values). A known path with an unsupported method (`405`)
+  `/v1/feeder/events`, `/v1/feeder/gap`, `/v1/feeder/barrier`, `/v1/nodes`,
+  `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges` — or
+  `unmatched` (18 values; the four inspection templates were added by
+  section 20). Node IDs never appear in the label: the template is used. A known path with an unsupported method (`405`)
   keeps its template.
 - `method`: `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `CONNECT`, `OPTIONS`,
   `TRACE`, `PATCH`, or `other` for any extension method (10 values).
@@ -646,6 +648,7 @@ creates the job (`metrics::JobKind`), never by request content:
 | `feeder_session`, `feeder_heartbeat` | `POST /v1/feeder/session`, `/heartbeat` | `Service::run` |
 | `feeder_events`, `feeder_gap`, `feeder_barrier` | `POST /v1/feeder/events`, `/gap`, `/barrier` | `Service::execute_feeder_worker` |
 | `import_publish` | `POST /v1/feeder/import` | `Service::import`, publication lock only |
+| `inspect` | `GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges` | `Service::run_read`, shared lock (section 20) |
 
 Series exist only for kinds reachable in the configured mode. In standalone
 mode the feeder and import endpoints refuse with `mode_conflict` before
@@ -1594,3 +1597,38 @@ operation outcomes at their expected values and that no identifier appears as
 a label value.
 
 **Overhead.** Not qualified. Section 6 applies unchanged.
+
+## 20. Inspection routes (console data browser; implemented, unreleased)
+
+The read-only inspection routes (`docs/http-api.md`, "Inspection (opt-in)")
+add no new metric family. They extend two existing label sets:
+
+- `route` gains `/v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges` and
+  `/v1/edges` (18 values instead of 14). The routes are always registered,
+  answering 409 `inspection_disabled` when `KNOTREL_INSPECTION` is off, so the
+  bound grows whether or not inspection is enabled: `http_requests_total` by
+  4 × 10 × 7 = 280 and `http_request_duration_seconds` by 4 × 18 = 72.
+- `kind="inspect"` is added to the three job-phase histograms (section 11)
+  only when inspection is enabled, because the routes are refused before
+  admission otherwise: 3 × 17 = 51 series.
+
+The calculated maximum becomes:
+
+| Lifecycle support | Inspection | Standalone | Source-managed |
+| --- | --- | --- | --- |
+| off | off | 1766 (1414 + 352) | 2187 (1835 + 352) |
+| off | on | 1817 | 2238 |
+| on | off | 1784 (1432 + 352) | 2196 (1844 + 352) |
+| on | on | 1835 | 2247 |
+
+Actual counts stay far below the bound, because most route and method
+combinations can only produce `405`. The series-count qualification
+(section 18) predates this change.
+
+**Tests.** `tests/inspection.rs` covers the routes. The `kind` label values are
+pinned by the unit tests of `metrics::JobKind`, and the route templates by
+`api::Route`.
+
+**Overhead.** Not qualified. The page cost and its interference with
+concurrent work are measured in
+[console inspection costs](console-inspection-costs.md).
