@@ -209,7 +209,11 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: "0"
         # Not a dot-directory: upload-artifact skips hidden paths by default.
-        run: npm run archive -- --out archive-digest --revision "$GITHUB_SHA"
+        run: |
+          npm run archive -- --out archive-digest --revision "$GITHUB_SHA"
+          # Per-file checksums in the log make a cross-platform difference easy to locate.
+          v="$(node -p 'require("./package.json").version')"
+          tar -xzOf "archive-digest/knotrel-console-$v.tar.gz" "knotrel-console-$v/SHA256SUMS"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archive-digest-${{ matrix.os }}
