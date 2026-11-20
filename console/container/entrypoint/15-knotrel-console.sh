@@ -8,11 +8,11 @@ fail() {
     exit 1
 }
 
-: "${KNOTREL_UPSTREAM:?knotrel-console: set KNOTREL_UPSTREAM to the Knotrel server base URL, e.g. http://knotrel:8080}"
+: "${KNOTREL_UPSTREAM:?knotrel-console: set KNOTREL_UPSTREAM to the Knotrel server base URL (see docs/console.md)}"
 # http(s)://host[:port][/path] with no credentials, query, fragment, spaces or
 # trailing slash. The value is fixed for the container's lifetime.
 printf '%s' "$KNOTREL_UPSTREAM" | grep -Eq '^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*$' ||
-    fail "KNOTREL_UPSTREAM must look like http://host:port[/path] without credentials, query or trailing slash"
+    fail "KNOTREL_UPSTREAM must be scheme://host[:port][/path] with scheme http or https, and no credentials, query or trailing slash"
 
 printf '%s' "$KNOTREL_CONSOLE_SERVER_NAMES" | grep -Eq '^[][A-Za-z0-9.:_* -]+$' ||
     fail "KNOTREL_CONSOLE_SERVER_NAMES must be space-separated host names"
