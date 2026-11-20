@@ -13,9 +13,12 @@ a web server or gateway you already operate.
 ## Requirements
 
 1. Serve `html/` and, **on the same origin**, forward these requests to one
-   Knotrel server (strip the `/api` prefix):
-   `GET /api/health`, `GET /api/ready`, `GET /api/v1/info`, `GET /api/v1/stats`,
-   `POST /api/v1/operations`. Forward nothing else.
+   Knotrel server (strip the `/api` prefix): `GET /api/health`,
+   `GET /api/ready`, `GET /api/v1/info`, `GET /api/v1/stats`,
+   `POST /api/v1/operations`, `POST /api/v1/batch`, `GET /api/metrics`,
+   `GET /api/v1/nodes`, `GET /api/v1/nodes/{id}`,
+   `GET /api/v1/nodes/{id}/edges` and `GET /api/v1/edges`. Forward nothing else:
+   feeder routes stay private.
 2. Provide TLS and access control at the gateway. The console adds no
    authentication and the Knotrel API has none.
 3. Do not let browsers choose the upstream: it is fixed by your configuration.

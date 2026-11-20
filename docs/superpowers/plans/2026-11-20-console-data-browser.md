@@ -1,7 +1,8 @@
 # Console data browser — plan and inspection API design
 
-**Status (2026-11-20):** in progress on `feature/console-data-browser`
-(stacked on the Operational Console branch, PR #60). Not released.
+**Status (2026-11-20):** implemented and locally validated on
+`feature/console-data-browser` (stacked on the Operational Console branch, PR
+#60). External CI pending. Not released.
 
 ## Goal
 

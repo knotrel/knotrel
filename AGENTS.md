@@ -41,9 +41,16 @@
 - Use only existing HTTP endpoints. Report a missing capability instead of
   adding a server endpoint for the console.
 - The container gateway forwards only `GET /health`, `GET /ready`,
-  `GET /v1/info`, `GET /v1/stats` and `POST /v1/operations`. Changing that
-  list, the `Host`/`Origin` checks or the upstream configuration is a security
-  change: update `docs/console.md` and `console/scripts/smoke-container.sh`.
+  `GET /v1/info`, `GET /v1/stats`, `POST /v1/operations`, `POST /v1/batch`,
+  `GET /metrics` and the read-only inspection routes (`GET /v1/nodes`,
+  `/v1/nodes/{id}`, `/v1/nodes/{id}/edges`, `/v1/edges`). Feeder routes are never
+  forwarded. Changing that list, the `Host`/`Origin` checks or the upstream
+  configuration is a security change: update `docs/console.md`,
+  `console/deploy/nginx-gateway.conf` and `console/scripts/smoke-container.sh`.
+- Inspection routes must stay read-only, bounded per page (scan budget) and
+  free of graph-proportional work per request. A change to their cost or to the
+  node index updates `docs/console-inspection-costs.md` with a new measurement
+  against criteria declared beforehand.
 - Verify in `console/`: `npm run check` (formatting, ESLint, TypeScript,
   OpenAPI drift, unit tests with at least 80% statements, branches, functions
   and lines, production build), `npm run test:e2e` against a freshly built

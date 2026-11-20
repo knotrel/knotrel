@@ -7,7 +7,12 @@ test.describe('accessibility and keyboard use', () => {
   let ui: { url: string; close: () => Promise<void> };
 
   test.beforeAll(async () => {
-    server = await KnotrelServer.start({ KNOTREL_TOPOLOGY_LIFECYCLE: 'true' });
+    server = await KnotrelServer.start({
+      KNOTREL_TOPOLOGY_LIFECYCLE: 'true',
+      KNOTREL_INSPECTION: 'true',
+      KNOTREL_METRICS_ENABLED: 'true',
+    });
+    await server.call('POST', '/v1/operations', { op: 'link', source: '4', target: '5' });
     ui = await startConsole(server.url);
   });
   test.afterAll(async () => {
@@ -15,9 +20,9 @@ test.describe('accessibility and keyboard use', () => {
     await server?.stop();
   });
 
-  for (const page of ['overview', 'queries', 'sync', 'operations']) {
+  for (const page of ['overview', 'browser?node=4', 'workbench', 'performance']) {
     test(`${page} has no serious or critical axe violations`, async ({ page: browser }) => {
-      await browser.goto(`${ui.url}#${page}`);
+      await browser.goto(`${ui.url}#/${page}`);
       await expect(browser.getByRole('status').getByText('Connected')).toBeVisible();
       const results = await new AxeBuilder({ page: browser })
         .withTags(['wcag2a', 'wcag2aa'])
@@ -29,37 +34,47 @@ test.describe('accessibility and keyboard use', () => {
     });
   }
 
-  test('tabs, queries and confirmations work with the keyboard only', async ({ page }) => {
+  test('tabs, lists, queries and confirmations work with the keyboard only', async ({ page }) => {
     await page.goto(ui.url);
     await expect(page.getByRole('status').getByText('Connected')).toBeVisible();
     await page.getByRole('tab', { name: 'Overview' }).focus();
     await page.keyboard.press('ArrowRight');
-    await expect(page.getByRole('tab', { name: 'Graph/Queries' })).toBeFocused();
-    await expect(page.getByRole('tab', { name: 'Graph/Queries' })).toHaveAttribute(
+    await expect(page.getByRole('tab', { name: 'Browser' })).toBeFocused();
+    await expect(page.getByRole('tab', { name: 'Browser' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
 
-    await server.call('POST', '/v1/operations', { op: 'link', source: '4', target: '5' });
-    const card = page.getByRole('region', { name: 'Connectivity' });
-    await card.getByLabel('Source').focus();
-    await page.keyboard.type('4');
-    await page.keyboard.press('Tab');
-    await expect(card.getByLabel('Target')).toBeFocused();
-    await page.keyboard.type('5');
+    // List navigation with arrow keys, open with Enter.
+    const first = page.locator('.browser-list').getByRole('button', { name: '4', exact: true });
+    await first.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(
+      page.locator('.browser-list').getByRole('button', { name: '5', exact: true }),
+    ).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect(card.locator('.answer')).toHaveText(/Connected/);
+    const pane = page.getByRole('region', { name: 'Node 5' });
+    await expect(pane).toBeVisible();
 
-    await page.getByRole('tab', { name: 'Graph/Queries' }).focus();
-    await page.keyboard.press('End');
-    await expect(page.getByRole('tab', { name: 'Operations' })).toBeFocused();
-    await page.getByRole('region', { name: 'Node' }).getByLabel('Node ID').fill('5');
-    await page.getByRole('button', { name: 'Remove permanently…' }).focus();
+    // Confirmation dialog: focus moves in, Escape cancels and restores focus.
+    await pane.getByRole('button', { name: 'Remove permanently…' }).focus();
     await page.keyboard.press('Enter');
     const dialog = page.getByRole('alertdialog');
     await expect(dialog.getByRole('textbox')).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Remove permanently…' })).toBeFocused();
+    await expect(pane.getByRole('button', { name: 'Remove permanently…' })).toBeFocused();
+
+    // Workbench query by keyboard.
+    await page.getByRole('tab', { name: 'Browser' }).focus();
+    await page.keyboard.press('ArrowRight');
+    const query = page.getByRole('region', { name: 'Query' });
+    await query.getByLabel('Source').focus();
+    await page.keyboard.type('4');
+    await page.keyboard.press('Tab');
+    await expect(query.getByLabel('Target')).toBeFocused();
+    await page.keyboard.type('5');
+    await page.keyboard.press('Enter');
+    await expect(query.locator('.answer')).toHaveText(/Connected/);
   });
 });
