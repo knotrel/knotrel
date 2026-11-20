@@ -44,19 +44,19 @@ the server is reachable only from the console container. Graph data lives in
 memory and is lost when the server stops.
 
 `seed-demo.sh` sends two `POST /v1/batch` requests through the console:
-170 nodes (a chain, a ring, a hub with 150 spokes, two huge exact IDs,
+173 nodes (a chain, a ring, a hub with 150 spokes, five 20-digit or huge IDs,
 isolated nodes), one disabled edge (2–3) and two inactive nodes (42, 105).
 Running it again is harmless. Pass another base URL to seed a different
 server, for example `console/scripts/seed-demo.sh http://127.0.0.1:7379`.
 
 A first tour once the demo network is loaded:
 
-1. **Browser**: page through nodes; filter `inactive` (42, 105); look up
-   `18446744073709551615`; open hub `100` and page its incident edges.
-2. Open edge 2–3 (disabled, not effective), press **Check connectivity from
-   here…** on node 2 and query target `3`: not connected.
-3. Back in the Browser, **Enable** edge 2–3 and run the query again:
-   connected.
+1. **Browser**: page through nodes; set **State** to Inactive (42, 105); go to
+   `18446744073709551615`; open hub `100` and page through its 150 neighbors.
+   Drag the divider to resize the detail pane.
+2. Open node 2: edge 2–3 is disabled. In **Connectivity**, check target `3`:
+   not connected.
+3. Press **Enable** on neighbor 3 and check again: connected.
 4. **Workbench**: send a batch with a deliberate error and look at the
    per-operation results, the raw view and **Copy as curl**.
 5. **Performance** fills in after a few seconds; **Overview** should report
@@ -147,7 +147,7 @@ UI (Overview → Liveness and readiness).
 | ------------------------------ | --------------------------- | -------------------------------------------------------------------------------------------- |
 | `KNOTREL_UPSTREAM`             | required                    | Server base URL, e.g. `http://knotrel:8080`. Fixed at startup; the browser cannot change it. |
 | `KNOTREL_CONSOLE_SERVER_NAMES` | `localhost 127.0.0.1 [::1]` | Host names the console answers to. Add your DNS name when a gateway forwards to it.          |
-| `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL            | Text shown as "Server address" in the UI.                                                    |
+| `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL            | Server name shown in the connection indicator (display only).                                |
 | `KNOTREL_UPSTREAM_TIMEOUT`     | `35s`                       | Upstream timeout.                                                                            |
 
 The container listens on port 8080 as an unprivileged user and supports a

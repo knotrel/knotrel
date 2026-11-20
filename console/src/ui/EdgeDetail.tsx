@@ -10,7 +10,9 @@ import type { MutationVerdict } from '../domain/outcomes';
 import type { QueryPreset } from './presets';
 import { Exact, FailureView, StatusBadge, Time } from './components';
 import { runMutation, type RecordHistory } from './mutation';
+import { STATE_DEFINITIONS } from './NodeDetail';
 import { VerdictView } from './results';
+import { IconButton, InfoTip, Menu, StateDot } from './widgets';
 
 interface Props {
   api: ConsoleApi;
@@ -19,6 +21,7 @@ interface Props {
   capabilities: Capabilities;
   onSelectNode: (node: string) => void;
   onQuery: (preset: QueryPreset) => void;
+  onClose: () => void;
   record: RecordHistory;
   onMutated: () => void;
 }
@@ -32,18 +35,18 @@ interface EdgeFacts {
 }
 
 function endpointLabel(result: Result<InspectedNode>): {
-  severity: 'ok' | 'warning' | 'unknown';
+  tone: 'ok' | 'warning' | 'muted';
   text: string;
 } {
   if (result.ok) {
     return result.value.active
-      ? { severity: 'ok', text: 'active' }
-      : { severity: 'warning', text: 'inactive' };
+      ? { tone: 'ok', text: 'Active' }
+      : { tone: 'warning', text: 'Inactive' };
   }
   if (result.failure.kind === 'server-error' && result.failure.error.code === 'unknown_node') {
-    return { severity: 'unknown', text: 'not registered' };
+    return { tone: 'muted', text: 'Not registered' };
   }
-  return { severity: 'unknown', text: 'unknown' };
+  return { tone: 'muted', text: 'Unknown' };
 }
 
 /** The edge detail pane. */
@@ -88,164 +91,154 @@ export function EdgeDetail(props: Props) {
   const removed = edge !== undefined && !edge.registered;
   const cut = verdict?.verdict.kind === 'effective' && verdict.text.startsWith('Cut');
 
+  const gone = removed || (!lifecycle && cut);
+  const menu =
+    capabilities.canMutate && !gone
+      ? [{ id: 'cut', label: 'Cut edge', danger: true, disabled: busy }]
+      : [];
+
   return (
-    <section className="card detail" aria-label={`Edge ${source} – ${target}`}>
+    <section className="detail" aria-label={`Edge ${source} – ${target}`}>
       <div className="detail-head">
-        <h2>
-          Edge <Exact value={source} /> – <Exact value={target} />
-        </h2>
-        <button type="button" onClick={() => void load()}>
-          Re-read
-        </button>
+        <span className="kicker">Edge</span>
+        <div className="detail-tools">
+          <IconButton icon="reload" label="Re-read" onClick={() => void load()} />
+          {menu.length > 0 && (
+            <Menu
+              label="More edge actions"
+              items={menu}
+              onSelect={() =>
+                void mutate({ op: 'cut', source, target }, `Cut ${source} – ${target}`)
+              }
+            />
+          )}
+          <IconButton icon="close" label="Close detail" onClick={props.onClose} />
+        </div>
       </div>
-      {facts && (
-        <p className="source">
-          Read at <Time date={facts.readAt} />.
-        </p>
-      )}
-      {verdict && (
-        <div className="result" aria-live="polite">
-          <h3>{verdict.text}</h3>
-          <VerdictView verdict={verdict.verdict} />
+      <div className="detail-identity">
+        <h2>
+          <Exact value={source} /> – <Exact value={target} />
+        </h2>
+        {!facts ? (
+          <span role="status">
+            <StatusBadge severity="progress" label="Loading" />
+          </span>
+        ) : gone ? (
+          <StatusBadge severity="unknown" label="Not registered" />
+        ) : (
+          <div className="identity-facts">
+            {lifecycle ? (
+              edge ? (
+                <>
+                  {edge.enabled ? (
+                    <StateDot tone="ok">Enabled</StateDot>
+                  ) : (
+                    <StateDot tone="warning">Disabled</StateDot>
+                  )}
+                  {edge.effective ? (
+                    <StateDot tone="ok">Effective</StateDot>
+                  ) : (
+                    <StateDot tone="warning">Not effective</StateDot>
+                  )}
+                </>
+              ) : null
+            ) : (
+              <StateDot tone="ok">Effective</StateDot>
+            )}
+            <InfoTip label="About node and edge states">
+              {STATE_DEFINITIONS}
+              {!lifecycle && ' Without lifecycle support every existing edge is effective.'}
+            </InfoTip>
+          </div>
+        )}
+      </div>
+      {state && !state.ok && (
+        <div className="detail-section">
+          <FailureView failure={state.failure} />
         </div>
       )}
-      {!facts ? (
-        <p role="status">
-          <StatusBadge severity="progress" label="Loading" />
-        </p>
-      ) : (
-        <>
-          {removed || (!lifecycle && cut) ? (
-            <p>
-              <StatusBadge severity="unknown" label="Not registered" /> This edge does not exist
-              {verdict ? ' any more' : ''}.
-            </p>
-          ) : (
-            <dl className="flags">
-              <div className="field">
-                <dt>Enabled (desired state)</dt>
-                <dd>
-                  {lifecycle ? (
-                    edge ? (
-                      edge.enabled ? (
-                        <StatusBadge severity="ok" label="Enabled" />
-                      ) : (
-                        <StatusBadge severity="warning" label="Disabled" />
-                      )
-                    ) : state && !state.ok ? (
-                      <FailureView failure={state.failure} />
-                    ) : null
-                  ) : (
-                    <span className="note">Always enabled without lifecycle support.</span>
-                  )}
-                </dd>
-              </div>
-              <div className="field">
-                <dt>Effective</dt>
-                <dd>
-                  {lifecycle ? (
-                    edge?.effective ? (
-                      <StatusBadge severity="ok" label="Effective: carries connectivity" />
-                    ) : (
-                      <StatusBadge severity="warning" label="Not effective" />
-                    )
-                  ) : (
-                    <span className="note">
-                      Effective whenever it exists (no lifecycle support).
-                    </span>
-                  )}
-                </dd>
-              </div>
-            </dl>
-          )}
-          <p className="note">
-            An edge is effective when it is enabled and both endpoints are active.
-          </p>
-          <table className="list">
-            <caption className="visually-hidden">Endpoints</caption>
-            <thead>
-              <tr>
-                <th scope="col">Endpoint</th>
-                <th scope="col">State</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                [source, facts.sourceNode],
-                [target, facts.targetNode],
-              ].map(([id, result]) => {
-                const label = endpointLabel(result as Result<InspectedNode>);
-                return (
-                  <tr key={id as string}>
-                    <td>
-                      <button
-                        type="button"
-                        className="link"
-                        onClick={() => props.onSelectNode(id as string)}
-                      >
-                        <Exact value={id as string} />
-                      </button>
-                    </td>
-                    <td>
-                      <StatusBadge severity={label.severity} label={label.text} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <div className="actions-row">
+      {gone && (
+        <p className="detail-section">This edge does not exist{verdict ? ' any more' : ''}.</p>
+      )}
+
+      {facts && capabilities.canMutate && (
+        <div className="detail-actions">
+          {lifecycle && edge?.registered && (
             <button
               type="button"
-              onClick={() => props.onQuery({ op: 'connected', a: source, b: target })}
+              disabled={busy}
+              onClick={() =>
+                void mutate(
+                  { op: 'set_edge_enabled', source, target, enabled: !edge.enabled },
+                  `${edge.enabled ? 'Disable' : 'Enable'} edge ${source} – ${target}`,
+                )
+              }
             >
-              Check connectivity in Workbench
+              {edge.enabled ? 'Disable' : 'Enable'}
             </button>
-          </div>
-          <h3>Operations</h3>
-          {!capabilities.canMutate ? (
-            <p className="note">{capabilities.mutationBlockedReason}</p>
-          ) : (
-            <div className="actions-row">
-              {lifecycle && edge?.registered && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    void mutate(
-                      { op: 'set_edge_enabled', source, target, enabled: !edge.enabled },
-                      `${edge.enabled ? 'Disable' : 'Enable'} edge ${source} – ${target}`,
-                    )
-                  }
-                >
-                  {edge.enabled ? 'Disable' : 'Enable'}
-                </button>
-              )}
-              {!removed && !(cut && !lifecycle) && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    void mutate({ op: 'cut', source, target }, `Cut ${source} – ${target}`)
-                  }
-                >
-                  Cut
-                </button>
-              )}
-              {(removed || (cut && !lifecycle)) && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    void mutate({ op: 'link', source, target }, `Link ${source} – ${target}`)
-                  }
-                >
-                  Link again
-                </button>
-              )}
-            </div>
           )}
-        </>
+          {gone && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void mutate({ op: 'link', source, target }, `Link ${source} – ${target}`)
+              }
+            >
+              Link again
+            </button>
+          )}
+        </div>
+      )}
+      {facts && !capabilities.canMutate && (
+        <p className="detail-section note">{capabilities.mutationBlockedReason}</p>
+      )}
+      {verdict && (
+        <div className="detail-section result-line" aria-live="polite">
+          <strong>{verdict.text}</strong>
+          <VerdictView verdict={verdict.verdict} />
+          <IconButton icon="close" label="Dismiss" onClick={() => setVerdict(undefined)} />
+        </div>
+      )}
+
+      {facts && (
+        <section className="detail-section" aria-labelledby={`ep-${source}-${target}`}>
+          <div className="section-head">
+            <h3 id={`ep-${source}-${target}`}>Endpoints</h3>
+          </div>
+          <ul className="neighbors" aria-label="Endpoints">
+            {[
+              [source, facts.sourceNode],
+              [target, facts.targetNode],
+            ].map(([id, result]) => {
+              const label = endpointLabel(result as Result<InspectedNode>);
+              return (
+                <li key={id as string}>
+                  <button
+                    type="button"
+                    className="link neighbor"
+                    onClick={() => props.onSelectNode(id as string)}
+                  >
+                    <Exact value={id as string} />
+                  </button>
+                  <StateDot tone={label.tone}>{label.text}</StateDot>
+                </li>
+              );
+            })}
+          </ul>
+          <button
+            type="button"
+            className="link small"
+            onClick={() => props.onQuery({ op: 'connected', a: source, b: target })}
+          >
+            Check connectivity in Workbench
+          </button>
+        </section>
+      )}
+      {facts && (
+        <p className="detail-foot note">
+          Read <Time date={facts.readAt} />.
+        </p>
       )}
     </section>
   );

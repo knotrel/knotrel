@@ -34,6 +34,8 @@ services:
     image: knotrel-console:local
     environment:
       KNOTREL_UPSTREAM: http://knotrel:8080
+      # Name shown in the console's connection indicator (display only).
+      KNOTREL_CONSOLE_SERVER_LABEL: local-demo (knotrel:8080)
     ports:
       - '127.0.0.1:7380:8080'
     depends_on:

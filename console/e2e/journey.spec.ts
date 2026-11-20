@@ -35,24 +35,23 @@ test.describe('operator journey on a standalone server with lifecycle and inspec
     // 1. Discover nodes without knowing their IDs; exact u64 values.
     await expect(list.getByRole('button', { name: MAX })).toBeVisible();
     await expect(list.getByRole('button', { name: BEYOND_JS })).toBeVisible();
-    await expect(list.getByText(/5 nodes loaded/)).toBeVisible();
+    await expect(list.getByText(/^5 (of 5 )?loaded$/)).toBeVisible();
 
-    // 2. Find by exact ID and inspect incident edges.
-    await page.getByLabel('Find node by exact ID').fill(MAX);
-    await page.getByRole('button', { name: 'Open', exact: true }).click();
+    // 2. Go to a node by exact ID and inspect its neighbors.
+    await page.getByLabel('Go to node ID').fill(MAX);
+    await page.getByLabel('Go to node ID').press('Enter');
     const maxPane = page.getByRole('region', { name: `Node ${MAX}` });
-    await expect(maxPane.getByText('Registered degree')).toBeVisible();
-    await expect(maxPane.getByRole('button', { name: BEYOND_JS })).toBeVisible();
+    await expect(maxPane.getByText('degree 2')).toBeVisible();
+    await expect(maxPane.getByRole('button', { name: BEYOND_JS, exact: true })).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`node=${MAX}`));
 
     // Navigate node -> neighbor -> edge -> endpoint.
     await maxPane.getByRole('button', { name: '3', exact: true }).click();
     const pane3 = page.getByRole('region', { name: 'Node 3' });
-    await expect(pane3.getByText('not effective: disabled')).toBeVisible();
-    await pane3
-      .getByRole('row', { name: /^2 / })
-      .getByRole('button', { name: 'Open edge' })
-      .click();
+    const neighbors3 = pane3.getByRole('list', { name: 'Neighbors of node 3' });
+    await expect(neighbors3.getByText('Disabled')).toBeVisible();
+    await pane3.getByRole('button', { name: 'Actions for edge 3 – 2' }).click();
+    await page.getByRole('menuitem', { name: 'Open edge' }).click();
     const edge = page.getByRole('region', { name: 'Edge 3 – 2' });
     await expect(edge.getByText('Disabled')).toBeVisible();
     await expect(edge.getByText('Not effective')).toBeVisible();
@@ -60,36 +59,47 @@ test.describe('operator journey on a standalone server with lifecycle and inspec
     const pane2 = page.getByRole('region', { name: 'Node 2' });
     await expect(pane2).toBeVisible();
 
-    // 3. Query from the selection in the Workbench.
-    await pane2.getByRole('button', { name: 'Check connectivity from here…' }).click();
+    // 3. Query connectivity from the selection, without leaving the browser.
+    await pane2.getByLabel('Target node').fill(MAX);
+    await pane2.getByRole('button', { name: 'Check' }).click();
+    await expect(pane2.getByText(/^Not connected to/)).toBeVisible();
+    await expect(pane2.getByText(/round trip/)).toBeVisible();
+
+    // The same query in the Workbench; the selection survives navigation.
+    await pane2.getByRole('button', { name: 'Open in Workbench' }).click();
     await expect(page.getByRole('tab', { name: 'Workbench' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
     const query = page.getByRole('region', { name: 'Query' });
     await expect(query.getByLabel('Source')).toHaveValue('2');
-    await query.getByLabel('Target').fill(MAX);
+    await expect(query.getByLabel('Target')).toHaveValue(MAX);
     await query.getByRole('button', { name: 'Run query' }).click();
     await expect(query.locator('.answer')).toHaveText(/Not connected/);
     await expect(query.getByText(/Browser round trip/)).toBeVisible();
-
-    // Back to the browser: the selection survived navigation.
     await page.getByRole('tab', { name: 'Browser' }).click();
     await expect(page.getByRole('region', { name: 'Node 2' })).toBeVisible();
 
     // 4. Apply an allowed operation on the selection: enable edge 2–3.
-    await pane2.getByRole('row', { name: /^3 / }).getByRole('button', { name: 'Enable' }).click();
+    const neighbors2 = pane2.getByRole('list', { name: 'Neighbors of node 2' });
+    await neighbors2
+      .getByRole('listitem')
+      .filter({ hasText: 'Disabled' })
+      .getByRole('button', { name: 'Enable' })
+      .click();
     await expect(pane2.getByText('Enable edge 2 – 3')).toBeVisible();
-    await expect(pane2.getByText('Effective', { exact: true }).first()).toBeVisible();
 
     // 5. Verify: the detail was re-read, the server agrees, and the query flips.
-    await expect(pane2.getByRole('row', { name: /^3 / }).getByText('effective')).toBeVisible();
+    await expect(neighbors2.getByText('Disabled')).toHaveCount(0);
+    await expect(neighbors2.getByText('Effective')).toHaveCount(2);
     const state = await server.call('POST', '/v1/operations', {
       op: 'edge_state',
       source: '2',
       target: '3',
     });
     expect(state.json).toMatchObject({ enabled: true, effective: true });
+    await pane2.getByRole('button', { name: 'Check' }).click();
+    await expect(pane2.getByText(/^Connected to/)).toBeVisible();
     await page.getByRole('tab', { name: 'Workbench' }).click();
     await query.getByRole('button', { name: 'Run query' }).click();
     await expect(query.locator('.answer')).toHaveText(/^.?\s*Connected/);
@@ -105,19 +115,19 @@ test.describe('operator journey on a standalone server with lifecycle and inspec
     const pane = page.getByRole('region', { name: `Node ${BEYOND_JS}` });
     await pane.getByRole('button', { name: 'Deactivate' }).click();
     await expect(pane.getByText('Inactive', { exact: true })).toBeVisible();
-    await expect(pane.getByText('not effective: this node inactive')).toBeVisible();
+    await expect(pane.getByText('Not effective: this node inactive')).toBeVisible();
     await page
-      .locator('.browser-list')
-      .getByLabel(/Filter/)
+      .locator('.browser-toolbar')
+      .getByLabel('State', { exact: true })
       .selectOption('inactive');
     await expect(
       page.locator('.browser-list').getByRole('button', { name: BEYOND_JS }),
     ).toBeVisible();
     await expect(page).toHaveURL(/state=inactive/);
-    await page.getByRole('button', { name: 'Edges' }).click();
+    await page.getByRole('button', { name: /^Edges/ }).click();
     await page
-      .locator('.browser-list')
-      .getByLabel(/Filter/)
+      .locator('.browser-toolbar')
+      .getByLabel('State', { exact: true })
       .selectOption('ineffective');
     await expect(
       page.locator('.browser-list').getByRole('button', { name: `${BEYOND_JS} – ${MAX}` }),

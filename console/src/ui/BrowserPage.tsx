@@ -1,14 +1,15 @@
 /**
- * Data browser: node and edge lists with cursor paging and state filters,
- * exact ID lookup, and a detail pane for the selection. Filters and the
- * selection live in the URL hash, so views can be shared and survive
+ * Data browser: a compact toolbar, a node or edge table that fills the
+ * available height, and a resizable detail pane for the selection. Filters and
+ * the selection live in the URL hash, so views can be shared and survive
  * navigation.
  */
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import type { ConsoleApi, EdgeState } from '../api/endpoints';
 import type { GraphStats, InspectedEdge, InspectedNode } from '../api/decode';
 import type { Capabilities } from '../domain/capabilities';
 import { checkNodeId } from '../domain/node-id';
+import type { MutationVerdict } from '../domain/outcomes';
 import {
   appendPage,
   emptyListing,
@@ -19,12 +20,13 @@ import {
   type Listing,
 } from '../state/listing';
 import { Exact, FailureView, NodeIdField, StatusBadge, Time } from './components';
+import { Dialog } from './Dialog';
 import { EdgeDetail } from './EdgeDetail';
 import { runMutation, type RecordHistory } from './mutation';
 import { NodeDetail } from './NodeDetail';
 import type { QueryPreset } from './presets';
 import { VerdictView } from './results';
-import type { MutationVerdict } from '../domain/outcomes';
+import { Icon, IconButton, InfoTip, Splitter, StateDot } from './widgets';
 
 /** Browser parameters kept in the URL hash. */
 export interface BrowserParams {
@@ -50,8 +52,42 @@ type EdgeCursor = { source: string; target: string | null };
 
 const NODE_STATES = ['all', 'active', 'inactive'] as const;
 const EDGE_STATES = ['all', 'enabled', 'disabled', 'effective', 'ineffective'] as const;
+const STATE_LABELS: Record<string, string> = {
+  all: 'All',
+  active: 'Active',
+  inactive: 'Inactive',
+  enabled: 'Enabled',
+  disabled: 'Disabled',
+  effective: 'Effective',
+  ineffective: 'Not effective',
+};
 /** Empty scan-budget pages followed automatically per user action. */
 const AUTO_CONTINUE = 5;
+
+/** Narrowest detail pane, in CSS pixels. */
+export const DETAIL_MIN = 360;
+/** Narrowest list pane, in CSS pixels. */
+export const LIST_MIN = 360;
+/** Initial detail width: the detail gets more room than a three-column table needs. */
+export const DETAIL_DEFAULT = 560;
+const WIDTH_KEY = 'knotrel-console.detail-width';
+
+function loadWidth(): number {
+  try {
+    const stored = Number(window.localStorage.getItem(WIDTH_KEY));
+    return Number.isFinite(stored) && stored >= DETAIL_MIN ? stored : DETAIL_DEFAULT;
+  } catch {
+    return DETAIL_DEFAULT;
+  }
+}
+
+function storeWidth(width: number) {
+  try {
+    window.localStorage.setItem(WIDTH_KEY, String(Math.round(width)));
+  } catch {
+    // A per-browser convenience only.
+  }
+}
 
 interface Props {
   api: ConsoleApi;
@@ -63,61 +99,69 @@ interface Props {
   onQuery: (preset: QueryPreset) => void;
 }
 
-function Counts({ stats, lifecycle }: { stats: GraphStats | undefined; lifecycle: boolean }) {
-  if (!stats) return null;
+/** Dialog that creates one node. */
+function NewNodeDialog({
+  api,
+  record,
+  onClose,
+  onCreated,
+}: {
+  api: ConsoleApi;
+  record: RecordHistory;
+  onClose: () => void;
+  onCreated: (node: string, verdict: MutationVerdict) => void;
+}) {
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [verdict, setVerdict] = useState<MutationVerdict>();
+  const check = checkNodeId(value);
   return (
-    <dl className="counts" aria-label="Graph counts from GET /v1/stats">
-      <div>
-        <dt>Registered nodes</dt>
-        <dd>
-          <Exact value={stats.nodeCount} />
-        </dd>
-      </div>
-      {lifecycle && stats.activeNodeCount !== undefined && (
-        <div>
-          <dt>Active nodes</dt>
-          <dd>
-            <Exact value={stats.activeNodeCount} />
-          </dd>
+    <Dialog title="New node" onClose={onClose}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!check.ok || busy) return;
+          setBusy(true);
+          void runMutation(api, { op: 'add_node', node: value }, record).then((result) => {
+            setBusy(false);
+            if (result.kind === 'effective' || result.kind === 'no-op') {
+              onCreated(value, result);
+            } else {
+              setVerdict(result);
+            }
+          });
+        }}
+      >
+        <NodeIdField label="Node ID" value={value} onChange={setValue} disabled={busy} />
+        {verdict && <VerdictView verdict={verdict} />}
+        <div className="actions">
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="primary" disabled={!check.ok || busy}>
+            {busy ? 'Creating…' : 'Create node'}
+          </button>
         </div>
-      )}
-      <div>
-        <dt>Registered edges</dt>
-        <dd>
-          <Exact value={stats.edgeCount} />
-        </dd>
-      </div>
-      {lifecycle && stats.enabledEdgeCount !== undefined && (
-        <div>
-          <dt>Enabled edges</dt>
-          <dd>
-            <Exact value={stats.enabledEdgeCount} />
-          </dd>
-        </div>
-      )}
-      {lifecycle && stats.effectiveEdgeCount !== undefined && (
-        <div>
-          <dt>Effective edges</dt>
-          <dd>
-            <Exact value={stats.effectiveEdgeCount} />
-          </dd>
-        </div>
-      )}
-    </dl>
+      </form>
+    </Dialog>
   );
 }
 
 /** The data browser page. */
 export function BrowserPage(props: Props) {
-  const { api, capabilities, params, navigate, record } = props;
+  const { api, capabilities, params, navigate, record, stats } = props;
   const [nodes, setNodes] = useState<Listing<InspectedNode, NodeCursor>>(emptyListing);
   const [edges, setEdges] = useState<Listing<InspectedEdge, EdgeCursor>>(emptyListing);
   const [search, setSearch] = useState('');
-  const [newNode, setNewNode] = useState('');
-  const [addVerdict, setAddVerdict] = useState<MutationVerdict>();
+  const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState<{ node: string; verdict: MutationVerdict }>();
   const [outOfDate, setOutOfDate] = useState(false);
+  const [width, setWidth] = useState(loadWidth);
+  const [splitWidth, setSplitWidth] = useState(DETAIL_DEFAULT * 2);
   const request = useRef(0);
   const listRef = useRef<HTMLTableSectionElement>(null);
+  const splitRef = useRef<HTMLDivElement>(null);
+  const filterId = useId();
   const lifecycle = capabilities.lifecycle;
   const view = params.view;
   const stateFilter = lifecycle ? params.state : 'all';
@@ -204,6 +248,18 @@ export function BrowserPage(props: Props) {
     startListing();
   };
 
+  // The split container's width bounds the detail pane.
+  useEffect(() => {
+    const element = splitRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const measured = entries[0]?.contentRect.width;
+      if (measured) setSplitWidth(measured);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   // A new view, filter or capability set starts a new listing.
   useEffect(() => {
     startListing();
@@ -212,6 +268,7 @@ export function BrowserPage(props: Props) {
   const selectNode = (node: string) => navigate({ node, edge: undefined });
   const selectEdge = (source: string, target: string) =>
     navigate({ edge: `${source}-${target}`, node: undefined });
+  const closeDetail = () => navigate({ node: undefined, edge: undefined });
   const edgeSelection = params.edge?.split('-');
 
   const onListKey = (event: KeyboardEvent<HTMLTableSectionElement>) => {
@@ -227,289 +284,355 @@ export function BrowserPage(props: Props) {
     }
   };
 
+  const maxWidth = Math.max(DETAIL_MIN, splitWidth - LIST_MIN);
+  const resize = (next: number) => {
+    const clamped = Math.min(Math.max(next, DETAIL_MIN), maxWidth);
+    setWidth(clamped);
+    storeWidth(clamped);
+  };
+
   const searchCheck = checkNodeId(search);
-  const newCheck = checkNodeId(newNode);
   const listing = view === 'nodes' ? nodes : edges;
   const states = view === 'nodes' ? NODE_STATES : EDGE_STATES;
   const blocked = view === 'nodes' ? !capabilities.browseNodes : !capabilities.browseEdges;
+  const total =
+    stateFilter === 'all' ? (view === 'nodes' ? stats?.nodeCount : stats?.edgeCount) : undefined;
+  // Stats are polled separately and can lag behind the listing.
+  const shownTotal =
+    total !== undefined && BigInt(total) >= BigInt(listing.rows.length) ? total : undefined;
+  const hasDetail = params.node !== undefined || edgeSelection?.length === 2;
 
   return (
     <div className="browser">
-      <div className="browser-list card">
-        <div className="toolbar" role="toolbar" aria-label="Browser controls">
-          <div className="segmented" role="group" aria-label="List">
-            <button
-              type="button"
-              aria-pressed={view === 'nodes'}
-              onClick={() => navigate({ view: 'nodes', state: 'all' })}
-            >
-              Nodes
-            </button>
-            <button
-              type="button"
-              aria-pressed={view === 'edges'}
-              onClick={() => navigate({ view: 'edges', state: 'all' })}
-            >
-              Edges
-            </button>
-          </div>
-          {lifecycle ? (
-            <label className="filter">
-              Filter{' '}
-              <select
-                value={stateFilter}
-                onChange={(event) => navigate({ state: event.target.value })}
-              >
-                {states.map((s) => (
-                  <option key={s} value={s}>
-                    {s === 'ineffective' ? 'not effective' : s}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            <span className="note">
-              No state filters: without lifecycle support every node is active and every edge
-              effective.
-            </span>
-          )}
+      <div className="browser-toolbar" role="toolbar" aria-label="Browser controls">
+        <div className="segmented" role="group" aria-label="List">
           <button
             type="button"
-            onClick={restart}
-            disabled={blocked || listing.status === 'loading'}
+            aria-pressed={view === 'nodes'}
+            onClick={() => navigate({ view: 'nodes', state: 'all' })}
           >
-            Restart listing
+            Nodes {stats && <span className="count">{stats.nodeCount}</span>}
+          </button>
+          <button
+            type="button"
+            aria-pressed={view === 'edges'}
+            onClick={() => navigate({ view: 'edges', state: 'all' })}
+          >
+            Edges {stats && <span className="count">{stats.edgeCount}</span>}
           </button>
         </div>
         <form
-          className="inline-form"
+          className="search"
+          role="search"
           onSubmit={(event) => {
             event.preventDefault();
             if (searchCheck.ok) selectNode(search);
           }}
         >
-          <NodeIdField label="Find node by exact ID" value={search} onChange={setSearch} />
-          <button type="submit" disabled={!searchCheck.ok || !capabilities.browseNodes}>
+          <span className="search-icon">
+            <Icon name="search" />
+          </span>
+          <NodeIdField
+            label="Go to node ID"
+            hideLabel
+            placeholder="Go to node ID…"
+            value={search}
+            onChange={setSearch}
+            disabled={!capabilities.browseNodes}
+          />
+          <button type="submit" className="visually-hidden" tabIndex={-1}>
             Open
           </button>
         </form>
-        {capabilities.canMutate && (
-          <form
-            className="inline-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!newCheck.ok) return;
-              const id = newNode;
-              void runMutation(api, { op: 'add_node', node: id }, record).then((verdict) => {
-                setAddVerdict(verdict);
-                setOutOfDate(true);
-                if (verdict.kind === 'effective' || verdict.kind === 'no-op') selectNode(id);
-              });
-            }}
-          >
-            <NodeIdField label="Create node" value={newNode} onChange={setNewNode} />
-            <button type="submit" disabled={!newCheck.ok}>
-              Add node
-            </button>
-          </form>
+        {lifecycle && (
+          <span className="filter">
+            <label htmlFor={filterId}>State</label>
+            <select
+              id={filterId}
+              value={stateFilter}
+              onChange={(event) => navigate({ state: event.target.value })}
+            >
+              {states.map((s) => (
+                <option key={s} value={s}>
+                  {STATE_LABELS[s]}
+                </option>
+              ))}
+            </select>
+          </span>
         )}
-        {addVerdict && <VerdictView verdict={addVerdict} />}
-        <Counts stats={props.stats} lifecycle={lifecycle} />
+        <div className="toolbar-end">
+          {listing.loadedAt && (
+            <span className="note">
+              Updated <Time date={listing.loadedAt} />
+            </span>
+          )}
+          <IconButton
+            icon="reload"
+            label="Reload list"
+            onClick={restart}
+            disabled={blocked || listing.status === 'loading'}
+          />
+          {capabilities.canMutate && (
+            <button type="button" className="primary" onClick={() => setCreating(true)}>
+              <Icon name="plus" size={14} />
+              New node
+            </button>
+          )}
+        </div>
+      </div>
 
-        {blocked ? (
-          <div className="empty" role="note">
-            <StatusBadge
-              severity="unknown"
-              label={view === 'nodes' ? 'Node list unavailable' : 'Edge list unavailable'}
-            />
-            <p>{capabilities.browseBlockedReason}</p>
-          </div>
-        ) : (
-          <>
-            <p className="source" aria-live="polite">
-              {listing.status === 'loading' && listing.pages === 0
-                ? 'Loading…'
-                : listing.loadedAt && (
-                    <>
-                      {listing.rows.length} {view} loaded ({listing.pages} page
-                      {listing.pages === 1 ? '' : 's'}), last page at{' '}
-                      <Time date={listing.loadedAt} />
-                      {listing.identity?.generation !== undefined && (
-                        <>
-                          , generation <Exact value={listing.identity.generation} />
-                        </>
-                      )}
-                      . Pages are read one at a time and are not a snapshot.
-                    </>
-                  )}
-            </p>
-            {listing.identityChanged && (
-              <div className="banner" role="alert">
-                <StatusBadge severity="warning" label="Graph changed while browsing" /> The server
-                instance or generation changed between pages; this list mixes different graphs.{' '}
-                <button type="button" onClick={restart}>
-                  Restart listing
-                </button>
-              </div>
-            )}
-            {outOfDate && (
-              <p className="note">
-                The graph was changed from this console; the list may be out of date.{' '}
-                <button type="button" onClick={restart}>
-                  Refresh list
-                </button>
-              </p>
-            )}
-            {listing.failure && <FailureView failure={listing.failure} />}
-            {listing.rows.length === 0 && listing.status === 'ready' ? (
-              <div className="empty">
-                <p>
-                  {stateFilter === 'all'
-                    ? view === 'nodes'
-                      ? 'The graph has no nodes.'
-                      : 'The graph has no edges.'
-                    : `No ${view} match the filter “${stateFilter}”.`}
-                </p>
+      {(listing.identityChanged || outOfDate || created) && (
+        <div className="notices">
+          {listing.identityChanged && (
+            <div className="notice warning" role="alert">
+              <StatusBadge severity="warning" label="Graph changed while browsing" />
+              <span>The server instance or generation changed between pages.</span>
+              <button type="button" onClick={restart}>
+                Restart listing
+              </button>
+            </div>
+          )}
+          {outOfDate && !listing.identityChanged && (
+            <div className="notice">
+              <span>The graph was changed from this console; the list may be out of date.</span>
+              <button type="button" onClick={restart}>
+                Refresh list
+              </button>
+            </div>
+          )}
+          {created && (
+            <div className="notice" aria-live="polite">
+              <span>
+                Node <Exact value={created.node} />:
+              </span>
+              <VerdictView verdict={created.verdict} />
+              <IconButton icon="close" label="Dismiss" onClick={() => setCreated(undefined)} />
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="browser-split" ref={splitRef}>
+        <section className="browser-list" aria-label={view === 'nodes' ? 'Nodes' : 'Edges'}>
+          <div className="table-scroll">
+            {blocked ? (
+              <div className="empty" role="note">
+                <StatusBadge
+                  severity="unknown"
+                  label={view === 'nodes' ? 'Node list unavailable' : 'Edge list unavailable'}
+                />
+                <p>{capabilities.browseBlockedReason}</p>
               </div>
             ) : (
-              listing.rows.length > 0 && (
-                <table className="list">
-                  <caption className="visually-hidden">
-                    {view === 'nodes' ? 'Nodes' : 'Edges'}
-                  </caption>
-                  <thead>
-                    {view === 'nodes' ? (
-                      <tr>
-                        <th scope="col">Node</th>
-                        <th scope="col">State</th>
-                        <th scope="col">Degree</th>
-                      </tr>
-                    ) : (
-                      <tr>
-                        <th scope="col">Edge</th>
-                        <th scope="col">Enabled</th>
-                        <th scope="col">Effective</th>
-                      </tr>
-                    )}
-                  </thead>
-                  <tbody ref={listRef} onKeyDown={onListKey}>
-                    {view === 'nodes'
-                      ? nodes.rows.map((row) => (
-                          <tr
-                            key={row.node}
-                            aria-selected={params.node === row.node}
-                            className={params.node === row.node ? 'selected' : undefined}
-                          >
-                            <td>
-                              <button
-                                type="button"
-                                className="row-select link"
+              <>
+                {listing.failure && <FailureView failure={listing.failure} />}
+                {listing.status === 'loading' && listing.pages === 0 && (
+                  <p className="empty-hint" role="status">
+                    Loading…
+                  </p>
+                )}
+                {listing.rows.length === 0 && listing.status === 'ready' ? (
+                  <p className="empty-hint">
+                    {stateFilter === 'all'
+                      ? view === 'nodes'
+                        ? 'The graph has no nodes.'
+                        : 'The graph has no edges.'
+                      : `No ${view} match the filter “${STATE_LABELS[stateFilter] ?? stateFilter}”.`}
+                  </p>
+                ) : (
+                  listing.rows.length > 0 && (
+                    <table className="list grid">
+                      <caption className="visually-hidden">
+                        {view === 'nodes' ? 'Nodes' : 'Edges'}
+                      </caption>
+                      <thead>
+                        {view === 'nodes' ? (
+                          <tr>
+                            <th scope="col">Node ID</th>
+                            {lifecycle && <th scope="col">State</th>}
+                            <th scope="col" className="num">
+                              Degree
+                            </th>
+                          </tr>
+                        ) : (
+                          <tr>
+                            <th scope="col">Edge</th>
+                            <th scope="col">State</th>
+                          </tr>
+                        )}
+                      </thead>
+                      <tbody ref={listRef} onKeyDown={onListKey}>
+                        {view === 'nodes'
+                          ? nodes.rows.map((row) => (
+                              <tr
+                                key={row.node}
+                                aria-selected={params.node === row.node}
+                                className={params.node === row.node ? 'selected' : undefined}
                                 onClick={() => selectNode(row.node)}
                               >
-                                <Exact value={row.node} />
-                              </button>
-                            </td>
-                            <td>
-                              {row.active ? (
-                                'active'
-                              ) : (
-                                <StatusBadge severity="warning" label="inactive" />
-                              )}
-                            </td>
-                            <td>{row.degree ?? '—'}</td>
-                          </tr>
-                        ))
-                      : edges.rows.map((row) => {
-                          const key = `${row.source}-${row.target}`;
-                          return (
-                            <tr
-                              key={key}
-                              aria-selected={params.edge === key}
-                              className={params.edge === key ? 'selected' : undefined}
-                            >
-                              <td>
-                                <button
-                                  type="button"
-                                  className="row-select link"
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="row-select"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      selectNode(row.node);
+                                    }}
+                                  >
+                                    <Exact value={row.node} />
+                                  </button>
+                                </td>
+                                {lifecycle && (
+                                  <td>
+                                    {row.active ? (
+                                      <StateDot tone="ok">Active</StateDot>
+                                    ) : (
+                                      <StateDot tone="warning">Inactive</StateDot>
+                                    )}
+                                  </td>
+                                )}
+                                <td className="num">{row.degree ?? '—'}</td>
+                              </tr>
+                            ))
+                          : edges.rows.map((row) => {
+                              const key = `${row.source}-${row.target}`;
+                              return (
+                                <tr
+                                  key={key}
+                                  aria-selected={params.edge === key}
+                                  className={params.edge === key ? 'selected' : undefined}
                                   onClick={() => selectEdge(row.source, row.target)}
                                 >
-                                  <Exact value={row.source} /> – <Exact value={row.target} />
-                                </button>
-                              </td>
-                              <td>
-                                {row.enabled ? (
-                                  'enabled'
-                                ) : (
-                                  <StatusBadge severity="warning" label="disabled" />
-                                )}
-                              </td>
-                              <td>
-                                {row.effective ? (
-                                  'effective'
-                                ) : (
-                                  <StatusBadge severity="warning" label="not effective" />
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                  </tbody>
-                </table>
-              )
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="row-select"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        selectEdge(row.source, row.target);
+                                      }}
+                                    >
+                                      <Exact value={row.source} /> – <Exact value={row.target} />
+                                    </button>
+                                  </td>
+                                  <td>
+                                    {row.effective ? (
+                                      <StateDot tone="ok">Effective</StateDot>
+                                    ) : !row.enabled ? (
+                                      <StateDot tone="warning">Disabled</StateDot>
+                                    ) : (
+                                      <StateDot tone="warning">Not effective</StateDot>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                      </tbody>
+                    </table>
+                  )
+                )}
+              </>
             )}
-            {listing.next !== null && listing.next !== undefined && (
-              <button
-                type="button"
-                disabled={listing.status === 'loading'}
-                onClick={() => (view === 'nodes' ? void loadNodes(nodes) : void loadEdges(edges))}
-              >
-                {listing.status === 'loading' ? 'Loading…' : 'Load more'}
-              </button>
-            )}
-            {listing.next === null && listing.rows.length > 0 && !listing.truncated && (
-              <p className="source">End of list.</p>
-            )}
-            {listing.truncated && (
-              <p className="note">
-                Showing the first {LISTING_CAP} rows. Use a filter or the exact ID search.
-              </p>
-            )}
-          </>
+          </div>
+          {!blocked && listing.rows.length > 0 && (
+            <footer className="list-foot">
+              <span aria-live="polite">
+                {listing.rows.length}
+                {shownTotal !== undefined ? ` of ${shownTotal}` : ''} loaded
+              </span>
+              <InfoTip label="About paging">
+                Rows are read in pages of {LISTING_PAGE}, in ascending ID order. Pages are read one
+                at a time and are not a snapshot.
+                {listing.identity?.generation !== undefined &&
+                  ` Generation ${listing.identity.generation}.`}
+              </InfoTip>
+              {listing.truncated ? (
+                <span className="note">
+                  First {LISTING_CAP} rows only. Use a filter or go to an ID.
+                </span>
+              ) : listing.next === null ? (
+                <span className="note">End of list</span>
+              ) : null}
+              {listing.next !== null && listing.next !== undefined && !listing.truncated && (
+                <button
+                  type="button"
+                  className="push"
+                  disabled={listing.status === 'loading'}
+                  onClick={() => (view === 'nodes' ? void loadNodes(nodes) : void loadEdges(edges))}
+                >
+                  {listing.status === 'loading' ? 'Loading…' : `Load ${LISTING_PAGE} more`}
+                </button>
+              )}
+            </footer>
+          )}
+        </section>
+
+        {hasDetail && (
+          <Splitter
+            label="Resize detail pane"
+            value={width}
+            min={DETAIL_MIN}
+            max={Math.round(maxWidth)}
+            onResize={resize}
+            onStep={(delta) =>
+              resize(delta === 'min' ? DETAIL_MIN : delta === 'max' ? maxWidth : width + delta)
+            }
+          />
         )}
+
+        <div
+          className="browser-detail"
+          style={hasDetail ? { flexBasis: `${width}px` } : undefined}
+          data-empty={!hasDetail || undefined}
+        >
+          {params.node !== undefined ? (
+            <NodeDetail
+              key={params.node}
+              api={api}
+              node={params.node}
+              capabilities={capabilities}
+              onSelectNode={selectNode}
+              onSelectEdge={selectEdge}
+              onQuery={props.onQuery}
+              onClose={closeDetail}
+              record={record}
+              onMutated={() => setOutOfDate(true)}
+            />
+          ) : edgeSelection?.length === 2 ? (
+            <EdgeDetail
+              key={params.edge}
+              api={api}
+              source={edgeSelection[0] as string}
+              target={edgeSelection[1] as string}
+              capabilities={capabilities}
+              onSelectNode={selectNode}
+              onQuery={props.onQuery}
+              onClose={closeDetail}
+              record={record}
+              onMutated={() => setOutOfDate(true)}
+            />
+          ) : (
+            <section className="detail detail-empty" aria-label="No selection">
+              <h2>No selection</h2>
+              <p>Select a row, or go to a node by its ID.</p>
+            </section>
+          )}
+        </div>
       </div>
 
-      <div className="browser-detail">
-        {params.node !== undefined ? (
-          <NodeDetail
-            key={params.node}
-            api={api}
-            node={params.node}
-            capabilities={capabilities}
-            onSelectNode={selectNode}
-            onSelectEdge={selectEdge}
-            onQuery={props.onQuery}
-            record={record}
-            onMutated={() => setOutOfDate(true)}
-          />
-        ) : edgeSelection?.length === 2 ? (
-          <EdgeDetail
-            key={params.edge}
-            api={api}
-            source={edgeSelection[0] as string}
-            target={edgeSelection[1] as string}
-            capabilities={capabilities}
-            onSelectNode={selectNode}
-            onQuery={props.onQuery}
-            record={record}
-            onMutated={() => setOutOfDate(true)}
-          />
-        ) : (
-          <section className="card detail empty">
-            <h2>No selection</h2>
-            <p>Select a node or edge in the list, or open a node by its exact ID.</p>
-          </section>
-        )}
-      </div>
+      {creating && (
+        <NewNodeDialog
+          api={api}
+          record={record}
+          onClose={() => setCreating(false)}
+          onCreated={(node, verdict) => {
+            setCreating(false);
+            setCreated({ node, verdict });
+            setOutOfDate(true);
+            selectNode(node);
+          }}
+        />
+      )}
     </div>
   );
 }

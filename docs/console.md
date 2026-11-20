@@ -97,7 +97,7 @@ unauthenticated server just to reach it.
 | --- | --- | --- |
 | `KNOTREL_UPSTREAM` | required | Server base URL, `http(s)://host[:port][/path]`, no credentials, query or trailing slash. Fixed for the container's lifetime. |
 | `KNOTREL_CONSOLE_SERVER_NAMES` | `localhost 127.0.0.1 [::1]` | Accepted `Host` names (space separated). Requests for any other host get 421. Add the public name when a gateway forwards to the container. |
-| `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL | Text shown as "Server address" in the UI. |
+| `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL | Server name shown in the connection indicator (display only). |
 | `KNOTREL_UPSTREAM_TIMEOUT` | `35s` | Upstream send/read timeout. It exceeds the server's 30 s request timeout so that the server's `request_timeout` is reported when it applies. |
 
 Invalid values stop the container at startup. The image runs nginx as uid
@@ -218,6 +218,18 @@ silently.
 
 ## Behavior
 
+- **Layout.** The top bar holds the pages, the connection indicator and the
+  theme switch (dark by default, light on request; the choice is kept in this
+  browser). The connection indicator names the server and opens a panel that
+  separates the server (backend: name, mode, engine, flags, instance) from the
+  console host the browser talks to (frontend: address, version, deployment).
+- **Browser layout.** A compact toolbar (Nodes/Edges with counts, go to an ID,
+  state filter, reload, New node), a table that fills the available height,
+  and a detail pane on the right whose width can be dragged or set with the
+  arrow keys (kept in this browser). The node detail shows identity and state
+  first, then neighbors in a bounded, paged box (25 per page), then a
+  connectivity check from that node. Rare or destructive actions (remove a
+  node, cut an edge) sit in a menu; technical explanations sit in info tips.
 - **Browser lists are paged, never complete downloads.** Pages of 100 are loaded
   on demand, up to 5000 rows; empty pages produced by the server's scan budget
   are followed automatically (up to five per click). Each page is a coherent

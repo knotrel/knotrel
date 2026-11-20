@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { KnotrelServer, startConsole } from './harness';
+import { KnotrelServer, startConsole, refreshNow } from './harness';
 
 test.describe('source-managed diagnostics', () => {
   let server: KnotrelServer;
@@ -58,7 +58,7 @@ test.describe('source-managed diagnostics', () => {
     );
     expect(imported.status).toBe(201);
 
-    await page.getByRole('button', { name: 'Refresh now' }).click();
+    await refreshNow(page);
     await expect(sync.getByText('Catching up', { exact: true }).first()).toBeVisible();
     await expect(sync.getByText('lsn/0001')).toBeVisible();
 
@@ -75,7 +75,7 @@ test.describe('source-managed diagnostics', () => {
       header,
     );
     expect(barrier.status).toBe(200);
-    await page.getByRole('button', { name: 'Refresh now' }).click();
+    await refreshNow(page);
     await expect(sync.getByText('Synchronized', { exact: true }).first()).toBeVisible();
     await expect(sync.getByText(instance)).toBeVisible();
     await expect(sync.getByRole('button')).toHaveCount(0);
@@ -85,12 +85,14 @@ test.describe('source-managed diagnostics', () => {
 
     // Diagnostics: browse the imported graph, without mutation controls.
     await page.getByRole('tab', { name: 'Browser' }).click();
-    await page.locator('.browser-list').getByRole('button', { name: 'Restart listing' }).click();
+    await page.getByRole('button', { name: 'Reload list' }).click();
     await page.locator('.browser-list').getByRole('button', { name: '1', exact: true }).click();
     const pane = page.getByRole('region', { name: 'Node 1' });
     await expect(pane.getByRole('button', { name: '2', exact: true })).toBeVisible();
     await expect(pane.getByText(/authoritative source/)).toBeVisible();
-    await expect(pane.getByRole('button', { name: /Deactivate|Remove|Cut|^Link$/ })).toHaveCount(0);
+    await expect(
+      pane.getByRole('button', { name: /Deactivate|Link to node|More node actions|^Disable$/ }),
+    ).toHaveCount(0);
 
     // Queries remain available and carry the source position.
     await page.getByRole('tab', { name: 'Workbench' }).click();

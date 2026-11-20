@@ -111,24 +111,43 @@ export function MetadataView({ metadata }: { metadata: VersionMetadata }) {
   );
 }
 
-/** A validated node ID input. Reports its value only when valid. */
+/**
+ * A validated node ID input. Reports its value only when valid. The format
+ * hint ("unsigned 64-bit decimal ID") is announced to assistive technology but
+ * shown only when the value needs attention.
+ */
 export function NodeIdField({
   label,
   value,
   onChange,
   disabled,
+  hideLabel,
+  placeholder,
+  autoFocus,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  /** Keeps the label for assistive technology only (compact toolbars). */
+  hideLabel?: boolean;
+  placeholder?: string;
+  autoFocus?: boolean;
 }) {
   const id = useId();
   const check = value === '' ? undefined : checkNodeId(value);
   const hintId = `${id}-hint`;
+  const message =
+    check && !check.ok
+      ? check.message
+      : check?.ok && hasLeadingZeroes(value)
+        ? 'The server normalizes leading zeroes.'
+        : undefined;
   return (
     <div className="node-field">
-      <label htmlFor={id}>{label}</label>
+      <label htmlFor={id} className={hideLabel ? 'visually-hidden' : undefined}>
+        {label}
+      </label>
       <input
         id={id}
         inputMode="numeric"
@@ -136,16 +155,14 @@ export function NodeIdField({
         spellCheck={false}
         value={value}
         disabled={disabled}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
         aria-invalid={check !== undefined && !check.ok}
         aria-describedby={hintId}
         onChange={(event) => onChange(event.target.value)}
       />
-      <span id={hintId} className="hint">
-        {check && !check.ok
-          ? check.message
-          : check?.ok && hasLeadingZeroes(value)
-            ? 'The server normalizes leading zeroes.'
-            : 'Unsigned 64-bit decimal ID.'}
+      <span id={hintId} className={message ? 'hint' : 'visually-hidden'}>
+        {message ?? 'Unsigned 64-bit decimal ID.'}
       </span>
     </div>
   );
