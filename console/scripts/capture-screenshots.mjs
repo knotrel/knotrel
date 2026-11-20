@@ -19,7 +19,11 @@ const viewport = { width: 1280, height: 720 };
 await mkdir(out, { recursive: true });
 const browser = await chromium.launch();
 
-/** Opens a page with the given theme and returns it once the console is connected. */
+/**
+ * Opens a page with the given theme and returns it once the console is connected.
+ * @param {string} hash Route after `#/`.
+ * @param {'dark' | 'light'} [theme]
+ */
 async function open(hash, theme = 'dark') {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 2 });
   await context.addInitScript((value) => {
@@ -31,6 +35,11 @@ async function open(hash, theme = 'dark') {
   return page;
 }
 
+/**
+ * Saves a JPEG screenshot and closes the page's context.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name File name without extension.
+ */
 async function shot(page, name) {
   const file = path.join(out, `${name}.jpg`);
   await page.screenshot({ path: file, type: 'jpeg', quality: 82 });
