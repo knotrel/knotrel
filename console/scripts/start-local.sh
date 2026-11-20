@@ -5,6 +5,14 @@
 #   console/scripts/start-local.sh --build    # force a rebuild first
 set -euo pipefail
 
+# Find docker even when the shell PATH lacks it (Docker Desktop on macOS).
+if ! command -v docker >/dev/null 2>&1; then
+    for d in /usr/local/bin /opt/homebrew/bin /Applications/Docker.app/Contents/Resources/bin "$HOME/.docker/bin"; do
+        [[ -x "$d/docker" ]] && PATH="$d:$PATH" && break
+    done
+fi
+command -v docker >/dev/null 2>&1 || { echo "docker not found. Install or start Docker Desktop, or add docker to PATH." >&2; exit 1; }
+
 compose_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/../deploy" && pwd)/compose.yaml"
 url="http://127.0.0.1:7380/"
 
@@ -18,7 +26,7 @@ for _ in $(seq 1 60); do
     if curl -sf "${url}api/ready" >/dev/null 2>&1; then
         printf '\nKnotrel console ready at %s\n' "$url"
         echo "Logs: docker compose -f $compose_file logs -f"
-        echo "Stop: $(dirname "${BASH_SOURCE[0]}")/stop-local.sh"
+        echo "Stop: $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/stop-local.sh"
         exit 0
     fi
     printf '.'
