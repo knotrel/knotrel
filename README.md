@@ -292,6 +292,14 @@ Further timeouts and size limits are listed under
   503 `busy`. See the
   [snapshot contract](docs/http-api.md#live-graph-snapshot-versus-instance-information).
 
+## Operational console
+
+A browser console (unreleased, versioned separately) explores, queries and
+diagnoses one server: node and edge browser, workbench, performance from
+metrics. See [the console documentation](docs/console.md).
+
+![Knotrel Console: node browser with a node selected, its neighbors and a connectivity check](docs/images/console/browser.jpg)
+
 ## Documentation
 
 - [HTTP API](docs/http-api.md) and [OpenAPI specification](docs/openapi.yaml): operations, batch semantics, limits and errors.
