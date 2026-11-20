@@ -197,12 +197,13 @@ function build() {
   /** @type {Map<string, Buffer>} */
   const files = new Map();
   for (const rel of htmlFiles) files.set(`html/${rel}`, readFileSync(path.join(dist, rel)));
-  files.set(
-    'nginx/knotrel-console.conf',
-    readFileSync(path.join(root, 'deploy', 'nginx-gateway.conf')),
-  );
-  files.set('README.md', readFileSync(path.join(root, 'deploy', 'ARCHIVE-README.md')));
-  files.set('LICENSE.md', readFileSync(path.join(root, '..', 'LICENSE.md')));
+  // Text files from the repository are normalized to LF: a Windows checkout may
+  // convert them to CRLF, which would make the archive platform-dependent.
+  const text = (/** @type {string} */ file) =>
+    Buffer.from(readFileSync(file, 'utf8').replace(/\r\n/g, '\n'), 'utf8');
+  files.set('nginx/knotrel-console.conf', text(path.join(root, 'deploy', 'nginx-gateway.conf')));
+  files.set('README.md', text(path.join(root, 'deploy', 'ARCHIVE-README.md')));
+  files.set('LICENSE.md', text(path.join(root, '..', 'LICENSE.md')));
   files.set(
     'console-manifest.json',
     Buffer.from(
