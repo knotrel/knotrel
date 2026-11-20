@@ -57,7 +57,10 @@ paths:
               example:
                 status: ready
         '503':
-          description: Server is not ready (starting up, draining for shutdown, or graph worker failed)
+          description: |
+            Server is not ready: starting up, draining for shutdown or graph worker failed
+            (both modes); in source-managed mode also uninitialized, loading, catching up,
+            stale (expired feeder lease) or desynchronized.
           headers:
             Cache-Control:
               schema:
@@ -80,6 +83,10 @@ paths:
                   summary: Graph worker failed or panicked
                   value:
                     status: unavailable
+                catching_up:
+                  summary: Source-managed mode, published image not yet verified by a barrier
+                  value:
+                    status: catching_up
 
   /metrics:
     get:
@@ -143,12 +150,26 @@ paths:
         - Metadata
       responses:
         '200':
-          description: Coherent graph snapshot
+          description: Coherent graph snapshot; version headers are captured under the same lock
           headers:
             Cache-Control:
               schema:
                 type: string
                 example: no-store
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
           content:
             application/json:
               schema:
@@ -254,7 +275,24 @@ paths:
                   target: "2"
       responses:
         '200':
-          description: Operation completed successfully
+          description: |
+            Operation completed successfully. Version headers are captured under the same lock
+            acquisition as the outcome. Error responses carry no version headers.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
           content:
             application/json:
               schema:
@@ -1340,6 +1378,16 @@ components:
         - $ref: '#/components/schemas/EdgeStateOperation'
       discriminator:
         propertyName: op
+        mapping:
+          add_node: '#/components/schemas/AddNodeOperation'
+          link: '#/components/schemas/LinkOperation'
+          cut: '#/components/schemas/CutOperation'
+          connected: '#/components/schemas/ConnectedOperation'
+          set_node_active: '#/components/schemas/SetNodeActiveOperation'
+          set_edge_enabled: '#/components/schemas/SetEdgeEnabledOperation'
+          remove_node: '#/components/schemas/RemoveNodeOperation'
+          node_state: '#/components/schemas/NodeStateOperation'
+          edge_state: '#/components/schemas/EdgeStateOperation'
 
     ChangedOutcome:
       type: object
@@ -1484,6 +1532,12 @@ components:
         - $ref: '#/components/schemas/ErrorOutcome'
       discriminator:
         propertyName: result
+        mapping:
+          changed: '#/components/schemas/ChangedOutcome'
+          connected: '#/components/schemas/ConnectedOutcome'
+          node_state: '#/components/schemas/NodeStateOutcome'
+          edge_state: '#/components/schemas/EdgeStateOutcome'
+          error: '#/components/schemas/ErrorOutcome'
 
     BatchRequest:
       type: object
@@ -1533,7 +1587,10 @@ components:
       properties:
         status:
           type: string
-          enum: [starting, draining, unavailable]
+          enum: [starting, draining, unavailable, uninitialized, loading, catching_up, stale, desynchronized]
+          description: |
+            `starting`, `draining` and `unavailable` occur in both modes. The other values are
+            reported only in source-managed mode.
 
     ServerInfo:
       type: object
@@ -1574,6 +1631,18 @@ components:
           description: |
             Present, and `true`, only when node and edge lifecycle support is enabled
             (`KNOTREL_TOPOLOGY_LIFECYCLE=true`); absent otherwise.
+        mode:
+          type: string
+          const: source_managed
+          description: |
+            Present only in source-managed mode (`KNOTREL_MODE=source_managed`). Absent in
+            standalone mode. The response carries no server software version.
+        instance_id:
+          type: string
+          description: |
+            Present only in source-managed mode: the current process instance ID that feeder
+            requests must carry. In both modes the same value is returned in the
+            `X-Knotrel-Instance-Id` header of `/v1/stats`, `/v1/operations` and `/v1/batch`.
 
     GraphSnapshot:
       type: object
@@ -1614,7 +1683,24 @@ components:
           description: Remaining edge capacity before reaching limit, or null if unlimited.
         state_version:
           type: string
+          pattern: '^[0-9]+$'
           description: Decimal string monotonic version counter incremented on effective mutations.
+        instance_id:
+          type: string
+          description: Source-managed mode only. Current process instance ID.
+        generation:
+          $ref: '#/components/schemas/FeederU64'
+          description: |
+            Source-managed mode only. Published generation as a JSON integer that can exceed
+            2^53; clients must parse it losslessly. The `X-Knotrel-Generation` header carries
+            the same value as a decimal string in both modes.
+        source_position:
+          type: string
+          description: |
+            Source-managed mode only, and only once a source position exists. Raw (not
+            percent-encoded) applied source position.
+        sync_status:
+          $ref: '#/components/schemas/FeederSyncStatus'
 
     ActiveNodeCount:
       type: integer

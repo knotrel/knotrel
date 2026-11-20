@@ -681,6 +681,11 @@ size (1 MiB) and batch size (1–1024) are fixed in this version.
 
 The endpoint does not acquire the graph mutex or an admission permit, and
 contains no graph data. It does not report the lifecycle phase; use `/ready`.
+In source-managed mode it also contains `"mode": "source_managed"` and the
+current `instance_id`; both are absent in standalone mode, where the instance ID
+is available from the `X-Knotrel-Instance-Id` header of `/v1/stats`,
+`/v1/operations` and `/v1/batch`. No endpoint reports the server software
+version.
 With `KNOTREL_TOPOLOGY_LIFECYCLE=true` it adds `"topology_lifecycle": true`;
 the field is absent when lifecycle support is off. Engine and
 limit fields describe the actual service instance, including embedded routers.
@@ -751,6 +756,11 @@ share one instance. No hierarchy or typed-node model is introduced.
   "state_version": "157"
 }
 ```
+
+In source-managed mode the object also contains `instance_id`, `generation`
+(a JSON integer up to 2^64 − 1, so JavaScript clients must parse it
+losslessly), `sync_status` and, once one exists, the raw `source_position`.
+The response carries the same version headers as `/v1/operations`.
 
 With lifecycle support the object also contains `active_node_count`,
 `enabled_edge_count` and `effective_edge_count`, captured under the same lock;
@@ -1073,7 +1083,7 @@ In-flight barriers from a superseded, disconnected, or expired feeder session ca
 Operators and feeder processes monitor Knotrel instances through four primary HTTP endpoints:
 1. **Liveness (`GET /health`):** Returns HTTP 200 `OK` as long as the HTTP listener and background worker threads are running. Liveness probes should not restart instances merely because synchronization is in progress.
 2. **Readiness (`GET /ready`):** Returns HTTP 200 when `status == "ready"` (or standalone server is initialized). Returns HTTP 503 during `uninitialized`, `loading`, `catching_up`, `stale`, `desynchronized`, `draining`, or `unavailable`. Load balancers and service meshes must direct query traffic only to ready instances.
-3. **Instance Discovery (`GET /v1/info`):** Returns `instance_id`, `mode`, and server version. Feeders poll `/v1/info` to discover ephemeral server instance IDs and detect process restarts.
+3. **Instance Discovery (`GET /v1/info`):** In source-managed mode returns `instance_id` and `mode: "source_managed"` in addition to the effective settings (both fields are absent in standalone mode). No endpoint reports the server software version. Feeders poll `/v1/info` to discover ephemeral server instance IDs and detect process restarts.
 4. **Live Statistics (`GET /v1/stats`):** Returns live topology cardinality (`node_count`, `edge_count`, and with lifecycle support `active_node_count`, `enabled_edge_count`, `effective_edge_count`), graph limits, and current synchronization metadata (`generation`, `state_version`, `source_position`, `sync_status`). The `ETag` header exposes the exact `<generation>.<state_version>.<percent_encoded_source_position>` token required for optimistic concurrency on replacement imports (`mode: "replace"`).
 
 ### Standard synchronization lifecycle
