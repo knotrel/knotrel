@@ -124,10 +124,20 @@ export interface MenuItem {
   disabled?: boolean;
 }
 
+/** Places a menu of `count` items under its button, or above it near the bottom. */
+function placeMenu(rect: DOMRect, count: number): CSSProperties {
+  const right = window.innerWidth - rect.right;
+  const below = window.innerHeight - rect.bottom;
+  return below < 40 + 36 * count
+    ? { right, bottom: window.innerHeight - rect.top + 4 }
+    : { right, top: rect.bottom + 4 };
+}
+
 /**
  * A button that opens a list of secondary actions. The list is positioned
- * against the viewport, so scrolling containers do not clip it; it closes on
- * scroll, Escape, Tab or a click elsewhere.
+ * against the viewport, so scrolling containers do not clip it, and follows
+ * its button when the page scrolls or resizes. It closes on Escape, Tab or a
+ * click elsewhere.
  */
 export function Menu({
   label,
@@ -142,26 +152,26 @@ export function Menu({
   const [position, setPosition] = useState<CSSProperties>({});
   const root = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
-  const anchor = useRef({ top: 0, left: 0 });
   const id = useId();
+  const count = items.length;
+
+  // Focus the first item once, when the menu opens; items that appear later
+  // (for example after a detail finishes loading) must not steal focus.
+  useEffect(() => {
+    if (!open) return;
+    root.current
+      ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not([disabled])')
+      ?.focus({ preventScroll: true });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    root.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not([disabled])')?.focus();
     const onDown = (event: MouseEvent) => {
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
-    // Close only when the button actually moved: focusing an item may scroll
-    // its container without displacing the menu's anchor.
     const onScroll = () => {
       const rect = button.current?.getBoundingClientRect();
-      if (
-        !rect ||
-        Math.abs(rect.top - anchor.current.top) > 2 ||
-        Math.abs(rect.left - anchor.current.left) > 2
-      ) {
-        setOpen(false);
-      }
+      if (rect) setPosition(placeMenu(rect, count));
     };
     document.addEventListener('mousedown', onDown);
     window.addEventListener('scroll', onScroll, true);
@@ -171,20 +181,11 @@ export function Menu({
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', onScroll);
     };
-  }, [open]);
+  }, [open, count]);
 
   const toggle = () => {
     const rect = button.current?.getBoundingClientRect();
-    if (!open && rect) {
-      anchor.current = { top: rect.top, left: rect.left };
-      const right = window.innerWidth - rect.right;
-      const below = window.innerHeight - rect.bottom;
-      setPosition(
-        below < 40 + 36 * items.length
-          ? { right, bottom: window.innerHeight - rect.top + 4 }
-          : { right, top: rect.bottom + 4 },
-      );
-    }
+    if (!open && rect) setPosition(placeMenu(rect, count));
     setOpen((o) => !o);
   };
 
@@ -227,6 +228,7 @@ export function Menu({
         <div
           id={id}
           role="menu"
+          tabIndex={-1}
           aria-label={label}
           className="menu-list"
           style={position}

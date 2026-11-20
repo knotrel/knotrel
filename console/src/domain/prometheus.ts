@@ -36,8 +36,9 @@ export function parseExposition(text: string): { samples: MetricSample[]; skippe
 function parseValue(text: string): number | undefined {
   if (text === '+Inf') return Infinity;
   if (text === '-Inf') return -Infinity;
-  if (text === 'NaN') return NaN;
-  if (!/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(text)) return undefined;
+  if (text === 'NaN') return Number.NaN;
+  // Unambiguous alternatives keep matching linear (no backtracking).
+  if (!/^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/.test(text)) return undefined;
   return Number(text);
 }
 
@@ -98,9 +99,15 @@ export function select(
   );
 }
 
+/** Locale-independent ordering by UTF-16 code units (stable series keys). */
+export function byCodeUnit(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 function seriesKey(sample: MetricSample): string {
   return Object.keys(sample.labels)
-    .sort()
+    .sort(byCodeUnit)
     .map((k) => `${k}=${sample.labels[k]}`)
     .join(',');
 }

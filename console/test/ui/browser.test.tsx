@@ -436,6 +436,7 @@ describe('node detail', () => {
     const linkToggle = within(pane).getByRole('button', { name: 'Link to node…' });
     await user.click(linkToggle);
     expect(linkToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(within(pane).getByLabelText('Link to node')).toHaveFocus();
     await user.type(within(pane).getByLabelText('Link to node'), '6');
     await user.click(within(pane).getByRole('button', { name: 'Link' }));
     expect(operation).toHaveBeenLastCalledWith(
@@ -621,8 +622,6 @@ describe('menus', () => {
     await user.click(document.body);
     expect(screen.queryByRole('menu')).toBeNull();
     await user.click(button);
-    fireEvent.scroll(window);
-    expect(screen.getByRole('menu')).toBeInTheDocument();
     vi.spyOn(button, 'getBoundingClientRect').mockReturnValue({
       top: 300,
       left: 10,
@@ -633,9 +632,14 @@ describe('menus', () => {
       x: 10,
       y: 300,
       toJSON: () => ({}),
-    });
+    } as DOMRect);
     fireEvent.scroll(window);
-    expect(screen.queryByRole('menu')).toBeNull();
+    // The menu follows its button instead of closing.
+    expect(screen.getByRole('menu')).toHaveStyle({ top: '334px' });
+    Object.defineProperty(window, 'innerHeight', { value: 340, configurable: true });
+    fireEvent(window, new Event('resize'));
+    expect(screen.getByRole('menu')).toHaveStyle({ bottom: '44px' });
+    Object.defineProperty(window, 'innerHeight', { value: 768, configurable: true });
   });
 });
 
@@ -806,5 +810,22 @@ describe('ConfirmDialog focus handling', () => {
     expect(screen.getByRole('button', { name: 'Go' })).toHaveFocus();
     await user.tab();
     expect(input).toHaveFocus();
+  });
+});
+
+describe('menu focus', () => {
+  it('keeps focus on the chosen item when items appear later', async () => {
+    const user = userEvent.setup();
+    let resolve: (value: Result<InspectedNode>) => void = () => {};
+    const getNode = vi.fn(() => new Promise<Result<InspectedNode>>((done) => (resolve = done)));
+    render(<Harness api={fakeApi({ getNode })} initial={{ node: '5' }} />);
+    const pane = await screen.findByRole('region', { name: 'Node 5' });
+    await user.click(within(pane).getByRole('button', { name: 'More node actions' }));
+    expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+    expect(screen.getByRole('menuitem', { name: 'Query node state in Workbench' })).toHaveFocus();
+    await act(async () => resolve(ok({ node: '5', active: true, degree: '1' })));
+    await user.keyboard('{ArrowDown}');
+    const remove = await screen.findByRole('menuitem', { name: 'Remove permanently…' });
+    expect(remove).toHaveFocus();
   });
 });
