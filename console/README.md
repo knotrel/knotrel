@@ -5,61 +5,140 @@ server: liveness and readiness, configuration, graph counts, identity and
 version metadata, synchronization status, connectivity and lifecycle queries,
 and topology operations on standalone servers.
 
-> **Status: unreleased.** Version 0.1.0 is prepared but not published. The
+> **Status: unreleased.** Version 0.1.0 is not published yet. Until the first
+> release, build the image locally (see [Get the image](#get-the-image)). The
 > console is versioned independently of the server and supports servers
-> `>=0.7.0 <0.9.0` (`knotrel.supportedServer` in `package.json`).
+> `>=0.7.0 <0.9.0`.
 
-It is a static React application, distributed as:
+The console ships as a container image (nginx serving the UI and forwarding
+`/api` to one Knotrel server) and as a static archive for your own web
+server. Full reference: [docs/console.md](../docs/console.md). Development:
+[DEVELOPER.md](DEVELOPER.md).
 
-- the container image `ghcr.io/knotrel/knotrel-console:<version>`: an
-  unprivileged nginx that serves the console and forwards an allowlist of
-  `/api` routes to one server set by `KNOTREL_UPSTREAM`;
-- the static archive `knotrel-console-<version>.tar.gz`, for your own gateway.
+## Quick start: server and console together
 
-Usage, configuration, trust boundary and API mapping:
-[docs/console.md](../docs/console.md). Release procedure:
-[docs/releases/console-release.md](../docs/releases/console-release.md).
-
-## Try it locally
+Two convenience scripts (macOS, Linux; they work from any directory) start
+and stop a local server and the console with Docker Compose:
 
 ```sh
-docker compose -f console/deploy/compose.yaml up --build   # from the repository root
+console/scripts/start-local.sh            # start (builds images the first time) and wait until ready
+console/scripts/start-local.sh --build    # rebuild after code changes, then start
+console/scripts/stop-local.sh             # stop and remove everything
 ```
 
-Then open <http://127.0.0.1:7380/>.
+Open <http://127.0.0.1:7380/>. Only the console is published, on loopback;
+the server is reachable only from the console container. Graph data lives in
+memory and is lost when the server stops.
 
-## Development
+The same stack with plain Docker Compose (also on Windows), from the
+repository root:
 
-npm is used for development only (`"private": true`).
+| Task                | Command                                                         |
+| ------------------- | --------------------------------------------------------------- |
+| Start               | `docker compose -f console/deploy/compose.yaml up -d --build`   |
+| Status and health   | `docker compose -f console/deploy/compose.yaml ps`              |
+| Follow console logs | `docker compose -f console/deploy/compose.yaml logs -f console` |
+| Follow server logs  | `docker compose -f console/deploy/compose.yaml logs -f knotrel` |
+| Pause / resume      | `docker compose -f console/deploy/compose.yaml stop` / `start`  |
+| Stop and remove     | `docker compose -f console/deploy/compose.yaml down`            |
+
+## Get the image
+
+After a release, pull it from GitHub Container Registry:
 
 ```sh
-cd console
-nvm use                     # Node.js 24.22.3 (.nvmrc), npm 11
-npm ci
-KNOTREL_SERVER=http://127.0.0.1:8080 npm run dev   # Vite dev server; proxies /api to that server
+docker pull ghcr.io/knotrel/knotrel-console:0.1.0
 ```
 
-| Command                                                            | Purpose                                                                                                                                  |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run check`                                                    | Formatting, ESLint, TypeScript, OpenAPI drift, unit tests with coverage gates, production build                                          |
-| `npm run test:coverage`                                            | Vitest + React Testing Library. LCOV in `coverage/lcov.info`; at least 80% statements, branches, functions and lines                     |
-| `npm run test:e2e`                                                 | Playwright (Chromium, Firefox) against real `knotrel-server` processes. Build the server first: `cargo build -p knotrel-server --locked` |
-| `npm run generate:api`                                             | Regenerate `src/api/generated/openapi.ts` from `../docs/openapi.yaml` and record its SHA-256 in `package.json`                           |
-| `npm run build`                                                    | Production bundle in `dist/`                                                                                                             |
-| `npm run archive`                                                  | Reproducible `.artifacts/knotrel-console-<version>.tar.gz` and `.sha256` (`node scripts/package-static.mjs --verify <file>` checks one)  |
-| `scripts/smoke-container.sh <console-image> <server-image> [dist]` | Container smoke test against a real server container                                                                                     |
+Until then, or to test local changes, build it from the repository root:
 
-Layout:
+```sh
+docker build -t knotrel-console:dev console
+```
 
-| Path                       | Content                                                                                                              |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `src/api/`                 | Lossless JSON parser, runtime decoders, transport and endpoint classification; `generated/` is produced from OpenAPI |
-| `src/domain/`              | Capabilities, error and synchronization guidance, node-ID validation, mutation outcomes, history                     |
-| `src/state/`               | Bounded polling and overview store                                                                                   |
-| `src/ui/`                  | React pages and components                                                                                           |
-| `container/`, `Dockerfile` | Image: nginx configuration templates and startup validation                                                          |
-| `deploy/`                  | Compose example, nginx gateway example, archive README                                                               |
-| `test/`, `e2e/`            | Unit/component tests and browser integration tests                                                                   |
+Use `knotrel-console:dev` in place of `ghcr.io/knotrel/knotrel-console:0.1.0`
+in the commands below. Images are tagged by version; `latest` is used only
+for stable releases.
+
+## Run the console against a server
+
+The container must reach the server over a Docker network. This example also
+starts a server from the repository's example image (run from the repository
+root):
+
+```sh
+docker build -f examples/container/Dockerfile -t knotrel-server:example .
+docker network create knotrel
+docker run -d --name knotrel --network knotrel -e KNOTREL_MODE=standalone knotrel-server:example
+docker run -d --name knotrel-console --network knotrel \
+  -p 127.0.0.1:7380:8080 \
+  -e KNOTREL_UPSTREAM=http://knotrel:8080 \
+  --read-only --tmpfs /tmp --cap-drop ALL \
+  ghcr.io/knotrel/knotrel-console:0.1.0
+```
+
+Open <http://127.0.0.1:7380/>. If your server already runs in another
+container, attach the console to that container's network and point
+`KNOTREL_UPSTREAM` at it.
+
+### Stop, restart, remove
+
+```sh
+docker stop knotrel-console           # stop
+docker start knotrel-console          # start again with the same settings
+docker rm -f knotrel-console          # remove (the configuration lives in the run command)
+docker rm -f knotrel && docker network rm knotrel   # remove the example server and network
+```
+
+To upgrade, pull the new version, remove the container and run it again
+with the new tag. The console keeps no state.
+
+### Logs and health
+
+```sh
+docker logs -f knotrel-console                    # follow console logs
+docker ps --filter name=knotrel-console           # STATUS shows (healthy) or (unhealthy)
+curl http://127.0.0.1:7380/healthz                # prints "ok" while nginx is up
+```
+
+Logs show the startup check (`forwarding /api to …`) and one line per request:
+client address, method, path without query string, status, size and
+duration. Request bodies, headers and credentials are never logged. Startup
+errors also appear here, for example an invalid `KNOTREL_UPSTREAM`.
+
+`/healthz` checks the console container only. Server state is shown in the
+UI (Overview → Liveness and readiness).
+
+## Configuration
+
+| Variable                       | Default                     | Meaning                                                                                      |
+| ------------------------------ | --------------------------- | -------------------------------------------------------------------------------------------- |
+| `KNOTREL_UPSTREAM`             | required                    | Server base URL, e.g. `http://knotrel:8080`. Fixed at startup; the browser cannot change it. |
+| `KNOTREL_CONSOLE_SERVER_NAMES` | `localhost 127.0.0.1 [::1]` | Host names the console answers to. Add your DNS name when a gateway forwards to it.          |
+| `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL            | Text shown as "Server address" in the UI.                                                    |
+| `KNOTREL_UPSTREAM_TIMEOUT`     | `35s`                       | Upstream timeout.                                                                            |
+
+The container listens on port 8080 as an unprivileged user and supports a
+read-only filesystem with a tmpfs at `/tmp`.
+
+## Security
+
+The console adds **no authentication**, and the Knotrel API has none. Keep
+the published port on `127.0.0.1`. For remote access, put a gateway with TLS
+and access control in front of it; see [docs/console.md](../docs/console.md#trust-boundary).
+Only the console's own API routes are forwarded; feeder endpoints,
+`/v1/batch` and `/metrics` are never reachable through it.
+
+## Troubleshooting
+
+| Symptom                                        | Cause and fix                                                                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `compose.yaml: no such file or directory`      | The command ran outside the repository root. Use the scripts, or `cd` to the repository root first.                |
+| Container exits right after start              | Invalid configuration: run `docker logs knotrel-console`, fix the variable and run it again.                       |
+| Browser shows `421` / "unexpected Host header" | You opened it through a name not in `KNOTREL_CONSOLE_SERVER_NAMES`; add it.                                        |
+| UI says "Server unreachable"                   | The server is down or not on the console's network. Check `KNOTREL_UPSTREAM` and `docker network inspect knotrel`. |
+| `docker pull` fails                            | The image is not published yet (or still private): build it locally.                                               |
+| Port 7380 already in use                       | Publish another port, e.g. `-p 127.0.0.1:7381:8080`.                                                               |
 
 ## License
 
