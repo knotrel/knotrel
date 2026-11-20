@@ -184,9 +184,11 @@ strings preserving the full `u64` range.
 the reproducible workloads, methodology and published reports: release
 regression qualification, engine/competitor comparisons and algorithm
 experiments, each labelled with the version and host it actually measured.
-[Performance by version](docs/performance-by-version.md) summarizes the
-release-to-release comparisons (v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 → v0.6.0 → v0.7.0 candidate) for users, with
-their limits. The authoritative statements are in the release notes for
+[Performance by version](docs/performance-by-version.md) summarizes, for
+users, the comparison of the current release with the previous minor release
+(v0.7.0 candidate against v0.6.0), with its limits. Earlier comparisons are
+kept separately in the [performance history](docs/performance-history.md);
+they were separate campaigns and are not comparable with each other. The authoritative statements are in the release notes for
 [v0.4.0](docs/releases/v0.4.0-release-notes.md#regression-qualification-against-v030)
 and [v0.3.0](docs/releases/v0.3.0-release-notes.md#performance-qualification).
 No speedup is claimed for either release. The v0.5.0 qualification
