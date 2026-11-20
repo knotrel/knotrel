@@ -1,5 +1,7 @@
 # Knotrel Console
 
+![Knotrel Console: node browser with a node selected, its neighbors and a connectivity check](../docs/images/console/browser.jpg)
+
 Browser console for exploring, querying and diagnosing one
 [Knotrel](https://github.com/knotrel/knotrel) server: a node and edge browser
 with a detail pane and contextual operations, a workbench for queries and

@@ -61,6 +61,7 @@ Fix formatting with `npm run format`.
 | Image                                                  | `docker build -t knotrel-console:dev .`                                                                                                                           |
 | Container test                                         | `docker build -f ../examples/container/Dockerfile -t knotrel-server:example ..` then `scripts/smoke-container.sh knotrel-console:dev knotrel-server:example dist` |
 | Server and console in Docker                           | `scripts/start-local.sh --build`, `scripts/seed-demo.sh` (demo data), then `scripts/stop-local.sh`                                                                |
+| Documentation screenshots                              | With the stack running and the demo data loaded: `node scripts/capture-screenshots.mjs` (writes `docs/images/console/`)                                           |
 
 ## Rules worth knowing
 

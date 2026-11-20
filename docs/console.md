@@ -13,6 +13,8 @@ Insight:
   saturation computed from `/metrics`.
 - **Overview** and, for source-managed servers, **Synchronization.**
 
+![Browser: the node list fills the height; the selected node shows its state, neighbors and a connectivity check](images/console/browser.jpg)
+
 > **Status: unreleased.** Console 0.1.0 is prepared for the Operational
 > Console milestone. No container image or archive is published yet.
 > Commands that reference `ghcr.io/knotrel/knotrel-console:0.1.0` or a
@@ -215,6 +217,43 @@ Not exposed, so shown as unavailable:
 
 Unsupported actions are disabled with an explanation. They are not hidden
 silently.
+
+## Screens
+
+Screenshots of the demo network (`console/scripts/seed-demo.sh`) at 1280×720.
+To refresh them, start the local stack, load the demo network and run
+`node console/scripts/capture-screenshots.mjs`; the script only runs queries.
+
+**High-degree node.** Neighbors are paged in a bounded box, so the
+connectivity check stays in view.
+
+![Node 100 with 150 neighbors, paged 25 at a time](images/console/browser-hub.jpg)
+
+**Edges and the light theme.** The state filter lists edges that do not carry
+connectivity; the detail shows the desired state, effectiveness and both
+endpoints.
+
+![Edge list filtered to not effective, with edge 2–3 selected, in the light theme](images/console/browser-light.jpg)
+
+**Connection details.** The server (backend) and the console host the browser
+talks to (frontend) are shown separately.
+
+![Connection panel open over the browser](images/console/connection.jpg)
+
+**Workbench.** Queries, a validated batch editor, saved requests and the console
+history.
+
+![Workbench with a connectivity query result](images/console/workbench.jpg)
+
+**Performance.** Rates and server-side latency per route, computed from
+`/metrics` scrapes taken by this tab.
+
+![Performance page with request rates and latency per route](images/console/performance.jpg)
+
+**Overview.** Connection, readiness, server configuration, graph counts and
+what needs attention.
+
+![Overview page](images/console/overview.jpg)
 
 ## Behavior
 
