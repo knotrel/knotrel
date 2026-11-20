@@ -77,7 +77,10 @@ const MAX_BATCH_OPERATIONS: usize = 1024;
 /// Builds the HTTP API around an owned, in-memory graph.
 ///
 /// Routes are `GET /health`, `GET /ready`, `GET /v1/info`, `GET /v1/stats`,
-/// `POST /v1/operations` and `POST /v1/batch`. Request
+/// `POST /v1/operations`, `POST /v1/batch` and the read-only inspection routes
+/// `GET /v1/nodes`, `GET /v1/nodes/{node}`, `GET /v1/nodes/{node}/edges` and
+/// `GET /v1/edges` (which answer `inspection_disabled` unless
+/// [`ServerConfig::with_inspection`] is enabled). Request
 /// bodies are limited to 1 MiB; batches contain 1–1024 operations. At most 32
 /// graph jobs may be queued or running. Excess graph requests receive HTTP 503.
 /// A graph lock isolates each request, including all operations in a batch:
@@ -125,6 +128,7 @@ fn empty_graph(config: &ServerConfig) -> graph::ServiceGraph {
         config.engine(),
         config.graph_limits(),
         config.topology_lifecycle(),
+        config.inspection(),
     )
 }
 
@@ -204,6 +208,10 @@ fn build_router_from_service(
         )
         .route(api::Route::Info.as_str(), get(api::info))
         .route(api::Route::Stats.as_str(), get(api::stats))
+        .route(api::Route::Nodes.as_str(), get(api::list_nodes))
+        .route(api::Route::Node.as_str(), get(api::get_node))
+        .route(api::Route::NodeEdges.as_str(), get(api::list_node_edges))
+        .route(api::Route::Edges.as_str(), get(api::list_edges))
         .route(
             api::Route::Operations.as_str(),
             post(api::single).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
@@ -289,6 +297,9 @@ pub(crate) struct ServerInfo {
     /// Serialized only when node and edge lifecycle support is enabled.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     topology_lifecycle: bool,
+    /// Serialized only when the inspection routes are enabled.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    inspection: bool,
 }
 
 #[cfg(test)]

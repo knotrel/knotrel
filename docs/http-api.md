@@ -634,6 +634,7 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_DEDUP_WINDOW_SIZE` | ASCII decimal integer from 1 through 1000000 | `10000` |
 | `KNOTREL_METRICS_ENABLED` | Exactly `true` or `false`; `true` serves [`GET /metrics`](#metrics-opt-in) | `false` |
 | `KNOTREL_TOPOLOGY_LIFECYCLE` | Exactly `true` or `false`; `true` enables [node and edge lifecycle](#node-and-edge-lifecycle-opt-in) support and requires `KNOTREL_ENGINE=compact-bfs` (with `ett` or `hdt` startup fails before binding; their lifecycle support is deferred) | `false` |
+| `KNOTREL_INSPECTION` | Exactly `true` or `false`; `true` enables the read-only [inspection routes](#inspection-opt-in) and keeps an ordered node index | `false` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
 | `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
 | `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |
@@ -815,6 +816,84 @@ A partial mutation is not rolled back and cannot be read through `/v1/stats`.
 Recover by replacing/restarting the service; in-memory data is not persisted.
 Disconnecting an admitted stats caller does not release its permit before its worker finishes. `/v1/info`
 `/health` and `/ready` remain independent of this queue.
+
+## Inspection (opt-in)
+
+Four read-only routes let a client discover nodes and edges without knowing
+their IDs, for example the operational console's data browser. They are
+enabled with `KNOTREL_INSPECTION=true`. When it is off (the default) every
+route answers 409 `inspection_disabled` before admission, and the server
+keeps no extra state. `GET /v1/info` adds `"inspection": true` when it is
+on.
+
+| Route | Result |
+| --- | --- |
+| `GET /v1/nodes?after=&limit=&state=` | Nodes in ascending numeric ID |
+| `GET /v1/nodes/{node}` | One node: `active` and registered `degree` |
+| `GET /v1/nodes/{node}/edges?after=&limit=&state=` | The node's incident edges with `enabled` and `effective` |
+| `GET /v1/edges?after_source=&after_target=&limit=&state=` | Every edge once, as `source < target` |
+
+IDs are JSON strings, exact over the whole u64 range. `limit` is 1–1000
+(default 100). Node `state` is `all`, `active` or `inactive`. Edge `state` is
+`all`, `enabled`, `disabled`, `effective` or `ineffective`. Without lifecycle
+support every node is active and every edge enabled and effective. Unknown or
+repeated parameters, malformed IDs and out-of-range values get 422
+`invalid_request`. An unregistered `{node}` gets 404 `unknown_node`.
+
+Example:
+
+```text
+GET /v1/nodes?limit=2
+200 {"nodes":[{"node":"2","active":true,"degree":2},
+              {"node":"7","active":true,"degree":0}],"next_after":"7"}
+GET /v1/nodes/2/edges?state=ineffective
+200 {"node":{"node":"2","active":true,"degree":2},
+     "edges":[{"neighbor":"3","enabled":true,"effective":false}],"next_after":null}
+```
+
+**Order and cursors.** Nodes are ordered by ID. Incident edges are ordered by
+neighbor in the engine's stable incidence order: ascending neighbor ID with
+lifecycle support, neighbor registration order without it. `/v1/edges`
+orders by `source`, then by `source`'s incidence order. A non-null
+`next_after` (or `next_after_source` and `next_after_target`) is the cursor of
+the next page; `null` means the traversal is complete. A cursor is a
+position, not a token: it never expires and stays valid after the element it
+names is removed. The exception is plain `compact-bfs`, where an incidence
+cursor must name a registered node (nodes are never removed there);
+otherwise the route answers 422 `invalid_cursor`.
+
+**Consistency.** Each page is computed under one acquisition of the shared
+graph lock, and its version headers (`ETag`, `X-Knotrel-*`) describe that
+instant. Pages are **not** a snapshot:
+
+- an element present for the whole traversal is returned exactly once;
+- elements added or removed meanwhile may or may not appear;
+- when `X-Knotrel-Instance-Id` or `X-Knotrel-Generation` changes between
+  pages, the traversal spans different graphs, so restart it.
+
+**Bounded work.** A page examines at most 10 000 nodes or incidences (the
+scan budget), so a selective filter cannot hold the lock for long. Such a page
+can hold fewer than `limit` items while its cursor is non-null; keep
+following the cursor. A page costs `O(log V)` to position plus at most the
+budget, independent of graph size. Node detail is `O(1)` expected.
+
+**Engines and modes.**
+
+- Node listing and node detail work with every engine. `ett` and `hdt` keep no
+  per-node adjacency: they report `degree: null` and answer 409
+  `inspection_unsupported` for incident and edge listing.
+- The routes use the same bounded admission, blocking worker and shared lock as
+  `GET /v1/stats` (job kind `inspect` in the metrics), with no readiness gate.
+- They are available in both modes and never mutate. Responses carry
+  `Cache-Control: no-store`.
+
+**Costs.** With inspection enabled, the service keeps an ordered set of
+registered node IDs, roughly 10–20 bytes per node. Registering or removing a
+node updates it in `O(log V)`; links between existing nodes and flag changes
+do not touch it. Imports build it off-lock before publication. The plain
+`compact-bfs` engine also keeps an index→ID vector (8 bytes per node) whether
+or not inspection is enabled. Measurements:
+[console inspection costs](console-inspection-costs.md).
 
 ## Graph identity, versioning and coherent response headers
 

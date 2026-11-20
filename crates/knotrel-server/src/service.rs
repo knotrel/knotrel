@@ -345,7 +345,17 @@ fn build_import_candidate(
     engine: EngineConfig,
     limits: knotrel_core::GraphLimits,
     topology_lifecycle: bool,
+    inspection: bool,
 ) -> Result<ServiceGraph, FeederError> {
+    // The inspection index is built off-lock from the request, like the
+    // candidate itself: O(V log V) for V distinct IDs, before publication.
+    let order = inspection.then(|| {
+        nodes
+            .iter()
+            .map(|node| node.node.0)
+            .chain(edges.iter().flat_map(|edge| [edge.source.0, edge.target.0]))
+            .collect::<std::collections::BTreeSet<u64>>()
+    });
     let self_loop = || {
         FeederError::Domain(
             ErrorCode::SelfLoop,
@@ -384,7 +394,10 @@ fn build_import_candidate(
                 .link(edge.source.0, edge.target.0)
                 .map_err(|err| limit_error(err, ErrorCode::InvalidEdge))?;
         }
-        return Ok(ServiceGraph::Plain(candidate));
+        return Ok(ServiceGraph::from_parts(
+            crate::graph::Topology::Plain(candidate),
+            order,
+        ));
     }
     let node_specs: Vec<knotrel_core::NodeSpec> = nodes
         .into_iter()
@@ -402,7 +415,7 @@ fn build_import_candidate(
         })
         .collect();
     knotrel_core::LifecycleGraph::try_from_topology(engine, limits, &node_specs, &edge_specs)
-        .map(ServiceGraph::Lifecycle)
+        .map(|graph| ServiceGraph::from_parts(crate::graph::Topology::Lifecycle(graph), order))
         .map_err(|error| match error {
             knotrel_core::LifecycleError::Graph(error) => {
                 limit_error(error, ErrorCode::InvalidEdge)
@@ -418,13 +431,13 @@ fn build_import_candidate(
 ///
 /// Prevalidation rejects lifecycle events for a plain graph, so the
 /// unsupported branch is defensive and still reports an error.
-fn lifecycle_event(
-    result: Result<Result<bool, knotrel_core::LifecycleError>, crate::graph::LifecycleUnsupported>,
-) -> Result<bool, (ErrorCode, String)> {
+fn lifecycle_event(result: crate::graph::LifecycleResult) -> Result<bool, (ErrorCode, String)> {
     match result {
-        Ok(Ok(changed)) => Ok(changed),
-        Ok(Err(error)) => Err(crate::api::lifecycle_error_code(error)),
-        Err(_) => Err((
+        Ok(changed) => Ok(changed),
+        Err(crate::graph::LifecycleFailure::Domain(error)) => {
+            Err(crate::api::lifecycle_error_code(error))
+        }
+        Err(crate::graph::LifecycleFailure::Unsupported) => Err((
             ErrorCode::TopologyLifecycleDisabled,
             crate::api::LIFECYCLE_DISABLED_MESSAGE.into(),
         )),
@@ -1615,11 +1628,9 @@ impl GraphState {
                         }
                     }
                     CanonicalOp::Progress => Ok(false),
-                    CanonicalOp::SetNodeActive { node, active } => lifecycle_event(
-                        self.graph
-                            .lifecycle_mut()
-                            .map(|graph| graph.set_node_active(*node, *active)),
-                    ),
+                    CanonicalOp::SetNodeActive { node, active } => {
+                        lifecycle_event(self.graph.set_node_active(*node, *active))
+                    }
                     // The fingerprint is normalized (min, max); the facade
                     // gets the supplied order so that error precedence and
                     // messages match direct operations (`u` before `v`).
@@ -1627,17 +1638,11 @@ impl GraphState {
                         let (Some(source), Some(target)) = (event.source, event.target) else {
                             unreachable!("prevalidated set_edge_enabled has both endpoints")
                         };
-                        lifecycle_event(
-                            self.graph
-                                .lifecycle_mut()
-                                .map(|graph| graph.set_edge_enabled(source.0, target.0, *enabled)),
-                        )
+                        lifecycle_event(self.graph.set_edge_enabled(source.0, target.0, *enabled))
                     }
-                    CanonicalOp::RemoveNode { node } => lifecycle_event(
-                        self.graph
-                            .lifecycle_mut()
-                            .map(|graph| Ok(graph.remove_node(*node))),
-                    ),
+                    CanonicalOp::RemoveNode { node } => {
+                        lifecycle_event(self.graph.remove_node(*node))
+                    }
                 };
 
                 let changed = match changed_result {
@@ -2028,7 +2033,7 @@ impl Service {
         let max_import_body_bytes = config.max_import_body_bytes();
         let telemetry = config
             .metrics_enabled()
-            .then(|| ServiceTelemetry::new(mode, topology_lifecycle));
+            .then(|| ServiceTelemetry::new(mode, topology_lifecycle, graph.is_inspectable()));
         if let Some(telemetry) = &telemetry {
             telemetry.publish_graph_counts(&graph);
         }
@@ -2050,6 +2055,7 @@ impl Service {
                 mode: mode_str,
                 instance_id: inst_id_opt,
                 topology_lifecycle,
+                inspection: graph.is_inspectable(),
             },
             graph: Arc::new(RwLock::new(GraphState::new(
                 graph,
@@ -2304,6 +2310,7 @@ impl Service {
         let panic_telemetry = self.telemetry_for(JobEffect::MayChangeState);
         let engine = self.info.engine;
         let topology_lifecycle = self.info.topology_lifecycle;
+        let inspection = self.info.inspection;
         let limits = knotrel_core::GraphLimits {
             max_nodes: self.info.max_nodes,
             max_edges: self.info.max_edges,
@@ -2416,6 +2423,7 @@ impl Service {
                 engine_config,
                 limits,
                 topology_lifecycle,
+                inspection,
             )?;
 
             job.import.observe(ImportObservation::begin_publish);
@@ -2644,6 +2652,32 @@ impl Service {
                 metadata.sync_status = Some(SyncStatus::Loading);
             }
             StatsResult { snapshot, metadata }
+        })
+        .await
+    }
+
+    /// Whether the inspection routes are enabled.
+    pub(crate) fn inspection(&self) -> bool {
+        self.info.inspection
+    }
+
+    /// Runs one read-only inspection job under the shared graph lock, with
+    /// the same admission, worker and failure handling as [`Self::stats`].
+    /// The version metadata is captured under the same lock acquisition.
+    pub(crate) async fn inspect<T: Send + 'static>(
+        &self,
+        read: impl FnOnce(&ServiceGraph) -> Result<T, crate::graph::InspectError> + Send + 'static,
+    ) -> Result<(Result<T, crate::graph::InspectError>, ResponseMetadata), ServiceError> {
+        let mode = self.mode;
+        let instance_id = Arc::clone(&self.instance_id);
+        let current_sync_status = self.sync_status();
+        self.run_read(JobKind::Inspect, move |state| {
+            let result = read(&state.graph);
+            let mut metadata = state.response_metadata(mode, &instance_id);
+            if current_sync_status == SyncStatus::Loading && state.generation == 0 {
+                metadata.sync_status = Some(SyncStatus::Loading);
+            }
+            (result, metadata)
         })
         .await
     }
@@ -3166,6 +3200,7 @@ mod tests {
             EngineConfig::CompactBfs,
             knotrel_core::GraphLimits::default(),
             true,
+            false,
         );
         let service = Service::new(graph, 2, Lifecycle::new());
         assert!(service.execute(vec![link(1, 2), link(2, 3)]).await.is_ok());
@@ -4370,7 +4405,7 @@ mod tests {
     /// reports `topology_lifecycle_disabled`.
     #[test]
     fn lifecycle_event_on_a_plain_graph_reports_lifecycle_disabled() {
-        let result = lifecycle_event(Err(crate::graph::LifecycleUnsupported));
+        let result = lifecycle_event(Err(crate::graph::LifecycleFailure::Unsupported));
         assert_eq!(
             result,
             Err((

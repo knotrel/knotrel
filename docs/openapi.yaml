@@ -1172,7 +1172,306 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
 
+  /v1/nodes:
+    get:
+      operationId: list_nodes
+      summary: List nodes in ascending ID order (inspection)
+      tags:
+        - Inspection
+      description: |
+        Read-only inspection route, enabled by `KNOTREL_INSPECTION=true` (otherwise 409
+        `inspection_disabled`, before admission). Works with every engine. Runs like
+        `GET /v1/stats`: bounded admission, blocking worker, shared graph lock, no readiness
+        gate, available in both modes. Each page is computed under one lock acquisition and
+        carries the version headers of that instant; pages are not a snapshot. A node present
+        for the whole traversal is returned exactly once; nodes added or removed meanwhile may
+        or may not appear. A page examines at most 10000 nodes, so it may hold fewer than
+        `limit` items while `next_after` is non-null. Restart when `X-Knotrel-Instance-Id` or
+        `X-Knotrel-Generation` changes between pages.
+      parameters:
+        - $ref: '#/components/parameters/InspectionAfter'
+        - $ref: '#/components/parameters/InspectionLimit'
+        - name: state
+          in: query
+          required: false
+          description: Node filter. Without lifecycle support every node is active.
+          schema:
+            type: string
+            enum: [all, active, inactive]
+            default: all
+      responses:
+        '200':
+          description: One page of nodes
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodePage'
+              example:
+                nodes:
+                  - node: "2"
+                    active: true
+                    degree: 2
+                  - node: "18446744073709551615"
+                    active: false
+                    degree: 1
+                next_after: "18446744073709551615"
+        '409':
+          $ref: '#/components/responses/InspectionConflict'
+        '422':
+          $ref: '#/components/responses/InspectionInvalid'
+        '503':
+          $ref: '#/components/responses/InspectionUnavailable'
+
+  /v1/nodes/{node}:
+    get:
+      operationId: get_node
+      summary: Inspect one node
+      tags:
+        - Inspection
+      description: |
+        Read-only inspection route (`KNOTREL_INSPECTION=true`). Returns the node's flag and
+        registered degree. `degree` is `null` for engines without per-node adjacency (`ett`,
+        `hdt`). Accepts no query parameters.
+      parameters:
+        - $ref: '#/components/parameters/InspectionNode'
+      responses:
+        '200':
+          description: The registered node
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InspectedNode'
+        '404':
+          $ref: '#/components/responses/InspectionUnknownNode'
+        '409':
+          $ref: '#/components/responses/InspectionConflict'
+        '422':
+          $ref: '#/components/responses/InspectionInvalid'
+        '503':
+          $ref: '#/components/responses/InspectionUnavailable'
+
+  /v1/nodes/{node}/edges:
+    get:
+      operationId: list_node_edges
+      summary: List one node's incident edges (inspection)
+      tags:
+        - Inspection
+      description: |
+        Read-only inspection route (`KNOTREL_INSPECTION=true`); requires `compact-bfs`
+        (otherwise 409 `inspection_unsupported`). Order: ascending neighbor ID with lifecycle
+        support, neighbor registration order without it. `after` is the last neighbor
+        returned. With lifecycle support it need not be registered. Without it, it must name a
+        registered node (nodes are never removed in that mode), otherwise 422
+        `invalid_cursor`. Each page examines at most 10000 incidences. Same consistency
+        rules as `GET /v1/nodes`.
+      parameters:
+        - $ref: '#/components/parameters/InspectionNode'
+        - $ref: '#/components/parameters/InspectionAfter'
+        - $ref: '#/components/parameters/InspectionLimit'
+        - $ref: '#/components/parameters/InspectionEdgeState'
+      responses:
+        '200':
+          description: One page of incident edges
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentEdgePage'
+        '404':
+          $ref: '#/components/responses/InspectionUnknownNode'
+        '409':
+          $ref: '#/components/responses/InspectionConflict'
+        '422':
+          $ref: '#/components/responses/InspectionInvalid'
+        '503':
+          $ref: '#/components/responses/InspectionUnavailable'
+
+  /v1/edges:
+    get:
+      operationId: list_edges
+      summary: List edges once each (inspection)
+      tags:
+        - Inspection
+      description: |
+        Read-only inspection route (`KNOTREL_INSPECTION=true`); requires `compact-bfs`.
+        Each edge appears once as `source < target`, ordered by `source` ascending and then by
+        `source`'s incidence order. Resume with `after_source` and, when present,
+        `after_target` from `next_after_source` / `next_after_target`. A page examines at most
+        10000 nodes plus incidences. Same consistency rules as `GET /v1/nodes`.
+      parameters:
+        - name: after_source
+          in: query
+          required: false
+          description: Resume position (`next_after_source` of the previous page).
+          schema:
+            $ref: '#/components/schemas/NodeId'
+        - name: after_target
+          in: query
+          required: false
+          description: Resume position inside `after_source` (`next_after_target`); requires `after_source`.
+          schema:
+            $ref: '#/components/schemas/NodeId'
+        - $ref: '#/components/parameters/InspectionLimit'
+        - $ref: '#/components/parameters/InspectionEdgeState'
+      responses:
+        '200':
+          description: One page of edges
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgePage'
+        '409':
+          $ref: '#/components/responses/InspectionConflict'
+        '422':
+          $ref: '#/components/responses/InspectionInvalid'
+        '503':
+          $ref: '#/components/responses/InspectionUnavailable'
+
 components:
+  parameters:
+    InspectionNode:
+      name: node
+      in: path
+      required: true
+      description: Node ID (ASCII decimal digits, u64; leading zeroes are normalized).
+      schema:
+        $ref: '#/components/schemas/NodeId'
+    InspectionAfter:
+      name: after
+      in: query
+      required: false
+      description: Exclusive cursor, the last node (or neighbor) of the previous page. Never expires.
+      schema:
+        $ref: '#/components/schemas/NodeId'
+    InspectionLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+    InspectionEdgeState:
+      name: state
+      in: query
+      required: false
+      description: Edge filter. Without lifecycle support every edge is enabled and effective.
+      schema:
+        type: string
+        enum: [all, enabled, disabled, effective, ineffective]
+        default: all
+  responses:
+    InspectionConflict:
+      description: |
+        `inspection_disabled` (KNOTREL_INSPECTION is not enabled; rejected before admission)
+        or `inspection_unsupported` (incident and edge listing on `ett` or `hdt`).
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorOutcome'
+    InspectionInvalid:
+      description: |
+        `invalid_request`: unknown, repeated or malformed query parameter, invalid node ID,
+        `limit` outside 1-1000, unknown `state`, `after_target` without `after_source`.
+        `invalid_cursor`: a plain `compact-bfs` incidence cursor names an unregistered node.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorOutcome'
+    InspectionUnknownNode:
+      description: The inspected node is not registered (`unknown_node`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorOutcome'
+    InspectionUnavailable:
+      description: Admission exhausted (`busy`), worker unavailable, draining or `request_timeout`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorOutcome'
   headers:
     ETag:
       description: |
@@ -1472,7 +1771,10 @@ components:
         - graph_desynchronized
         - graph_uninitialized
         - import_in_progress
+        - inspection_disabled
+        - inspection_unsupported
         - invalid_batch_size
+        - invalid_cursor
         - invalid_edge
         - invalid_graph_id
         - invalid_instance_id
@@ -1637,6 +1939,12 @@ components:
           description: |
             Present only in source-managed mode (`KNOTREL_MODE=source_managed`). Absent in
             standalone mode. The response carries no server software version.
+        inspection:
+          type: boolean
+          const: true
+          description: |
+            Present, and `true`, only when the read-only inspection routes are enabled
+            (`KNOTREL_INSPECTION=true`); absent otherwise.
         instance_id:
           type: string
           description: |
@@ -1716,6 +2024,100 @@ components:
       type: integer
       minimum: 0
       description: Lifecycle support only. Edges that are enabled and whose endpoints are both active.
+
+    # Inspection payloads (GET /v1/nodes, /v1/nodes/{node}, /v1/nodes/{node}/edges, /v1/edges).
+
+    InspectedNode:
+      type: object
+      required: [node, active, degree]
+      properties:
+        node:
+          $ref: '#/components/schemas/NodeId'
+        active:
+          type: boolean
+          description: The node's flag; always `true` without lifecycle support.
+        degree:
+          type: [integer, "null"]
+          minimum: 0
+          description: Registered incident edges (enabled or not); `null` for `ett` and `hdt`.
+
+    NodePage:
+      type: object
+      required: [nodes, next_after]
+      properties:
+        nodes:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/InspectedNode'
+        next_after:
+          description: Cursor of the next page (`after`); `null` when the traversal is complete.
+          oneOf:
+            - $ref: '#/components/schemas/NodeId'
+            - type: "null"
+
+    IncidentEdge:
+      type: object
+      required: [neighbor, enabled, effective]
+      properties:
+        neighbor:
+          $ref: '#/components/schemas/NodeId'
+        enabled:
+          type: boolean
+          description: The edge's own flag (desired state).
+        effective:
+          type: boolean
+          description: Enabled with both endpoints active; participates in connectivity.
+
+    IncidentEdgePage:
+      type: object
+      required: [node, edges, next_after]
+      properties:
+        node:
+          $ref: '#/components/schemas/InspectedNode'
+        edges:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/IncidentEdge'
+        next_after:
+          description: Last neighbor examined, the cursor of the next page; `null` when complete.
+          oneOf:
+            - $ref: '#/components/schemas/NodeId'
+            - type: "null"
+
+    InspectedEdge:
+      type: object
+      required: [source, target, enabled, effective]
+      properties:
+        source:
+          $ref: '#/components/schemas/NodeId'
+        target:
+          $ref: '#/components/schemas/NodeId'
+        enabled:
+          type: boolean
+        effective:
+          type: boolean
+
+    EdgePage:
+      type: object
+      required: [edges, next_after_source, next_after_target]
+      properties:
+        edges:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/InspectedEdge'
+        next_after_source:
+          description: Resume position (`after_source`); `null` when the traversal is complete.
+          oneOf:
+            - $ref: '#/components/schemas/NodeId'
+            - type: "null"
+        next_after_target:
+          description: Resume position inside `next_after_source` (`after_target`), or `null`.
+          oneOf:
+            - $ref: '#/components/schemas/NodeId'
+            - type: "null"
 
     # Feeder payloads; operational recovery details are in integration-contract.md.
 

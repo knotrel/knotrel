@@ -5,7 +5,7 @@ use crate::service::{Service, ServiceError};
 use axum::{
     Json,
     body::Bytes,
-    extract::{FromRequest, Request, State},
+    extract::{FromRequest, Path, Query as QueryString, Request, State},
     http::{HeaderMap, HeaderName, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
@@ -28,10 +28,14 @@ pub(crate) enum Route {
     FeederEvents,
     FeederGap,
     FeederBarrier,
+    Nodes,
+    Node,
+    NodeEdges,
+    Edges,
 }
 
 impl Route {
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::Health,
         Self::Ready,
         Self::Metrics,
@@ -45,6 +49,10 @@ impl Route {
         Self::FeederEvents,
         Self::FeederGap,
         Self::FeederBarrier,
+        Self::Nodes,
+        Self::Node,
+        Self::NodeEdges,
+        Self::Edges,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -62,6 +70,10 @@ impl Route {
             Self::FeederEvents => "/v1/feeder/events",
             Self::FeederGap => "/v1/feeder/gap",
             Self::FeederBarrier => "/v1/feeder/barrier",
+            Self::Nodes => "/v1/nodes",
+            Self::Node => "/v1/nodes/{node}",
+            Self::NodeEdges => "/v1/nodes/{node}/edges",
+            Self::Edges => "/v1/edges",
         }
     }
 }
@@ -99,7 +111,10 @@ pub(crate) enum ErrorCode {
     GraphDesynchronized,
     GraphUninitialized,
     ImportInProgress,
+    InspectionDisabled,
+    InspectionUnsupported,
     InvalidBatchSize,
+    InvalidCursor,
     InvalidEdge,
     InvalidGraphId,
     InvalidInstanceId,
@@ -134,7 +149,7 @@ pub(crate) enum ErrorCode {
 
 impl ErrorCode {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 45] = [
+    pub(crate) const ALL: [Self; 48] = [
         Self::BarrierNotReached,
         Self::BarrierPositionMismatch,
         Self::Busy,
@@ -149,7 +164,10 @@ impl ErrorCode {
         Self::GraphDesynchronized,
         Self::GraphUninitialized,
         Self::ImportInProgress,
+        Self::InspectionDisabled,
+        Self::InspectionUnsupported,
         Self::InvalidBatchSize,
+        Self::InvalidCursor,
         Self::InvalidEdge,
         Self::InvalidGraphId,
         Self::InvalidInstanceId,
@@ -198,7 +216,10 @@ impl ErrorCode {
             Self::GraphDesynchronized => "graph_desynchronized",
             Self::GraphUninitialized => "graph_uninitialized",
             Self::ImportInProgress => "import_in_progress",
+            Self::InspectionDisabled => "inspection_disabled",
+            Self::InspectionUnsupported => "inspection_unsupported",
             Self::InvalidBatchSize => "invalid_batch_size",
+            Self::InvalidCursor => "invalid_cursor",
             Self::InvalidEdge => "invalid_edge",
             Self::InvalidGraphId => "invalid_graph_id",
             Self::InvalidInstanceId => "invalid_instance_id",
@@ -778,28 +799,15 @@ impl Operation {
             Self::Connected { source, target } => {
                 Query::Connected { source, target }.evaluate(graph)
             }
-            Self::SetNodeActive { node, active } => lifecycle_outcome(
-                graph
-                    .lifecycle_mut()
-                    .map_err(LifecycleFailure::from)
-                    .and_then(|graph| Ok(graph.set_node_active(node.0, active)?)),
-            ),
+            Self::SetNodeActive { node, active } => {
+                lifecycle_outcome(graph.set_node_active(node.0, active))
+            }
             Self::SetEdgeEnabled {
                 source,
                 target,
                 enabled,
-            } => lifecycle_outcome(
-                graph
-                    .lifecycle_mut()
-                    .map_err(LifecycleFailure::from)
-                    .and_then(|graph| Ok(graph.set_edge_enabled(source.0, target.0, enabled)?)),
-            ),
-            Self::RemoveNode { node } => lifecycle_outcome(
-                graph
-                    .lifecycle_mut()
-                    .map_err(LifecycleFailure::from)
-                    .map(|graph| graph.remove_node(node.0)),
-            ),
+            } => lifecycle_outcome(graph.set_edge_enabled(source.0, target.0, enabled)),
+            Self::RemoveNode { node } => lifecycle_outcome(graph.remove_node(node.0)),
             Self::NodeState { node } => Query::NodeState { node }.evaluate(graph),
             Self::EdgeState { source, target } => {
                 Query::EdgeState { source, target }.evaluate(graph)
@@ -1794,6 +1802,349 @@ pub(crate) async fn stats(State(service): State<Service>) -> Response {
     response
 }
 
+// ----- Inspection routes (read-only; KNOTREL_INSPECTION) -----
+
+/// Default page size of the inspection routes.
+const INSPECTION_DEFAULT_LIMIT: usize = 100;
+
+/// Wire form of one node (`GET /v1/nodes`, `GET /v1/nodes/{node}`).
+#[derive(Serialize)]
+struct WireNodeRecord {
+    node: String,
+    active: bool,
+    degree: Option<usize>,
+}
+
+impl From<crate::graph::NodeRecord> for WireNodeRecord {
+    fn from(record: crate::graph::NodeRecord) -> Self {
+        Self {
+            node: record.node.to_string(),
+            active: record.active,
+            degree: record.degree,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct WireNodePage {
+    nodes: Vec<WireNodeRecord>,
+    next_after: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WireIncidentEdge {
+    neighbor: String,
+    enabled: bool,
+    effective: bool,
+}
+
+#[derive(Serialize)]
+struct WireIncidentPage {
+    node: WireNodeRecord,
+    edges: Vec<WireIncidentEdge>,
+    next_after: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WirePairRecord {
+    source: String,
+    target: String,
+    enabled: bool,
+    effective: bool,
+}
+
+#[derive(Serialize)]
+struct WireEdgePage {
+    edges: Vec<WirePairRecord>,
+    next_after_source: Option<String>,
+    next_after_target: Option<String>,
+}
+
+fn invalid_query(message: impl Into<String>) -> Response {
+    error_response(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        ErrorCode::InvalidRequest,
+        message.into(),
+    )
+}
+
+/// Validated query parameters of an inspection route. Unknown or repeated
+/// parameters are rejected, like unknown JSON fields.
+struct InspectQuery<'a> {
+    pairs: Vec<(&'a str, &'a str)>,
+}
+
+impl<'a> InspectQuery<'a> {
+    fn new(pairs: &'a [(String, String)], allowed: &[&str]) -> Result<Self, String> {
+        let mut seen: Vec<(&str, &str)> = Vec::with_capacity(pairs.len());
+        for (name, value) in pairs {
+            if !allowed.contains(&name.as_str()) {
+                return Err(format!("unknown query parameter `{name}`"));
+            }
+            if seen.iter().any(|(seen_name, _)| *seen_name == name) {
+                return Err(format!("duplicate query parameter `{name}`"));
+            }
+            seen.push((name, value));
+        }
+        Ok(Self { pairs: seen })
+    }
+
+    fn get(&self, name: &str) -> Option<&'a str> {
+        self.pairs
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| *value)
+    }
+
+    fn node(&self, name: &str) -> Result<Option<u64>, String> {
+        self.get(name)
+            .map(|value| {
+                WireNode::parse(value)
+                    .map(|node| node.0)
+                    .map_err(|reason| format!("`{name}`: {reason}"))
+            })
+            .transpose()
+    }
+
+    fn limit(&self) -> Result<usize, String> {
+        let Some(value) = self.get("limit") else {
+            return Ok(INSPECTION_DEFAULT_LIMIT);
+        };
+        match value.parse::<usize>() {
+            Ok(limit)
+                if value.bytes().all(|b| b.is_ascii_digit())
+                    && (1..=crate::graph::INSPECTION_MAX_LIMIT).contains(&limit) =>
+            {
+                Ok(limit)
+            }
+            _ => Err(format!(
+                "`limit` must be an integer from 1 to {}",
+                crate::graph::INSPECTION_MAX_LIMIT
+            )),
+        }
+    }
+
+    fn node_filter(&self) -> Result<crate::graph::NodeFilter, String> {
+        use crate::graph::NodeFilter;
+        match self.get("state") {
+            None | Some("all") => Ok(NodeFilter::All),
+            Some("active") => Ok(NodeFilter::Active),
+            Some("inactive") => Ok(NodeFilter::Inactive),
+            Some(_) => Err("`state` must be all, active or inactive".into()),
+        }
+    }
+
+    fn edge_filter(&self) -> Result<crate::graph::EdgeFilter, String> {
+        use crate::graph::EdgeFilter;
+        match self.get("state") {
+            None | Some("all") => Ok(EdgeFilter::All),
+            Some("enabled") => Ok(EdgeFilter::Enabled),
+            Some("disabled") => Ok(EdgeFilter::Disabled),
+            Some("effective") => Ok(EdgeFilter::Effective),
+            Some("ineffective") => Ok(EdgeFilter::Ineffective),
+            Some(_) => {
+                Err("`state` must be all, enabled, disabled, effective or ineffective".into())
+            }
+        }
+    }
+}
+
+fn inspect_error(error: crate::graph::InspectError) -> Response {
+    use crate::graph::InspectError;
+    match error {
+        InspectError::Disabled => error_response(
+            StatusCode::CONFLICT,
+            ErrorCode::InspectionDisabled,
+            "inspection routes are disabled; set KNOTREL_INSPECTION=true".into(),
+        ),
+        InspectError::Unsupported => error_response(
+            StatusCode::CONFLICT,
+            ErrorCode::InspectionUnsupported,
+            "incident and edge listing require KNOTREL_ENGINE=compact-bfs".into(),
+        ),
+        InspectError::UnknownNode => error_response(
+            StatusCode::NOT_FOUND,
+            ErrorCode::UnknownNode,
+            "unknown node".into(),
+        ),
+        InspectError::InvalidCursor => error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::InvalidCursor,
+            "the cursor names a node that is not registered; restart the listing".into(),
+        ),
+    }
+}
+
+/// Runs one inspection read and renders it with the version headers captured
+/// under the same lock acquisition. Every response carries `no-store`.
+async fn inspect_response<T, W>(
+    service: &Service,
+    read: impl FnOnce(&crate::graph::ServiceGraph) -> Result<T, crate::graph::InspectError>
+    + Send
+    + 'static,
+    render: impl FnOnce(T) -> W,
+) -> Response
+where
+    T: Send + 'static,
+    W: Serialize,
+{
+    let mut response = if service.inspection() {
+        match service.inspect(read).await {
+            Ok((Ok(value), metadata)) => {
+                let mut response = Json(render(value)).into_response();
+                inject_metadata_headers(response.headers_mut(), metadata);
+                response
+            }
+            Ok((Err(error), _)) => inspect_error(error),
+            Err(error) => service_error(error),
+        }
+    } else {
+        // Rejected before admission: a disabled feature consumes no permit.
+        inspect_error(crate::graph::InspectError::Disabled)
+    };
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+type QueryPairs =
+    Result<QueryString<Vec<(String, String)>>, axum::extract::rejection::QueryRejection>;
+
+fn query_pairs(query: QueryPairs) -> Result<Vec<(String, String)>, String> {
+    query
+        .map(|QueryString(pairs)| pairs)
+        .map_err(|_| "malformed query string".to_owned())
+}
+
+/// `GET /v1/nodes`: nodes in ascending ID order.
+pub(crate) async fn list_nodes(State(service): State<Service>, query: QueryPairs) -> Response {
+    let parsed = query_pairs(query).and_then(|pairs| {
+        let query = InspectQuery::new(&pairs, &["after", "limit", "state"])?;
+        Ok((query.node("after")?, query.limit()?, query.node_filter()?))
+    });
+    let (after, limit, filter) = match parsed {
+        Ok(parsed) => parsed,
+        Err(message) => return invalid_query(message),
+    };
+    inspect_response(
+        &service,
+        move |graph| graph.list_nodes(after, limit, filter),
+        |page| WireNodePage {
+            nodes: page.nodes.into_iter().map(WireNodeRecord::from).collect(),
+            next_after: page.next_after.map(|node| node.to_string()),
+        },
+    )
+    .await
+}
+
+fn path_node(node: &str) -> Result<u64, String> {
+    WireNode::parse(node)
+        .map(|node| node.0)
+        .map_err(|reason| format!("node: {reason}"))
+}
+
+/// `GET /v1/nodes/{node}`: one node.
+pub(crate) async fn get_node(
+    State(service): State<Service>,
+    Path(node): Path<String>,
+    query: QueryPairs,
+) -> Response {
+    let parsed = query_pairs(query)
+        .and_then(|pairs| InspectQuery::new(&pairs, &[]).map(|_| ()))
+        .and_then(|()| path_node(&node));
+    let node = match parsed {
+        Ok(node) => node,
+        Err(message) => return invalid_query(message),
+    };
+    inspect_response(
+        &service,
+        move |graph| graph.inspect_node(node),
+        WireNodeRecord::from,
+    )
+    .await
+}
+
+/// `GET /v1/nodes/{node}/edges`: incident edges of one node.
+pub(crate) async fn list_node_edges(
+    State(service): State<Service>,
+    Path(node): Path<String>,
+    query: QueryPairs,
+) -> Response {
+    let parsed = query_pairs(query).and_then(|pairs| {
+        let query = InspectQuery::new(&pairs, &["after", "limit", "state"])?;
+        Ok((
+            path_node(&node)?,
+            query.node("after")?,
+            query.limit()?,
+            query.edge_filter()?,
+        ))
+    });
+    let (node, after, limit, filter) = match parsed {
+        Ok(parsed) => parsed,
+        Err(message) => return invalid_query(message),
+    };
+    inspect_response(
+        &service,
+        move |graph| graph.list_incident(node, after, limit, filter),
+        |page| WireIncidentPage {
+            node: page.node.into(),
+            edges: page
+                .edges
+                .into_iter()
+                .map(|edge| WireIncidentEdge {
+                    neighbor: edge.neighbor.to_string(),
+                    enabled: edge.enabled,
+                    effective: edge.effective,
+                })
+                .collect(),
+            next_after: page.next_after.map(|node| node.to_string()),
+        },
+    )
+    .await
+}
+
+/// `GET /v1/edges`: every edge once, as `source < target`.
+pub(crate) async fn list_edges(State(service): State<Service>, query: QueryPairs) -> Response {
+    let parsed = query_pairs(query).and_then(|pairs| {
+        let query = InspectQuery::new(&pairs, &["after_source", "after_target", "limit", "state"])?;
+        let after = match (query.node("after_source")?, query.node("after_target")?) {
+            (None, None) => None,
+            (Some(source), target) => Some((source, target)),
+            (None, Some(_)) => {
+                return Err("`after_target` requires `after_source`".to_owned());
+            }
+        };
+        Ok((after, query.limit()?, query.edge_filter()?))
+    });
+    let (after, limit, filter) = match parsed {
+        Ok(parsed) => parsed,
+        Err(message) => return invalid_query(message),
+    };
+    inspect_response(
+        &service,
+        move |graph| graph.list_edges(after, limit, filter),
+        |page| WireEdgePage {
+            edges: page
+                .edges
+                .into_iter()
+                .map(|edge| WirePairRecord {
+                    source: edge.source.to_string(),
+                    target: edge.target.to_string(),
+                    enabled: edge.enabled,
+                    effective: edge.effective,
+                })
+                .collect(),
+            next_after_source: page.next.map(|(source, _)| source.to_string()),
+            next_after_target: page
+                .next
+                .and_then(|(_, target)| target.map(|target| target.to_string())),
+        },
+    )
+    .await
+}
+
 /// Injects coherent graph identity and version headers into an HTTP response.
 pub(crate) fn inject_metadata_headers(
     headers: &mut HeaderMap,
@@ -2109,6 +2460,10 @@ mod tests {
                 "/v1/feeder/events",
                 "/v1/feeder/gap",
                 "/v1/feeder/barrier",
+                "/v1/nodes",
+                "/v1/nodes/{node}",
+                "/v1/nodes/{node}/edges",
+                "/v1/edges",
             ]
         );
         assert_eq!(INSTANCE_ID_HEADER.as_str(), "x-knotrel-instance-id");
@@ -2179,7 +2534,10 @@ mod tests {
                 "graph_desynchronized",
                 "graph_uninitialized",
                 "import_in_progress",
+                "inspection_disabled",
+                "inspection_unsupported",
                 "invalid_batch_size",
+                "invalid_cursor",
                 "invalid_edge",
                 "invalid_graph_id",
                 "invalid_instance_id",

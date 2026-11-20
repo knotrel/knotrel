@@ -1153,6 +1153,63 @@ impl LifecycleGraph {
         self.nodes.get(&node).map(|record| record.active)
     }
 
+    /// Returns the number of registered edges incident to `node` (enabled or
+    /// not), or `None` if it is not registered. Expected O(1).
+    #[must_use]
+    pub fn degree(&self, node: NodeId) -> Option<usize> {
+        self.nodes.get(&node).map(|record| record.incident.len())
+    }
+
+    /// Iterates the registered edges incident to `node` in ascending neighbor
+    /// ID, starting strictly after the neighbor `after` (or from the start),
+    /// with each edge's flags. Returns `None` if `node` is not registered.
+    ///
+    /// `after` is a pagination cursor: it need not be registered or still
+    /// linked, so every edge that stays registered while a caller pages through
+    /// the list is visited exactly once; edges registered or removed meanwhile
+    /// may or may not be visited.
+    ///
+    /// Positioning is O(log deg(node)); each step costs one expected-O(1)
+    /// catalog lookup of the neighbor (for `effective`).
+    ///
+    /// ```rust
+    /// use knotrel_core::{EngineConfig, LifecycleGraph};
+    ///
+    /// let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs)?;
+    /// graph.link(5, 9)?;
+    /// graph.link(5, 1)?;
+    /// graph.set_node_active(9, false)?;
+    /// let edges: Vec<_> = graph.incident_after(5, None).unwrap().collect();
+    /// assert_eq!(edges.len(), 2);
+    /// assert_eq!(edges[0].0, 1); // ascending neighbor ID
+    /// assert!(edges[0].1.effective);
+    /// assert!(edges[1].1.enabled && !edges[1].1.effective); // 9 is inactive
+    /// assert_eq!(graph.incident_after(5, Some(1)).unwrap().count(), 1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn incident_after(
+        &self,
+        node: NodeId,
+        after: Option<NodeId>,
+    ) -> Option<impl Iterator<Item = (NodeId, EdgeState)> + '_> {
+        let record = self.nodes.get(&node)?;
+        let start = after.map_or(0, |cursor| {
+            record
+                .incident
+                .partition_point(|incidence| incidence.neighbor <= cursor)
+        });
+        Some(record.incident[start..].iter().map(move |incidence| {
+            let neighbor_active = self.nodes[&incidence.neighbor].active;
+            (
+                incidence.neighbor,
+                EdgeState {
+                    enabled: incidence.enabled,
+                    effective: incidence.enabled && record.active && neighbor_active,
+                },
+            )
+        }))
+    }
+
     /// Returns the flags of the registered edge `{source, target}`, or `None`
     /// if it is not registered. A self-loop pair is never registered.
     #[must_use]
@@ -1266,6 +1323,29 @@ impl LifecycleGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `incident_after` pages in ascending neighbor ID, reports flags, and keeps
+    /// working with a cursor whose neighbor was removed.
+    #[test]
+    fn incident_pages_follow_neighbor_ids_and_survive_removal() {
+        let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
+        for neighbor in [30, 10, 20, u64::MAX] {
+            graph.link(5, neighbor).unwrap();
+        }
+        graph.set_edge_enabled(5, 20, false).unwrap();
+        graph.set_node_active(u64::MAX, false).unwrap();
+        let first: Vec<_> = graph.incident_after(5, None).unwrap().take(2).collect();
+        assert_eq!(first.iter().map(|e| e.0).collect::<Vec<_>>(), [10, 20]);
+        assert!(first[0].1.effective);
+        assert!(!first[1].1.enabled && !first[1].1.effective);
+        assert!(graph.remove_node(20));
+        let rest: Vec<_> = graph.incident_after(5, Some(20)).unwrap().collect();
+        assert_eq!(rest.iter().map(|e| e.0).collect::<Vec<_>>(), [30, u64::MAX]);
+        assert!(rest[1].1.enabled && !rest[1].1.effective);
+        assert_eq!(graph.degree(5), Some(3));
+        assert_eq!(graph.degree(20), None);
+        assert!(graph.incident_after(20, None).is_none());
+    }
 
     /// `Error::source` exposes only wrapped graph errors.
     #[test]

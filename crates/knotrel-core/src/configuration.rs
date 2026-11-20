@@ -199,12 +199,24 @@ impl ConnectivityGraph {
         }
     }
 
-    /// Reports whether `node` is registered, in expected O(1) time.
+    /// Reports whether `node` is registered, in expected O(1) time with every
+    /// engine.
     ///
     /// Limit checks use this ID-map lookup instead of a reflexive
     /// [`Self::connected`] query, which costs O(log V) tree-root walks on the
     /// Euler-tour and HDT engines.
-    pub(crate) fn contains_node(&self, node: NodeId) -> bool {
+    ///
+    /// ```rust
+    /// use knotrel_core::{ConnectivityGraph, EngineConfig};
+    ///
+    /// let mut graph = ConnectivityGraph::new(EngineConfig::Hdt);
+    /// graph.add_node(u64::MAX)?;
+    /// assert!(graph.contains_node(u64::MAX));
+    /// assert!(!graph.contains_node(1));
+    /// # Ok::<(), knotrel_core::GraphError>(())
+    /// ```
+    #[must_use]
+    pub fn contains_node(&self, node: NodeId) -> bool {
         match &self.backend {
             Backend::Compact(graph) => graph.contains_node(node),
             Backend::EulerTour(graph) => graph.contains_node(node),
@@ -295,6 +307,28 @@ impl ConnectivityGraph {
             Backend::Compact(graph) => graph.connected(source, target),
             Backend::EulerTour(graph) => graph.connected(source, target),
             Backend::Hdt(graph) => graph.connected(source, target),
+        }
+    }
+
+    /// Returns the [`Graph`] engine when this graph uses
+    /// [`EngineConfig::CompactBfs`], for adjacency inspection with
+    /// [`Graph::degree`] and [`Graph::neighbors_after`]. The experimental engines
+    /// keep no per-node adjacency list, so they return `None`.
+    ///
+    /// ```rust
+    /// use knotrel_core::{ConnectivityGraph, EngineConfig};
+    ///
+    /// let mut graph = ConnectivityGraph::new(EngineConfig::CompactBfs);
+    /// graph.link(1, 2)?;
+    /// assert_eq!(graph.as_compact().and_then(|g| g.degree(1)), Some(1));
+    /// assert!(ConnectivityGraph::new(EngineConfig::EulerTour).as_compact().is_none());
+    /// # Ok::<(), knotrel_core::GraphError>(())
+    /// ```
+    #[must_use]
+    pub fn as_compact(&self) -> Option<&Graph> {
+        match &self.backend {
+            Backend::Compact(graph) => Some(graph),
+            Backend::EulerTour(_) | Backend::Hdt(_) => None,
         }
     }
 

@@ -268,11 +268,32 @@ impl GraphError {
 
 impl Error for GraphError {}
 
+/// Why an incidence listing could not start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncidenceError {
+    /// The node whose incident edges were requested is not registered.
+    UnknownNode,
+    /// The pagination cursor names a node that is not registered.
+    UnknownCursor,
+}
+
+impl fmt::Display for IncidenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::UnknownNode => "unknown node",
+            Self::UnknownCursor => "unknown incidence cursor",
+        })
+    }
+}
+
+impl Error for IncidenceError {}
+
 /// An undirected simple graph with compact adjacency and exact BFS queries.
 ///
-/// External IDs map to stable, append-only indices. Each sorted adjacency vector
-/// contains unique indices, and every edge appears at both endpoints. Cuts retain
-/// vertices. Logical storage is O(V + E). Allocated storage is O(V + H), where H is
+/// External IDs map to stable, append-only indices, and `nodes[i]` holds the ID of
+/// index `i` (8 bytes per vertex, used by [`neighbors_after`](Self::neighbors_after)).
+/// Each sorted adjacency vector contains unique indices, and every edge appears at
+/// both endpoints. Cuts retain vertices. Logical storage is O(V + E). Allocated storage is O(V + H), where H is
 /// the sum of per-vertex adjacency capacities: each is at least the vertex's
 /// historical maximum degree (capacity is retained) and, for a graph built in
 /// bulk by the lifecycle facade, starts at the vertex's enabled registered
@@ -280,6 +301,9 @@ impl Error for GraphError {}
 #[derive(Debug, Default)]
 pub struct Graph {
     ids: IntMap<NodeId, usize>,
+    /// Inverse of `ids`: the ID registered at each index. Indices are never
+    /// reused or removed, so this only grows, in step with `adjacency`.
+    nodes: Vec<NodeId>,
     adjacency: Vec<Vec<usize>>,
     edges: usize,
 }
@@ -313,6 +337,7 @@ impl Graph {
             Entry::Vacant(entry) => {
                 let index = self.adjacency.len();
                 self.adjacency.push(Vec::new());
+                self.nodes.push(node);
                 entry.insert(index);
                 index
             }
@@ -327,6 +352,7 @@ impl Graph {
         if let Entry::Vacant(entry) = self.ids.entry(node) {
             let index = self.adjacency.len();
             self.adjacency.push(Vec::new());
+            self.nodes.push(node);
             entry.insert(index);
             true
         } else {
@@ -471,9 +497,75 @@ impl Graph {
         }
         Self {
             ids: map,
+            nodes: ids,
             adjacency,
             edges: incidences / 2,
         }
+    }
+
+    /// Returns the number of edges incident to `node`, or `None` if it is not
+    /// registered. Expected O(1).
+    ///
+    /// ```rust
+    /// let mut graph = knotrel_core::Graph::new();
+    /// graph.link(1, 2)?;
+    /// assert_eq!(graph.degree(1), Some(1));
+    /// assert_eq!(graph.degree(9), None);
+    /// # Ok::<(), knotrel_core::GraphError>(())
+    /// ```
+    #[must_use]
+    pub fn degree(&self, node: NodeId) -> Option<usize> {
+        self.ids
+            .get(&node)
+            .map(|&index| self.adjacency[index].len())
+    }
+
+    /// Iterates the neighbors of `node` in the graph's stable incidence order,
+    /// starting strictly after the neighbor `after` (or from the start).
+    ///
+    /// The order is the neighbors' registration order. It is stable across
+    /// mutations: indices are never reused, so a neighbor present before and
+    /// after a sequence of calls keeps its relative position. That makes
+    /// `after` usable as a pagination cursor: every neighbor that stays linked
+    /// while a caller pages through the list is visited exactly once, and
+    /// neighbors linked or cut meanwhile may or may not be visited. `after`
+    /// need not still be linked to `node`.
+    ///
+    /// Positioning costs O(log deg(node)) expected; each step is O(1).
+    ///
+    /// # Errors
+    ///
+    /// [`IncidenceError::UnknownNode`] if `node` is not registered, and
+    /// [`IncidenceError::UnknownCursor`] if `after` is not a registered node.
+    /// Vertices are never removed from a [`Graph`], so a cursor obtained from
+    /// this graph never becomes unknown.
+    ///
+    /// ```rust
+    /// let mut graph = knotrel_core::Graph::new();
+    /// graph.link(5, 9)?;
+    /// graph.link(5, 1)?;
+    /// graph.link(5, 7)?;
+    /// let all: Vec<_> = graph.neighbors_after(5, None)?.collect();
+    /// assert_eq!(all, [9, 1, 7]); // registration order, not ID order
+    /// let rest: Vec<_> = graph.neighbors_after(5, Some(9))?.collect();
+    /// assert_eq!(rest, [1, 7]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn neighbors_after(
+        &self,
+        node: NodeId,
+        after: Option<NodeId>,
+    ) -> Result<impl Iterator<Item = NodeId> + '_, IncidenceError> {
+        let &index = self.ids.get(&node).ok_or(IncidenceError::UnknownNode)?;
+        let list = &self.adjacency[index];
+        let start = match after {
+            None => 0,
+            Some(cursor) => {
+                let &cursor = self.ids.get(&cursor).ok_or(IncidenceError::UnknownCursor)?;
+                list.partition_point(|&neighbor| neighbor <= cursor)
+            }
+        };
+        Ok(list[start..].iter().map(|&neighbor| self.nodes[neighbor]))
     }
 
     /// Releases the adjacency allocation of an isolated vertex.
@@ -501,6 +593,67 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Paging through a hub's neighbors with `neighbors_after` visits every
+    /// neighbor that stays linked exactly once, even when other edges are cut
+    /// and added between pages; cursors stay valid after their edge is cut.
+    #[test]
+    fn neighbor_pages_visit_stable_neighbors_exactly_once() {
+        let mut graph = Graph::new();
+        for neighbor in 1..=100u64 {
+            graph.link(0, neighbor * 7).unwrap();
+        }
+        let stable: Vec<u64> = (1..=100u64).filter(|n| n % 3 != 0).map(|n| n * 7).collect();
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut round = 0u64;
+        loop {
+            let page: Vec<u64> = graph.neighbors_after(0, cursor).unwrap().take(9).collect();
+            let Some(&last) = page.last() else { break };
+            seen.extend(page);
+            cursor = Some(last);
+            // Between pages: cut neighbors that are not "stable" (including the
+            // cursor itself) and link new ones.
+            for n in (1..=100u64).filter(|n| n % 3 == 0) {
+                let _ = graph.cut(0, n * 7);
+            }
+            // New neighbors are appended after the cursor; stop adding them after
+            // a few rounds so the traversal terminates.
+            if round < 5 {
+                round += 1;
+                graph.link(0, 10_000 + round).unwrap();
+            }
+        }
+        for node in &stable {
+            assert_eq!(seen.iter().filter(|&&s| s == *node).count(), 1, "{node}");
+        }
+        assert_eq!(graph.degree(0), Some(stable.len() + round as usize));
+        assert_eq!(graph.degree(424_242), None);
+        assert_eq!(
+            graph.neighbors_after(424_242, None).err(),
+            Some(IncidenceError::UnknownNode)
+        );
+        assert_eq!(
+            graph.neighbors_after(0, Some(424_242)).err(),
+            Some(IncidenceError::UnknownCursor)
+        );
+        assert_eq!(
+            IncidenceError::UnknownCursor.to_string(),
+            "unknown incidence cursor"
+        );
+        assert_eq!(IncidenceError::UnknownNode.to_string(), "unknown node");
+    }
+
+    /// A bulk-built graph maps indices back to the same IDs as an incremental one.
+    #[test]
+    fn bulk_built_graph_lists_neighbors_by_id() {
+        let ids = vec![u64::MAX, 3, 9_007_199_254_740_993];
+        let adjacency = vec![vec![1, 2], vec![0], vec![0]];
+        let graph = Graph::from_sorted_adjacency(ids, adjacency);
+        let neighbors: Vec<u64> = graph.neighbors_after(u64::MAX, None).unwrap().collect();
+        assert_eq!(neighbors, [3, 9_007_199_254_740_993]);
+        assert_eq!(graph.degree(3), Some(1));
+    }
 
     /// A bulk-built graph keeps every `Graph` invariant and then behaves like
     /// an incrementally built one under further `add_node`, `link`, `cut` and
