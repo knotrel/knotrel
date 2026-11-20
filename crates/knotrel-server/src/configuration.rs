@@ -336,9 +336,10 @@ impl ServerConfig {
     /// `GET /v1/nodes/{node}`, `GET /v1/nodes/{node}/edges`, `GET /v1/edges`).
     ///
     /// When enabled, the service keeps an ordered index of registered node IDs
-    /// (about 10–20 bytes per node and an `O(log V)` update whenever a node is
-    /// registered or removed) so that nodes can be listed in ascending ID
-    /// order with stable cursors. When disabled (the default) no index is kept
+    /// and, for plain `compact-bfs`, an index-to-ID vector for neighbor listing
+    /// (together up to about 20 bytes per node, updated in `O(log V)` whenever a node
+    /// is registered or removed) so that nodes can be listed in ascending ID
+    /// order with stable cursors. When disabled (the default) neither is kept
     /// and the routes answer 409 `inspection_disabled`. Every engine supports
     /// node listing; incident and edge listing need `compact-bfs`. See
     /// `docs/http-api.md`.

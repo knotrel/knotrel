@@ -4,9 +4,18 @@ Browser console for exploring, querying and diagnosing one
 [Knotrel](https://github.com/knotrel/knotrel) server: a node and edge browser
 with a detail pane and contextual operations, a workbench for queries and
 batches, a performance view from metrics, an overview and synchronization
-status. For the full console, run the server with `KNOTREL_INSPECTION=true`,
-`KNOTREL_TOPOLOGY_LIFECYCLE=true` and `KNOTREL_METRICS_ENABLED=true`, as the
-Compose example does.
+status.
+
+The console works with any server. Three optional server flags unlock more of
+it (the Compose example turns them all on):
+
+| Server flag | Unlocks | Default |
+| --- | --- | --- |
+| `KNOTREL_INSPECTION=true` | The node and edge browser | off (no cost when off) |
+| `KNOTREL_TOPOLOGY_LIFECYCLE=true` | Active/enabled/effective states and their actions | off |
+| `KNOTREL_METRICS_ENABLED=true` | The Performance page | off |
+
+Why each is optional, and what it costs: [docs/console.md](../docs/console.md#server-flags-in-short).
 
 > **Status: unreleased.** Version 0.1.0 is not published yet. Until the first
 > release, build the image locally (see [Get the image](#get-the-image)). The

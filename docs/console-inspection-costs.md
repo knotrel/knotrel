@@ -109,6 +109,32 @@ about 11 bytes per node.
 | C3 | **PASS**: ratios 0.96 and 0.98, against ≥ 0.85 |
 | C4 | **PASS**: 11 bytes per node, against ≤ 40 |
 
+## Run 2 (2026-11-20, after making the index→ID vector opt-in)
+
+The vector that plain `compact-bfs` uses to list neighbors is now kept only
+when inspection is enabled. The same protocol was re-run on that code. Raw
+output: [`console-inspection-costs-run2.json`](console-inspection-costs-run2.json)
+(SHA-256 `a0e4dabd74cc668be76839e94683ccb76a4c5a1b7e3d4d51eae389b2ecf71137`).
+
+| Measurement | Run 2 |
+| --- | --- |
+| M1 worst client p95 / server p95 | 0.47 ms / ≤ 0.5 ms (budget-bound page: max ≤ 1 ms) |
+| M2 mutations alone → with browsing (p95) | 0.081 → 0.453 ms |
+| M2 queries alone → with browsing (p95) | 0.084 → 0.144 ms |
+| M3 on/off (`add_node`, `link` with new endpoint) | 0.95, 0.98 |
+| M4 RSS difference | 5.6 bytes per node |
+
+All four criteria **PASS** again.
+
+**Reading M4 correctly.**
+- The protocol runs in lifecycle mode, where neighbors come from the lifecycle
+  catalog, so the opt-in vector is never allocated. M4 therefore measures only
+  the ordered node index.
+- RSS differences of a few bytes per node are within run-to-run variation (11
+  and 5.6 bytes in the two runs).
+- In plain `compact-bfs` mode the vector adds 8 bytes per node by construction.
+- The user documentation states "up to about 20 bytes per node".
+
 **Limits of this check.**
 - One machine, one run of each measurement, loopback only.
 - The bucket bounds of the execution histogram are coarse: 50 µs, then
