@@ -66,7 +66,8 @@ docker compose -f console/deploy/compose.yaml up --build
 
 Open <http://127.0.0.1:7380/>. The example starts a standalone server with
 lifecycle support, inspection and metrics enabled. `console/scripts/start-local.sh`
-and `stop-local.sh` wrap the same commands. Only the console port is published, on loopback;
+and `stop-local.sh` wrap the same commands; `console/scripts/seed-demo.sh` loads a
+small demo network, since the graph starts empty. Only the console port is published, on loopback;
 the server is reachable only from the console container. Graph state is in
 memory and lost when the server stops. Stop with Ctrl+C, then:
 

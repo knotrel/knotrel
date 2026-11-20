@@ -60,7 +60,7 @@ Fix formatting with `npm run format`.
 | Static archive                                         | `npm run archive` (writes `.artifacts/`)                                                                                                                          |
 | Image                                                  | `docker build -t knotrel-console:dev .`                                                                                                                           |
 | Container test                                         | `docker build -f ../examples/container/Dockerfile -t knotrel-server:example ..` then `scripts/smoke-container.sh knotrel-console:dev knotrel-server:example dist` |
-| Server and console in Docker                           | `scripts/start-local.sh --build`, then `scripts/stop-local.sh`                                                                                                    |
+| Server and console in Docker                           | `scripts/start-local.sh --build`, `scripts/seed-demo.sh` (demo data), then `scripts/stop-local.sh`                                                                |
 
 ## Rules worth knowing
 
