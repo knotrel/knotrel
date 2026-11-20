@@ -35,12 +35,32 @@ and stop a local server and the console with Docker Compose:
 ```sh
 console/scripts/start-local.sh            # start (builds images the first time) and wait until ready
 console/scripts/start-local.sh --build    # rebuild after code changes, then start
+console/scripts/seed-demo.sh              # load a small demo network (the graph starts empty)
 console/scripts/stop-local.sh             # stop and remove everything
 ```
 
 Open <http://127.0.0.1:7380/>. Only the console is published, on loopback;
 the server is reachable only from the console container. Graph data lives in
 memory and is lost when the server stops.
+
+`seed-demo.sh` sends two `POST /v1/batch` requests through the console:
+170 nodes (a chain, a ring, a hub with 150 spokes, two huge exact IDs,
+isolated nodes), one disabled edge (2–3) and two inactive nodes (42, 105).
+Running it again is harmless. Pass another base URL to seed a different
+server, for example `console/scripts/seed-demo.sh http://127.0.0.1:7379`.
+
+A first tour once the demo network is loaded:
+
+1. **Browser**: page through nodes; filter `inactive` (42, 105); look up
+   `18446744073709551615`; open hub `100` and page its incident edges.
+2. Open edge 2–3 (disabled, not effective), press **Check connectivity from
+   here…** on node 2 and query target `3`: not connected.
+3. Back in the Browser, **Enable** edge 2–3 and run the query again:
+   connected.
+4. **Workbench**: send a batch with a deliberate error and look at the
+   per-operation results, the raw view and **Copy as curl**.
+5. **Performance** fills in after a few seconds; **Overview** should report
+   nothing that needs attention.
 
 The same stack with plain Docker Compose (also on Windows), from the
 repository root:
