@@ -70,20 +70,27 @@ impl ServiceGraph {
         } else {
             Topology::Plain(ConnectivityGraph::with_limits(engine, limits))
         };
-        Self {
-            topology,
-            order: inspection.then(BTreeSet::new),
-        }
+        Self::from_parts(topology, inspection.then(BTreeSet::new))
     }
 
     /// Wraps an import candidate built off-lock. `order` must hold exactly
     /// the candidate's registered node IDs, or be `None` without inspection.
-    pub(crate) fn from_parts(topology: Topology, order: Option<BTreeSet<u64>>) -> Self {
+    ///
+    /// With inspection, a plain `compact-bfs` engine also starts keeping the
+    /// ID of every internal index (8 bytes per node) for neighbor listing.
+    /// Without inspection nothing extra is kept. The lifecycle facade lists
+    /// neighbors from its own catalog and needs nothing extra.
+    pub(crate) fn from_parts(mut topology: Topology, order: Option<BTreeSet<u64>>) -> Self {
         debug_assert!(order.as_ref().is_none_or(|order| order.len()
             == match &topology {
                 Topology::Plain(graph) => graph.node_count(),
                 Topology::Lifecycle(graph) => graph.node_count(),
             }));
+        if order.is_some()
+            && let Topology::Plain(graph) = &mut topology
+        {
+            graph.enable_neighbor_listing();
+        }
         Self { topology, order }
     }
 
@@ -330,6 +337,8 @@ impl ServiceGraph {
                         .map_err(|error| match error {
                             IncidenceError::UnknownNode => InspectError::UnknownNode,
                             IncidenceError::UnknownCursor => InspectError::InvalidCursor,
+                            // Unreachable: inspection enables listing on compact-bfs.
+                            IncidenceError::NotEnabled => InspectError::Unsupported,
                         })?;
                 for neighbor in neighbors {
                     if !visit(EdgeRecord {
@@ -696,6 +705,16 @@ mod tests {
         );
         let wrapped = ServiceGraph::from(ConnectivityGraph::new(EngineConfig::CompactBfs));
         assert!(!wrapped.is_inspectable());
+        // Without inspection the plain engine keeps no index-to-ID vector.
+        let mut plain = super::tests::graph(false, false);
+        plain.link(1, 2).unwrap();
+        let Topology::Plain(engine) = &plain.topology else {
+            unreachable!()
+        };
+        assert_eq!(
+            engine.as_compact().unwrap().neighbors_after(1, None).err(),
+            Some(IncidenceError::NotEnabled)
+        );
     }
 
     /// The index follows every node-set change, including rejected links

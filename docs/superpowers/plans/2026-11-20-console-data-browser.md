@@ -91,7 +91,7 @@ those routes and report `degree: null`.
 | Page | O(log V) seek plus at most 10 000 visited entries plus O(limit) output, under a shared lock. Independent of graph size. |
 | Node detail | O(1) expected |
 | Extra state (only when enabled) | A `BTreeSet<u64>` of registered node IDs: about 10–20 bytes per node, O(log V) insert or remove when a node is created or removed, built off-lock during import |
-| Always on (plain `compact-bfs`) | The core `Graph` keeps an index→ID vector: 8 bytes per node, one `push` when a node is registered. No change for edge operations. |
+| Also only when enabled (plain `compact-bfs`) | The core `Graph` keeps an index→ID vector for neighbor listing: 8 bytes per node, one `push` when a node is registered. No change for edge operations. |
 
 These costs are measured before any claim is made; see
 [the cost check](#cost-check).
@@ -144,9 +144,10 @@ Protocol and pass criteria are written before measuring, in
 
 ## Re-qualification impact
 
-The index→ID vector changes the core `Graph` registration path, which every
-`compact-bfs` mutation and import uses. Published performance evidence
-(v0.7.0) was measured without it. Before the next server release, re-run the
-qualification items that register nodes: imports, `add_node` and `link` with
-new endpoints. The inspection index is opt-in and off by default, so default
-servers pay only the vector.
+With inspection disabled (the default), the server keeps no extra state. The
+only change on the node-registration path is a check of an empty optional
+field in the `compact-bfs` engine. No published evidence is invalidated by
+design; the standard qualification of the next release confirms it.
+
+With inspection enabled, the costs are those measured in the
+[cost check](../../console-inspection-costs.md).

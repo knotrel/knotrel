@@ -706,7 +706,7 @@ for them.
   - Workbench with contract-checked batches, raw views, saved requests, console history and `curl` equivalents.
   - Performance view from `/metrics`; condensed overview; synchronization with lease information.
   - Server side: the opt-in read-only inspection routes (`KNOTREL_INSPECTION`), with a targeted cost check that passed its pre-declared criteria ([results](docs/console-inspection-costs.md)).
-  - The `compact-bfs` index→ID vector changes the node-registration path: re-qualify node-registering workloads before the next server release.
+  - With inspection off (the default) the server keeps no extra state; the inspection costs apply only when it is enabled.
 - [ ] **C4 — Release.** Maintainer setup ([console release procedure](docs/releases/console-release.md)), RC, post-publication checks and stable.
 
 **Acceptance:** console CI green on all jobs; SonarCloud quality gate passed in authorized CI; dry run passed on the release commit; published image and archive verified (digest, checksums, provenance, start-up). The npm launcher, a dedicated repository and the server API gaps listed in the design (software version, execution time, source lag) are separate decisions.

@@ -310,6 +310,20 @@ impl ConnectivityGraph {
         }
     }
 
+    /// Enables neighbor listing on the [`Graph`] engine
+    /// ([`Graph::enable_neighbor_listing`]); does nothing for the experimental
+    /// engines, which cannot list neighbors. Returns whether listing is
+    /// available.
+    pub fn enable_neighbor_listing(&mut self) -> bool {
+        match &mut self.backend {
+            Backend::Compact(graph) => {
+                graph.enable_neighbor_listing();
+                true
+            }
+            Backend::EulerTour(_) | Backend::Hdt(_) => false,
+        }
+    }
+
     /// Returns the [`Graph`] engine when this graph uses
     /// [`EngineConfig::CompactBfs`], for adjacency inspection with
     /// [`Graph::degree`] and [`Graph::neighbors_after`]. The experimental engines
@@ -321,6 +335,8 @@ impl ConnectivityGraph {
     /// let mut graph = ConnectivityGraph::new(EngineConfig::CompactBfs);
     /// graph.link(1, 2)?;
     /// assert_eq!(graph.as_compact().and_then(|g| g.degree(1)), Some(1));
+    /// assert!(graph.enable_neighbor_listing());
+    /// assert!(!ConnectivityGraph::new(EngineConfig::Hdt).enable_neighbor_listing());
     /// assert!(ConnectivityGraph::new(EngineConfig::EulerTour).as_compact().is_none());
     /// # Ok::<(), knotrel_core::GraphError>(())
     /// ```

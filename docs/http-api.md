@@ -887,12 +887,12 @@ budget, independent of graph size. Node detail is `O(1)` expected.
 - They are available in both modes and never mutate. Responses carry
   `Cache-Control: no-store`.
 
-**Costs.** With inspection enabled, the service keeps an ordered set of
-registered node IDs, roughly 10–20 bytes per node. Registering or removing a
-node updates it in `O(log V)`; links between existing nodes and flag changes
-do not touch it. Imports build it off-lock before publication. The plain
-`compact-bfs` engine also keeps an index→ID vector (8 bytes per node) whether
-or not inspection is enabled. Measurements:
+**Costs.** Only with inspection enabled, the service keeps an ordered set of
+registered node IDs and, for plain `compact-bfs`, an index→ID vector used to
+list neighbors (8 bytes per node). Registering or removing a node updates
+them in `O(log V)`; links between existing nodes and flag changes do not
+touch them. Imports build them off-lock before publication. With inspection
+disabled the server keeps neither. Measurements:
 [console inspection costs](console-inspection-costs.md).
 
 ## Graph identity, versioning and coherent response headers

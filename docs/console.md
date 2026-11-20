@@ -31,17 +31,23 @@ The server binary, the console image and the archive are independent
 artifacts. Cargo builds and server installations never need Node.js, and the
 Rust binary embeds no console assets.
 
-## Server settings for the full console
+## Server flags, in short
 
-The console uses only the Knotrel HTTP API. Some views need optional server
-features:
+The console works with any server. Three optional server flags unlock more of
+it. Each is off by default because each has a cost that not every
+deployment wants to pay.
 
-| View | Server setting | Without it |
-| --- | --- | --- |
-| Browser lists and node detail | `KNOTREL_INSPECTION=true` | The browser explains how to enable it; queries and operations still work |
-| Incident edges, edge list | `KNOTREL_INSPECTION=true` and `KNOTREL_ENGINE=compact-bfs` | Node list only, explained |
-| Active/enabled/effective states, activation, enable/disable, removal | `KNOTREL_TOPOLOGY_LIFECYCLE=true` | Every node active, every edge effective; those actions are hidden with the reason |
-| Performance, lease information | `KNOTREL_METRICS_ENABLED=true` | Shown as disabled |
+| Flag | What it unlocks in the console | Cost when on | Off (default) |
+| --- | --- | --- | --- |
+| `KNOTREL_INSPECTION=true` | Browser: lists of nodes and edges, node detail, incident edges | Up to about 20 bytes per node and a few percent slower node creation (measured: 2–5 %) | No cost. The browser explains how to turn it on; queries and operations still work. |
+| `KNOTREL_TOPOLOGY_LIFECYCLE=true` | Active/inactive nodes, enabled/disabled edges, removal, the related filters | Roughly twice the graph memory; `compact-bfs` only | Every node is active and every edge effective; those actions are hidden. |
+| `KNOTREL_METRICS_ENABLED=true` | Performance page, feeder lease on the Synchronization page | Exposes `/metrics` (no authentication, like every route) | The pages say metrics are disabled. |
+
+Incident edges and the edge list also need the `compact-bfs` engine (the
+default): the experimental engines cannot list neighbors.
+
+The Compose example turns all three on. Measured costs:
+[inspection cost check](console-inspection-costs.md).
 
 ## Choose a path
 

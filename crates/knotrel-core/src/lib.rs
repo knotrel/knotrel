@@ -275,6 +275,8 @@ pub enum IncidenceError {
     UnknownNode,
     /// The pagination cursor names a node that is not registered.
     UnknownCursor,
+    /// Neighbor listing was not enabled with [`Graph::enable_neighbor_listing`].
+    NotEnabled,
 }
 
 impl fmt::Display for IncidenceError {
@@ -282,6 +284,7 @@ impl fmt::Display for IncidenceError {
         formatter.write_str(match self {
             Self::UnknownNode => "unknown node",
             Self::UnknownCursor => "unknown incidence cursor",
+            Self::NotEnabled => "neighbor listing is not enabled",
         })
     }
 }
@@ -290,8 +293,10 @@ impl Error for IncidenceError {}
 
 /// An undirected simple graph with compact adjacency and exact BFS queries.
 ///
-/// External IDs map to stable, append-only indices, and `nodes[i]` holds the ID of
-/// index `i` (8 bytes per vertex, used by [`neighbors_after`](Self::neighbors_after)).
+/// External IDs map to stable, append-only indices. Neighbor listing
+/// ([`neighbors_after`](Self::neighbors_after)) is opt-in: after
+/// [`enable_neighbor_listing`](Self::enable_neighbor_listing) the graph also keeps
+/// the ID of every index (8 bytes per vertex); otherwise it keeps nothing extra.
 /// Each sorted adjacency vector contains unique indices, and every edge appears at
 /// both endpoints. Cuts retain vertices. Logical storage is O(V + E). Allocated storage is O(V + H), where H is
 /// the sum of per-vertex adjacency capacities: each is at least the vertex's
@@ -301,9 +306,10 @@ impl Error for IncidenceError {}
 #[derive(Debug, Default)]
 pub struct Graph {
     ids: IntMap<NodeId, usize>,
-    /// Inverse of `ids`: the ID registered at each index. Indices are never
-    /// reused or removed, so this only grows, in step with `adjacency`.
-    nodes: Vec<NodeId>,
+    /// Inverse of `ids` (the ID registered at each index), kept only after
+    /// [`Graph::enable_neighbor_listing`]. Indices are never reused or removed,
+    /// so it only grows, in step with `adjacency`.
+    nodes: Option<Vec<NodeId>>,
     adjacency: Vec<Vec<usize>>,
     edges: usize,
 }
@@ -337,7 +343,9 @@ impl Graph {
             Entry::Vacant(entry) => {
                 let index = self.adjacency.len();
                 self.adjacency.push(Vec::new());
-                self.nodes.push(node);
+                if let Some(nodes) = &mut self.nodes {
+                    nodes.push(node);
+                }
                 entry.insert(index);
                 index
             }
@@ -352,7 +360,9 @@ impl Graph {
         if let Entry::Vacant(entry) = self.ids.entry(node) {
             let index = self.adjacency.len();
             self.adjacency.push(Vec::new());
-            self.nodes.push(node);
+            if let Some(nodes) = &mut self.nodes {
+                nodes.push(node);
+            }
             entry.insert(index);
             true
         } else {
@@ -497,7 +507,7 @@ impl Graph {
         }
         Self {
             ids: map,
-            nodes: ids,
+            nodes: None,
             adjacency,
             edges: incidences / 2,
         }
@@ -520,6 +530,29 @@ impl Graph {
             .map(|&index| self.adjacency[index].len())
     }
 
+    /// Starts keeping the ID of every internal index, which
+    /// [`neighbors_after`](Self::neighbors_after) needs. Costs 8 bytes per vertex
+    /// and one vector push per new vertex from now on; building the vector for
+    /// the existing vertices is O(V). Calling it again does nothing.
+    ///
+    /// ```rust
+    /// let mut graph = knotrel_core::Graph::new();
+    /// graph.link(1, 2)?;
+    /// assert!(graph.neighbors_after(1, None).is_err());
+    /// graph.enable_neighbor_listing();
+    /// assert_eq!(graph.neighbors_after(1, None)?.collect::<Vec<_>>(), [2]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn enable_neighbor_listing(&mut self) {
+        if self.nodes.is_none() {
+            let mut nodes = vec![0; self.adjacency.len()];
+            for (&node, &index) in &self.ids {
+                nodes[index] = node;
+            }
+            self.nodes = Some(nodes);
+        }
+    }
+
     /// Iterates the neighbors of `node` in the graph's stable incidence order,
     /// starting strictly after the neighbor `after` (or from the start).
     ///
@@ -535,6 +568,8 @@ impl Graph {
     ///
     /// # Errors
     ///
+    /// [`IncidenceError::NotEnabled`] before
+    /// [`enable_neighbor_listing`](Self::enable_neighbor_listing),
     /// [`IncidenceError::UnknownNode`] if `node` is not registered, and
     /// [`IncidenceError::UnknownCursor`] if `after` is not a registered node.
     /// Vertices are never removed from a [`Graph`], so a cursor obtained from
@@ -542,6 +577,7 @@ impl Graph {
     ///
     /// ```rust
     /// let mut graph = knotrel_core::Graph::new();
+    /// graph.enable_neighbor_listing();
     /// graph.link(5, 9)?;
     /// graph.link(5, 1)?;
     /// graph.link(5, 7)?;
@@ -565,7 +601,8 @@ impl Graph {
                 list.partition_point(|&neighbor| neighbor <= cursor)
             }
         };
-        Ok(list[start..].iter().map(|&neighbor| self.nodes[neighbor]))
+        let nodes = self.nodes.as_deref().ok_or(IncidenceError::NotEnabled)?;
+        Ok(list[start..].iter().map(move |&neighbor| nodes[neighbor]))
     }
 
     /// Releases the adjacency allocation of an isolated vertex.
@@ -600,6 +637,15 @@ mod tests {
     #[test]
     fn neighbor_pages_visit_stable_neighbors_exactly_once() {
         let mut graph = Graph::new();
+        graph.link(0, 3).unwrap();
+        assert_eq!(
+            graph.neighbors_after(0, None).err(),
+            Some(IncidenceError::NotEnabled)
+        );
+        // Enabling after vertices exist rebuilds the index-to-ID vector.
+        graph.enable_neighbor_listing();
+        graph.enable_neighbor_listing();
+        graph.cut(0, 3).unwrap();
         for neighbor in 1..=100u64 {
             graph.link(0, neighbor * 7).unwrap();
         }
@@ -642,6 +688,10 @@ mod tests {
             "unknown incidence cursor"
         );
         assert_eq!(IncidenceError::UnknownNode.to_string(), "unknown node");
+        assert_eq!(
+            IncidenceError::NotEnabled.to_string(),
+            "neighbor listing is not enabled"
+        );
     }
 
     /// A bulk-built graph maps indices back to the same IDs as an incremental one.
@@ -649,7 +699,8 @@ mod tests {
     fn bulk_built_graph_lists_neighbors_by_id() {
         let ids = vec![u64::MAX, 3, 9_007_199_254_740_993];
         let adjacency = vec![vec![1, 2], vec![0], vec![0]];
-        let graph = Graph::from_sorted_adjacency(ids, adjacency);
+        let mut graph = Graph::from_sorted_adjacency(ids, adjacency);
+        graph.enable_neighbor_listing();
         let neighbors: Vec<u64> = graph.neighbors_after(u64::MAX, None).unwrap().collect();
         assert_eq!(neighbors, [3, 9_007_199_254_740_993]);
         assert_eq!(graph.degree(3), Some(1));

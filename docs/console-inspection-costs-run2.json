@@ -1,0 +1,136 @@
+{
+  "machine": "macOS-26.5.2-arm64-arm-64bit arm64 cpus=8",
+  "nodes": 500000,
+  "edges": 1500000,
+  "hub_degree": 20000,
+  "quick": false,
+  "load_seconds_off": 3.9,
+  "load_seconds_on": 3.9,
+  "M1": {
+    "nodes_limit_1000": {
+      "client_ms": {
+        "p50": 0.191,
+        "p95": 0.232,
+        "max": 0.34,
+        "n": 300
+      },
+      "server_exec_p95_bucket_s": 5e-05,
+      "server_exec_max_bucket_s": 0.0005
+    },
+    "edges_limit_1000": {
+      "client_ms": {
+        "p50": 0.288,
+        "p95": 0.469,
+        "max": 0.521,
+        "n": 300
+      },
+      "server_exec_p95_bucket_s": 0.0005,
+      "server_exec_max_bucket_s": 0.0005
+    },
+    "hub_incident_limit_1000": {
+      "client_ms": {
+        "p50": 0.169,
+        "p95": 0.185,
+        "max": 0.212,
+        "n": 300
+      },
+      "server_exec_p95_bucket_s": 5e-05,
+      "server_exec_max_bucket_s": 5e-05
+    },
+    "nodes_inactive_budget_bound": {
+      "client_ms": {
+        "p50": 0.308,
+        "p95": 0.43,
+        "max": 0.919,
+        "n": 300
+      },
+      "server_exec_p95_bucket_s": 0.0005,
+      "server_exec_max_bucket_s": 0.001
+    }
+  },
+  "M2": {
+    "mutations": {
+      "alone_ms": {
+        "p50": 0.069,
+        "p95": 0.081,
+        "max": 0.344,
+        "n": 3000
+      },
+      "with_browsing_ms": {
+        "p50": 0.378,
+        "p95": 0.453,
+        "max": 1.271,
+        "n": 3000
+      },
+      "browse_pages": 6935
+    },
+    "queries": {
+      "alone_ms": {
+        "p50": 0.063,
+        "p95": 0.084,
+        "max": 0.258,
+        "n": 3000
+      },
+      "with_browsing_ms": {
+        "p50": 0.066,
+        "p95": 0.144,
+        "max": 0.272,
+        "n": 3000
+      },
+      "browse_pages": 2352
+    }
+  },
+  "M4": {
+    "rss_off": 230866944,
+    "rss_on": 233668608,
+    "bytes_per_node": 5.6
+  },
+  "M3": {
+    "ops_per_s_median": {
+      "on": {
+        "add_node": 1879667,
+        "link_new_endpoint": 591339
+      },
+      "off": {
+        "add_node": 1981797,
+        "link_new_endpoint": 603550
+      }
+    },
+    "on_over_off": {
+      "add_node": 0.948,
+      "link_new_endpoint": 0.98
+    },
+    "runs": {
+      "on": {
+        "add_node": [
+          1959372.4053657323,
+          1724958.2959540994,
+          1879666.853800342
+        ],
+        "link_new_endpoint": [
+          593900.934443102,
+          559885.4674445317,
+          591339.3910142871
+        ]
+      },
+      "off": {
+        "add_node": [
+          2008571.5806534896,
+          1902687.0691206069,
+          1981797.197637137
+        ],
+        "link_new_endpoint": [
+          608470.8255766407,
+          596613.9183852588,
+          603549.9298146889
+        ]
+      }
+    }
+  },
+  "criteria": {
+    "C1": true,
+    "C2": true,
+    "C3": true,
+    "C4": true
+  }
+}
