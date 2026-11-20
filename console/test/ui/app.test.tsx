@@ -165,7 +165,7 @@ describe('App shell and overview', () => {
       window.location.hash = '#/browser?view=edges';
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
-    expect(screen.getByRole('button', { name: 'Edges' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /^Edges/ })).toHaveAttribute('aria-pressed', 'true');
     act(() => {
       window.location.hash = '#/nowhere';
       window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -178,8 +178,36 @@ describe('App shell and overview', () => {
     const api = fakeApi();
     renderApp(api);
     await screen.findAllByText('Connected');
-    await user.click(await screen.findByRole('button', { name: 'Refresh now' }));
+    const connection = screen.getByRole('button', { name: /http:\/\/knotrel:8080/ });
+    expect(connection).toHaveAttribute('aria-expanded', 'false');
+    await user.click(connection);
+    const details = screen
+      .getByText('Server (backend)')
+      .closest('.connection-panel') as HTMLElement;
+    expect(within(details).getByText('Server (backend)')).toBeInTheDocument();
+    expect(within(details).getByText('Console (frontend)')).toBeInTheDocument();
+    expect(within(details).getByText('compact-bfs')).toBeInTheDocument();
+    expect(within(details).getByText('container')).toBeInTheDocument();
+    await user.click(within(details).getByRole('button', { name: 'Refresh now' }));
     await waitFor(() => expect(api.stats).toHaveBeenCalledTimes(2));
+    await user.keyboard('{Escape}');
+    expect(connection).toHaveAttribute('aria-expanded', 'false');
+    await user.click(connection);
+    await user.click(document.body);
+    expect(connection).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('starts dark and switches theme, remembering the choice', async () => {
+    const user = userEvent.setup();
+    window.localStorage.removeItem('knotrel-console.theme');
+    renderApp(fakeApi());
+    await screen.findAllByText('Connected');
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    await user.click(screen.getByRole('button', { name: 'Switch to light theme' }));
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(window.localStorage.getItem('knotrel-console.theme')).toBe('light');
+    await user.click(screen.getByRole('button', { name: 'Switch to dark theme' }));
+    expect(document.documentElement.dataset.theme).toBe('dark');
   });
 });
 

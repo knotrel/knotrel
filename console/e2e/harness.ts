@@ -144,3 +144,10 @@ export async function startConsole(
   if (!address) throw new Error('vite preview did not report a URL');
   return { url: address, close: () => server.close() };
 }
+
+/** Opens the connection panel, asks for an immediate refresh and closes it. */
+export async function refreshNow(page: import('@playwright/test').Page): Promise<void> {
+  await page.locator('.connection-button').click();
+  await page.getByRole('button', { name: 'Refresh now' }).click();
+  await page.keyboard.press('Escape');
+}

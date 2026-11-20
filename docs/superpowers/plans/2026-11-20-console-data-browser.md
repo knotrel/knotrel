@@ -137,6 +137,26 @@ These costs are measured before any claim is made; see
 The gateway allowlist grows by the inspection routes, `POST /v1/batch` and
 `GET /metrics` (read-only, no graph data). Feeder routes stay unreachable.
 
+## UX revision
+
+A review at 1280×720 found the features complete but the screens dominated by
+forms, counters and contract explanations (three visible catalog rows). A
+high-fidelity mockup of the Browser was approved with four corrections, now
+implemented:
+
+- the table fills the height; the detail pane is wider by default (560 px) and
+  resizable with a draggable, keyboard-operable divider;
+- neighbors sit in a bounded box with pages of 25, so the connectivity check
+  below stays reachable for high-degree nodes (verified with degree 150 and
+  20-digit IDs);
+- the top bar names the server connection; a details panel separates the
+  server (backend) from the console host (frontend);
+- both themes are kept, dark by default, with a switch.
+
+Connectivity is checked inside the node pane; destructive actions moved to a
+menu; technical texts moved to info tips. Workbench and Performance keep their
+current layout for now.
+
 ## Cost check
 
 Protocol and pass criteria are written before measuring, in

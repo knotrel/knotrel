@@ -57,13 +57,34 @@ test.describe('accessibility and keyboard use', () => {
     await expect(pane).toBeVisible();
 
     // Confirmation dialog: focus moves in, Escape cancels and restores focus.
-    await pane.getByRole('button', { name: 'Remove permanently…' }).focus();
+    // Destructive actions sit in a menu: arrows move, Enter selects.
+    const more = pane.getByRole('button', { name: 'More node actions' });
+    await more.focus();
+    await page.keyboard.press('Enter');
+    await expect(
+      page.getByRole('menuitem', { name: 'Query node state in Workbench' }),
+    ).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(page.getByRole('menuitem', { name: 'Remove permanently…' })).toBeFocused();
     await page.keyboard.press('Enter');
     const dialog = page.getByRole('alertdialog');
     await expect(dialog.getByRole('textbox')).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
-    await expect(pane.getByRole('button', { name: 'Remove permanently…' })).toBeFocused();
+    await expect(more).toBeFocused();
+
+    // Connectivity from the pane by keyboard.
+    await pane.getByLabel('Target node').focus();
+    await page.keyboard.type('4');
+    await page.keyboard.press('Enter');
+    await expect(pane.getByText(/^Connected to/)).toBeVisible();
+
+    // The splitter resizes the detail pane from the keyboard.
+    const splitter = page.getByRole('separator', { name: 'Resize detail pane' });
+    const before = Number(await splitter.getAttribute('aria-valuenow'));
+    await splitter.focus();
+    await page.keyboard.press('ArrowLeft');
+    await expect(splitter).toHaveAttribute('aria-valuenow', String(before + 16));
 
     // Workbench query by keyboard.
     await page.getByRole('tab', { name: 'Browser' }).focus();

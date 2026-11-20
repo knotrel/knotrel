@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client';
 import { ApiClient } from './api/client';
 import { createConsoleApi } from './api/endpoints';
 import { App } from './ui/App';
+import { applyTheme, loadTheme } from './ui/theme';
 import './styles.css';
 
 /** Mounts the console into `element`. Returns the React root for unmounting. */
@@ -18,6 +19,8 @@ export function mount(element: HTMLElement) {
   );
   return root;
 }
+
+applyTheme(loadTheme());
 
 const element = document.getElementById('root');
 if (element) {

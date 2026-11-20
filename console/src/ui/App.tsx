@@ -17,15 +17,18 @@ import type { ConsoleApi } from '../api/endpoints';
 import { deriveCapabilities } from '../domain/capabilities';
 import { appendHistory, type HistoryEntry } from '../domain/history';
 import { MetricsStore } from '../state/metrics';
-import { connectivityOf, isStale, OverviewStore } from '../state/overview';
+import { OverviewStore } from '../state/overview';
 import { formatHash, parseHash, type PageId } from '../state/route';
 import { BrowserPage, browserParams, type BrowserParams } from './BrowserPage';
 import { Exact, StatusBadge, Time } from './components';
+import { ConnectionButton } from './Connection';
 import type { RecordHistory } from './mutation';
 import { OverviewPage } from './OverviewPage';
 import { PerformancePage } from './PerformancePage';
 import type { QueryPreset } from './presets';
 import { SyncPage } from './SyncPage';
+import { applyTheme, loadTheme, storeTheme, type Theme } from './theme';
+import { Icon, IconButton } from './widgets';
 import { WorkbenchPage } from './WorkbenchPage';
 
 const LABELS: Record<PageId, string> = {
@@ -88,6 +91,13 @@ export function App({ api, store: providedStore, metricsStore: providedMetrics }
   );
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [preset, setPreset] = useState<QueryPreset>();
+  const [theme, setTheme] = useState<Theme>(loadTheme);
+  useEffect(() => applyTheme(theme), [theme]);
+  const toggleTheme = () => {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    storeTheme(next);
+  };
   const nextId = useRef(1);
   const tabRefs = useRef<Partial<Record<PageId, HTMLButtonElement | null>>>({});
 
@@ -172,39 +182,44 @@ export function App({ api, store: providedStore, metricsStore: providedMetrics }
     }
   };
 
-  const connectivity = connectivityOf(state);
-  const stale = isStale(state, now);
   const base = window.location.href.split('#')[0] ?? window.location.href;
 
   return (
     <div className="app">
-      <header className="app-header">
-        <h1>Knotrel Console</h1>
-        <div className="header-status" role="status" aria-live="polite">
-          {connectivity === 'connected' ? (
-            <StatusBadge
-              severity={stale ? 'warning' : 'ok'}
-              label={stale ? 'Connected, stale data' : 'Connected'}
-            />
-          ) : connectivity === 'connecting' ? (
-            <StatusBadge severity="progress" label="Connecting" />
-          ) : connectivity === 'console-unreachable' ? (
-            <StatusBadge severity="critical" label="Console host unreachable" />
-          ) : connectivity === 'server-unreachable' ? (
-            <StatusBadge severity="critical" label="Server unreachable" />
-          ) : connectivity === 'incompatible' ? (
-            <StatusBadge severity="critical" label="Incompatible server responses" />
-          ) : (
-            <StatusBadge severity="warning" label="Degraded" />
-          )}
-          {capabilities.mode && (
-            <span className="mode">
-              Mode: <Exact value={capabilities.mode} />
-            </span>
-          )}
-          <button type="button" onClick={() => store.refresh()} disabled={state.refreshing}>
-            {state.refreshing ? 'Refreshing…' : 'Refresh now'}
-          </button>
+      <header className="topbar">
+        <div className="brand">
+          <Icon name="graph" size={20} />
+          <h1>Knotrel Console</h1>
+        </div>
+        <nav aria-label="Console sections">
+          <div role="tablist" aria-label="Console sections" className="tabs">
+            {pages.map((p, index) => (
+              <button
+                key={p}
+                ref={(el) => {
+                  tabRefs.current[p] = el;
+                }}
+                type="button"
+                role="tab"
+                id={`tab-${p}`}
+                aria-selected={page === p}
+                aria-controls={`panel-${p}`}
+                tabIndex={page === p ? 0 : -1}
+                onClick={() => open(p)}
+                onKeyDown={(event) => onTabKey(event, index)}
+              >
+                {LABELS[p]}
+              </button>
+            ))}
+          </div>
+        </nav>
+        <div className="topbar-end">
+          <ConnectionButton state={state} now={now} onRefresh={() => store.refresh()} />
+          <IconButton
+            icon={theme === 'dark' ? 'sun' : 'moon'}
+            label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            onClick={toggleTheme}
+          />
         </div>
       </header>
 
@@ -218,29 +233,6 @@ export function App({ api, store: providedStore, metricsStore: providedMetrics }
         </div>
       )}
 
-      <nav aria-label="Console sections">
-        <div role="tablist" aria-label="Console sections" className="tabs">
-          {pages.map((p, index) => (
-            <button
-              key={p}
-              ref={(el) => {
-                tabRefs.current[p] = el;
-              }}
-              type="button"
-              role="tab"
-              id={`tab-${p}`}
-              aria-selected={page === p}
-              aria-controls={`panel-${p}`}
-              tabIndex={page === p ? 0 : -1}
-              onClick={() => open(p)}
-              onKeyDown={(event) => onTabKey(event, index)}
-            >
-              {LABELS[p]}
-            </button>
-          ))}
-        </div>
-      </nav>
-
       <main className="panel">
         <div
           id="panel-overview"
@@ -253,9 +245,10 @@ export function App({ api, store: providedStore, metricsStore: providedMetrics }
         </div>
         <div
           id="panel-browser"
+          className="panel-fill"
           role="tabpanel"
           aria-labelledby="tab-browser"
-          tabIndex={0}
+          tabIndex={-1}
           hidden={page !== 'browser'}
         >
           <BrowserPage
@@ -307,11 +300,6 @@ export function App({ api, store: providedStore, metricsStore: providedMetrics }
           </div>
         )}
       </main>
-
-      <footer className="app-footer">
-        Knotrel console <Exact value={__CONSOLE_VERSION__} />. The console adds no authentication;
-        access control belongs to the gateway in front of it.
-      </footer>
     </div>
   );
 }

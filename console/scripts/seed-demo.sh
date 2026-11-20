@@ -5,12 +5,12 @@
 #   console/scripts/seed-demo.sh                          # default: http://127.0.0.1:7380/api
 #   console/scripts/seed-demo.sh http://127.0.0.1:7379    # a server reached directly
 #
-# The network (170 nodes, 166 edges):
+# The network (173 nodes, 169 edges):
 #   - chain 1-2-3-4-5, with edge 2-3 disabled (needs lifecycle support)
 #   - ring 10..19
 #   - hub 100 with 150 spokes 101..250 (more than one page of incident edges)
 #   - huge exact IDs 9007199254740993 (2^53+1) and 18446744073709551615 (u64 max),
-#     linked to node 5
+#     linked to node 5, plus three more 20-digit IDs around u64 max
 #   - isolated nodes 42 and 43, with 42 and spoke 105 inactive (needs lifecycle)
 # Running it twice is harmless: existing nodes and edges are reported as no-ops.
 set -euo pipefail
@@ -26,6 +26,9 @@ for i in $(seq 10 19); do link "$i" "$(( i == 19 ? 10 : i + 1 ))"; done
 for i in $(seq 101 250); do link 100 "$i"; done
 link 5 9007199254740993
 link 9007199254740993 18446744073709551615
+for id in 18446744073709551614 18446744073709551613 12345678901234567890; do
+    link 18446744073709551615 "$id"
+done
 ops+=('{"op":"add_node","node":"42"}' '{"op":"add_node","node":"43"}')
 
 send() { # $1 = label, rest = operations
