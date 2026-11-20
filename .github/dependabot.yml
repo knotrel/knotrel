@@ -19,3 +19,26 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+
+  # Maintain npm development dependencies of the operational console
+  - package-ecosystem: "npm"
+    directory: "/console"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      console-minor-and-patch:
+        update-types: ["minor", "patch"]
+    labels:
+      - "dependencies"
+      - "console"
+
+  # Maintain the console container base images (digest-pinned)
+  - package-ecosystem: "docker"
+    directory: "/console"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "console"

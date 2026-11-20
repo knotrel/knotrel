@@ -1,0 +1,281 @@
+name: console-release
+run-name: "Console release (version: ${{ inputs.version }}, dry_run: ${{ inputs.dry_run != false }})"
+
+# Builds, tests and (only when dry_run is false) publishes one console release:
+#   - ghcr.io/knotrel/knotrel-console:<version> (linux/amd64, linux/arm64)
+#   - knotrel-console-<version>.tar.gz and its .sha256 on GitHub Release console-v<version>
+# The image and archive that are tested are the bytes that are published; the
+# publish job never rebuilds. Independent of the Rust crate release (release.yml).
+# Procedure, setup and recovery: docs/releases/console-release.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Console version, equal to console/package.json (e.g. 0.1.0 or 0.1.0-rc.1)"
+        required: true
+      commit_sha:
+        description: "Full 40-character commit SHA on main to build"
+        required: true
+      dry_run:
+        description: "Dry run: build and test only, publish nothing"
+        type: boolean
+        required: true
+        default: true
+      update_latest:
+        description: "Also move the image tag 'latest' (stable versions only)"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: console-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/knotrel/knotrel-console
+  RUST_TOOLCHAIN: 1.100.0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.inputs.outputs.version }}
+      commit_sha: ${{ steps.inputs.outputs.commit_sha }}
+      prerelease: ${{ steps.inputs.outputs.prerelease }}
+      source_date_epoch: ${{ steps.identity.outputs.source_date_epoch }}
+    steps:
+      - name: Validate inputs
+        id: inputs
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          UPDATE_LATEST: ${{ inputs.update_latest }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::invalid version $VERSION"; exit 1; }
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit_sha must be a full SHA"; exit 1; }
+          prerelease=false
+          [[ "$VERSION" == *-rc.* ]] && prerelease=true
+          if [[ "$prerelease" == true && "$UPDATE_LATEST" == true ]]; then
+            echo "::error::'latest' is reserved for stable versions"; exit 1
+          fi
+          { echo "version=$VERSION"; echo "commit_sha=$COMMIT_SHA"; echo "prerelease=$prerelease"; } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.inputs.outputs.commit_sha }}
+          fetch-depth: 0
+      - name: Verify version, lineage, tag and registry state
+        id: identity
+        env:
+          VERSION: ${{ steps.inputs.outputs.version }}
+          COMMIT_SHA: ${{ steps.inputs.outputs.commit_sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$COMMIT_SHA" ]]
+          manifest_version="$(node -p 'require("./console/package.json").version')"
+          [[ "$manifest_version" == "$VERSION" ]] || { echo "::error::console/package.json is $manifest_version"; exit 1; }
+          lock_version="$(node -p 'require("./console/package-lock.json").version')"
+          [[ "$lock_version" == "$VERSION" ]] || { echo "::error::package-lock.json is $lock_version"; exit 1; }
+          git fetch --quiet origin main
+          git merge-base --is-ancestor "$COMMIT_SHA" origin/main || { echo "::error::commit is not on main"; exit 1; }
+          echo "source_date_epoch=$(git log -1 --format=%ct "$COMMIT_SHA")" >> "$GITHUB_OUTPUT"
+          tag="console-v$VERSION"
+          if [[ "$DRY_RUN" == "false" ]]; then
+            git fetch --quiet --tags origin
+            git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || { echo "::error::tag $tag does not exist"; exit 1; }
+            [[ "$(git rev-parse "refs/tags/$tag^{commit}")" == "$COMMIT_SHA" ]] || { echo "::error::$tag does not point to $COMMIT_SHA"; exit 1; }
+          fi
+          # Never reinterpret a published version. The resume procedure in
+          # docs/releases/console-release.md covers a partially published one.
+          if docker manifest inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "::warning::$IMAGE:$VERSION already exists; publication will only resume if its digest matches the build."
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::warning::GitHub Release $tag already exists."
+          fi
+
+  build:
+    name: build and test candidate
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      archive_sha256: ${{ steps.record.outputs.archive_sha256 }}
+      image_digest: ${{ steps.record.outputs.image_digest }}
+      oci_sha256: ${{ steps.record.outputs.oci_sha256 }}
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      COMMIT_SHA: ${{ needs.validate.outputs.commit_sha }}
+      SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit_sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: console/.nvmrc
+      - name: Console checks
+        working-directory: console
+        run: |
+          npm ci --no-audit --no-fund
+          npm run format:check
+          npm run lint
+          npm run typecheck
+          npm run check:api
+          npm run test:coverage
+          npm audit --audit-level=high
+          npm run build
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Browser integration tests (Chromium) against a real server
+        run: |
+          cargo build -p knotrel-server --locked
+          cd console
+          npx playwright install --with-deps chromium
+          npx playwright test --project=chromium
+      - name: Static archive
+        working-directory: console
+        run: |
+          npm run archive -- --out ../release --revision "$COMMIT_SHA" --source-date-epoch "$SOURCE_DATE_EPOCH"
+          node scripts/package-static.mjs --verify "../release/knotrel-console-$VERSION.tar.gz"
+          mkdir -p ../release/extracted
+          tar -xzf "../release/knotrel-console-$VERSION.tar.gz" -C ../release/extracted
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build multi-platform image (OCI archive)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: console
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            REVISION=${{ env.COMMIT_SHA }}
+          outputs: type=oci,dest=release/knotrel-console-${{ env.VERSION }}.oci.tar
+          provenance: false
+          sbom: false
+      - name: Build example knotrel-server image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: examples/container/Dockerfile
+          tags: knotrel-server:example
+          load: true
+      - name: Smoke-test the exact candidate image (amd64)
+        run: |
+          skopeo copy --override-arch amd64 "oci-archive:release/knotrel-console-$VERSION.oci.tar" docker-daemon:knotrel-console:candidate
+          console/scripts/smoke-container.sh knotrel-console:candidate knotrel-server:example "release/extracted/knotrel-console-$VERSION/html"
+      - name: Record artifact identity
+        id: record
+        run: |
+          set -euo pipefail
+          archive="release/knotrel-console-$VERSION.tar.gz"
+          oci="release/knotrel-console-$VERSION.oci.tar"
+          archive_sha256="$(sha256sum "$archive" | cut -d' ' -f1)"
+          oci_sha256="$(sha256sum "$oci" | cut -d' ' -f1)"
+          image_digest="sha256:$(skopeo inspect --raw "oci-archive:$oci" | sha256sum | cut -d' ' -f1)"
+          jq -n --arg v "$VERSION" --arg c "$COMMIT_SHA" --arg a "$archive_sha256" --arg d "$image_digest" --arg o "$oci_sha256" \
+            '{version:$v, commit:$c, archive_sha256:$a, image_digest:$d, oci_archive_sha256:$o, platforms:["linux/amd64","linux/arm64"]}' \
+            > release/release-manifest.json
+          cat release/release-manifest.json | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo "archive_sha256=$archive_sha256"; echo "image_digest=$image_digest"; echo "oci_sha256=$oci_sha256"; } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: console-release-${{ env.VERSION }}
+          path: |
+            release/knotrel-console-${{ env.VERSION }}.tar.gz
+            release/knotrel-console-${{ env.VERSION }}.tar.gz.sha256
+            release/knotrel-console-${{ env.VERSION }}.oci.tar
+            release/release-manifest.json
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [validate, build]
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    environment: console-release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      COMMIT_SHA: ${{ needs.validate.outputs.commit_sha }}
+      PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+      ARCHIVE_SHA256: ${{ needs.build.outputs.archive_sha256 }}
+      IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
+      OCI_SHA256: ${{ needs.build.outputs.oci_sha256 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: console-release-${{ env.VERSION }}
+          path: release
+      - name: Verify downloaded artifacts are the tested ones
+        run: |
+          set -euo pipefail
+          echo "$ARCHIVE_SHA256  release/knotrel-console-$VERSION.tar.gz" | sha256sum -c -
+          echo "$OCI_SHA256  release/knotrel-console-$VERSION.oci.tar" | sha256sum -c -
+          echo "## Console $VERSION publication" >> "$GITHUB_STEP_SUMMARY"
+      - name: Push image (versioned tag)
+        run: |
+          set -euo pipefail
+          existing="$(skopeo inspect --raw "docker://$IMAGE:$VERSION" --creds "$GITHUB_ACTOR:$GH_TOKEN" 2>/dev/null | sha256sum | cut -d' ' -f1 || true)"
+          if skopeo inspect --raw "docker://$IMAGE:$VERSION" --creds "$GITHUB_ACTOR:$GH_TOKEN" >/dev/null 2>&1; then
+            if [[ "sha256:$existing" == "$IMAGE_DIGEST" ]]; then
+              echo "- image $IMAGE:$VERSION already published with the tested digest (resumed)" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::error::$IMAGE:$VERSION exists with a different digest; refusing to overwrite"
+            exit 1
+          fi
+          skopeo copy --all --preserve-digests --dest-creds "$GITHUB_ACTOR:$GH_TOKEN" \
+            "oci-archive:release/knotrel-console-$VERSION.oci.tar" "docker://$IMAGE:$VERSION"
+          pushed="sha256:$(skopeo inspect --raw "docker://$IMAGE:$VERSION" --creds "$GITHUB_ACTOR:$GH_TOKEN" | sha256sum | cut -d' ' -f1)"
+          [[ "$pushed" == "$IMAGE_DIGEST" ]] || { echo "::error::pushed digest $pushed differs from $IMAGE_DIGEST"; exit 1; }
+          echo "- pushed $IMAGE:$VERSION ($IMAGE_DIGEST)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.IMAGE_DIGEST }}
+          push-to-registry: true
+      - name: Attest archive provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/knotrel-console-${{ env.VERSION }}.tar.gz
+      - name: Create or complete GitHub Release
+        run: |
+          set -euo pipefail
+          tag="console-v$VERSION"
+          assets=("release/knotrel-console-$VERSION.tar.gz" "release/knotrel-console-$VERSION.tar.gz.sha256")
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Resume: upload missing assets only; existing assets are never replaced.
+            present="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            for asset in "${assets[@]}"; do
+              grep -qx "$(basename "$asset")" <<<"$present" || gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY"
+            done
+          else
+            flags=(--verify-tag --draft --title "Knotrel Console $VERSION")
+            [[ "$PRERELEASE" == "true" ]] && flags+=(--prerelease)
+            gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
+              --notes "Container image: \`$IMAGE:$VERSION\` (\`$IMAGE_DIGEST\`). Static archive SHA-256: \`$ARCHIVE_SHA256\`. Built from $COMMIT_SHA. See docs/console.md."
+          fi
+          echo "- GitHub Release $tag (draft until a maintainer publishes it) with archive and checksum" >> "$GITHUB_STEP_SUMMARY"
+      - name: Move 'latest' (stable only, on request)
+        if: inputs.update_latest && needs.validate.outputs.prerelease == 'false'
+        run: |
+          set -euo pipefail
+          skopeo copy --all --preserve-digests --src-creds "$GITHUB_ACTOR:$GH_TOKEN" --dest-creds "$GITHUB_ACTOR:$GH_TOKEN" \
+            "docker://$IMAGE@$IMAGE_DIGEST" "docker://$IMAGE:latest"
+          echo "- moved $IMAGE:latest to $IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
