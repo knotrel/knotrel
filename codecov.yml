@@ -1,0 +1,41 @@
+# Codecov gates, one per uploaded flag (see .github/workflows/coverage.yml for
+# `rust` and console.yml for `console`).
+#
+# - Rust keeps the strictest gate: new lines must be covered at least as well
+#   as the Rust code already is ("auto" = the base commit's Rust coverage).
+# - The console (React UI) has a fixed patch target of 90%. Its local gate
+#   (`npm run check`) also requires at least 80% overall; UI branches such as
+#   rare error paths make the Rust-level target impractical for every change.
+#
+# Carryforward keeps a flag's last report when a commit does not upload it
+# (for example a Rust-only change, where the console workflow does not run).
+coverage:
+  status:
+    project:
+      default: false
+      rust:
+        flags: [rust]
+        target: auto
+        threshold: 0.1%
+      console:
+        flags: [console]
+        target: auto
+        threshold: 1%
+    patch:
+      default: false
+      rust:
+        flags: [rust]
+        target: auto
+      console:
+        flags: [console]
+        target: 90%
+
+flags:
+  rust:
+    paths:
+      - crates/
+    carryforward: true
+  console:
+    paths:
+      - console/
+    carryforward: true

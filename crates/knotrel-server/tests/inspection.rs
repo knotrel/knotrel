@@ -212,9 +212,59 @@ async fn plain_compact_mode_lists_registration_order_and_validates_cursors() {
     let (status, _, invalid) = get(&app, "/v1/nodes/5/edges?after=424242").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(invalid["code"], "invalid_cursor");
+    let (status, _, unknown) = get(&app, "/v1/nodes/404/edges").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown["code"], "unknown_node");
     // Without lifecycle support every node is active.
     let (_, _, inactive) = get(&app, "/v1/nodes?state=inactive").await;
     assert_eq!(inactive["nodes"], json!([]));
+}
+
+#[tokio::test]
+async fn every_state_filter_selects_its_elements() {
+    let app = app(EngineConfig::CompactBfs, true, true);
+    for (a, b) in [("1", "2"), ("2", "3"), ("3", "4")] {
+        op(&app, json!({"op": "link", "source": a, "target": b})).await;
+    }
+    op(
+        &app,
+        json!({"op": "set_edge_enabled", "source": "1", "target": "2", "enabled": false}),
+    )
+    .await;
+    op(
+        &app,
+        json!({"op": "set_node_active", "node": "4", "active": false}),
+    )
+    .await;
+    let pairs = |page: &Value| -> Vec<(String, String)> {
+        page["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|edge| {
+                (
+                    edge["source"].as_str().unwrap().to_owned(),
+                    edge["target"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let pair = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+    let (_, _, active) = get(&app, "/v1/nodes?state=active").await;
+    assert_eq!(active["nodes"].as_array().unwrap().len(), 3);
+    let (_, _, inactive) = get(&app, "/v1/nodes?state=inactive").await;
+    assert_eq!(
+        inactive["nodes"],
+        json!([{"node": "4", "active": false, "degree": 1}])
+    );
+    let (_, _, enabled) = get(&app, "/v1/edges?state=enabled").await;
+    assert_eq!(pairs(&enabled), [pair("2", "3"), pair("3", "4")]);
+    let (_, _, disabled) = get(&app, "/v1/edges?state=disabled").await;
+    assert_eq!(pairs(&disabled), [pair("1", "2")]);
+    let (_, _, ineffective) = get(&app, "/v1/edges?state=ineffective").await;
+    assert_eq!(pairs(&ineffective), [pair("1", "2"), pair("3", "4")]);
+    let (_, _, all) = get(&app, "/v1/edges?state=all").await;
+    assert_eq!(pairs(&all).len(), 3);
 }
 
 #[tokio::test]

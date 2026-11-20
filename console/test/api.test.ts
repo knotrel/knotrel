@@ -122,6 +122,10 @@ describe('decoders', () => {
 
   it.each([
     ['{"engine":"bogus"}', /engine/],
+    [
+      '{"engine":"ett","experimental":false,"max_pending_jobs":1,"max_body_bytes":1,"max_batch_operations":1,"max_nodes":1,"max_edges":1,"inspection":false}',
+      /inspection/,
+    ],
     ['[]', /expected an object/],
     [
       '{"engine":"ett","experimental":"no","max_pending_jobs":1,"max_body_bytes":1,"max_batch_operations":1,"max_nodes":1,"max_edges":1}',
@@ -153,6 +157,16 @@ describe('decoders', () => {
     expect(stats.stateVersion).toBe('123456789012345678901234567890');
     expect(stats.syncStatus).toBe('catching_up');
     expect(stats.activeNodeCount).toBeUndefined();
+    const lifecycle = decodeStats(
+      j(
+        '{"node_count":3,"edge_count":2,"active_node_count":2,"enabled_edge_count":1,"effective_edge_count":0,"max_nodes":null,"max_edges":null,"remaining_nodes":null,"remaining_edges":null,"state_version":"1"}',
+      ),
+    );
+    expect([
+      lifecycle.activeNodeCount,
+      lifecycle.enabledEdgeCount,
+      lifecycle.effectiveEdgeCount,
+    ]).toEqual(['2', '1', '0']);
     expect(() =>
       decodeStats(
         j(

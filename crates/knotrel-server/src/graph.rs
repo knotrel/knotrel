@@ -708,13 +708,12 @@ mod tests {
         // Without inspection the plain engine keeps no index-to-ID vector.
         let mut plain = super::tests::graph(false, false);
         plain.link(1, 2).unwrap();
-        let Topology::Plain(engine) = &plain.topology else {
-            unreachable!()
-        };
-        assert_eq!(
-            engine.as_compact().unwrap().neighbors_after(1, None).err(),
-            Some(IncidenceError::NotEnabled)
-        );
+        assert!(matches!(
+            &plain.topology,
+            Topology::Plain(engine)
+                if engine.as_compact().unwrap().neighbors_after(1, None).err()
+                    == Some(IncidenceError::NotEnabled)
+        ));
     }
 
     /// The index follows every node-set change, including rejected links

@@ -7668,3 +7668,38 @@ mod read_lock_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod import_index_tests {
+    use super::*;
+    use crate::api::{ImportNode, WireEdge, WireNode};
+    use crate::graph::NodeFilter;
+
+    /// With inspection enabled the import candidate carries a node index
+    /// covering explicit nodes and edge endpoints, in ascending ID order.
+    #[test]
+    fn import_candidate_builds_the_inspection_index() {
+        let nodes = vec![ImportNode {
+            node: WireNode(42),
+            active: None,
+        }];
+        let edges = vec![WireEdge {
+            source: WireNode(u64::MAX),
+            target: WireNode(7),
+            enabled: None,
+        }];
+        let graph = build_import_candidate(
+            nodes,
+            edges,
+            EngineConfig::CompactBfs,
+            knotrel_core::GraphLimits::default(),
+            false,
+            true,
+        )
+        .unwrap();
+        let page = graph.list_nodes(None, 10, NodeFilter::All).unwrap();
+        let ids: Vec<u64> = page.nodes.iter().map(|record| record.node).collect();
+        assert_eq!(ids, [7, 42, u64::MAX]);
+        assert_eq!(page.next_after, None);
+    }
+}
