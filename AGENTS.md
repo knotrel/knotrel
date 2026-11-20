@@ -18,6 +18,38 @@
 - Keep benchmarks reproducible. Never present unmeasured performance claims or compare different consistency/result contracts.
 - Do not commit or push unless the user explicitly asks for it.
 
+## Operational console (`console/`)
+
+- Keep the console outside the Cargo workspace. Cargo builds, server
+  installation and the Rust binary must never require Node.js or embed console
+  assets. The console is versioned independently (`console/package.json`, tags
+  `console-v*`) and is released only through
+  [the console release procedure](docs/releases/console-release.md).
+- Toolchain: Node 24.22.3 LTS (`console/.nvmrc`) with npm 11; exact dependency
+  versions and the committed `package-lock.json`. npm is development tooling
+  only (`"private": true`); do not add runtime dependencies to the container
+  image, install scripts or an npm publication without an explicit decision.
+- `docs/openapi.yaml` is the wire contract. After changing it, run
+  `npm run generate:api` in `console/` and commit the regenerated
+  `src/api/generated/openapi.ts` and the `knotrel.openapiSha256` digest
+  (`npm run check:api` fails otherwise). Update `knotrel.supportedServer` and
+  `docs/console.md` when compatibility changes. Generated types do not validate
+  responses: extend the runtime decoders in `src/api/decode.ts` too.
+- Never convert node IDs, revisions, generations or counts to a JavaScript
+  `number`; parse JSON with `src/api/lossless-json.ts`. Render server text as
+  text, never HTML. Never retry mutations automatically.
+- Use only existing HTTP endpoints. Report a missing capability instead of
+  adding a server endpoint for the console.
+- The container gateway forwards only `GET /health`, `GET /ready`,
+  `GET /v1/info`, `GET /v1/stats` and `POST /v1/operations`. Changing that
+  list, the `Host`/`Origin` checks or the upstream configuration is a security
+  change: update `docs/console.md` and `console/scripts/smoke-container.sh`.
+- Verify in `console/`: `npm run check` (formatting, ESLint, TypeScript,
+  OpenAPI drift, unit tests with at least 80% statements, branches, functions
+  and lines, production build), `npm run test:e2e` against a freshly built
+  `knotrel-server`, and for container or gateway changes
+  `scripts/smoke-container.sh`. Do not exclude handwritten logic from coverage.
+
 ## Before release
 
 Follow [the release procedure](docs/releases/release-procedure.md); this list
