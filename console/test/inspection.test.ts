@@ -17,6 +17,7 @@ import {
   gauge,
   histogramQuantile,
   increase,
+  byCodeUnit,
   parseExposition,
   type Scrape,
 } from '../src/domain/prometheus';
@@ -171,6 +172,22 @@ describe('prometheus parsing and statistics', () => {
     expect(Number.isNaN(samples[2]!.value)).toBe(true);
     expect(skipped).toBe(3);
     expect(parseExposition('knotrel_v -Inf').samples[0]!.value).toBe(-Infinity);
+    for (const [text, value] of [
+      ['1', 1],
+      ['-2.5', -2.5],
+      ['.5', 0.5],
+      ['3.', 3],
+      ['1e3', 1000],
+      ['+4E-1', 0.4],
+    ] as const) {
+      expect(parseExposition(`knotrel_v ${text}`).samples[0]!.value).toBe(value);
+    }
+    expect(Number.isNaN(parseExposition('knotrel_v NaN').samples[0]!.value)).toBe(true);
+    for (const bad of ['1.2.3', '0x10', '1e', '.', '1_0']) {
+      expect(parseExposition(`knotrel_v ${bad}`).skipped).toBe(1);
+    }
+    expect(['b', 'B', 'a'].sort(byCodeUnit)).toEqual(['B', 'a', 'b']);
+    expect(byCodeUnit('a', 'a')).toBe(0);
     expect(parseExposition('knotrel_v{a="x\\n"} 1').samples[0]!.labels.a).toBe('x\n');
   });
 

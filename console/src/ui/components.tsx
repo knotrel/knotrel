@@ -123,7 +123,6 @@ export function NodeIdField({
   disabled,
   hideLabel,
   placeholder,
-  autoFocus,
 }: {
   label: string;
   value: string;
@@ -132,7 +131,6 @@ export function NodeIdField({
   /** Keeps the label for assistive technology only (compact toolbars). */
   hideLabel?: boolean;
   placeholder?: string;
-  autoFocus?: boolean;
 }) {
   const id = useId();
   const check = value === '' ? undefined : checkNodeId(value);
@@ -156,7 +154,6 @@ export function NodeIdField({
         value={value}
         disabled={disabled}
         placeholder={placeholder}
-        autoFocus={autoFocus}
         aria-invalid={check !== undefined && !check.ok}
         aria-describedby={hintId}
         onChange={(event) => onChange(event.target.value)}

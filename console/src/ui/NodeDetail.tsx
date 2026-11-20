@@ -149,6 +149,12 @@ export function NodeDetail(props: Props) {
   const [readAt, setReadAt] = useState<Date>();
   const [copied, setCopied] = useState(false);
   const generation = useRef(0);
+  const linkForm = useRef<HTMLFormElement>(null);
+
+  // Opening the link form moves focus to its field (instead of autoFocus).
+  useEffect(() => {
+    if (linking) linkForm.current?.querySelector('input')?.focus();
+  }, [linking]);
 
   /** Loads one neighbor page (and the node itself unless only paging). */
   const load = useCallback(
@@ -335,6 +341,7 @@ export function NodeDetail(props: Props) {
       )}
       {linking && record_ && (
         <form
+          ref={linkForm}
           className="detail-section inline-form"
           onSubmit={(event) => {
             event.preventDefault();
@@ -351,7 +358,6 @@ export function NodeDetail(props: Props) {
             value={linkTarget}
             onChange={setLinkTarget}
             disabled={busy}
-            autoFocus
           />
           <button type="submit" disabled={busy || !linkCheck.ok || linkTarget === node}>
             Link

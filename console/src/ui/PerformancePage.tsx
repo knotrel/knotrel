@@ -7,7 +7,14 @@
  * quantiles estimated from histogram bucket deltas.
  */
 import { useState, useSyncExternalStore } from 'react';
-import { gauge, histogramQuantile, increase, select, type Scrape } from '../domain/prometheus';
+import {
+  byCodeUnit,
+  gauge,
+  histogramQuantile,
+  increase,
+  select,
+  type Scrape,
+} from '../domain/prometheus';
 import type { MetricsStore } from '../state/metrics';
 import { StatusBadge, Time } from './components';
 
@@ -44,7 +51,7 @@ function ms(seconds: number | undefined): string {
 function labelValues(scrape: Scrape, name: string, label: string): string[] {
   return [...new Set(select(scrape, name).map((s) => s.labels[label] ?? ''))]
     .filter(Boolean)
-    .sort();
+    .sort(byCodeUnit);
 }
 
 /** The Performance page. */
