@@ -734,6 +734,106 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/v1/nodes': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List nodes in ascending ID order (inspection)
+     * @description Read-only inspection route, enabled by `KNOTREL_INSPECTION=true` (otherwise 409
+     *     `inspection_disabled`, before admission). Works with every engine. Runs like
+     *     `GET /v1/stats`: bounded admission, blocking worker, shared graph lock, no readiness
+     *     gate, available in both modes. Each page is computed under one lock acquisition and
+     *     carries the version headers of that instant; pages are not a snapshot. A node present
+     *     for the whole traversal is returned exactly once; nodes added or removed meanwhile may
+     *     or may not appear. A page examines at most 10000 nodes, so it may hold fewer than
+     *     `limit` items while `next_after` is non-null. Restart when `X-Knotrel-Instance-Id` or
+     *     `X-Knotrel-Generation` changes between pages.
+     */
+    get: operations['list_nodes'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/v1/nodes/{node}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Inspect one node
+     * @description Read-only inspection route (`KNOTREL_INSPECTION=true`). Returns the node's flag and
+     *     registered degree. `degree` is `null` for engines without per-node adjacency (`ett`,
+     *     `hdt`). Accepts no query parameters.
+     */
+    get: operations['get_node'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/v1/nodes/{node}/edges': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List one node's incident edges (inspection)
+     * @description Read-only inspection route (`KNOTREL_INSPECTION=true`); requires `compact-bfs`
+     *     (otherwise 409 `inspection_unsupported`). Order: ascending neighbor ID with lifecycle
+     *     support, neighbor registration order without it. `after` is the last neighbor
+     *     returned. With lifecycle support it need not be registered. Without it, it must name a
+     *     registered node (nodes are never removed in that mode), otherwise 422
+     *     `invalid_cursor`. Each page examines at most 10000 incidences. Same consistency
+     *     rules as `GET /v1/nodes`.
+     */
+    get: operations['list_node_edges'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/v1/edges': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List edges once each (inspection)
+     * @description Read-only inspection route (`KNOTREL_INSPECTION=true`); requires `compact-bfs`.
+     *     Each edge appears once as `source < target`, ordered by `source` ascending and then by
+     *     `source`'s incidence order. Resume with `after_source` and, when present,
+     *     `after_target` from `next_after_source` / `next_after_target`. A page examines at most
+     *     10000 nodes plus incidences. Same consistency rules as `GET /v1/nodes`.
+     */
+    get: operations['list_edges'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -905,7 +1005,10 @@ export interface components {
       | 'graph_desynchronized'
       | 'graph_uninitialized'
       | 'import_in_progress'
+      | 'inspection_disabled'
+      | 'inspection_unsupported'
       | 'invalid_batch_size'
+      | 'invalid_cursor'
       | 'invalid_edge'
       | 'invalid_graph_id'
       | 'invalid_instance_id'
@@ -1017,6 +1120,12 @@ export interface components {
        */
       mode?: 'source_managed';
       /**
+       * @description Present, and `true`, only when the read-only inspection routes are enabled
+       *     (`KNOTREL_INSPECTION=true`); absent otherwise.
+       * @constant
+       */
+      inspection?: true;
+      /**
        * @description Present only in source-managed mode: the current process instance ID that feeder
        *     requests must carry. In both modes the same value is returned in the
        *     `X-Knotrel-Instance-Id` header of `/v1/stats`, `/v1/operations` and `/v1/batch`.
@@ -1062,6 +1171,44 @@ export interface components {
     EnabledEdgeCount: number;
     /** @description Lifecycle support only. Edges that are enabled and whose endpoints are both active. */
     EffectiveEdgeCount: number;
+    InspectedNode: {
+      node: components['schemas']['NodeId'];
+      /** @description The node's flag; always `true` without lifecycle support. */
+      active: boolean;
+      /** @description Registered incident edges (enabled or not); `null` for `ett` and `hdt`. */
+      degree: number | null;
+    };
+    NodePage: {
+      nodes: components['schemas']['InspectedNode'][];
+      /** @description Cursor of the next page (`after`); `null` when the traversal is complete. */
+      next_after: components['schemas']['NodeId'] | null;
+    };
+    IncidentEdge: {
+      neighbor: components['schemas']['NodeId'];
+      /** @description The edge's own flag (desired state). */
+      enabled: boolean;
+      /** @description Enabled with both endpoints active; participates in connectivity. */
+      effective: boolean;
+    };
+    IncidentEdgePage: {
+      node: components['schemas']['InspectedNode'];
+      edges: components['schemas']['IncidentEdge'][];
+      /** @description Last neighbor examined, the cursor of the next page; `null` when complete. */
+      next_after: components['schemas']['NodeId'] | null;
+    };
+    InspectedEdge: {
+      source: components['schemas']['NodeId'];
+      target: components['schemas']['NodeId'];
+      enabled: boolean;
+      effective: boolean;
+    };
+    EdgePage: {
+      edges: components['schemas']['InspectedEdge'][];
+      /** @description Resume position (`after_source`); `null` when the traversal is complete. */
+      next_after_source: components['schemas']['NodeId'] | null;
+      /** @description Resume position inside `next_after_source` (`after_target`), or `null`. */
+      next_after_target: components['schemas']['NodeId'] | null;
+    };
     /**
      * @description One `nodes` entry of `POST /v1/feeder/import`: a node ID string (active), or an
      *     object with both members required. The object form requires lifecycle support even
@@ -1293,8 +1440,62 @@ export interface components {
       status: 'ready';
     };
   };
-  responses: never;
-  parameters: never;
+  responses: {
+    /**
+     * @description `inspection_disabled` (KNOTREL_INSPECTION is not enabled; rejected before admission)
+     *     or `inspection_unsupported` (incident and edge listing on `ett` or `hdt`).
+     */
+    InspectionConflict: {
+      headers: {
+        'Cache-Control'?: 'no-store';
+        [name: string]: unknown;
+      };
+      content: {
+        'application/json': components['schemas']['ErrorOutcome'];
+      };
+    };
+    /**
+     * @description `invalid_request`: unknown, repeated or malformed query parameter, invalid node ID,
+     *     `limit` outside 1-1000, unknown `state`, `after_target` without `after_source`.
+     *     `invalid_cursor`: a plain `compact-bfs` incidence cursor names an unregistered node.
+     */
+    InspectionInvalid: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/json': components['schemas']['ErrorOutcome'];
+      };
+    };
+    /** @description The inspected node is not registered (`unknown_node`). */
+    InspectionUnknownNode: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/json': components['schemas']['ErrorOutcome'];
+      };
+    };
+    /** @description Admission exhausted (`busy`), worker unavailable, draining or `request_timeout`. */
+    InspectionUnavailable: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/json': components['schemas']['ErrorOutcome'];
+      };
+    };
+  };
+  parameters: {
+    /** @description Node ID (ASCII decimal digits, u64; leading zeroes are normalized). */
+    InspectionNode: components['schemas']['NodeId'];
+    /** @description Exclusive cursor, the last node (or neighbor) of the previous page. Never expires. */
+    InspectionAfter: components['schemas']['NodeId'];
+    /** @description Page size. */
+    InspectionLimit: number;
+    /** @description Edge filter. Without lifecycle support every edge is enabled and effective. */
+    InspectionEdgeState: 'all' | 'enabled' | 'disabled' | 'effective' | 'ineffective';
+  };
   requestBodies: never;
   headers: {
     /**
@@ -1865,6 +2066,178 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
+    };
+  };
+  list_nodes: {
+    parameters: {
+      query?: {
+        /** @description Exclusive cursor, the last node (or neighbor) of the previous page. Never expires. */
+        after?: components['parameters']['InspectionAfter'];
+        /** @description Page size. */
+        limit?: components['parameters']['InspectionLimit'];
+        /** @description Node filter. Without lifecycle support every node is active. */
+        state?: 'all' | 'active' | 'inactive';
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of nodes */
+      200: {
+        headers: {
+          'Cache-Control'?: 'no-store';
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "nodes": [
+           *         {
+           *           "node": "2",
+           *           "active": true,
+           *           "degree": 2
+           *         },
+           *         {
+           *           "node": "18446744073709551615",
+           *           "active": false,
+           *           "degree": 1
+           *         }
+           *       ],
+           *       "next_after": "18446744073709551615"
+           *     }
+           */
+          'application/json': components['schemas']['NodePage'];
+        };
+      };
+      409: components['responses']['InspectionConflict'];
+      422: components['responses']['InspectionInvalid'];
+      503: components['responses']['InspectionUnavailable'];
+    };
+  };
+  get_node: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Node ID (ASCII decimal digits, u64; leading zeroes are normalized). */
+        node: components['parameters']['InspectionNode'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The registered node */
+      200: {
+        headers: {
+          'Cache-Control'?: 'no-store';
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['InspectedNode'];
+        };
+      };
+      404: components['responses']['InspectionUnknownNode'];
+      409: components['responses']['InspectionConflict'];
+      422: components['responses']['InspectionInvalid'];
+      503: components['responses']['InspectionUnavailable'];
+    };
+  };
+  list_node_edges: {
+    parameters: {
+      query?: {
+        /** @description Exclusive cursor, the last node (or neighbor) of the previous page. Never expires. */
+        after?: components['parameters']['InspectionAfter'];
+        /** @description Page size. */
+        limit?: components['parameters']['InspectionLimit'];
+        /** @description Edge filter. Without lifecycle support every edge is enabled and effective. */
+        state?: components['parameters']['InspectionEdgeState'];
+      };
+      header?: never;
+      path: {
+        /** @description Node ID (ASCII decimal digits, u64; leading zeroes are normalized). */
+        node: components['parameters']['InspectionNode'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of incident edges */
+      200: {
+        headers: {
+          'Cache-Control'?: 'no-store';
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['IncidentEdgePage'];
+        };
+      };
+      404: components['responses']['InspectionUnknownNode'];
+      409: components['responses']['InspectionConflict'];
+      422: components['responses']['InspectionInvalid'];
+      503: components['responses']['InspectionUnavailable'];
+    };
+  };
+  list_edges: {
+    parameters: {
+      query?: {
+        /** @description Resume position (`next_after_source` of the previous page). */
+        after_source?: components['schemas']['NodeId'];
+        /** @description Resume position inside `after_source` (`next_after_target`); requires `after_source`. */
+        after_target?: components['schemas']['NodeId'];
+        /** @description Page size. */
+        limit?: components['parameters']['InspectionLimit'];
+        /** @description Edge filter. Without lifecycle support every edge is enabled and effective. */
+        state?: components['parameters']['InspectionEdgeState'];
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of edges */
+      200: {
+        headers: {
+          'Cache-Control'?: 'no-store';
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['EdgePage'];
+        };
+      };
+      409: components['responses']['InspectionConflict'];
+      422: components['responses']['InspectionInvalid'];
+      503: components['responses']['InspectionUnavailable'];
     };
   };
 }

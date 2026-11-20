@@ -147,6 +147,8 @@ export interface ServerInfo {
   instanceId: string | undefined;
   /** Whether node and edge lifecycle support is enabled. */
   topologyLifecycle: boolean;
+  /** Whether the read-only inspection routes are enabled. */
+  inspection: boolean;
 }
 
 /** Decodes the effective configuration. */
@@ -156,6 +158,10 @@ export function decodeInfo(value: JsonValue): ServerInfo {
   const lifecycle = optional(body, 'topology_lifecycle', 'info', boolean);
   if (lifecycle === false) {
     fail('info.topology_lifecycle', 'must be absent or true');
+  }
+  const inspection = optional(body, 'inspection', 'info', boolean);
+  if (inspection === false) {
+    fail('info.inspection', 'must be absent or true');
   }
   return {
     engine: oneOf(ENGINES, body.engine, 'info.engine'),
@@ -168,6 +174,7 @@ export function decodeInfo(value: JsonValue): ServerInfo {
     mode: mode ?? 'standalone',
     instanceId: optional(body, 'instance_id', 'info', string),
     topologyLifecycle: lifecycle === true,
+    inspection: inspection === true,
   };
 }
 
@@ -285,4 +292,155 @@ export function decodeServerError(value: JsonValue): ServerError {
 /** Narrows a code string to a documented {@link ErrorCode}. */
 export function isKnownErrorCode(code: string): code is ErrorCode {
   return (ERROR_CODES as readonly string[]).includes(code);
+}
+
+/** A node ID string: ASCII decimal digits within the u64 range, kept exact. */
+export function nodeId(value: JsonValue | undefined, path: string): string {
+  const text = decimalString(value, path);
+  if (BigInt(text) > U64_MAX) {
+    fail(path, 'node ID exceeds u64');
+  }
+  return text;
+}
+
+function nullable<T>(
+  value: JsonValue | undefined,
+  path: string,
+  decode: (value: JsonValue, path: string) => T,
+): T | null {
+  if (value === undefined) {
+    fail(path, 'missing (expected a value or null)');
+  }
+  return value === null ? null : decode(value, path);
+}
+
+function array(value: JsonValue | undefined, path: string): JsonValue[] {
+  if (!Array.isArray(value)) {
+    fail(path, 'expected an array');
+  }
+  return value;
+}
+
+/** A node reported by the inspection routes. */
+export interface InspectedNode {
+  /** Exact node ID. */
+  node: string;
+  /** Node flag; always true without lifecycle support. */
+  active: boolean;
+  /** Registered degree, or `null` when the engine does not report it. */
+  degree: string | null;
+}
+
+/** Decodes one inspected node. */
+export function decodeInspectedNode(value: JsonValue, path = 'node'): InspectedNode {
+  const body = object(value, path);
+  return {
+    node: nodeId(body.node, `${path}.node`),
+    active: boolean(body.active, `${path}.active`),
+    degree: nullable(body.degree, `${path}.degree`, (v, p) => unsigned(v, p)),
+  };
+}
+
+/** A page of `GET /v1/nodes`. */
+export interface NodePage {
+  nodes: InspectedNode[];
+  /** Cursor of the next page, or `null` when complete. */
+  nextAfter: string | null;
+}
+
+/** Decodes a node page. */
+export function decodeNodePage(value: JsonValue): NodePage {
+  const body = object(value, 'page');
+  return {
+    nodes: array(body.nodes, 'page.nodes').map((n, i) =>
+      decodeInspectedNode(n, `page.nodes[${i}]`),
+    ),
+    nextAfter: nullable(body.next_after, 'page.next_after', nodeId),
+  };
+}
+
+/** An incident edge, seen from the inspected node. */
+export interface IncidentEdge {
+  neighbor: string;
+  /** The edge's own flag (desired state). */
+  enabled: boolean;
+  /** Enabled and both endpoints active. */
+  effective: boolean;
+}
+
+/** A page of `GET /v1/nodes/{node}/edges`. */
+export interface IncidentPage {
+  node: InspectedNode;
+  edges: IncidentEdge[];
+  nextAfter: string | null;
+}
+
+/** Decodes an incident edge page. */
+export function decodeIncidentPage(value: JsonValue): IncidentPage {
+  const body = object(value, 'page');
+  return {
+    node: decodeInspectedNode(body.node as JsonValue, 'page.node'),
+    edges: array(body.edges, 'page.edges').map((edge, i) => {
+      const e = object(edge, `page.edges[${i}]`);
+      return {
+        neighbor: nodeId(e.neighbor, `page.edges[${i}].neighbor`),
+        enabled: boolean(e.enabled, `page.edges[${i}].enabled`),
+        effective: boolean(e.effective, `page.edges[${i}].effective`),
+      };
+    }),
+    nextAfter: nullable(body.next_after, 'page.next_after', nodeId),
+  };
+}
+
+/** One edge of `GET /v1/edges`. */
+export interface InspectedEdge {
+  source: string;
+  target: string;
+  enabled: boolean;
+  effective: boolean;
+}
+
+/** A page of `GET /v1/edges`. */
+export interface EdgePage {
+  edges: InspectedEdge[];
+  /** Resume position, or `null` when complete. */
+  nextAfterSource: string | null;
+  nextAfterTarget: string | null;
+}
+
+/** Decodes an edge page. */
+export function decodeEdgePage(value: JsonValue): EdgePage {
+  const body = object(value, 'page');
+  const page = {
+    edges: array(body.edges, 'page.edges').map((edge, i) => {
+      const e = object(edge, `page.edges[${i}]`);
+      return {
+        source: nodeId(e.source, `page.edges[${i}].source`),
+        target: nodeId(e.target, `page.edges[${i}].target`),
+        enabled: boolean(e.enabled, `page.edges[${i}].enabled`),
+        effective: boolean(e.effective, `page.edges[${i}].effective`),
+      };
+    }),
+    nextAfterSource: nullable(body.next_after_source, 'page.next_after_source', nodeId),
+    nextAfterTarget: nullable(body.next_after_target, 'page.next_after_target', nodeId),
+  };
+  if (page.nextAfterSource === null && page.nextAfterTarget !== null) {
+    fail('page.next_after_target', 'requires next_after_source');
+  }
+  return page;
+}
+
+/** One entry of a batch response: an outcome or a per-operation error. */
+export type BatchEntry =
+  { ok: true; outcome: OperationOutcome } | { ok: false; error: ServerError };
+
+/** Decodes a `POST /v1/batch` 200 body. Results are in operation order. */
+export function decodeBatch(value: JsonValue): BatchEntry[] {
+  const body = object(value, 'batch');
+  return array(body.results, 'batch.results').map((entry, i) => {
+    const e = object(entry, `batch.results[${i}]`);
+    return e.result === 'error'
+      ? { ok: false as const, error: decodeServerError(e) }
+      : { ok: true as const, outcome: decodeOperationOutcome(e) };
+  });
 }

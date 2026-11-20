@@ -9,14 +9,24 @@
 import type { ApiClient, Transport } from './client';
 import {
   DecodeError,
+  decodeBatch,
+  decodeEdgePage,
   decodeHealth,
+  decodeIncidentPage,
+  decodeInspectedNode,
+  decodeNodePage,
   decodeInfo,
   decodeOperationOutcome,
   decodeReadiness,
   decodeServerError,
   decodeStats,
+  type BatchEntry,
+  type EdgePage,
   type GraphStats,
   type Health,
+  type IncidentPage,
+  type InspectedNode,
+  type NodePage,
   type OperationOutcome,
   type Readiness,
   type ServerError,
@@ -46,8 +56,10 @@ export type Result<T> =
       metadata: VersionMetadata;
       durationMs: number;
       receivedAt: Date;
+      /** Raw response text, exactly as received. */
+      raw: string;
     }
-  | { ok: false; failure: Failure; durationMs: number; receivedAt: Date };
+  | { ok: false; failure: Failure; durationMs: number; receivedAt: Date; raw?: string };
 
 /** Default timeout for reads, in milliseconds. */
 export const READ_TIMEOUT_MS = 10_000;
@@ -77,7 +89,11 @@ export function classify<T>(
 ): Result<T> {
   const receivedAt = new Date();
   const { durationMs } = transport;
-  const failed = (failure: Failure): Result<T> => ({ ok: false, failure, durationMs, receivedAt });
+  const raw = transport.kind === 'response' ? transport.text : undefined;
+  const failed = (failure: Failure): Result<T> =>
+    raw === undefined
+      ? { ok: false, failure, durationMs, receivedAt }
+      : { ok: false, failure, durationMs, receivedAt, raw };
   switch (transport.kind) {
     case 'aborted':
       return failed({ kind: 'aborted' });
@@ -117,6 +133,7 @@ export function classify<T>(
         metadata: transport.metadata,
         durationMs,
         receivedAt,
+        raw: transport.text,
       };
     } catch (error) {
       const reason = error instanceof DecodeError ? error.message : 'undecodable response';
@@ -165,6 +182,65 @@ function decodeRuntimeConfig(body: JsonValue): RuntimeConfig {
   return { serverLabel: text('serverLabel'), deployment: text('deployment') };
 }
 
+/** Paging parameters of `GET /v1/nodes`. */
+export interface NodeQuery {
+  after?: string | undefined;
+  limit: number;
+  state: 'all' | 'active' | 'inactive';
+}
+
+/** Edge state filter. */
+export type EdgeState = 'all' | 'enabled' | 'disabled' | 'effective' | 'ineffective';
+
+/** Paging parameters of `GET /v1/nodes/{node}/edges`. */
+export interface IncidentQuery {
+  after?: string | undefined;
+  limit: number;
+  state: EdgeState;
+}
+
+/** Paging parameters of `GET /v1/edges`. */
+export interface EdgeQuery {
+  afterSource?: string | undefined;
+  afterTarget?: string | undefined;
+  limit: number;
+  state: EdgeState;
+}
+
+function query(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      search.set(key, String(value));
+    }
+  }
+  const text = search.toString();
+  return text ? `?${text}` : '';
+}
+
+/** Plain-text decoder for `/metrics`; the body is kept verbatim. */
+function metricsText(transport: Transport): Result<string> {
+  if (transport.kind === 'response' && transport.status === 200 && transport.proxy === undefined) {
+    return {
+      ok: true,
+      value: transport.text,
+      status: 200,
+      metadata: transport.metadata,
+      durationMs: transport.durationMs,
+      receivedAt: new Date(),
+      raw: transport.text,
+    };
+  }
+  return classify(
+    {
+      ...transport,
+      ...(transport.kind === 'response' ? { body: undefined, bodyError: undefined } : {}),
+    } as Transport,
+    [],
+    () => '',
+  );
+}
+
 /** The console API used by the UI. */
 export interface ConsoleApi {
   health(signal?: AbortSignal): Promise<Result<Health>>;
@@ -173,6 +249,17 @@ export interface ConsoleApi {
   stats(signal?: AbortSignal): Promise<Result<GraphStats>>;
   runtimeConfig(signal?: AbortSignal): Promise<Result<RuntimeConfig>>;
   operation(op: Operation, kind: 'query' | 'mutation'): Promise<Result<OperationOutcome>>;
+  batch(ops: Operation[], kind: 'query' | 'mutation'): Promise<Result<BatchEntry[]>>;
+  listNodes(params: NodeQuery, signal?: AbortSignal): Promise<Result<NodePage>>;
+  getNode(node: string, signal?: AbortSignal): Promise<Result<InspectedNode>>;
+  listNodeEdges(
+    node: string,
+    params: IncidentQuery,
+    signal?: AbortSignal,
+  ): Promise<Result<IncidentPage>>;
+  listEdges(params: EdgeQuery, signal?: AbortSignal): Promise<Result<EdgePage>>;
+  /** Raw Prometheus exposition of `GET /metrics` (404 when metrics are disabled). */
+  metrics(signal?: AbortSignal): Promise<Result<string>>;
 }
 
 /** Builds the {@link ConsoleApi} on top of an {@link ApiClient}. */
@@ -214,5 +301,52 @@ export function createConsoleApi(client: ApiClient): ConsoleApi {
         [200],
         decodeOperationOutcome,
       ),
+    batch: async (ops, kind) =>
+      classify(
+        await client.request('v1/batch', {
+          body: { operations: ops },
+          timeoutMs: kind === 'mutation' ? MUTATION_TIMEOUT_MS : READ_TIMEOUT_MS,
+        }),
+        [200],
+        decodeBatch,
+      ),
+    listNodes: (params, signal) =>
+      read(
+        `v1/nodes${query({ after: params.after, limit: params.limit, state: params.state })}`,
+        [200],
+        decodeNodePage,
+        signal,
+      ),
+    getNode: (node, signal) =>
+      read(`v1/nodes/${encodeURIComponent(node)}`, [200], (b) => decodeInspectedNode(b), signal),
+    listNodeEdges: (node, params, signal) =>
+      read(
+        `v1/nodes/${encodeURIComponent(node)}/edges${query({
+          after: params.after,
+          limit: params.limit,
+          state: params.state,
+        })}`,
+        [200],
+        decodeIncidentPage,
+        signal,
+      ),
+    listEdges: (params, signal) =>
+      read(
+        `v1/edges${query({
+          after_source: params.afterSource,
+          after_target: params.afterTarget,
+          limit: params.limit,
+          state: params.state,
+        })}`,
+        [200],
+        decodeEdgePage,
+        signal,
+      ),
+    metrics: async (signal) => {
+      const options = signal
+        ? { timeoutMs: READ_TIMEOUT_MS, signal, text: true }
+        : { timeoutMs: READ_TIMEOUT_MS, text: true };
+      return metricsText(await client.request('metrics', options));
+    },
   };
 }

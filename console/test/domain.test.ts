@@ -218,7 +218,10 @@ describe('history', () => {
     id,
     at: new Date(),
     description: `op ${id}`,
-    verdict: { kind: 'no-op', stateVersion: undefined },
+    summary: 'No-op',
+    severity: 'unknown',
+    mutating: true,
+    request: undefined,
     instanceId: undefined,
     durationMs: 1,
   });

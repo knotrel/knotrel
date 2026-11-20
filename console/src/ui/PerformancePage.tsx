@@ -1,0 +1,302 @@
+/**
+ * Performance view from `GET /metrics`: request and error rates, admission
+ * rejections, server-side latency, saturation and graph-job timing.
+ *
+ * Every number is computed from scrapes this tab observed (no stored
+ * history). Rates use reset-corrected counter increases; latencies are
+ * quantiles estimated from histogram bucket deltas.
+ */
+import { useState, useSyncExternalStore } from 'react';
+import { gauge, histogramQuantile, increase, select, type Scrape } from '../domain/prometheus';
+import type { MetricsStore } from '../state/metrics';
+import { StatusBadge, Time } from './components';
+
+const WINDOWS = [
+  { id: '60', label: 'last 1 minute', ms: 60_000 },
+  { id: '300', label: 'last 5 minutes', ms: 300_000 },
+  { id: 'session', label: 'whole session', ms: Infinity },
+] as const;
+
+/** Picks the oldest scrape inside the window and the latest scrape. */
+export function windowScrapes(
+  scrapes: readonly Scrape[],
+  windowMs: number,
+): [Scrape, Scrape] | undefined {
+  const latest = scrapes[scrapes.length - 1];
+  if (!latest || scrapes.length < 2) return undefined;
+  const from =
+    scrapes.find((s) => latest.at - s.at <= windowMs && s !== latest) ??
+    scrapes[scrapes.length - 2];
+  return from ? [from, latest] : undefined;
+}
+
+function rate(value: number | undefined): string {
+  return value === undefined ? '—' : value < 0.1 && value > 0 ? '< 0.1/s' : `${value.toFixed(1)}/s`;
+}
+
+function ms(seconds: number | undefined): string {
+  if (seconds === undefined) return 'no observations';
+  return seconds < 0.001
+    ? `${(seconds * 1_000_000).toFixed(0)} µs`
+    : `${(seconds * 1000).toFixed(seconds < 0.01 ? 2 : 1)} ms`;
+}
+
+function labelValues(scrape: Scrape, name: string, label: string): string[] {
+  return [...new Set(select(scrape, name).map((s) => s.labels[label] ?? ''))]
+    .filter(Boolean)
+    .sort();
+}
+
+/** The Performance page. */
+export function PerformancePage({ store }: { store: MetricsStore }) {
+  const state = useSyncExternalStore(store.subscribe, store.getState);
+  const [windowId, setWindowId] = useState<(typeof WINDOWS)[number]['id']>('60');
+
+  if (state.availability === 'disabled') {
+    return (
+      <div className="page">
+        <section className="card">
+          <h2>Performance</h2>
+          <p>
+            <StatusBadge severity="unknown" label="Metrics disabled" /> The server answers 404 for{' '}
+            <code className="exact">/metrics</code>. Start it with{' '}
+            <code className="exact">KNOTREL_METRICS_ENABLED=true</code> to see rates, latency and
+            saturation.
+          </p>
+          <button type="button" onClick={() => store.retry()}>
+            Check again
+          </button>
+        </section>
+      </div>
+    );
+  }
+  const window = WINDOWS.find((w) => w.id === windowId) ?? WINDOWS[0];
+  const pair = windowScrapes(state.scrapes, window.ms);
+  const latest = state.scrapes[state.scrapes.length - 1];
+  const first = state.scrapes[0];
+
+  return (
+    <div className="page">
+      <section className="card" aria-labelledby="perf-h">
+        <h2 id="perf-h">Performance</h2>
+        <div className="toolbar">
+          <label className="filter">
+            Window{' '}
+            <select
+              value={windowId}
+              onChange={(event) => setWindowId(event.target.value as typeof windowId)}
+            >
+              {WINDOWS.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {state.availability === 'error' && (
+            <StatusBadge severity="critical" label={`Scrape failed (${state.error ?? 'error'})`} />
+          )}
+        </div>
+        <p className="note">
+          Computed from scrapes of <code className="exact">/metrics</code> taken by this tab every 5
+          s while it is visible. There is no stored history: the session started at{' '}
+          {first ? <Time date={new Date(first.at)} /> : '—'} ({state.scrapes.length} scrapes).
+          Server-side times exclude the network; browser round trips are shown with each request
+          instead.
+        </p>
+        {!pair || !latest ? (
+          <p role="status">
+            <StatusBadge severity="progress" label="Collecting" /> Rates need at least two scrapes.
+          </p>
+        ) : (
+          <PerformanceBody from={pair[0]} to={pair[1]} />
+        )}
+        {state.skippedLines > 0 && (
+          <p className="note">{state.skippedLines} unparsed metric lines were ignored.</p>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function PerformanceBody({ from, to }: { from: Scrape; to: Scrape }) {
+  const seconds = (to.at - from.at) / 1000;
+  const total = increase(from, to, 'knotrel_http_requests_total');
+  const reset = total?.reset === true;
+  const routes = labelValues(to, 'knotrel_http_requests_total', 'route');
+  const rejected = labelValues(to, 'knotrel_requests_rejected_total', 'reason');
+  const uncertain = labelValues(to, 'knotrel_requests_outcome_uncertain_total', 'cause');
+  const kinds = labelValues(to, 'knotrel_graph_job_execution_seconds_bucket', 'kind');
+  const outstanding = gauge(to, 'knotrel_graph_jobs_outstanding');
+  const capacity = gauge(to, 'knotrel_graph_job_capacity');
+  return (
+    <>
+      <p className="source">
+        Window: {seconds.toFixed(0)} s between <Time date={new Date(from.at)} /> and{' '}
+        <Time date={new Date(to.at)} />.
+      </p>
+      {reset && (
+        <div className="banner" role="alert">
+          <StatusBadge severity="warning" label="Counter reset" /> Counters decreased in this window
+          (server restart). Rates count from the reset.
+        </div>
+      )}
+      <h3>Saturation</h3>
+      <dl>
+        <div className="field">
+          <dt>Graph jobs outstanding / capacity</dt>
+          <dd>
+            {outstanding === undefined || capacity === undefined
+              ? '—'
+              : `${outstanding} / ${capacity}`}
+            {outstanding !== undefined && capacity !== undefined && outstanding >= capacity && (
+              <>
+                {' '}
+                <StatusBadge
+                  severity="warning"
+                  label="At capacity: new graph work is refused (busy)"
+                />
+              </>
+            )}
+          </dd>
+        </div>
+      </dl>
+      <h3>Requests by route</h3>
+      <table className="list">
+        <caption className="visually-hidden">
+          Request rates and server-side latency by route
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Route</th>
+            <th scope="col">Rate</th>
+            <th scope="col">4xx</th>
+            <th scope="col">5xx</th>
+            <th scope="col">Server p50</th>
+            <th scope="col">Server p95</th>
+          </tr>
+        </thead>
+        <tbody>
+          {routes.map((route) => {
+            const all = increase(from, to, 'knotrel_http_requests_total', { route });
+            const c4 = increase(from, to, 'knotrel_http_requests_total', {
+              route,
+              status_class: '4xx',
+            });
+            const c5 = increase(from, to, 'knotrel_http_requests_total', {
+              route,
+              status_class: '5xx',
+            });
+            const p50 = histogramQuantile(
+              from,
+              to,
+              'knotrel_http_request_duration_seconds',
+              { route },
+              0.5,
+            );
+            const p95 = histogramQuantile(
+              from,
+              to,
+              'knotrel_http_request_duration_seconds',
+              { route },
+              0.95,
+            );
+            return (
+              <tr key={route}>
+                <td>
+                  <code className="exact">{route}</code>
+                </td>
+                <td>{rate(all && all.value / all.seconds)}</td>
+                <td>{rate(c4 && c4.value / c4.seconds)}</td>
+                <td>{rate(c5 && c5.value / c5.seconds)}</td>
+                <td>{ms(p50?.value)}</td>
+                <td>{ms(p95?.value)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="note">
+        Server p50/p95: estimated from{' '}
+        <code className="exact">knotrel_http_request_duration_seconds</code> bucket deltas in the
+        window (middleware entry to response, no network).
+      </p>
+      <h3>Admission rejections and uncertain outcomes</h3>
+      {rejected.length === 0 && uncertain.length === 0 ? (
+        <p>No rejection series reported.</p>
+      ) : (
+        <ul>
+          {rejected.map((reason) => {
+            const r = increase(from, to, 'knotrel_requests_rejected_total', { reason });
+            return (
+              <li key={reason}>
+                Rejected (<code className="exact">{reason}</code>): {rate(r && r.value / r.seconds)}{' '}
+                ({r?.value ?? 0} in window)
+              </li>
+            );
+          })}
+          {uncertain.map((cause) => {
+            const r = increase(from, to, 'knotrel_requests_outcome_uncertain_total', { cause });
+            return (
+              <li key={cause}>
+                Outcome uncertain (<code className="exact">{cause}</code>): {r?.value ?? 0} in
+                window
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <h3>Graph jobs (server processing time)</h3>
+      <table className="list">
+        <caption className="visually-hidden">
+          Graph job queue, lock wait and execution by kind
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Kind</th>
+            <th scope="col">Jobs</th>
+            <th scope="col">Queue p95</th>
+            <th scope="col">Lock wait p95</th>
+            <th scope="col">Execution p95</th>
+          </tr>
+        </thead>
+        <tbody>
+          {kinds.map((kind) => {
+            const exec = histogramQuantile(
+              from,
+              to,
+              'knotrel_graph_job_execution_seconds',
+              { kind },
+              0.95,
+            );
+            return (
+              <tr key={kind}>
+                <td>
+                  <code className="exact">{kind}</code>
+                </td>
+                <td>{exec?.count ?? 0}</td>
+                <td>
+                  {ms(
+                    histogramQuantile(from, to, 'knotrel_graph_job_queue_seconds', { kind }, 0.95)
+                      ?.value,
+                  )}
+                </td>
+                <td>
+                  {ms(
+                    histogramQuantile(from, to, 'knotrel_graph_lock_wait_seconds', { kind }, 0.95)
+                      ?.value,
+                  )}
+                </td>
+                <td>{ms(exec?.value)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="note">
+        Job timing is aggregate per kind, measured by the server around the graph lock. It is the
+        only server-side processing time available; no per-request value exists.
+      </p>
+    </>
+  );
+}

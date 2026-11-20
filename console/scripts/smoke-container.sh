@@ -36,6 +36,7 @@ header() { curl -s -D - -o /dev/null "${@:2}" | tr -d '\r' | awk -v h="$1" 'tolo
 docker network create "$network" >/dev/null
 docker run -d --name "$server" --network "$network" --network-alias knotrel \
     -e KNOTREL_MODE=standalone -e KNOTREL_TOPOLOGY_LIFECYCLE=true \
+    -e KNOTREL_INSPECTION=true -e KNOTREL_METRICS_ENABLED=true \
     --read-only --cap-drop ALL "$server_image" >/dev/null
 docker run -d --name "$console" --network "$network" -p "127.0.0.1:$port:8080" \
     -e KNOTREL_UPSTREAM=http://knotrel:8080 -e KNOTREL_CONSOLE_SERVER_LABEL="smoke server" \
@@ -63,13 +64,24 @@ op() { curl -s -X POST -H 'content-type: application/json' -H "origin: $base" -H
 [[ "$(op '{"op":"connected","source":"18446744073709551615","target":"1"}')" == '{"result":"connected","connected":true}' ]] || fail "connected"
 [[ "$(header x-knotrel-state-version -X POST -H 'content-type: application/json' -d '{"op":"connected","source":"1","target":"18446744073709551615"}' "$base/api/v1/operations")" == 1 ]] || fail "version header"
 [[ "$(op '{"op":"link","source":"2","target":"2"}')" == *'"code":"self_loop"'* ]] || fail "server error passthrough"
+curl -sf "$base/api/v1/nodes?limit=1" | grep -q '"next_after":"18446744073709551615"\|"node":"1"' || fail "node listing"
+curl -sf "$base/api/v1/nodes/18446744073709551615/edges" | grep -q '"neighbor":"1"' || fail "incident listing"
+curl -sf "$base/api/v1/edges" | grep -q '"source":"1"' || fail "edge listing"
+[[ "$(status "$base/api/v1/nodes/999")" == 404 ]] || fail "unknown node passes through"
+[[ "$(header x-knotrel-console-proxy "$base/api/v1/nodes/999")" == "" ]] || fail "server 404 is not a gateway answer"
+curl -sf "$base/api/metrics" | grep -q '^knotrel_http_requests_total' || fail "metrics forwarded"
+big_batch="$(python3 -c 'import json;print(json.dumps({"operations":[{"op":"connected","source":"1","target":"18446744073709551615"}]*1024}))')"
+[[ "$(status -X POST -H 'content-type: application/json' --data-binary "$big_batch" "$base/api/v1/batch")" == 200 ]] || fail "full batch accepted"
 pass "API forwarding with exact IDs, version headers and server errors"
+pass "inspection routes, batch (1 MiB limit) and metrics forwarded"
 
 [[ "$(status -H 'Host: attacker.example' "$base/api/v1/info")" == 421 ]] || fail "Host check"
 [[ "$(status -X POST -H 'content-type: application/json' -H 'origin: http://evil.example' -d '{}' "$base/api/v1/operations")" == 403 ]] || fail "Origin check"
 [[ "$(header x-knotrel-console-proxy -H 'sec-fetch-site: cross-site' "$base/api/v1/stats")" == rejected ]] || fail "Sec-Fetch-Site check"
 [[ "$(status -X POST -H 'content-type: application/json' -d '{}' "$base/api/v1/feeder/session")" == 404 ]] || fail "feeder route hidden"
-[[ "$(status -X POST -H 'content-type: application/json' -d '{"operations":[]}' "$base/api/v1/batch")" == 404 ]] || fail "batch hidden"
+[[ "$(status -X POST -H 'content-type: application/json' -d '{"operations":[]}' "$base/api/v1/batch")" == 422 ]] || fail "batch forwarded (server validates size)"
+[[ "$(status "$base/api/v1/nodes/12a")" == 404 ]] || fail "non-numeric node path rejected"
+[[ "$(header x-knotrel-console-proxy "$base/api/v1/nodes/1/other")" == rejected ]] || fail "unknown node subpath rejected"
 [[ "$(status "$base/api/v1/operations")" == 405 ]] || fail "method check"
 big="$(head -c 70000 /dev/zero | tr '\0' ' ')"
 [[ "$(status -X POST -H 'content-type: application/json' --data-binary "$big" "$base/api/v1/operations")" == 413 ]] || fail "body limit"

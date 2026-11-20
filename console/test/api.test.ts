@@ -318,6 +318,7 @@ describe('ApiClient', () => {
       status: 404,
       body: undefined,
       bodyError: undefined,
+      text: '',
     });
     const b = await client.request('health', { timeoutMs: 1000 });
     expect(b.kind === 'response' && b.bodyError).toMatch(/invalid JSON/);
@@ -372,6 +373,7 @@ describe('classify', () => {
   const base = {
     kind: 'response' as const,
     body: undefined,
+    text: '',
     bodyError: undefined,
     metadata: EMPTY_METADATA,
     proxy: undefined,
@@ -441,6 +443,7 @@ describe('createConsoleApi', () => {
       status: 200,
       body: parseLosslessJson('{"status":"ok"}'),
       bodyError: undefined,
+      text: '',
       metadata: EMPTY_METADATA,
       proxy: undefined,
       durationMs: 1,
@@ -479,6 +482,7 @@ describe('createConsoleApi', () => {
           status: 200,
           body: parseLosslessJson(body),
           bodyError: undefined,
+          text: '',
           metadata: EMPTY_METADATA,
           proxy: undefined,
           durationMs: 1,

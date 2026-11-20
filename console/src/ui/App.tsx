@@ -1,7 +1,11 @@
 /**
- * Application shell: header, connection banner, keyboard-navigable tabs and pages.
+ * Application shell: header, keyboard-navigable tabs adapted to the server
+ * mode, shareable hash routes and the pages. Every page stays mounted (inactive
+ * ones are hidden), so filters, selections, forms and history survive
+ * navigation.
  */
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -11,28 +15,26 @@ import {
 } from 'react';
 import type { ConsoleApi } from '../api/endpoints';
 import { deriveCapabilities } from '../domain/capabilities';
+import { appendHistory, type HistoryEntry } from '../domain/history';
+import { MetricsStore } from '../state/metrics';
 import { connectivityOf, isStale, OverviewStore } from '../state/overview';
+import { formatHash, parseHash, type PageId } from '../state/route';
+import { BrowserPage, browserParams, type BrowserParams } from './BrowserPage';
 import { Exact, StatusBadge, Time } from './components';
-import { OperationsPage } from './OperationsPage';
+import type { RecordHistory } from './mutation';
 import { OverviewPage } from './OverviewPage';
-import { QueriesPage } from './QueriesPage';
+import { PerformancePage } from './PerformancePage';
+import type { QueryPreset } from './presets';
 import { SyncPage } from './SyncPage';
+import { WorkbenchPage } from './WorkbenchPage';
 
-/** Navigable pages, in tab order. */
-export const PAGES = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'queries', label: 'Graph/Queries' },
-  { id: 'sync', label: 'Synchronization' },
-  { id: 'operations', label: 'Operations' },
-] as const;
-
-/** Page identifier. */
-export type PageId = (typeof PAGES)[number]['id'];
-
-function pageFromHash(hash: string): PageId {
-  const id = hash.replace(/^#\/?/, '');
-  return PAGES.find((p) => p.id === id)?.id ?? 'overview';
-}
+const LABELS: Record<PageId, string> = {
+  overview: 'Overview',
+  browser: 'Browser',
+  workbench: 'Workbench',
+  performance: 'Performance',
+  sync: 'Synchronization',
+};
 
 function useNow(intervalMs: number): Date {
   const [now, setNow] = useState(() => new Date());
@@ -43,44 +45,112 @@ function useNow(intervalMs: number): Date {
   return now;
 }
 
+/** Hash parameters of a browser view, without defaults. */
+function browserHashParams(params: BrowserParams): Record<string, string | undefined> {
+  return {
+    view: params.view === 'nodes' ? undefined : params.view,
+    state: params.state === 'all' ? undefined : params.state,
+    node: params.node,
+    edge: params.edge,
+  };
+}
+
 /** Properties of {@link App}. */
 export interface AppProps {
   /** API used for every request. */
   api: ConsoleApi;
-  /** Optional store, for tests; created from `api` by default. */
+  /** Optional stores, for tests; created from `api` by default. */
   store?: OverviewStore;
+  metricsStore?: MetricsStore;
 }
 
 /** Root component. */
-export function App({ api, store: providedStore }: AppProps) {
+export function App({ api, store: providedStore, metricsStore: providedMetrics }: AppProps) {
   const store = useMemo(() => providedStore ?? new OverviewStore(api), [api, providedStore]);
+  const metricsStore = useMemo(
+    () => providedMetrics ?? new MetricsStore(api),
+    [api, providedMetrics],
+  );
   useEffect(() => {
     store.start();
-    return () => store.stop();
-  }, [store]);
+    metricsStore.start();
+    return () => {
+      store.stop();
+      metricsStore.stop();
+    };
+  }, [store, metricsStore]);
   const state = useSyncExternalStore(store.subscribe, store.getState);
+  const metrics = useSyncExternalStore(metricsStore.subscribe, metricsStore.getState);
   const now = useNow(1000);
-  const [page, setPage] = useState<PageId>(() => pageFromHash(window.location.hash));
+  const [route, setRoute] = useState(() => parseHash(window.location.hash));
+  const [browser, setBrowser] = useState<BrowserParams>(() =>
+    browserParams(parseHash(window.location.hash).params),
+  );
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [preset, setPreset] = useState<QueryPreset>();
+  const nextId = useRef(1);
   const tabRefs = useRef<Partial<Record<PageId, HTMLButtonElement | null>>>({});
 
+  const capabilities = deriveCapabilities(state.lastInfo?.value);
+  const pages: PageId[] = ['overview', 'browser', 'workbench', 'performance'];
+  if (capabilities.mode === 'source_managed') pages.push('sync');
+  const page: PageId = pages.includes(route.page) ? route.page : 'overview';
+
   useEffect(() => {
-    const onHash = () => setPage(pageFromHash(window.location.hash));
+    const onHash = () => {
+      const next = parseHash(window.location.hash);
+      setRoute(next);
+      if (next.page === 'browser') setBrowser(browserParams(next.params));
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  const select = (id: PageId, focus = false) => {
-    setPage(id);
-    if (window.location.hash !== `#${id}`) {
-      window.history.replaceState(null, '', `#${id}`);
-    }
-    if (focus) {
-      tabRefs.current[id]?.focus();
+  const go = useCallback(
+    (target: PageId, params: Record<string, string | undefined> = {}, focus = false) => {
+      const hash = formatHash(target, params);
+      if (window.location.hash !== hash) {
+        window.history.replaceState(null, '', hash);
+      }
+      setRoute(parseHash(hash));
+      if (focus) tabRefs.current[target]?.focus();
+    },
+    [],
+  );
+
+  const navigateBrowser = useCallback(
+    (patch: Partial<BrowserParams>, focus = false) => {
+      setBrowser((current) => {
+        const next = { ...current, ...patch };
+        go('browser', browserHashParams(next), focus);
+        return next;
+      });
+    },
+    [go],
+  );
+
+  const record: RecordHistory = useCallback((entry) => {
+    setHistory((h) => appendHistory(h, { ...entry, id: nextId.current++ }));
+  }, []);
+
+  const onQuery = useCallback(
+    (query: QueryPreset) => {
+      setPreset({ ...query });
+      go('workbench');
+    },
+    [go],
+  );
+
+  const open = (target: PageId, focus = false) => {
+    if (target === 'browser') {
+      navigateBrowser({}, focus);
+    } else {
+      go(target, {}, focus);
     }
   };
 
   const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const last = PAGES.length - 1;
+    const last = pages.length - 1;
     const target =
       event.key === 'ArrowRight'
         ? index === last
@@ -95,18 +165,16 @@ export function App({ api, store: providedStore }: AppProps) {
             : event.key === 'End'
               ? last
               : undefined;
-    if (target !== undefined) {
+    const next = target === undefined ? undefined : pages[target];
+    if (next) {
       event.preventDefault();
-      const next = PAGES[target];
-      if (next) {
-        select(next.id, true);
-      }
+      open(next, true);
     }
   };
 
-  const capabilities = deriveCapabilities(state.lastInfo?.value);
   const connectivity = connectivityOf(state);
   const stale = isStale(state, now);
+  const base = window.location.href.split('#')[0] ?? window.location.href;
 
   return (
     <div className="app">
@@ -152,31 +220,27 @@ export function App({ api, store: providedStore }: AppProps) {
 
       <nav aria-label="Console sections">
         <div role="tablist" aria-label="Console sections" className="tabs">
-          {PAGES.map((p, index) => (
+          {pages.map((p, index) => (
             <button
-              key={p.id}
+              key={p}
               ref={(el) => {
-                tabRefs.current[p.id] = el;
+                tabRefs.current[p] = el;
               }}
               type="button"
               role="tab"
-              id={`tab-${p.id}`}
-              aria-selected={page === p.id}
-              aria-controls={`panel-${p.id}`}
-              tabIndex={page === p.id ? 0 : -1}
-              onClick={() => select(p.id)}
+              id={`tab-${p}`}
+              aria-selected={page === p}
+              aria-controls={`panel-${p}`}
+              tabIndex={page === p ? 0 : -1}
+              onClick={() => open(p)}
               onKeyDown={(event) => onTabKey(event, index)}
             >
-              {p.label}
+              {LABELS[p]}
             </button>
           ))}
         </div>
       </nav>
 
-      {/*
-        Every panel stays mounted (inactive ones are hidden) so form input and the
-        session operation history survive tab switches.
-      */}
       <main className="panel">
         <div
           id="panel-overview"
@@ -185,35 +249,63 @@ export function App({ api, store: providedStore }: AppProps) {
           tabIndex={0}
           hidden={page !== 'overview'}
         >
-          <OverviewPage state={state} now={now} />
+          <OverviewPage state={state} metrics={metrics} now={now} />
         </div>
         <div
-          id="panel-queries"
+          id="panel-browser"
           role="tabpanel"
-          aria-labelledby="tab-queries"
+          aria-labelledby="tab-browser"
           tabIndex={0}
-          hidden={page !== 'queries'}
+          hidden={page !== 'browser'}
         >
-          <QueriesPage api={api} capabilities={capabilities} />
+          <BrowserPage
+            api={api}
+            capabilities={capabilities}
+            stats={state.lastStats?.value}
+            params={browser}
+            navigate={navigateBrowser}
+            record={record}
+            onQuery={onQuery}
+          />
         </div>
         <div
-          id="panel-sync"
+          id="panel-workbench"
           role="tabpanel"
-          aria-labelledby="tab-sync"
+          aria-labelledby="tab-workbench"
           tabIndex={0}
-          hidden={page !== 'sync'}
+          hidden={page !== 'workbench'}
         >
-          <SyncPage state={state} />
+          <WorkbenchPage
+            api={api}
+            capabilities={capabilities}
+            maxBatch={Number(state.lastInfo?.value.maxBatchOperations ?? '1024')}
+            history={history}
+            record={record}
+            onClearHistory={() => setHistory([])}
+            preset={preset}
+            base={base}
+          />
         </div>
         <div
-          id="panel-operations"
+          id="panel-performance"
           role="tabpanel"
-          aria-labelledby="tab-operations"
+          aria-labelledby="tab-performance"
           tabIndex={0}
-          hidden={page !== 'operations'}
+          hidden={page !== 'performance'}
         >
-          <OperationsPage api={api} capabilities={capabilities} instanceId={state.instanceId} />
+          <PerformancePage store={metricsStore} />
         </div>
+        {capabilities.mode === 'source_managed' && (
+          <div
+            id="panel-sync"
+            role="tabpanel"
+            aria-labelledby="tab-sync"
+            tabIndex={0}
+            hidden={page !== 'sync'}
+          >
+            <SyncPage state={state} metrics={metrics} now={now} />
+          </div>
+        )}
       </main>
 
       <footer className="app-footer">

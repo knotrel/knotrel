@@ -48,8 +48,10 @@ export type Transport =
       kind: 'response';
       /** HTTP status code. */
       status: number;
-      /** Parsed body, or `undefined` when the body was empty. */
+      /** Parsed body, or `undefined` when the body was empty or not parsed as JSON. */
       body: JsonValue | undefined;
+      /** Raw response text, exactly as received (for raw views and `/metrics`). */
+      text: string;
       /** Set when the body was present but not valid JSON. */
       bodyError: string | undefined;
       /** Version headers captured with the body. */
@@ -84,6 +86,8 @@ export interface RequestOptions {
   timeoutMs: number;
   /** Caller cancellation (for obsolete reads). */
   signal?: AbortSignal;
+  /** Expect plain text (Prometheus exposition) instead of JSON. */
+  text?: boolean;
 }
 
 /** Minimal clock, injectable for tests. */
@@ -125,7 +129,7 @@ export class ApiClient {
         method: options.body === undefined ? 'GET' : 'POST',
         headers:
           options.body === undefined
-            ? { accept: 'application/json' }
+            ? { accept: options.text ? 'text/plain' : 'application/json' }
             : { accept: 'application/json', 'content-type': 'application/json' },
         cache: 'no-store',
         credentials: 'same-origin',
@@ -140,7 +144,7 @@ export class ApiClient {
       const durationMs = elapsed();
       let body: JsonValue | undefined;
       let bodyError: string | undefined;
-      if (text.length > 0) {
+      if (text.length > 0 && !options.text) {
         try {
           body = parseLosslessJson(text);
         } catch (error) {
@@ -153,6 +157,7 @@ export class ApiClient {
         kind: 'response',
         status: response.status,
         body,
+        text,
         bodyError,
         metadata: readVersionMetadata(response.headers),
         proxy,
