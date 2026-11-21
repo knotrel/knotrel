@@ -1,6 +1,7 @@
 # Feeder progress under query load (roadmap 0.9.3)
 
-**Status: PROPOSED, awaiting maintainer approval. Nothing has been measured.**
+**Status: APPROVED by the maintainer on 2026-11-21 ("Approvati, procedi"),
+unchanged from the proposal. Baseline measurement below.**
 The protocol, the criteria and the decision rule below are fixed **before**
 any measurement. After approval they do not change; a failed criterion is
 reported as a failure, with its numbers, and is not reinterpreted.
@@ -108,7 +109,7 @@ the run stops and reports what it has; cells are not dropped silently. One
 repeated observation is allowed per cell, only for a recorded host problem
 (for example a thermal warning), with the reason written down.
 
-## Criteria (proposed; fixed once approved)
+## Criteria (approved 2026-11-21)
 
 Evaluated on the baseline (`v0.8.0`):
 
@@ -157,3 +158,93 @@ cell, the G10k cell, feeder `503` refusals, feeder batch latencies.
 3. The graphs, the writer rate (1,000 changes/s) and the backlog (100,000
    changes).
 4. The budget (45 minutes) and the repetition rule.
+
+## Baseline results (v0.8.0, 2026-11-21)
+
+**Verdict: Q1 PASS, Q2 FAIL, Q3 FAIL, Q4 PASS.** By the decision rule, a
+server change is needed (next section).
+
+**Environment.**
+- Machine: Apple M3, 8 CPUs, 16 GiB, macOS 26.5.2, on AC power, no thermal or
+  performance warning; `ps` showed no other benchmark or build.
+- Server: built at tag `v0.8.0` (`e3fc736`), release, SHA-256
+  `2da94ec521f0169bbd2cfe7d2188e264d6582a935b27dced4e366c6d4ef6548e`.
+- PostgreSQL 18.7 (`scripts/start-test-postgres.sh 18`), feeder and load tool
+  release builds from the change that adds this section.
+- Run: 2026-11-21 14:34:13–14:54:35 UTC, 1,222 s of the 45-minute budget, 21
+  observations, none repeated, none failed.
+
+Raw output:
+[`baseline-v0.8.0.jsonl`](feeder-under-load/baseline-v0.8.0.jsonl)
+(SHA-256 `c3acc77e1927bf565736a10e44933cfcc86b394f29d81ddb659bd4c7194e88eb`)
+and the tool's summary
+[`baseline-v0.8.0-summary.json`](feeder-under-load/baseline-v0.8.0-summary.json)
+(SHA-256 `bc6e8c094c84a0942d24e4095259d0153f595cb416388afd69392faccc7ef0e6`).
+
+**Implementation detail, disclosed.** In L2 the backlog was written in less
+than the 10 s lease, so Knotrel was still `ready` when the feeder restarted and
+no barrier would follow. To measure the protocol's event ("time from feeder
+start to `ready`, barrier accepted"), the tool waits until Knotrel reports
+`stale` before starting the feeder, and stops the clock when the restarted
+feeder's barrier is accepted. Cells, criteria and thresholds are unchanged.
+
+**L1, steady freshness** (median over 3 observations, range in brackets;
+marker lag in ms):
+
+| Cell | Marker p50 | Marker p99 | Marker max | Query req/s | Query p99 (ms) | Query 503s | Feeder 503s | Writer changes/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| G100k, 0 clients | 18.4 [16.7–18.9] | 53.9 [53.5–55.6] | 56.6 [53.9–59.2] | — | — | 0 | 0 | 995 |
+| G100k, 16 clients | 36.4 [33.2–37.6] | 142 [134–152] | 281 [200–317] | 1,233 | 77.2 | 0 | 0 | 951 |
+| G100k, 64 clients | 253 [227–320] | 1,315 [1,260–10,721] | 1,515 [1,483–11,123] | 1,179 | 190 | 57,176 | 240 | 782 [715–791] |
+| G10k, 16 clients | 30.6 | 57.9 | 59.8 | 32,145 | 1.6 | 0 | 0 | 998 |
+
+**L2, catch-up of a 100,000-change backlog** (94,604 events in every
+observation; median and range):
+
+| Cell | Time to `ready` (s) | Events/s | Query req/s | Query p99 (ms) | Feeder 503s |
+| --- | --- | --- | --- | --- | --- |
+| G100k, 0 clients | 0.52 [0.50–0.52] | 180,402 [180,171–183,878] | — | — | 0 |
+| G100k, 16 clients | 3.22 [3.2–3.3] | 29,416 [28,450–29,630] | 1,411 | 61.1 | 0 |
+| G100k, 64 clients | 25.0 [15.0–40.7] | 3,789 [2,322–6,310] | 1,476 | 129 | 87 |
+
+**Criteria.**
+
+| ID | Result | Numbers |
+| --- | --- | --- |
+| Q1 | **PASS** | G100k, 16 clients: marker p99 142 ms (≤ 1,000), max 281 ms (≤ 3,000) |
+| Q2 | **FAIL** | 11 of 12 L1 observations pass. G100k, 64 clients, repetition 3: its lag condition passes (last 10 s median 231 ms against first 10 s 6,847 ms), but its retained-WAL condition cannot be shown: the sample at the start of the window is missing (the tool found no active slot at that instant). The rule requires both conditions for every observation, so Q2 fails. |
+| Q3 | **FAIL** | Catch-up with 16 clients 16.3 % of the no-query rate (≥ 50 % required); with 64 clients 2.1 % (≥ 25 % required) |
+| Q4 | **PASS** | G100k, 64 clients: 25.0 s to `ready` (≤ 60 s) |
+
+**What the numbers show** (descriptive; the verdict above stands as computed):
+- **With 64 clients, admission starves the feeder.** Queries hold all 32
+  admission permits; the feeder's event requests are refused with
+  `503 import_in_progress` 188–243 times per 60 s window. In repetition 3 the
+  feeder was refused continuously for several seconds right after the
+  bootstrap, which produced the 7–11 s marker lags of that observation. The
+  query clients here back off on `503`, unlike the v0.6.0 probe, so this is
+  not an artifact of spinning clients.
+- **With 16 clients there is no refusal, yet catch-up falls to 16 %.** Each
+  feeder batch takes the graph lock exclusively and waits for the query
+  batches holding or queued for it; at 100k nodes a query batch holds the lock
+  for milliseconds. Freshness stays well inside Q1 at the steady 1,000
+  changes/s, but a backlog drains about six times slower.
+- **The writer fell short at 64 clients** (715–791 instead of 1,000
+  changes/s): PostgreSQL, the feeder, Knotrel and 64 clients share one machine.
+  The failures stand regardless: the feeder had less to apply, not more.
+
+## Next step (decision rule)
+
+A criterion failed, so 0.9.3 continues with the smallest server change that
+addresses the failing mechanisms, designed before it is coded:
+
+1. **Admission:** feeder requests must not be refused because queries hold
+   every permit (for example capacity reserved for the feeder routes). This
+   targets the 64-client starvation (Q2's lag spike, Q3 at 64 clients).
+2. **Lock precedence:** queued feeder work should not wait behind a stream of
+   query batches (for example writer preference on the graph lock for feeder
+   jobs). This targets Q3 at 16 clients.
+
+The candidate is then measured on the same cells against Q1–Q4 and Q5
+(query throughput ≥ 90 %, p99 ≤ 125 % of this baseline) and reviewed before
+merge.
