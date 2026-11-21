@@ -498,6 +498,10 @@ impl Feeder {
             random_u64() & 0xFFFF_FFFF_FFFF
         );
         tracing::info!(%slot, %reason, "bootstrapping a new lineage");
+        // Keep the lease alive while the image is read and imported, which can
+        // take longer than the lease; the stream starts its own heartbeat.
+        let _keepalive =
+            Keepalive::spawn(self.knotrel.clone(), session.clone(), self.cfg.lease / 3);
         let mut repl = ReplicationClient::connect_gated(self.repl_config(&slot))
             .await
             .map_err(|e| reconnect(format!("replication connection: {e}")))?;
@@ -532,6 +536,7 @@ impl Feeder {
             .await
             .map_err(pg_exit)?;
         fault::hit("after_snapshot_read");
+        fault::pause("slow_bootstrap", self.cfg.lease * 3).await;
 
         let lineage = Lineage {
             system_id: system.system_id.clone(),
@@ -768,8 +773,9 @@ fn spawn_heartbeat(
     knotrel: Knotrel,
     session: watch::Receiver<Session>,
     interval: Duration,
-) -> (JoinHandle<()>, watch::Receiver<Beat>) {
-    let (tx, rx) = watch::channel(Beat::Status(String::new()));
+) -> (JoinHandle<()>, watch::Receiver<(u64, Beat)>) {
+    let first = session.borrow().epoch;
+    let (tx, rx) = watch::channel((first, Beat::Status(String::new())));
     let handle = tokio::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
@@ -788,12 +794,39 @@ fn spawn_heartbeat(
                     Beat::Unreachable
                 }
             };
-            if tx.send(beat).is_err() {
+            // The epoch the request was sent with: an answer to an earlier
+            // epoch can arrive after a new one was registered.
+            if tx.send((s.epoch, beat)).is_err() {
                 return;
             }
         }
     });
     (handle, rx)
+}
+
+/// Heartbeats during a bootstrap, stopped when dropped. Answers are only
+/// logged: the import that follows reports a lost lease or a takeover itself.
+struct Keepalive(JoinHandle<()>);
+
+impl Keepalive {
+    fn spawn(knotrel: Knotrel, session: Session, interval: Duration) -> Self {
+        Self(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                match knotrel.heartbeat(&session).await {
+                    Ok(r) if r.ok() => {}
+                    Ok(r) => tracing::debug!(answer = %r.describe(), "bootstrap heartbeat refused"),
+                    Err(e) => tracing::debug!(error = %e, "bootstrap heartbeat failed"),
+                }
+            }
+        }))
+    }
+}
+
+impl Drop for Keepalive {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 struct Txn {
@@ -827,7 +860,7 @@ struct Stream {
     session: Session,
     session_tx: watch::Sender<Session>,
     heartbeat: JoinHandle<()>,
-    beats: watch::Receiver<Beat>,
+    beats: watch::Receiver<(u64, Beat)>,
     generation: u64,
     lineage: Lineage,
     source_id: String,
@@ -939,8 +972,16 @@ impl Stream {
                     if changed.is_err() {
                         return reconnect("heartbeat task ended");
                     }
-                    let beat = self.beats.borrow_and_update().clone();
-                    self.on_beat(beat, clock).await
+                    let (epoch, beat) = self.beats.borrow_and_update().clone();
+                    if epoch < self.session.epoch {
+                        // Sent before the current epoch was registered: its
+                        // answer (stale, lease_expired, fenced) describes the
+                        // old epoch and is obsolete.
+                        tracing::debug!(epoch, ?beat, "ignoring a heartbeat answer for an earlier epoch");
+                        Ok(())
+                    } else {
+                        self.on_beat(beat, clock).await
+                    }
                 }
                 received = tokio::time::timeout(wait, self.repl.recv()) => match received {
                     Err(_) => self.on_idle(clock).await,
