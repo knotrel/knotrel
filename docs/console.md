@@ -97,6 +97,7 @@ unauthenticated server just to reach it.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `KNOTREL_UPSTREAM` | required | Server base URL, `http(s)://host[:port][/path]`, no credentials, query or trailing slash. Fixed for the container's lifetime. |
+| `KNOTREL_CONSOLE_LISTEN` | `8080 [::]:8080` | Addresses the container listens on (space separated: port, `IPv4:port` or `[IPv6]:port`). Set `127.0.0.1:8080` when a gateway shares the container's network namespace, so only the gateway can reach it. The image's health check uses `127.0.0.1:8080`. |
 | `KNOTREL_CONSOLE_SERVER_NAMES` | `localhost 127.0.0.1 [::1]` | Accepted `Host` names (space separated). Requests for any other host get 421. Add the public name when a gateway forwards to the container. |
 | `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL | Server name shown in the connection indicator (display only). |
 | `KNOTREL_UPSTREAM_TIMEOUT` | `35s` | Upstream send/read timeout. It exceeds the server's 30 s request timeout so that the server's `request_timeout` is reported when it applies. |

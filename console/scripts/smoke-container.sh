@@ -114,6 +114,9 @@ fi
 if docker run --rm "$console_image" >/dev/null 2>&1; then
     fail "missing KNOTREL_UPSTREAM accepted"
 fi
+if docker run --rm -e KNOTREL_UPSTREAM=http://knotrel:8080 -e KNOTREL_CONSOLE_LISTEN='0.0.0.0:8080; evil' "$console_image" >/dev/null 2>&1; then
+    fail "invalid KNOTREL_CONSOLE_LISTEN accepted"
+fi
 pass "invalid configuration stops the container"
 
 if [[ -n "$dist_dir" ]]; then

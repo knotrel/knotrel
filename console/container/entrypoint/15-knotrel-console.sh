@@ -19,6 +19,19 @@ printf '%s' "$KNOTREL_CONSOLE_SERVER_NAMES" | grep -Eq '^[][A-Za-z0-9.:_* -]+$' 
 printf '%s' "$KNOTREL_UPSTREAM_TIMEOUT" | grep -Eq '^[0-9]{1,6}(ms|s|m)?$' ||
     fail "KNOTREL_UPSTREAM_TIMEOUT must be an nginx time such as 35s"
 
+# Listen addresses: port, IPv4:port or [IPv6]:port, space separated.
+listen="${KNOTREL_CONSOLE_LISTEN:-8080 [::]:8080}"
+printf '%s' "$listen" | grep -Eq '^(([0-9]{1,3}(\.[0-9]{1,3}){3}:|\[[0-9A-Fa-f:.]+\]:)?[0-9]{1,5})( ([0-9]{1,3}(\.[0-9]{1,3}){3}:|\[[0-9A-Fa-f:.]+\]:)?[0-9]{1,5})*$' ||
+    fail "KNOTREL_CONSOLE_LISTEN must be space-separated port, IPv4:port or [IPv6]:port values"
+listen_dir=/tmp/knotrel-console-listen
+mkdir -p "$listen_dir"
+: > "$listen_dir/default-server.conf"
+: > "$listen_dir/console.conf"
+for address in $listen; do
+    printf '    listen %s default_server;\n' "$address" >> "$listen_dir/default-server.conf"
+    printf '    listen %s;\n' "$address" >> "$listen_dir/console.conf"
+done
+
 label="${KNOTREL_CONSOLE_SERVER_LABEL:-$KNOTREL_UPSTREAM}"
 printf '%s' "$label" | grep -Eq '^[][A-Za-z0-9 ._~:/@()-]{1,200}$' ||
     fail "KNOTREL_CONSOLE_SERVER_LABEL contains unsupported characters"
@@ -26,4 +39,4 @@ printf '%s' "$label" | grep -Eq '^[][A-Za-z0-9 ._~:/@()-]{1,200}$' ||
 out="${NGINX_ENVSUBST_OUTPUT_DIR:-/tmp/knotrel-console}"
 mkdir -p "$out"
 printf '{"serverLabel":"%s","deployment":"container"}\n' "$label" > "$out/console-config.json"
-echo "knotrel-console: forwarding /api to $KNOTREL_UPSTREAM; accepted hosts: $KNOTREL_CONSOLE_SERVER_NAMES"
+echo "knotrel-console: listening on $listen; forwarding /api to $KNOTREL_UPSTREAM; accepted hosts: $KNOTREL_CONSOLE_SERVER_NAMES"

@@ -1,0 +1,38 @@
+name: gateway
+
+# Validates the gateway example (examples/gateway): TLS, authentication,
+# separated credentials, Knotrel reachable only through the gateway.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'examples/gateway/**'
+      - 'examples/container/**'
+      - 'console/container/**'
+      - 'console/Dockerfile'
+      - 'crates/**'
+      - 'Cargo.lock'
+      - '.github/workflows/gateway.yml'
+  pull_request:
+    paths:
+      - 'examples/gateway/**'
+      - 'examples/container/**'
+      - 'console/container/**'
+      - 'console/Dockerfile'
+      - 'crates/**'
+      - 'Cargo.lock'
+      - '.github/workflows/gateway.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: gateway smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Smoke test
+        run: examples/gateway/smoke-test.sh
