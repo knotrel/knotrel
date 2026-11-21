@@ -113,7 +113,7 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [x] **0.9.0a** Roadmap and readiness realignment — Implemented
 - [x] **0.9.1** Reference PostgreSQL integration (external feeder, Compose, console) — Implemented; [design](docs/integrations/postgresql-feeder.md), [feeder](integrations/postgres-feeder/README.md)
 - [x] **0.9.2** Recovery and synchronization tests against the reference source — Implemented; CI on PostgreSQL 15–19
-- [ ] **0.9.3** Feeder progress under query load
+- [x] **0.9.3** Feeder progress under query load — Implemented and measured (reserved feeder admission); **Q3 FAIL, accepted as a declared limitation of v0.9.0** for the measured configuration; follow-up [#87](https://github.com/knotrel/knotrel/issues/87)
 - [ ] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI)
 - [ ] **0.9.5** Verified gateway deployment, upgrade and rebuild
 - [ ] **0.9.6** Final performance campaign
@@ -765,13 +765,16 @@ languages and a CLI are not added at the same time.
   full rebuild), feeder takeover. Each compares the final graph with the
   store. The existing tests (criterion 3, "met for the tested matrix") stay;
   these extend them to a real source.
-- [ ] **0.9.3 Feeder progress under query load.** Protocol and criteria approved (2026-11-21); baseline on v0.8.0: Q1 and Q4 pass, Q2 and Q3 fail ([results](docs/integrations/feeder-under-load.md#baseline-results-v080-2026-11-21)), so a server change followed: reserved feeder admission (candidate A) passes Q1, Q2, Q4 and Q5, Q3 still fails ([results](docs/integrations/feeder-under-load.md#candidate-a-results-reserved-feeder-admission-2026-11-21)); awaiting a maintainer decision on Q3. v0.6.0 measured that the
-  feeder has no priority over queued queries and that admission reserves no
-  permit for it ([v0.7.0 input](#v070--measured-concurrency)); v0.7.0
-  improved queries during feeder events but did not re-measure catch-up under
-  query load. First measure it on v0.8.0 with criteria fixed beforehand
-  (catch-up rate and staleness against query clients). Change admission or
-  scheduling only if a criterion fails, and qualify the change.
+- [x] **0.9.3 Feeder progress under query load.** Protocol and criteria
+  approved (2026-11-21). Baseline v0.8.0: Q1 and Q4 pass, Q2 and Q3 fail.
+  Reserved feeder admission (change A, merged in `f283d30`): Q1, Q2, Q4 and Q5
+  pass, **Q3 fails** (catch-up at 14.7 % of the no-query rate with 16 clients,
+  8.9 % with 64; required 50 % and 25 %). The maintainer accepted Q3 as a
+  declared limitation of v0.9.0, limited to the measured configuration; the
+  result stays FAIL and no cause is claimed
+  ([results and decision](docs/integrations/feeder-under-load.md#maintainer-decision-on-q3-2026-11-21)).
+  Follow-up: [#87](https://github.com/knotrel/knotrel/issues/87), feeder
+  catch-up under query load (unassigned).
 - [ ] **0.9.4 Contracts toward 1.0.** A compatibility and deprecation policy
   (`docs/compatibility.md`, readiness criterion 2); every public Rust item
   and HTTP route, field, error code, variable and metric classified as
@@ -807,7 +810,8 @@ fixes found through use); a log viewer; speculative optimizations.
 
 **Acceptance:** 0.9.1–0.9.5 implemented and reviewed; 0.9.2 and 0.9.5 pass
 in CI or in a documented reproducible run; 0.9.3 meets its criteria (or the
-change is qualified); the 0.9.6 campaign is classified under its predeclared
+change is qualified; Q3 did not, and is carried as a declared limitation by
+maintainer decision of 2026-11-21); the 0.9.6 campaign is classified under its predeclared
 rules, failures reported as failures; readiness assessment updated.
 
 ## Unassigned — Optional Local Persistence & Fast Recovery
