@@ -210,6 +210,11 @@ for v0.7.0 only
 
 ## Installing a release
 
+**Versions.** `knotrel-core`, `knotrel-server` and the
+[console](docs/console.md) share one version number (lockstep): each release
+publishes all three with the same version, even a component that did not
+change. Use the console with the server of the same version.
+
 Download the archive and checksum for your platform from the
 [GitHub Releases page](https://github.com/knotrel/knotrel/releases) and verify
 the SHA-256 checksum before running.

@@ -328,15 +328,11 @@ what needs attention.
 
 ## Compatibility
 
-**Versioning rule.** The console follows the server's major.minor: console
-X.Y.z is released together with server X.Y.0 and supports server X.Y.x. Patch
-releases are independent (a console fix does not need a server release, and
-the reverse). The console may also work, with fewer features, with the
-previous server minor:
-
-| Console | Server 0.7.x | Server 0.8.x |
-| --- | --- | --- |
-| 0.8.x | Overview, Workbench (queries, batch), Performance and Synchronization work. The Browser is unavailable: server 0.7 has no inspection API, and the console says so. | All features (Browser needs `KNOTREL_INSPECTION=true`) |
+**Versioning rule.** The console, `knotrel-server` and `knotrel-core` share
+one version number (lockstep) and are released together; use the console with
+the server of the same version. With the previous server minor the console
+still works except for features the server lacks: with server 0.7, every page
+except the Browser (no inspection API there, and the console says so).
 
 Within a supported server version, the server flags decide what is available;
 see [Server flags, in short](#server-flags-in-short).

@@ -15,6 +15,23 @@ Tests should cover observable behavior. Algorithm changes must preserve the
 independent connectivity oracle and include the update sequence that motivates
 the change. Report benchmark methodology and results before claiming a speedup.
 
+## Versioning
+
+All artifacts use one version number (lockstep): `knotrel-core`,
+`knotrel-server` and the console. A release bumps them together, even when a
+component did not change; its release notes then say "no changes". To bump:
+
+- `version` in `[workspace.package]` and the `knotrel-core` dependency
+  version in the root `Cargo.toml`, then `cargo update -w` for `Cargo.lock`;
+- `version` in `console/package.json`, then
+  `npm install --package-lock-only` in `console/`.
+
+`python3 scripts/check-crate-docs.py` flags stale version references in the
+crate documentation, and the console release workflow refuses a console
+version that differs from the workspace version.
+
+## Before submitting
+
 Before submitting changes, run the four development commands in the README.
 Keep Cargo.lock up to date and inherit workspace lints in any new crate. Avoid
 adding dependencies without a concrete need. Do not change licensing implicitly.

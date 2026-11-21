@@ -22,12 +22,9 @@ Why each is optional, and what it costs: [docs/console.md](../docs/console.md#se
 > **Status: unreleased.** Console 0.8.0 will be released together with server
 > 0.8.0. Until then, build the image locally (see [Get the image](#get-the-image)).
 
-**Versions.** The console follows the server's major.minor: console 0.8.x goes
-with server 0.8.x. Patch releases are independent.
-
-| Console | Server 0.7.x                                                                                     | Server 0.8.x |
-| ------- | ------------------------------------------------------------------------------------------------ | ------------ |
-| 0.8.x   | Overview, Workbench, Performance, Synchronization; no Browser (server 0.7 has no inspection API) | All features |
+**Versions.** The console has the same version as the server (lockstep):
+use console 0.8.0 with server 0.8.0. With server 0.7, every page except the
+Browser works (server 0.7 has no inspection API).
 
 The console ships as a container image (nginx serving the UI and forwarding
 `/api` to one Knotrel server) and as a static archive for your own web
