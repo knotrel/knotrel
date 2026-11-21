@@ -1,0 +1,101 @@
+# Reference integration: PostgreSQL (authority) -> feeder -> Knotrel -> console.
+#
+#   integrations/postgres-feeder/deploy/generate-secrets.sh
+#   docker compose -f integrations/postgres-feeder/deploy/compose.yaml up --build
+#   open http://127.0.0.1:7380/
+#
+# Only the console is published, on loopback. PostgreSQL and Knotrel are
+# reachable only on the private Compose network. Passwords are files in
+# deploy/secrets/ (never committed), passed as Compose secrets. No TLS: this is
+# a local reference setup (docs/integrations/postgresql-feeder.md, A7).
+name: knotrel-postgres-reference
+
+services:
+  postgres:
+    image: postgres:18.7-alpine@sha256:ff64c9e3bdf8e2120107d3559de8db314e8305f7e38c5105903c6295876738ff
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      # Bound on the WAL a stalled feeder can retain (required by the feeder).
+      - -c
+      - max_slot_wal_keep_size=1GB
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password, feeder_password]
+    volumes:
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+      - ../sql:/knotrel-sql:ro
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'postgres', '-d', 'app']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  knotrel:
+    build:
+      context: ../../..
+      dockerfile: examples/container/Dockerfile
+    image: knotrel-server:example
+    environment:
+      KNOTREL_MODE: source_managed
+      KNOTREL_TOPOLOGY_LIFECYCLE: 'true'
+      KNOTREL_INSPECTION: 'true'
+      KNOTREL_METRICS_ENABLED: 'true'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+  feeder:
+    build:
+      context: ..
+    image: knotrel-pg-feeder:example
+    environment:
+      KNOTREL_PG_HOST: postgres
+      KNOTREL_PG_DATABASE: app
+      KNOTREL_PG_USER: knotrel_feeder
+      KNOTREL_PG_PASSWORD_FILE: /run/secrets/feeder_password
+      KNOTREL_URL: http://knotrel:8080
+    secrets: [feeder_password]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      knotrel:
+        condition: service_healthy
+    # Exit codes 2 to 5 are configuration, schema, capacity and takeover
+    # errors; they need an operator, so the feeder is not restarted forever.
+    restart: on-failure:3
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+  console:
+    image: ghcr.io/knotrel/knotrel-console:0.8.0@sha256:1c4ce3fda67acda0cb44dedd5a275fb19e5ab09dac2cce9a5dbc83c3f5f25f82
+    environment:
+      KNOTREL_UPSTREAM: http://knotrel:8080
+      KNOTREL_CONSOLE_SERVER_LABEL: postgres-reference (knotrel:8080)
+    ports:
+      - '127.0.0.1:7380:8080'
+    depends_on:
+      knotrel:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  feeder_password:
+    file: ./secrets/feeder_password
+
+volumes:
+  pgdata:
