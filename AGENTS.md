@@ -22,7 +22,8 @@
 
 - Keep the console outside the Cargo workspace. Cargo builds, server
   installation and the Rust binary must never require Node.js or embed console
-  assets. The console version (`console/package.json`, tags `console-v*`) equals
+  assets. The console version (`console/package.json`; no separate tag, it ships
+  under the release tag `v*`) equals
   the Rust workspace version (lockstep: console, server and core share one
   number, see `CONTRIBUTING.md`), and the console is released only through
   [the console release procedure](docs/releases/console-release.md).

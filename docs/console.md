@@ -26,7 +26,7 @@ The console is a static React application, released as its own artifacts
 | Distribution | Use | Status |
 | --- | --- | --- |
 | Container image `ghcr.io/knotrel/knotrel-console:<version>` | Run next to Knotrel, locally or on a server | Primary; not yet published |
-| Static archive `knotrel-console-<version>.tar.gz` (+ `.sha256`) on the GitHub Release `console-v<version>` | Host behind an existing web server or gateway | Primary; not yet published |
+| Static archive `knotrel-console-<version>.tar.gz` (+ `.sha256`) on the GitHub Release `v<version>` | Host behind an existing web server or gateway | Primary; not yet published |
 | npm package with a local launcher | `npx` quick start | Deferred (separate increment) |
 
 The server binary, the console image and the archive are independent
@@ -110,7 +110,8 @@ about the server.
 ## Install in your environment
 
 1. Download `knotrel-console-<version>.tar.gz` and its `.sha256` from the
-   GitHub Release `console-v<version>`, then verify and extract them:
+   GitHub Release `v<version>` (the same release as the server), then verify
+   and extract them:
 
    ```sh
    sha256sum -c knotrel-console-0.8.0.tar.gz.sha256

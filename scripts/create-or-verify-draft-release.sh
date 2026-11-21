@@ -227,8 +227,11 @@ if missing:
     print(f'ERROR_ASSETS:Missing assets on existing release: {missing}')
     sys.exit(0)
 
-if len(existing_assets) != len(expected_names):
-    extra = [name for name in existing_assets if name not in expected_names]
+# The console release (lockstep, same tag) may add exactly its archive and
+# checksum to this release; anything else is unexpected.
+console_assets = {f'knotrel-console-{version}.tar.gz', f'knotrel-console-{version}.tar.gz.sha256'}
+extra = [name for name in existing_assets if name not in expected_names and name not in console_assets]
+if extra:
     print(f'ERROR_ASSETS:Unexpected asset inventory on existing release: {extra}')
     sys.exit(0)
 

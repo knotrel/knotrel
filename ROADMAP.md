@@ -694,7 +694,7 @@ for them.
 
 ## Operational Console (console 0.8.0)
 
-**Scope:** a static React console for one Knotrel server, distributed as the container image `ghcr.io/knotrel/knotrel-console` and a versioned static archive. It is versioned independently (`console-v*` tags) and declares its supported servers (`>=0.7.0 <0.9.0`). It uses only the existing HTTP API; the only server-side change is documentation that brings `docs/openapi.yaml` in line with the implemented behavior. Server correctness, feeder fairness and the v1.0 checklist are separate work; this milestone neither satisfies nor blocks them.
+**Scope:** a static React console for one Knotrel server, distributed as the container image `ghcr.io/knotrel/knotrel-console` and a versioned static archive. It is versioned in lockstep with the crates (same version, released under the same `v*` tag) and declares its supported servers (`>=0.7.0 <0.9.0`). It uses only the existing HTTP API; the only server-side change is documentation that brings `docs/openapi.yaml` in line with the implemented behavior. Server correctness, feeder fairness and the v1.0 checklist are separate work; this milestone neither satisfies nor blocks them.
 
 **Status (2026-11-20):** C1–C3 implemented on `feature/v0.8.0-operational-console` and validated locally. External CI, the SonarCloud quality gate, the release dry run and publication are pending. Not accepted.
 
