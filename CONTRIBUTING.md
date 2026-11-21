@@ -26,6 +26,11 @@ component did not change; its release notes then say "no changes". To bump:
 - `version` in `console/package.json`, then
   `npm install --package-lock-only` in `console/`.
 
+Compatibility rules for a release (what may change, deprecation, the
+console's supported server range) are in
+[docs/compatibility.md](docs/compatibility.md); the stability class of each
+public surface is in [docs/stability.md](docs/stability.md).
+
 `python3 scripts/check-crate-docs.py` flags stale version references in the
 crate documentation, and the console release workflow refuses a console
 version that differs from the workspace version.

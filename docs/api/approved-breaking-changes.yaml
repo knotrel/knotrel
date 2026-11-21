@@ -1,0 +1,8 @@
+# Breaking changes to stable HTTP operations approved by the maintainer
+# (docs/compatibility.md, section 6). One entry per message printed by
+# scripts/check-openapi-compat.py:
+#
+# - change: "<exact message>"
+#   release: "v0.X.0"
+#   justification: "<deprecated in v0.Y.0; why; link>"
+[]

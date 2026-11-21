@@ -79,6 +79,16 @@ covers what is easy to miss. Check every item on the exact candidate commit.
 - **Versions:** workspace version, the `knotrel-core` dependency version,
   `Cargo.lock` and `console/package.json` (with its lockfile) agree with the
   release (lockstep, see `CONTRIBUTING.md`).
+- **Console compatibility (mandatory, from v0.9.0):** run the console's
+  browser tests against a server built from the release candidate and against
+  the previous release's server; only then set `knotrel.supportedServer` and
+  the statement in `docs/console.md` to the versions verified, never wider
+  ([compatibility policy](docs/compatibility.md#5-console-and-server-compatibility)).
+  Record the result in the release notes.
+- **API compatibility:** the `API compatibility` CI job passes against the
+  previous release (public Rust API and OpenAPI); any approved breaking
+  change follows the deprecation rule of `docs/compatibility.md` and is listed
+  in the release notes.
 - **Documentation website (`docs/index.md`, `docs/architecture-site.md`):**
   update it for the release like the README: release status, what is
   available versus planned, links to the new release notes and to new pages.
