@@ -4,9 +4,10 @@ title: Architecture
 ---
 # Architecture
 
-![Source-managed architecture](diagrams/architecture.svg)
+<img class="architecture-light" src="diagrams/architecture.svg" alt="Source-managed Knotrel architecture">
+<img class="architecture-dark" src="diagrams/architecture-dark.svg" alt="Source-managed Knotrel architecture">
 
-[Editable draw.io source](diagrams/architecture.drawio)
+Editable draw.io sources: [light](diagrams/architecture.drawio) · [dark](diagrams/architecture-dark.drawio).
 
 The external authoritative source owns the data. A feeder obtains a coherent image and delivers ordered changes. Knotrel maintains a derived, volatile graph; applications query the currently applied state. The console communicates with the server for inspection, queries and permitted operations. Synchronization lag means a successful source write is not necessarily visible immediately.
 
