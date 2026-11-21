@@ -1,1 +1,37 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ page.title | default: site.title }} · Knotrel</title><script>try{document.documentElement.dataset.theme=localStorage.getItem('knotrel-theme')||'dark'}catch(e){document.documentElement.dataset.theme='dark'}</script><link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}"></head><body><header><a class="brand" href="{{ '/' | relative_url }}">Knotrel <span>Docs</span></a><nav><a href="{{ '/architecture-site.html' | relative_url }}">Architecture</a><a href="{{ '/console.html' | relative_url }}">Console</a><a href="{{ '/http-api.html' | relative_url }}">HTTP API</a><a href="https://github.com/knotrel/knotrel">GitHub</a></nav><button id="theme" type="button">Switch theme</button></header><main>{{ content }}</main><footer>Documentation lives alongside the <a href="https://github.com/knotrel/knotrel">Knotrel source</a>.</footer><script>document.getElementById('theme').onclick=()=>{let t=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=t;try{localStorage.setItem('knotrel-theme',t)}catch(e){}}</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page.title | default: site.title }} · Knotrel</title>
+  <link rel="icon" type="image/png" href="{{ '/assets/logo.png' | relative_url }}">
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem('knotrel-theme') === 'light' ? 'light' : 'dark'; } catch (e) { document.documentElement.dataset.theme = 'dark'; }</script>
+  <link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}">
+</head>
+<body>
+<header>
+  <a class="brand" href="{{ '/' | relative_url }}"><img src="{{ '/assets/logo.png' | relative_url }}" alt="" width="36" height="36"> Knotrel <span>Docs</span></a>
+  <nav aria-label="Documentation">
+    <a href="{{ '/getting-started.html' | relative_url }}">Getting started</a>
+    <a href="{{ '/architecture-site.html' | relative_url }}">Architecture</a>
+    <a href="{{ '/console.html' | relative_url }}">Console</a>
+    <a href="{{ '/benchmarks.html' | relative_url }}">Benchmarks</a>
+    <a href="{{ '/http-api.html' | relative_url }}">HTTP API</a>
+    <a href="https://github.com/knotrel/knotrel">GitHub</a>
+  </nav>
+  <button id="theme" class="theme-button" type="button" aria-label="Switch to light mode" title="Switch to light mode">
+    <!-- Font Awesome Free sun icon, CC BY 4.0; see assets/ICON-LICENSE.md. -->
+    <svg class="icon-sun" viewBox="0 0 512 512" aria-hidden="true"><path fill="currentColor" d="M256 0c13.3 0 24 10.7 24 24V56c0 13.3-10.7 24-24 24s-24-10.7-24-24V24c0-13.3 10.7-24 24-24zM63 63c9.4-9.4 24.6-9.4 33.9 0l22.6 22.6c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0L63 96.9C53.7 87.5 53.7 72.3 63 63zM0 256c0-13.3 10.7-24 24-24H56c13.3 0 24 10.7 24 24s-10.7 24-24 24H24c-13.3 0-24-10.7-24-24zm383.5-136.5c-9.4-9.4-9.4-24.6 0-33.9L406.1 63c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9l-22.6 22.6c-9.4 9.4-24.6 9.4-33.9 0zM432 256c0-13.3 10.7-24 24-24h32c13.3 0 24 10.7 24 24s-10.7 24-24 24H456c-13.3 0-24-10.7-24-24zM256 432c13.3 0 24 10.7 24 24v32c0 13.3-10.7 24-24 24s-24-10.7-24-24V456c0-13.3 10.7-24 24-24zM119.5 392.5c9.4 9.4 9.4 24.6 0 33.9L96.9 449c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l22.6-22.6c9.4-9.4 24.6-9.4 33.9 0zM393 393c9.4-9.4 24.6-9.4 33.9 0L449 415.1c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0L393 426.9c-9.4-9.4-9.4-24.6 0-33.9zM112 256a144 144 0 1 1 288 0 144 144 0 1 1 -288 0z"/></svg>
+    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.9 14.3A9 9 0 0 1 9.7 3.1a9 9 0 1 0 11.2 11.2z"/></svg>
+  </button>
+</header>
+<main>{{ content }}</main>
+<footer>Documentation lives alongside the <a href="https://github.com/knotrel/knotrel">Knotrel source</a>.</footer>
+<script>
+  const themeButton = document.getElementById('theme');
+  function updateThemeButton() { const label = document.documentElement.dataset.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'; themeButton.setAttribute('aria-label', label); themeButton.title = label; }
+  updateThemeButton();
+  themeButton.addEventListener('click', () => { const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = theme; try { localStorage.setItem('knotrel-theme', theme); } catch (e) {} updateThemeButton(); });
+</script>
+</body>
+</html>
