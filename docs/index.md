@@ -12,11 +12,12 @@ Knotrel keeps an undirected graph in memory and answers exact connectivity queri
 
 ![Knotrel architecture](diagrams/architecture.svg)
 
-The authoritative source and feeder are external. In source-managed mode, the feeder imports a graph and delivers ordered updates; Knotrel answers queries against its in-memory state. PostgreSQL integration is planned for v0.9.0, not yet available. In standalone mode, clients operate the graph directly. [Architecture details](architecture-site.md).
+The authoritative source and feeder are external. In source-managed mode, the feeder imports a graph and delivers ordered updates; Knotrel answers queries against its in-memory state. A [reference PostgreSQL feeder](integrations/postgresql-feeder.md) (logical replication, unreleased, planned for v0.9.0) shows a complete integration. In standalone mode, clients operate the graph directly. [Architecture details](architecture-site.md).
 
 ## Explore the documentation
 
 - **Operate:** [Console](console.md), [deployment](deployment.md), [alerting](alerting.md).
+- **Integrate:** [PostgreSQL reference feeder](integrations/postgresql-feeder.md) (unreleased).
 - **Understand:** [Integration contract](integration-contract.md), [topology lifecycle](topology-lifecycle.md), [observability](observability-contract.md).
 - **Build:** [HTTP API](http-api.md), [OpenAPI specification](openapi.yaml), [Rust crate documentation](https://docs.rs/knotrel-core/latest/knotrel_core/).
 - **Evaluate:** [Performance by version](performance-by-version.md), [release notes](releases/v0.8.0-release-notes.md).

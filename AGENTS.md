@@ -79,6 +79,11 @@ covers what is easy to miss. Check every item on the exact candidate commit.
 - **Versions:** workspace version, the `knotrel-core` dependency version,
   `Cargo.lock` and `console/package.json` (with its lockfile) agree with the
   release (lockstep, see `CONTRIBUTING.md`).
+- **Documentation website (`docs/index.md`, `docs/architecture-site.md`):**
+  update it for the release like the README: release status, what is
+  available versus planned, links to the new release notes and to new pages.
+  Check that it builds (`python3 scripts/prepare-docs-site.py <dir>`, then the
+  `Documentation site` workflow) and that new pages are linked from it.
 - **User-facing performance pages:** add the release to
   `docs/performance-by-version.md` and the README performance section, with
   no claim beyond the qualification and its maintainer decisions.
