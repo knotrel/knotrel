@@ -884,6 +884,7 @@ async fn run_l2(s: &Settings, cell: Cell, obs: &mut Obs) -> Value {
         "barrier accepted but Knotrel is not ready"
     );
     let elapsed = start.elapsed();
+    record.store(false, Ordering::Relaxed);
     let metrics_after = phase_metrics(&obs.base).await;
     // Keep sampling one more second so a short catch-up still gets a sample
     // that ends after it.
@@ -900,7 +901,6 @@ async fn run_l2(s: &Settings, cell: Cell, obs: &mut Obs) -> Value {
         .filter(|(t, _)| *t > start && *t <= start + elapsed + Duration::from_millis(1100))
         .map(|(_, v)| *v)
         .collect();
-    record.store(false, Ordering::Relaxed);
     stop.store(true, Ordering::Relaxed);
     let mut query_stats = Vec::new();
     for c in clients {
