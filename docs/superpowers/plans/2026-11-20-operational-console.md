@@ -2,7 +2,7 @@
 
 **Status (2026-11-20):** implemented on `feature/v0.8.0-operational-console` and
 validated locally; not merged, not released, not accepted. The roadmap entry
-is [Operational Console](../../ROADMAP.md#operational-console-console-010).
+is [Operational Console](../../../ROADMAP.md#v080--operational-console).
 
 ## Goal and bounds
 
