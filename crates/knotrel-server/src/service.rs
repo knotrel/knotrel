@@ -4386,7 +4386,14 @@ mod tests {
                 }
             })
             .await
-            .unwrap_or_else(|_| panic!("expected {n} available permits"));
+            .expect("lane did not return to the expected number of available permits");
+        }
+
+        #[test]
+        fn lane_labels_name_the_lane_in_capacity_logs() {
+            assert_eq!(Lane::Shared.label(), "shared");
+            assert_eq!(Lane::FeederData.label(), "feeder_data");
+            assert_eq!(Lane::FeederControl.label(), "feeder_control");
         }
 
         #[tokio::test]
