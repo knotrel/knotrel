@@ -48,7 +48,7 @@
 //! See the [lifecycle contract](https://github.com/knotrel/knotrel/blob/main/docs/topology-lifecycle.md)
 //! for semantics, costs and memory limits.
 //!
-//! # Inspection (unreleased, 0.8.0)
+//! # Inspection (since 0.8.0)
 //!
 //! Read-only routes list nodes and edges with cursor paging and state filters
 //! (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`,
