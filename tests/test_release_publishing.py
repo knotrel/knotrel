@@ -425,6 +425,45 @@ fi
         self.assertIn("All 14 release asset digests verified byte-for-byte", res.stdout)
         self.assertIn("Safely reusing existing draft release", res.stdout)
 
+    def _view_with_extra_assets(self, extra):
+        assets = [{"name": f, "size": os.path.getsize(os.path.join(self.assets_dir, f))} for f in self.expected_files]
+        assets += [{"name": name, "size": 10} for name in extra]
+        view_json = json.dumps({"isDraft": True, "tagName": "v0.1.0", "targetCommitish": "main", "assets": assets})
+        self.write_mock_gh(f"""
+if [[ "$*" == *"release view"* ]]; then
+    cat << 'EOF'
+{view_json}
+EOF
+    exit 0
+fi
+if [[ "$*" == *"release download"* ]]; then
+    DIR=""
+    while [[ "$#" -gt 0 ]]; do
+        if [[ "$1" == "--dir" ]]; then DIR="$2"; shift 2; else shift; fi
+    done
+    cp -r "{self.assets_dir}"/* "$DIR"/
+    exit 0
+fi
+if [[ "$*" == *"release create"* ]]; then
+    echo "ERROR: Should not create when a release exists!" >&2
+    exit 1
+fi
+""")
+        return self.run_script()
+
+    def test_console_assets_on_the_same_release_are_accepted(self):
+        """Lockstep: the console workflow adds exactly its archive and checksum to v<version>."""
+        res = self._view_with_extra_assets(["knotrel-console-0.1.0.tar.gz", "knotrel-console-0.1.0.tar.gz.sha256"])
+        self.assertEqual(res.returncode, 0, f"Failed: {res.stdout}\n{res.stderr}")
+        self.assertIn("Safely reusing existing draft release", res.stdout)
+
+    def test_other_extra_assets_are_rejected(self):
+        """Any other extra asset (including a console archive of another version) is rejected."""
+        for extra in (["unexpected.bin"], ["knotrel-console-0.2.0.tar.gz"]):
+            res = self._view_with_extra_assets(extra)
+            self.assertNotEqual(res.returncode, 0, extra)
+            self.assertIn("Unexpected asset inventory", res.stderr + res.stdout)
+
     def test_scenario_3_wrong_tag_name_rejected(self):
         """Draft with tagName mismatch (e.g. v0.2.0 vs 0.1.0) must fail."""
         assets_json = json.dumps([{"name": f, "size": os.path.getsize(os.path.join(self.assets_dir, f))} for f in self.expected_files])

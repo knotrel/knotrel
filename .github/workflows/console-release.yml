@@ -3,7 +3,8 @@ run-name: "Console release (version: ${{ inputs.version }}, dry_run: ${{ inputs.
 
 # Builds, tests and (only when dry_run is false) publishes one console release:
 #   - ghcr.io/knotrel/knotrel-console:<version> (linux/amd64, linux/arm64)
-#   - knotrel-console-<version>.tar.gz and its .sha256 on GitHub Release console-v<version>
+#   - knotrel-console-<version>.tar.gz and its .sha256 added to GitHub Release v<version>
+#     (the release the Rust workflow creates; lockstep, one tag v<version>)
 # The image and archive that are tested are the bytes that are published; the
 # publish job never rebuilds. Independent of the Rust crate release (release.yml).
 # Procedure, setup and recovery: docs/releases/console-release.md.
@@ -93,7 +94,7 @@ jobs:
           git fetch --quiet origin main
           git merge-base --is-ancestor "$COMMIT_SHA" origin/main || { echo "::error::commit is not on main"; exit 1; }
           echo "source_date_epoch=$(git log -1 --format=%ct "$COMMIT_SHA")" >> "$GITHUB_OUTPUT"
-          tag="console-v$VERSION"
+          tag="v$VERSION"
           if [[ "$DRY_RUN" == "false" ]]; then
             git fetch --quiet --tags origin
             git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || { echo "::error::tag $tag does not exist"; exit 1; }
@@ -104,8 +105,10 @@ jobs:
           if docker manifest inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
             echo "::warning::$IMAGE:$VERSION already exists; publication will only resume if its digest matches the build."
           fi
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::warning::GitHub Release $tag already exists."
+          # The Rust release workflow creates GitHub Release v<version>; the
+          # console only adds its archive to it, so that release must exist.
+          if [[ "$DRY_RUN" == "false" ]] && ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::GitHub Release $tag does not exist: run the Rust release (release.yml) first"; exit 1
           fi
 
   build:
@@ -217,7 +220,6 @@ jobs:
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       COMMIT_SHA: ${{ needs.validate.outputs.commit_sha }}
-      PRERELEASE: ${{ needs.validate.outputs.prerelease }}
       ARCHIVE_SHA256: ${{ needs.build.outputs.archive_sha256 }}
       IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
       OCI_SHA256: ${{ needs.build.outputs.oci_sha256 }}
@@ -260,24 +262,25 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release/knotrel-console-${{ env.VERSION }}.tar.gz
-      - name: Create or complete GitHub Release
+      - name: Add the console archive to GitHub Release v<version>
         run: |
           set -euo pipefail
-          tag="console-v$VERSION"
+          tag="v$VERSION"
           assets=("release/knotrel-console-$VERSION.tar.gz" "release/knotrel-console-$VERSION.tar.gz.sha256")
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # Resume: upload missing assets only; existing assets are never replaced.
-            present="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-            for asset in "${assets[@]}"; do
-              grep -qx "$(basename "$asset")" <<<"$present" || gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY"
-            done
-          else
-            flags=(--verify-tag --draft --title "Knotrel Console $VERSION")
-            [[ "$PRERELEASE" == "true" ]] && flags+=(--prerelease)
-            gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
-              --notes "Container image: \`$IMAGE:$VERSION\` (\`$IMAGE_DIGEST\`). Static archive SHA-256: \`$ARCHIVE_SHA256\`. Built from $COMMIT_SHA. See docs/console.md."
+          # Upload missing assets only; existing assets are never replaced, so a
+          # rerun resumes safely. The Rust release scripts accept exactly these two.
+          present="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          for asset in "${assets[@]}"; do
+            grep -qx "$(basename "$asset")" <<<"$present" || gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY"
+          done
+          # Append the image reference to the release notes once.
+          body="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          if ! grep -qF "$IMAGE:$VERSION" <<<"$body"; then
+            printf '%s\n\n### Console\n\nContainer image: `%s:%s` (`%s`). Static archive SHA-256: `%s`. See docs/console.md.\n' \
+              "$body" "$IMAGE" "$VERSION" "$IMAGE_DIGEST" "$ARCHIVE_SHA256" > release-notes.md
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
           fi
-          echo "- GitHub Release $tag (draft until a maintainer publishes it) with archive and checksum" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GitHub Release $tag: added the console archive, checksum and image reference" >> "$GITHUB_STEP_SUMMARY"
       - name: Move 'latest' (stable only, on request)
         if: inputs.update_latest && needs.validate.outputs.prerelease == 'false'
         run: |

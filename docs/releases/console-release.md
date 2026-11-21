@@ -2,10 +2,13 @@
 
 This procedure releases the Knotrel Console: the container image
 `ghcr.io/knotrel/knotrel-console:<version>` and the static archive
-`knotrel-console-<version>.tar.gz` (+ `.sha256`) on the GitHub Release
-`console-v<version>`. It is independent of the Rust crate release
-([release-procedure.md](release-procedure.md)). A console-only retry never
-republishes crates, and a crate release never requires a console release.
+`knotrel-console-<version>.tar.gz` (+ `.sha256`), added to the GitHub Release
+`v<version>`. Versions are lockstep: one signed tag `v<version>` covers the
+crates, the server binaries and the console. The Rust release
+([release-procedure.md](release-procedure.md)) runs first and creates the
+GitHub Release; this workflow then adds the console files to it. The two
+workflows stay separate, so a console retry never republishes crates and a
+crate retry never republishes the console.
 
 Workflow: [`.github/workflows/console-release.yml`](../../.github/workflows/console-release.yml)
 (manual `workflow_dispatch`; **dry run by default**).
@@ -24,7 +27,8 @@ Workflow: [`.github/workflows/console-release.yml`](../../.github/workflows/cons
 - `knotrel.supportedServer` in `console/package.json` states the compatible
   server versions. Update it, and the documentation, when the API contract
   changes.
-- Tags are `console-v<version>`, signed (`git tag -s`), on a commit of `main`.
+- There is no separate console tag: the release uses the signed tag
+  `v<version>` (`git tag -s`) on a commit of `main`, the same tag as the crates.
 
 ## What a maintainer sets up once
 
@@ -49,7 +53,7 @@ repository performs them.
    unavailable, the environment still documents intent, but approval is not
    enforced. No secrets are needed: publication uses the job's `GITHUB_TOKEN`.
 4. **Tag protection (recommended).** Add a ruleset that restricts creation and
-   deletion of `console-v*` tags to maintainers.
+   deletion of `v*` tags to maintainers.
 5. **After the first publication:** make the package public (Package settings →
    Change visibility) and link it to the `knotrel/knotrel` repository if GitHub
    did not do so from the image's `org.opencontainers.image.source` label. Under
@@ -105,30 +109,28 @@ scripts/smoke-container.sh knotrel-console:dev knotrel-server:example dist
 
 ## Release candidate, then stable
 
-1. Set the version (for example `0.8.0-rc.1`) in `console/package.json`. Run
-   `npm install --package-lock-only` in `console/`, then merge the change to
-   `main`.
-2. Dry run on the merge commit and check that it passes.
-3. Create and push the signed tag on that exact commit:
-
-   ```sh
-   git tag -s console-v0.8.0-rc.1 <commit> -m "Knotrel Console 0.8.0-rc.1"
-   git verify-tag console-v0.8.0-rc.1
-   git push origin console-v0.8.0-rc.1
-   ```
-
-4. Run the workflow with `dry_run` = false, the same version and commit, and
-   `update_latest` = false. Approve the `console-release` environment when asked.
+1. Set the version in `console/package.json` (equal to the workspace version,
+   see `CONTRIBUTING.md`). Run `npm install --package-lock-only` in
+   `console/`, then merge the change to `main`.
+2. Dry run this workflow and the Rust release workflow on the merge commit.
+3. Follow the Rust release procedure: it creates and pushes the signed tag
+   `v<version>` on that commit, publishes the crates and creates the GitHub
+   Release `v<version>`.
+4. Run this workflow with `dry_run` = false, the same version and commit, and
+   `update_latest` = false. It refuses to run if the tag or the GitHub Release
+   `v<version>` is missing. Approve the `console-release` environment when
+   asked.
 5. The publish job:
    - re-verifies the downloaded artifacts against the SHA-256 values recorded
      by the build job;
    - pushes the OCI archive unchanged (`skopeo copy --all --preserve-digests`)
      to `ghcr.io/knotrel/knotrel-console:<version>` and checks the pushed digest;
    - attests build provenance for the image and the archive;
-   - creates a **draft** GitHub Release `console-v<version>` (a prerelease for
-     RCs) with the archive and its checksum;
+   - uploads the archive and its checksum to the GitHub Release `v<version>`
+     (only missing files; existing files are never replaced) and appends the
+     image reference and digest to the release notes;
    - moves `latest` only for a stable version with `update_latest` = true.
-6. Perform the post-publication checks, then publish the draft release.
+6. Perform the post-publication checks.
 7. For the stable release, repeat from step 1 with `0.8.0` and choose
    `update_latest` = true if this should become the default stable reference.
 
@@ -138,7 +140,7 @@ scripts/smoke-container.sh knotrel-console:dev knotrel-server:example dist
 docker pull ghcr.io/knotrel/knotrel-console:0.8.0
 docker buildx imagetools inspect ghcr.io/knotrel/knotrel-console:0.8.0   # index digest = release-manifest.json
 gh attestation verify oci://ghcr.io/knotrel/knotrel-console:0.8.0 --repo knotrel/knotrel
-gh release download console-v0.8.0 --repo knotrel/knotrel
+gh release download v0.8.0 --pattern 'knotrel-console-*' --repo knotrel/knotrel
 sha256sum -c knotrel-console-0.8.0.tar.gz.sha256
 gh attestation verify knotrel-console-0.8.0.tar.gz --repo knotrel/knotrel
 ```
@@ -160,8 +162,8 @@ every completed step.
 | --- | --- |
 | Nothing pushed | Re-run the workflow (same inputs). |
 | Image pushed, release missing or incomplete | Re-run with the same inputs. The workflow detects the tag with the identical digest and continues; it uploads only missing release assets and never replaces existing ones. |
-| Image tag exists with a **different** digest | The workflow refuses to overwrite it. Do not delete and re-push the tag. Publish a new version (`0.1.1` or the next RC) instead. |
-| Draft release created but checks failed | Do not publish the draft. Delete the draft (it was never public), fix forward and release a new version. |
+| Image tag exists with a **different** digest | The workflow refuses to overwrite it. Do not delete and re-push the tag. Publish a new version (the next patch or RC, for all artifacts in lockstep) instead. |
+| Console files added but checks failed | Edit the release notes to warn about the console files, fix forward and release a new version. Do not replace published files. |
 
 Versions are immutable once published. Do not delete a published image tag
 or release to reuse its version. To withdraw a bad version:
@@ -183,6 +185,6 @@ or release to reuse its version. To withdraw a bad version:
 - [ ] `knotrel.supportedServer` and `docs/console.md` reflect the compatible servers.
 - [ ] Console CI (`console-status`) green on the commit; Sonar and Codecov reviewed (not a gate if skipped).
 - [ ] Dry run passed on the exact commit; `release-manifest.json` kept.
-- [ ] Signed `console-v<version>` tag on that commit.
-- [ ] Publication approved; post-publication checks done; draft release published.
+- [ ] Signed `v<version>` tag on that commit and the Rust release done (GitHub Release `v<version>` exists).
+- [ ] Publication approved; console files and image reference on the GitHub Release; post-publication checks done.
 - [ ] After the first release: package public and linked; docs' "unreleased" labels removed.

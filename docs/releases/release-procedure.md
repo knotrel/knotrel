@@ -278,6 +278,12 @@ Once explicitly approved:
 4. For the initial v0.1.0 bootstrap only, perform the mandatory token rotation
    described in Section 2.2. Subsequent releases use the restricted token.
 
+5. Then release the console under the same tag (lockstep, same version): run
+   the [console release workflow](console-release.md) with `dry_run` = false.
+   It adds the console archive and checksum to this GitHub Release (the
+   asset checks above accept exactly those two extra files) and publishes the
+   image `ghcr.io/knotrel/knotrel-console:<version>`.
+
 ---
 
 ## 7. Partial Publication Failure Recovery & Rerun Guidelines
