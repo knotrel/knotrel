@@ -140,6 +140,15 @@ jobs:
             echo "Dry-run mode: Pre-existing tag check skipped."
           fi
 
+      - name: Verify the release notes are final
+        env:
+          VALID_VERSION: ${{ steps.validate.outputs.version }}
+        shell: bash
+        # The GitHub Release body comes from the notes at the tagged commit, so
+        # they must not say DRAFT or unreleased. Runs in dry runs too, so the
+        # candidate commit is checked before it is tagged.
+        run: ./scripts/check-release-notes.sh "$VALID_VERSION"
+
   candidate-quality-gates:
     name: candidate-quality-gates
     needs: [validate-inputs-and-metadata]

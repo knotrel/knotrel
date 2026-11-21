@@ -1086,5 +1086,62 @@ exit 0
         self.assertIn("No uploads necessary. Release artifacts already published.", res.stdout)
 
 
+class TestReleaseNotesFinal(unittest.TestCase):
+    """scripts/check-release-notes.sh rejects notes that would publish a draft status."""
+
+    SCRIPT = os.path.join(REPO_ROOT, "scripts", "check-release-notes.sh")
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.root, "docs", "releases"))
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def check(self, notes, version="9.9.0"):
+        if notes is not None:
+            path = os.path.join(self.root, "docs", "releases", f"v{version}-release-notes.md")
+            with open(path, "w") as f:
+                f.write(notes)
+        return subprocess.run([self.SCRIPT, version, self.root], capture_output=True, text=True)
+
+    def test_released_status_passes(self):
+        res = self.check("# Notes\n\n**Status: released 2026-11-21** (signed tag).\n\n## Scope\n")
+        self.assertEqual(res.returncode, 0, res.stderr)
+
+    def test_leading_v_in_version_is_accepted(self):
+        self.check("# Notes\n\n**Status: released 2026-11-21.**\n")
+        res = subprocess.run([self.SCRIPT, "v9.9.0", self.root], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+
+    def test_draft_status_fails(self):
+        # The v0.8.0 notes as they were at the tag.
+        res = self.check(
+            "# Notes\n\n**Status: DRAFT, unreleased. No performance qualification\n"
+            "(maintainer decision D2); release gates outstanding.** Nothing below\nis published.\n"
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("does not start with", res.stderr)
+
+    def test_unreleased_later_in_status_paragraph_fails(self):
+        res = self.check("# Notes\n\n**Status: released, but parts\nremain unreleased.**\n")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("draft or unreleased", res.stderr)
+
+    def test_unreleased_outside_status_paragraph_is_allowed(self):
+        res = self.check("# Notes\n\n**Status: released 2026-11-21.**\n\nThe v1.0 API stays unreleased.\n")
+        self.assertEqual(res.returncode, 0, res.stderr)
+
+    def test_missing_status_line_fails(self):
+        res = self.check("# Notes\n\nNo status here.\n")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("no '**Status:' line", res.stderr)
+
+    def test_missing_notes_file_fails(self):
+        res = self.check(None)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("not found", res.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
