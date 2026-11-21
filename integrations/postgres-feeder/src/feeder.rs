@@ -1484,19 +1484,49 @@ impl Stream {
     }
 
     /// Source history after Knotrel's frontier is gone (section 8.8).
+    ///
+    /// Knotrel must not stay `ready` or `stale` on a graph that misses
+    /// changes, so the gap is declared before the rebuild. The lease has often
+    /// lapsed by then (the feeder was stalled): the gap is then declared under
+    /// a new epoch.
     async fn history_lost(&mut self, reason: String) -> Exit {
-        match declare_gap(
-            &self.knotrel,
-            &self.session,
-            self.generation,
-            self.applied_seq,
-            &reason,
-        )
-        .await
-        {
-            Ok(()) => rebuild(reason),
-            Err(e) => e,
+        for attempt in 0..2 {
+            let answer = self
+                .knotrel
+                .gap(
+                    &self.session,
+                    self.generation,
+                    self.applied_seq + 1,
+                    &reason,
+                )
+                .await;
+            match answer {
+                Ok(r) if r.ok() => {
+                    tracing::warn!(%reason, "declared a source gap: Knotrel is desynchronized until the rebuild");
+                    return rebuild(reason);
+                }
+                Ok(r) if r.is("stale_instance_id") => {
+                    return Exit::Restart(Restart::KnotrelRestarted);
+                }
+                Ok(r)
+                    if attempt == 0 && (r.is("lease_expired") || r.is("fenced_feeder_session")) =>
+                {
+                    self.lease_lapsed = true;
+                    let mut clock = EpochClock {
+                        last: self.session.epoch,
+                    };
+                    if let Err(e) = self.reconcile(true, &mut clock).await {
+                        return e;
+                    }
+                }
+                Ok(r) => {
+                    tracing::warn!(answer = %r.describe(), "gap declaration refused; rebuilding anyway");
+                    return rebuild(reason);
+                }
+                Err(e) => return reconnect(e.to_string()),
+            }
         }
+        rebuild(reason)
     }
 }
 
