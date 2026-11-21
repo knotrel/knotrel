@@ -1,7 +1,13 @@
-# Feeder progress under query load (roadmap 0.9.3)
+# Feeder progress under query load (roadmap 0.9.3, release v0.9.0)
 
-**Status: APPROVED by the maintainer on 2026-11-21 ("Approvati, procedi"),
-unchanged from the proposal. Baseline measurement below.**
+**Status: protocol APPROVED by the maintainer on 2026-11-21 ("Approvati,
+procedi"), unchanged from the proposal. Measured: baseline v0.8.0 and the
+server code destined for v0.9.0 (change A). Q3 FAILS on both and is accepted
+as a declared limitation of v0.9.0, limited to the measured configuration
+(section "Maintainer decision on Q3").**
+
+"0.9.3" is the roadmap item, not a version: the work belongs to the
+unreleased v0.9.0.
 The protocol, the criteria and the decision rule below are fixed **before**
 any measurement. After approval they do not change; a failed criterion is
 reported as a failure, with its numbers, and is not reinterpreted.
@@ -361,13 +367,36 @@ Reading, limited to what was measured:
   PostgreSQL and the clients on another machine), so it is not shown to be the
   cause.
 
-## Status of 0.9.3
+## Status of roadmap item 0.9.3
 
-- Change A is implemented, tested and measured: it fixes the admission
-  starvation (Q2, Q4, and Q3's 64-client case improves fourfold) without
-  costing query throughput or latency beyond Q5.
-- **Q3 still fails** at 16 and 64 clients. Per the approved scope, B1 and B2
-  are not implemented. The options for the maintainer: accept Q3 as a stated
-  limitation of v0.9.0 with these numbers; run the check with PostgreSQL and the
-  load clients on a separate machine to test the CPU hypothesis; or open B1/B2
-  in a later release.
+- Change A is implemented, tested, measured and merged (`f283d30` on `main`,
+  for v0.9.0): it fixes the admission starvation (Q2 and Q4 pass, Q3's
+  64-client case improves fourfold) without costing query throughput or
+  latency beyond Q5.
+- **Q3 fails** at 16 and 64 clients, on v0.8.0 and on the v0.9.0 code. B1 and
+  B2 were out of the approved scope and are not implemented.
+
+## Maintainer decision on Q3 (2026-11-21)
+
+- **Q3 is accepted as a declared limitation of v0.9.0, limited to the measured
+  configuration**: one Apple M3 with 8 CPUs, macOS 26.5.2, loopback, PostgreSQL
+  18.7, graph G100k, the protocol's writer rate and backlog, query clients with
+  backoff.
+- **The result stays FAIL.** The thresholds (≥ 50 % at 16 clients, ≥ 25 % at
+  64) are unchanged; nothing in this document or in the release notes may
+  present Q3 as passed.
+- **No cause is claimed.** Host CPU contention is consistent with the
+  diagnostic but was not demonstrated: no run varied CPU availability. No
+  two-machine or pinned-CPU run was set up.
+- The numbers to state with the limitation:
+
+| G100k catch-up of a 100,000-change backlog | Required | v0.8.0 | v0.9.0 (change A) |
+| --- | --- | --- | --- |
+| 16 query clients, share of the no-query rate | ≥ 50 % | 16.3 % (29,416 / 180,402 events/s) | 14.7 % (27,997 / 190,906 events/s) |
+| 64 query clients, share of the no-query rate | ≥ 25 % | 2.1 % (3,789 events/s) | 8.9 % (17,075 events/s) |
+| 64 query clients, time to `ready` | ≤ 60 s (Q4) | 25.0 s | 5.5 s |
+
+- **Follow-up:** [knotrel/knotrel#87](https://github.com/knotrel/knotrel/issues/87),
+  feeder catch-up under query load: test the CPU hypothesis with a protocol
+  variant approved beforehand, then, depending on the result, B1 or B2 against
+  the same criteria. Not assigned to a release.
