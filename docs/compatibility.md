@@ -106,8 +106,10 @@ console release procedure) includes this step. As of 2026-11-21 the range is
   with the change.
 - **HTTP API:** CI compares `docs/openapi.yaml` with the previous release's
   (`scripts/check-openapi-compat.py`). Breaking changes to stable operations
-  fail the job; operations marked `x-knotrel-stability: experimental` are
-  reported, not failed. An approved breaking change is listed, with its
+  fail the job; changes to operations marked
+  `x-knotrel-stability: experimental` in the previous release are reported,
+  not failed. Marking a stable operation experimental is itself a breaking
+  change. An approved breaking change is listed, with its
   release and justification, in `docs/api/approved-breaking-changes.yaml`.
 - **Review:** the classification in [stability.md](stability.md) is reviewed
   with every change that adds a public surface.
