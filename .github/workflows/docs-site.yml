@@ -1,0 +1,37 @@
+name: Documentation site
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - run: gem install jekyll -v 3.10.0 --no-document
+      - run: gem install kramdown-parser-gfm -v 1.1.0 --no-document
+      - run: python3 scripts/prepare-docs-site.py "$RUNNER_TEMP/docs-source"
+      - run: jekyll build --source "$RUNNER_TEMP/docs-source" --destination "$RUNNER_TEMP/site" --baseurl /knotrel
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: ${{ runner.temp }}/site
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
