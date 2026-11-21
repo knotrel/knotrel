@@ -106,6 +106,15 @@ unchanged. See the
 [lifecycle contract](https://github.com/knotrel/knotrel/blob/main/docs/topology-lifecycle.md)
 for exact semantics, errors and costs.
 
+
+## Listing Neighbors (unreleased, 0.8.0)
+
+Neighbors can be listed page by page with a cursor, for browsing tools:
+`Graph::degree` and `Graph::neighbors_after` on `compact-bfs` (after the
+one-time opt-in `ConnectivityGraph::enable_neighbor_listing`, which keeps an
+8-byte-per-node index), and `LifecycleGraph::incident_after`, which also
+reports each edge's state. A cursor is the last neighbor returned; pages are
+not a snapshot of a graph that changes between them.
 ## Engine Selection
 
 Knotrel provides three dynamic connectivity engines via `EngineConfig`:

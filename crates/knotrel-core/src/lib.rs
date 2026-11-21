@@ -105,6 +105,31 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! # Listing Neighbors (unreleased, 0.8.0)
+//!
+//! Neighbors can be listed page by page with a cursor, for browsing tools.
+//! On `compact-bfs`, [`Graph::neighbors_after`] needs a one-time opt-in
+//! ([`ConnectivityGraph::enable_neighbor_listing`], O(V)) because it keeps an
+//! index-to-ID vector (8 bytes per node) that ordinary use does not need.
+//! [`LifecycleGraph::incident_after`] lists neighbors with their edge state,
+//! in ascending neighbor ID. A cursor is the last neighbor returned; pages are
+//! not a snapshot of a graph that changes between them.
+//!
+//! ```rust
+//! use knotrel_core::{ConnectivityGraph, EngineConfig};
+//!
+//! let mut graph = ConnectivityGraph::new(EngineConfig::CompactBfs);
+//! graph.link(1, 2)?;
+//! graph.link(1, 3)?;
+//! assert!(graph.enable_neighbor_listing());
+//! let compact = graph.as_compact().expect("compact-bfs engine");
+//! assert_eq!(compact.degree(1), Some(2));
+//! let first: Vec<_> = compact.neighbors_after(1, None)?.take(1).collect();
+//! let rest: Vec<_> = compact.neighbors_after(1, first.last().copied())?.collect();
+//! assert_eq!(first.len() + rest.len(), 2);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! # Choosing a Backend Engine
 //!
 //! Knotrel provides three underlying dynamic connectivity engines through [`EngineConfig`].
