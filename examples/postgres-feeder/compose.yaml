@@ -1,12 +1,12 @@
 # Reference integration: PostgreSQL (authority) -> feeder -> Knotrel -> console.
 #
-#   integrations/postgres-feeder/deploy/generate-secrets.sh
-#   docker compose -f integrations/postgres-feeder/deploy/compose.yaml up --build
+#   examples/postgres-feeder/generate-secrets.sh
+#   docker compose -f examples/postgres-feeder/compose.yaml up --build
 #   open http://127.0.0.1:7380/
 #
 # Only the console is published, on loopback. PostgreSQL and Knotrel are
 # reachable only on the private Compose network. Passwords are files in
-# deploy/secrets/ (never committed), passed as Compose secrets. No TLS: this is
+# examples/postgres-feeder/secrets/ (never committed), passed as Compose secrets. No TLS: this is
 # a local reference setup (docs/integrations/postgresql-feeder.md, A7).
 name: knotrel-postgres-reference
 
@@ -30,7 +30,7 @@ services:
     secrets: [postgres_password, feeder_password]
     volumes:
       - ./initdb:/docker-entrypoint-initdb.d:ro
-      - ../sql:/knotrel-sql:ro
+      - ../../integrations/postgres-feeder/sql:/knotrel-sql:ro
       - pgdata:/var/lib/postgresql
     healthcheck:
       test: ['CMD', 'pg_isready', '-U', 'postgres', '-d', 'app']
@@ -40,7 +40,7 @@ services:
 
   knotrel:
     build:
-      context: ../../..
+      context: ../..
       dockerfile: examples/container/Dockerfile
     image: knotrel-server:example
     environment:
@@ -54,7 +54,7 @@ services:
 
   feeder:
     build:
-      context: ..
+      context: ../../integrations/postgres-feeder
     image: knotrel-pg-feeder:example
     environment:
       KNOTREL_PG_HOST: postgres
