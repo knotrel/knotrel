@@ -117,7 +117,7 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [x] **0.9.3** Feeder progress under query load — Implemented and measured (reserved feeder admission); **Q3 FAIL, accepted as a declared limitation of v0.9.0** for the measured configuration; follow-up [#87](https://github.com/knotrel/knotrel/issues/87)
 - [ ] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI) — Implemented: [policy](docs/compatibility.md) and [classification](docs/stability.md) proposed, awaiting approval; API compatibility CI job
 - [ ] **0.9.5** Verified gateway deployment, upgrade and rebuild
-- [ ] **0.9.6** Final performance campaign
+- [ ] **0.9.6** Final performance campaign — [plan](docs/releases/v0.9.0-qualification-plan.md) proposed, awaiting approval
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
 
