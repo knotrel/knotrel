@@ -115,8 +115,8 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [x] **0.9.1** Reference PostgreSQL integration (external feeder, Compose, console) — Implemented; [design](docs/integrations/postgresql-feeder.md), [feeder](integrations/postgres-feeder/README.md)
 - [x] **0.9.2** Recovery and synchronization tests against the reference source — Implemented; CI on PostgreSQL 15–19
 - [x] **0.9.3** Feeder progress under query load — Implemented and measured (reserved feeder admission); **Q3 FAIL, accepted as a declared limitation of v0.9.0** for the measured configuration; follow-up [#87](https://github.com/knotrel/knotrel/issues/87)
-- [ ] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI) — Implemented: [policy](docs/compatibility.md) and [classification](docs/stability.md) proposed, awaiting approval; API compatibility CI job
-- [ ] **0.9.5** Verified gateway deployment, upgrade and rebuild
+- [x] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI) — Implemented and approved (2026-11-21): [policy](docs/compatibility.md), [classification](docs/stability.md), CI job `API compatibility`
+- [x] **0.9.5** Verified gateway deployment, upgrade and rebuild — Implemented: [gateway example](examples/gateway/compose.yaml) with smoke test in CI, [upgrade procedure](docs/deployment.md#upgrade-between-minor-versions) tested from the previous release
 - [ ] **0.9.6** Final performance campaign
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
@@ -788,8 +788,8 @@ languages and a CLI are not added at the same time.
   ([results and decision](docs/integrations/feeder-under-load.md#maintainer-decision-on-q3-2026-11-21)).
   Follow-up: [#87](https://github.com/knotrel/knotrel/issues/87), feeder
   catch-up under query load (unassigned).
-- [ ] **0.9.4 Contracts toward 1.0.** Implemented, awaiting approval of the
-  policy and the classification: [compatibility policy](docs/compatibility.md),
+- [x] **0.9.4 Contracts toward 1.0.** Implemented; policy and
+  classification approved by the maintainer on 2026-11-21: [compatibility policy](docs/compatibility.md),
   [stability classification](docs/stability.md), CI job `API compatibility`
   (`cargo-semver-checks` against the previous release, and
   `scripts/check-openapi-compat.py` on `docs/openapi.yaml`). The policy makes
@@ -800,7 +800,13 @@ languages and a CLI are not added at the same time.
   stable, experimental or internal (criterion 1); API checks in CI: a public
   Rust API check (for example `cargo-semver-checks`) and an OpenAPI
   compatibility diff against the previous release.
-- [ ] **0.9.5 Verified deployment.** A gateway example with TLS and
+- [x] **0.9.5 Verified deployment.** Implemented: `examples/gateway`
+  (TLS 1.2/1.3, separate operator and feeder credentials, Knotrel
+  loopback-only) validated by `examples/gateway/smoke-test.sh` in the
+  `gateway` workflow; the upgrade and rebuild procedure in
+  [deployment.md](docs/deployment.md#upgrade-between-minor-versions), tested
+  by `upgrade_from_previous_release` in the `postgres-feeder` workflow.
+  Original scope: A gateway example with TLS and
   authentication in front of Knotrel and the console (Knotrel loopback-only),
   validated by a smoke test (criterion 7, 1.0 gate); a documented upgrade and
   rebuild procedure between minor versions (drain, restart, rebuild from

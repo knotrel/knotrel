@@ -321,7 +321,8 @@ impl Control {
         let attributes = self
             .client
             .query(
-                "SELECT attname::text, format_type(atttypid, NULL), atttypid::regtype::text, attnotnull \
+                "SELECT attname::text, format_type(atttypid, NULL), atttypid::regtype::text, attnotnull, \
+                        attgenerated <> '' \
                  FROM pg_attribute WHERE attrelid = $1::int8::oid AND attnum > 0 AND NOT attisdropped",
                 &[&oid],
             )
@@ -395,7 +396,10 @@ impl Control {
                 "{qualified}: missing CHECK {check} (see sql/schema.sql)"
             )));
         }
-        Ok(attributes.len() as i64)
+        // Generated columns are not published by default (and never before
+        // PostgreSQL 18), so they do not count against the publication's
+        // column list.
+        Ok(attributes.iter().filter(|a| !a.get::<_, bool>(4)).count() as i64)
     }
 
     /// Reads the complete graph in the exported snapshot `snapshot`.
@@ -417,13 +421,19 @@ impl Control {
             )));
         }
         let schema = quote_ident(&names.schema);
-        self.client
+        if let Err(e) = self
+            .client
             .batch_execute(&format!(
                 "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; \
                  SET TRANSACTION SNAPSHOT '{snapshot}';"
             ))
             .await
-            .map_err(connection)?;
+        {
+            // BEGIN may have succeeded: leave no aborted transaction behind on
+            // the control connection.
+            let _ = self.client.batch_execute("ROLLBACK").await;
+            return Err(connection(e));
+        }
         let result = async {
             let node_rows = self
                 .client
@@ -470,9 +480,10 @@ impl Control {
             Ok((nodes, edges))
         }
         .await;
+        // A failed query aborts the transaction; COMMIT then rolls it back.
         let end = self
             .client
-            .batch_execute("COMMIT")
+            .batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
             .await
             .map_err(connection);
         let image = result?;
@@ -556,7 +567,7 @@ impl Control {
     /// Whether `slot` is a slot this feeder may use: logical, `pgoutput`, in
     /// this database.
     pub fn owns(&self, slot: &SlotInfo, prefix: &str) -> bool {
-        slot.name.starts_with(&format!("{prefix}_"))
+        slot_name_is_own(&slot.name, prefix)
             && slot.plugin.as_deref() == Some("pgoutput")
             && slot.database.as_deref() == Some(self.params.database.as_str())
     }
@@ -598,5 +609,46 @@ impl Control {
             }
         }
         Ok(dropped)
+    }
+}
+
+/// `{prefix}_` followed by the 12 lowercase hexadecimal digits the feeder
+/// generates: a slot of another feeder whose prefix extends this one's
+/// (`knotrel_feeder_b_...` for prefix `knotrel_feeder`) is not this feeder's.
+fn slot_name_is_own(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .is_some_and(|id| {
+            id.len() == 12 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
+
+#[cfg(test)]
+mod slot_name_tests {
+    use super::slot_name_is_own;
+
+    #[test]
+    fn own_slot_names() {
+        assert!(slot_name_is_own(
+            "knotrel_feeder_0123456789ab",
+            "knotrel_feeder"
+        ));
+        assert!(!slot_name_is_own(
+            "knotrel_feeder_b_0123456789ab",
+            "knotrel_feeder"
+        ));
+        assert!(!slot_name_is_own(
+            "knotrel_feeder_0123456789",
+            "knotrel_feeder"
+        ));
+        assert!(!slot_name_is_own(
+            "knotrel_feeder_0123456789AB",
+            "knotrel_feeder"
+        ));
+        assert!(!slot_name_is_own(
+            "knotrel_feeder0123456789ab",
+            "knotrel_feeder"
+        ));
+        assert!(!slot_name_is_own("other_0123456789ab", "knotrel_feeder"));
     }
 }

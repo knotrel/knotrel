@@ -256,6 +256,26 @@ async fn knotrel_restart_rebuilds() {
     env.cleanup().await;
 }
 
+/// A bootstrap that takes longer than the lease (a large image) keeps its
+/// session: the import is accepted the first time.
+#[tokio::test(flavor = "multi_thread")]
+async fn slow_bootstrap_keeps_the_lease() {
+    let Some(mut env) = Env::new("slowboot").await else {
+        return;
+    };
+    preload(&env, 200, 400).await;
+    env.start_feeder(Some("slow_bootstrap"));
+    env.converge().await;
+    let log = env.log();
+    assert!(log.contains("fault injection: pausing"), "the pause ran");
+    assert!(
+        !log.contains("import refused"),
+        "the import was refused after the pause:\n{log}"
+    );
+    assert_eq!(env.stats().await["generation"], 1);
+    env.cleanup().await;
+}
+
 /// C1: TRUNCATE during streaming causes a rebuild.
 #[tokio::test(flavor = "multi_thread")]
 async fn truncate_rebuilds() {

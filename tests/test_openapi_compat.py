@@ -174,6 +174,81 @@ class Rules(unittest.TestCase):
 
         self.assertEqual(breaks(to_all_of), ([], []))
 
+    def test_head_experimental_marker_does_not_silence(self):
+        def downgrade(h):
+            op = h["paths"]["/v1/info"]["get"]
+            op["x-knotrel-stability"] = "experimental"
+            op["responses"].pop("503")
+
+        breaking, info = breaks(downgrade)
+        self.assertIn("GET /v1/info: stable operation marked experimental", breaking)
+        self.assertIn("GET /v1/info: response 503 removed", breaking)
+        self.assertEqual(info, [])
+
+    def test_one_of_members_are_compared(self):
+        def one_of(doc):
+            doc["components"]["schemas"]["Info"]["properties"]["count"] = {
+                "oneOf": [{"$ref": "#/components/schemas/Op"}, {"type": "integer"}]}
+
+        base = copy.deepcopy(BASE)
+        one_of(base)
+        head = copy.deepcopy(base)
+        head["components"]["schemas"]["Op"]["properties"].pop("source")
+        breaking, _ = compat.check(base, head)
+        self.assertTrue(any("<oneOf #/components/schemas/Op>.source: response property removed" in b
+                            for b in breaking), breaking)
+        self.assertEqual(compat.check(base, copy.deepcopy(base)), ([], []))
+
+    def test_null_alternative_is_nullable(self):
+        def any_of_null(h):
+            h["components"]["schemas"]["Info"]["properties"]["engine"] = {
+                "anyOf": [{"type": "string"}, {"type": "null"}]}
+
+        self.assert_break(any_of_null, "200.engine: response value became nullable")
+
+    def test_response_header_removed(self):
+        def with_header(doc):
+            doc["paths"]["/v1/info"]["get"]["responses"]["200"]["headers"] = {
+                "ETag": {"schema": {"type": "string"}}}
+
+        base = copy.deepcopy(BASE)
+        with_header(base)
+        head = copy.deepcopy(BASE)
+        breaking, _ = compat.check(base, head)
+        self.assertIn("GET /v1/info 200: response header ETag removed", breaking)
+        self.assertEqual(compat.check(base, copy.deepcopy(base)), ([], []))
+
+    def test_request_constraints_tightened(self):
+        def tighten(h):
+            h["components"]["schemas"]["Op"]["properties"]["source"]["maxLength"] = 8
+
+        self.assert_break(tighten, "request.source: request constraint tightened (maxLength None -> 8)")
+
+        def loosen(doc):
+            doc["components"]["schemas"]["Op"]["properties"]["source"]["maxLength"] = 8
+
+        base = copy.deepcopy(BASE)
+        loosen(base)
+        head = copy.deepcopy(base)
+        head["components"]["schemas"]["Op"]["properties"]["source"]["maxLength"] = 16
+        self.assertEqual(compat.check(base, head), ([], []))
+
+    def test_request_body_required_flip_and_head_only_ref(self):
+        base = copy.deepcopy(BASE)
+        base["paths"]["/v1/operations"]["post"]["requestBody"]["required"] = False
+        head = copy.deepcopy(BASE)
+        breaking, _ = compat.check(base, head)
+        self.assertIn("POST /v1/operations: request body became required", breaking)
+
+        base = copy.deepcopy(BASE)
+        base["paths"]["/v1/operations"]["post"].pop("requestBody")
+        head = copy.deepcopy(BASE)
+        head["components"]["requestBodies"] = {
+            "OpBody": head["paths"]["/v1/operations"]["post"]["requestBody"]}
+        head["paths"]["/v1/operations"]["post"]["requestBody"] = {"$ref": "#/components/requestBodies/OpBody"}
+        breaking, _ = compat.check(base, head)
+        self.assertIn("POST /v1/operations: request body became required", breaking)
+
 
 class CommandLine(unittest.TestCase):
     def run_cli(self, head, approved=None):
