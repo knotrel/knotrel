@@ -105,7 +105,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! # Listing Neighbors (since 0.8.0)
+//! # Listing Neighbors (since 0.8)
 //!
 //! Neighbors can be listed page by page with a cursor, for browsing tools.
 //! On `compact-bfs`, [`Graph::neighbors_after`] needs a one-time opt-in

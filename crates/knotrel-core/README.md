@@ -107,7 +107,7 @@ unchanged. See the
 for exact semantics, errors and costs.
 
 
-## Listing Neighbors (since 0.8.0)
+## Listing Neighbors (since 0.8)
 
 Neighbors can be listed page by page with a cursor, for browsing tools:
 `Graph::degree` and `Graph::neighbors_after` on `compact-bfs` (after the
