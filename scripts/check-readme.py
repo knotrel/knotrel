@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Checks that the user-facing READMEs point at one, real, released version.
+
+Every reference to "the current release" in README.md and console/README.md
+must name the same version X:
+
+- README.md: the "Latest release" line (text and link), the download links and
+  release asset names, and the `knotrel-core` dependency snippet (which must be
+  "MAJOR.MINOR" of X);
+- console/README.md: the "Status: released" line and the console image tags.
+
+X must be released: docs/releases/vX-release-notes.md exists and its status is
+"released", and X is not newer than the workspace version.
+
+With --release VERSION (release workflow, dry runs included), X must also be
+VERSION and neither README may still call anything "unreleased": the READMEs
+of the tagged commit describe the release being published.
+
+Usage: check-readme.py [--release VERSION] [REPO_ROOT]
+"""
+
+import re
+import sys
+from pathlib import Path
+
+VERSION = r"(\d+\.\d+\.\d+)"
+
+
+def workspace_version(root):
+    text = (root / "Cargo.toml").read_text(encoding="utf-8")
+    section = text.split("[workspace.package]", 1)[1]
+    return re.search(r'^version = "' + VERSION + '"', section, re.M).group(1)
+
+
+def key(version):
+    return tuple(int(p) for p in version.split("."))
+
+
+def readme_references(text):
+    """(description, version) pairs that must all name the current release."""
+    refs = []
+    for m in re.finditer(r"\*\*Latest release: \[v" + VERSION + r"\]\(([^)]*)\)", text):
+        refs.append(("Latest release line", m.group(1)))
+        tag = re.search(r"/releases/tag/v" + VERSION, m.group(2))
+        refs.append(("Latest release link", tag.group(1) if tag else "?"))
+    if not any(d == "Latest release line" for d, _ in refs):
+        refs.append(("Latest release line (missing)", "?"))
+    for m in re.finditer(r"/releases/tag/v" + VERSION, text):
+        refs.append(("release link", m.group(1)))
+    for m in re.finditer(r"knotrel-server-v" + VERSION, text):
+        refs.append(("release asset name", m.group(1)))
+    for m in re.finditer(r"Download and extract the \*\*v" + VERSION + r"\*\*", text):
+        refs.append(("download instruction", m.group(1)))
+    deps = re.findall(r'^knotrel-core = "([^"]+)"', text, re.M)
+    if not deps:
+        refs.append(("knotrel-core dependency snippet (missing)", "?"))
+    for dep in deps:
+        refs.append(("knotrel-core dependency snippet", dep))
+    return refs
+
+
+def console_references(text):
+    refs = []
+    m = re.search(r"\*\*Status: released\.\*\* Console " + VERSION, text)
+    refs.append(("console status line", m.group(1) if m else "?"))
+    for m in re.finditer(r"ghcr\.io/knotrel/knotrel-console:" + VERSION, text):
+        refs.append(("console image tag", m.group(1)))
+    return refs
+
+
+def check(root, release=None):
+    errors = []
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    console = (root / "console" / "README.md").read_text(encoding="utf-8")
+    current = re.search(r"\*\*Latest release: \[v" + VERSION, readme)
+    if not current:
+        return ["README.md: no '**Latest release: [vX.Y.Z](...)**' line"]
+    latest = current.group(1)
+    minor = ".".join(latest.split(".")[:2])
+
+    for name, refs in (("README.md", readme_references(readme)),
+                       ("console/README.md", console_references(console))):
+        for what, found in refs:
+            expected = minor if what == "knotrel-core dependency snippet" else latest
+            if found != expected:
+                errors.append(f"{name}: {what} names {found!r}, expected {expected!r} "
+                              f"(the latest release, v{latest})")
+
+    notes = root / "docs" / "releases" / f"v{latest}-release-notes.md"
+    if not notes.is_file():
+        errors.append(f"README.md: latest release v{latest} has no {notes.relative_to(root)}")
+    elif release is None and not re.search(r"^\*\*Status: released", notes.read_text(encoding="utf-8"), re.M):
+        errors.append(f"README.md: v{latest} is not released ({notes.relative_to(root)} status)")
+
+    workspace = workspace_version(root)
+    if key(latest) > key(workspace):
+        errors.append(f"README.md: latest release v{latest} is newer than the workspace {workspace}")
+
+    if release is not None:
+        if latest != release:
+            errors.append(f"README.md: latest release is v{latest}; the README of the "
+                          f"v{release} release commit must describe v{release}")
+        for name, text in (("README.md", readme), ("console/README.md", console)):
+            for n, line in enumerate(text.splitlines(), 1):
+                if re.search(r"\bunreleased\b", line, re.I):
+                    errors.append(f"{name}:{n}: still says 'unreleased': {line.strip()[:100]}")
+    return errors
+
+
+def main(argv):
+    args = argv[1:]
+    release = None
+    if "--release" in args:
+        i = args.index("--release")
+        if i + 1 >= len(args):
+            print(__doc__, file=sys.stderr)
+            return 2
+        release = args[i + 1].removeprefix("v")
+        del args[i : i + 2]
+    if len(args) > 1:
+        print(__doc__, file=sys.stderr)
+        return 2
+    root = Path(args[0] if args else ".")
+    errors = check(root, release)
+    for e in errors:
+        print(f"ERROR: {e}", file=sys.stderr)
+    if errors:
+        print("Update the READMEs (docs/releases/release-procedure.md, section 5).", file=sys.stderr)
+        return 1
+    print("READMEs consistent" + (f" for release v{release}" if release else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
