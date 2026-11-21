@@ -2,8 +2,10 @@
 """Report breaking changes between two versions of docs/openapi.yaml.
 
 Implements the HTTP rules of docs/compatibility.md, section 3, for stable
-operations; operations marked `x-knotrel-stability: experimental` (in either
-version) are reported but never fail the check.
+operations. Stability is taken from BASE: changes to an operation marked
+`x-knotrel-stability: experimental` there are reported but never fail the
+check, and marking a stable operation experimental is itself a breaking
+change (otherwise the marker would silence every other break).
 
 Usage:
   check-openapi-compat.py BASE.yaml HEAD.yaml [--approved FILE]
@@ -13,12 +15,18 @@ Exit status: 0 when every breaking change is approved (or there is none),
 `change` (the exact message printed below), `release` and `justification`.
 
 Rules, for each operation present in BASE:
-- the operation, a parameter or a documented response status disappears;
-- a parameter or request-body property becomes required;
-- a request-body property or accepted enum value disappears, or a request
-  type narrows;
+- the operation, a parameter, a documented response status or a documented
+  response header disappears;
+- a parameter, the request body or a request-body property becomes required;
+- a request-body property, accepted enum value or `oneOf`/`anyOf`
+  alternative disappears, a request type narrows, or a request constraint
+  tightens (`maxLength`, `minLength`, `maximum`, `minimum`, `maxItems`,
+  `minItems`, `pattern`);
 - a response property disappears or stops being required, or a response type
-  widens (for example a field becomes nullable).
+  widens (for example a field becomes nullable, also through a `null`
+  alternative of `oneOf`/`anyOf`).
+`oneOf`/`anyOf` alternatives present in both versions (matched by reference,
+otherwise by position) are compared recursively.
 Additions (operations, optional request fields, response fields, response
 enum values) are compatible.
 """
@@ -81,8 +89,48 @@ def types(schema):
     return set(t) if isinstance(t, list) else {t}
 
 
-def nullable(schema):
-    return schema.get("nullable") is True or "null" in (types(schema) or set())
+def nullable(spec, schema, depth=0):
+    if schema.get("nullable") is True or "null" in (types(schema) or set()):
+        return True
+    if depth > 20:
+        return False
+    return any(nullable(spec, spec.flatten(m), depth + 1)
+               for comb in ("oneOf", "anyOf") for m in schema.get(comb, []))
+
+
+# Request constraints that reject more values when they increase (`min`) or
+# decrease (`max`).
+LOWER_BOUNDS = ("minLength", "minimum", "exclusiveMinimum", "minItems", "minProperties")
+UPPER_BOUNDS = ("maxLength", "maximum", "exclusiveMaximum", "maxItems", "maxProperties")
+
+
+def tightened(b, h):
+    out = []
+    for key in LOWER_BOUNDS:
+        if isinstance(h.get(key), (int, float)) and not isinstance(h.get(key), bool):
+            if key not in b or h[key] > b[key]:
+                out.append(f"{key} {b.get(key)} -> {h[key]}")
+    for key in UPPER_BOUNDS:
+        if isinstance(h.get(key), (int, float)) and not isinstance(h.get(key), bool):
+            if key not in b or h[key] < b[key]:
+                out.append(f"{key} {b.get(key)} -> {h[key]}")
+    if "pattern" in h and h.get("pattern") != b.get("pattern"):
+        out.append("pattern changed")
+    return out
+
+
+def matched_members(base_spec, head_spec, bmembers, hmembers):
+    """Pairs alternatives by reference name, inline ones by position."""
+    href = {head_spec.resolve(m)[1]: m for m in hmembers if head_spec.resolve(m)[1]}
+    pairs = []
+    for i, bm in enumerate(bmembers):
+        name = base_spec.resolve(bm)[1]
+        if name:
+            if name in href:
+                pairs.append((name, bm, href[name]))
+        elif i < len(hmembers) and not head_spec.resolve(hmembers[i])[1]:
+            pairs.append((str(i), bm, hmembers[i]))
+    return pairs
 
 
 def variants(spec, schema, key):
@@ -107,8 +155,11 @@ def compare(base_spec, head_spec, base, head, direction, where, out, seen):
             out.append(f"{where}: request type narrowed from {sorted(bt)} to {sorted(ht)}")
         if direction == "response" and not ht <= bt:
             out.append(f"{where}: response type widened from {sorted(bt)} to {sorted(ht)}")
-    if direction == "response" and nullable(h) and not nullable(b):
+    if direction == "response" and nullable(head_spec, h) and not nullable(base_spec, b):
         out.append(f"{where}: response value became nullable")
+    if direction == "request":
+        for change in tightened(b, h):
+            out.append(f"{where}: request constraint tightened ({change})")
 
     if "enum" in b and "enum" in h and direction == "request":
         removed = [v for v in b["enum"] if v not in h["enum"]]
@@ -122,6 +173,9 @@ def compare(base_spec, head_spec, base, head, direction, where, out, seen):
             gone = variants(base_spec, b, comb) - variants(head_spec, h, comb)
             if gone:
                 out.append(f"{where}: request alternatives removed {sorted(gone)}")
+        if comb in b and comb in h:
+            for label, bm, hm in matched_members(base_spec, head_spec, b[comb], h[comb]):
+                compare(base_spec, head_spec, bm, hm, direction, f"{where}<{comb} {label}>", out, seen)
 
     bprops = b.get("properties", {})
     hprops = h.get("properties", {})
@@ -157,6 +211,21 @@ def json_schema(spec, holder):
 
 def experimental(op):
     return op.get("x-knotrel-stability") == "experimental"
+
+
+def compare_headers(base, head, bresp, hresp, where, out):
+    bheaders = base.resolve(bresp)[0].get("headers") or {}
+    hheaders = head.resolve(hresp)[0].get("headers") or {}
+    hlower = {k.lower(): v for k, v in hheaders.items()}
+    for name, bh in bheaders.items():
+        hh = hlower.get(name.lower())
+        if hh is None:
+            out.append(f"{where}: response header {name} removed")
+            continue
+        bh, hh = base.resolve(bh)[0], head.resolve(hh)[0]
+        if "schema" in bh and "schema" in hh:
+            compare(base, head, bh["schema"], hh["schema"], "response",
+                    f"{where} header {name}", out, set())
 
 
 def check(base_doc, head_doc):
@@ -201,22 +270,29 @@ def check(base_doc, head_doc):
                         found.append(f"{op_name}: request body schema removed")
                     elif bbody is not None:
                         compare(base, head, bbody, hbody, "request", f"{op_name} request", found, set())
-                elif "requestBody" in hop and base.resolve(hop["requestBody"])[0].get("required"):
+                    if ("requestBody" in hop
+                            and head.resolve(hop["requestBody"])[0].get("required")
+                            and not base.resolve(bop["requestBody"])[0].get("required")):
+                        found.append(f"{op_name}: request body became required")
+                elif "requestBody" in hop and head.resolve(hop["requestBody"])[0].get("required"):
                     found.append(f"{op_name}: request body became required")
                 for status, bresp in (bop.get("responses") or {}).items():
                     hresp = (hop.get("responses") or {}).get(status)
                     if hresp is None:
                         found.append(f"{op_name}: response {status} removed")
                         continue
+                    compare_headers(base, head, bresp, hresp, f"{op_name} {status}", found)
                     bs = json_schema(base, bresp)
                     hs = json_schema(head, hresp)
                     if bs is not None and hs is None:
                         found.append(f"{op_name}: response {status} schema removed")
                     elif bs is not None:
                         compare(base, head, bs, hs, "response", f"{op_name} {status}", found, set())
-            if experimental(bop) or (hop is not None and experimental(hop)):
+            if experimental(bop):
                 info += [f"(experimental) {m}" for m in found]
             else:
+                if hop is not None and experimental(hop):
+                    found.append(f"{op_name}: stable operation marked experimental")
                 breaking += found
     return breaking, info
 
