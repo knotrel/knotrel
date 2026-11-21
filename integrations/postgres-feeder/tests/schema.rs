@@ -20,7 +20,7 @@ async fn retyped_column_stops_then_recovers_by_rebuild() {
 
     env.sql("ALTER TABLE knotrel_graph.edges ALTER COLUMN enabled DROP DEFAULT; \
              ALTER TABLE knotrel_graph.edges ALTER COLUMN enabled TYPE integer USING enabled::integer; \
-             INSERT INTO knotrel_graph.edges VALUES (1, 99, 1);")
+             INSERT INTO knotrel_graph.nodes VALUES (100000, true), (100001, true); INSERT INTO knotrel_graph.edges VALUES (100000, 100001, 1);")
         .await;
     let code = env.wait_feeder(Duration::from_secs(30)).await;
     let log = env.log();
