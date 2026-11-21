@@ -1,7 +1,7 @@
 # Stability classification
 
-**Status: PROPOSED for v0.9.0 (roadmap item 0.9.4), awaiting maintainer
-approval.** Classes and rules: [compatibility.md](compatibility.md). This list
+**Status: APPROVED by the maintainer on 2026-11-21 (roadmap item 0.9.4);
+applies from v0.9.0.** Classes and rules: [compatibility.md](compatibility.md). This list
 covers every public surface on `main` as of 2026-11-21; a surface not listed
 is internal.
 
