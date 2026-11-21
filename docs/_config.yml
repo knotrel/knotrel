@@ -1,0 +1,9 @@
+title: Knotrel
+markdown: kramdown
+exclude: [superpowers, archive]
+defaults:
+  - scope:
+      path: ''
+      type: pages
+    values:
+      layout: default
