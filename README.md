@@ -23,7 +23,10 @@ service alongside your existing database.
 
 ## Architecture
 
-![Knotrel architecture](docs/diagrams/architecture.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.svg">
+  <img src="docs/diagrams/architecture.svg" alt="Source-managed Knotrel architecture">
+</picture>
 
 A feeder connects an external authoritative source to the in-memory server.
 See the [architecture guide](docs/architecture-site.md) and

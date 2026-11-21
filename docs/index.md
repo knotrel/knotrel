@@ -10,7 +10,8 @@ Knotrel keeps an undirected graph in memory and answers exact connectivity queri
 
 ## Architecture
 
-![Knotrel architecture](diagrams/architecture.svg)
+<img class="architecture-light" src="diagrams/architecture.svg" alt="Source-managed Knotrel architecture">
+<img class="architecture-dark" src="diagrams/architecture-dark.svg" alt="Source-managed Knotrel architecture">
 
 The authoritative source and feeder are external. In source-managed mode, the feeder imports a graph and delivers ordered updates; Knotrel answers queries against its in-memory state. PostgreSQL integration is planned for v0.9.0, not yet available. In standalone mode, clients operate the graph directly. [Architecture details](architecture-site.md).
 
