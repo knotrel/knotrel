@@ -20,7 +20,7 @@ readiness.
 To find the request behind an alert, search the structured logs
 (`LOG_FORMAT=json`) for the messages named below; each line carries the
 `request_id` of the request that produced it
-([contract section 17](observability-contract.md#17-m63-structured-logs-implemented-unreleased)).
+([contract section 17](observability-contract.md#17-m63-structured-logs-released-in-v040)).
 
 ## Rules
 

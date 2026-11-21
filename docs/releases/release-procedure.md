@@ -149,7 +149,7 @@ do not treat a run against an earlier commit as the final RC validation.
    - `commit_sha`: the full, committed RC SHA on `origin/main` (supply it explicitly)
    - `dry_run`: `true`
 3. The dry-run workflow executes:
-   - `validate-inputs-and-metadata`: Validates version format (anchored `^[0-9]+\.[0-9]+\.[0-9]+$`), verifies commit SHA lineage against `origin/main`, verifies version against `Cargo.toml`.
+   - `validate-inputs-and-metadata`: Validates version format (anchored `^[0-9]+\.[0-9]+\.[0-9]+$`), verifies commit SHA lineage against `origin/main`, verifies version against `Cargo.toml`. Then runs `./scripts/check-release-notes.sh <version>`: the notes `docs/releases/v<version>-release-notes.md` must exist and their status paragraph must start with `**Status: released` and not mention draft or unreleased, because the GitHub Release body is taken from the notes at the tagged commit and the tag cannot be changed.
    - `candidate-quality-gates`: Executes fmt, Clippy, Rustdoc, workspace tests, test-support tests, all 3 examples, and the release-publishing and recovery simulation test suites on the candidate commit SHA before build jobs run.
    - `build-binaries`: Compiles release binaries, records build provenance receipts, validates executable architecture (ELF, Mach-O, PE32+), runs native smoke tests on Linux, macOS, and Windows, and packages release archives.
    - `build-source`: Runs `./scripts/verify-source-packages.sh`, executes the required `knotrel-core` publish dry run, conditionally checks the server publish dry run, and generates `.crate.sha256` files.
@@ -179,6 +179,7 @@ Before tagging and publishing:
 - [ ] Working tree is clean and `git status` shows no uncommitted files.
 - [ ] Workspace and inherited crate versions are `0.5.0`, and the core dependency and lockfile agree.
 - [ ] Release notes in `docs/releases/v0.5.0-release-notes.md` report the v0.5.0 performance qualification (existing behavior against v0.4.0, lifecycle cost and sustained resources), every disclosed or owner-accepted non-PASS result, and all operational limitations.
+- [ ] The release notes status is final (`**Status: released <date>**`, the planned tag date) on the candidate commit: the GitHub Release body is taken from the notes at the tag. Post-publication details (digests, links) can follow on `main` and in the release body, but never a status change from draft.
 - [ ] Candidate commit SHA is verified on `origin/main`.
 - [ ] The v0.5.0 performance qualification ran on the exact RC commit (or its executed code was shown identical), and the deployment and rebuild smoke test was repeated on it.
 - [ ] All CI and release dry-run quality gates passed on the exact candidate commit SHA.

@@ -2,7 +2,7 @@
 
 **Status:** Vocabulary for roadmap M6.1, nine M6.2 increments
 (sections 7, 8, 10, 11, 12, 13, 14, 15 and 16) and the M6.3 structured logs
-(section 17), implemented but unreleased and planned for v0.4.0. M6 is not
+(section 17), released in v0.4.0. M6 is not
 part of v0.3.0. M6.2 passed an independent review (section 6) with the
 corrections applied; alert rules (M6.4) are in [alerting.md](alerting.md);
 overhead and series count (M6.5) are qualified in section 18. M6 was accepted
@@ -94,7 +94,7 @@ either accepted or rejected. Once accepted, time is split into:
 - **queue:** from `spawn_blocking` until the closure starts (blocking-pool scheduling);
 - **lock wait:** from the graph-lock request until it is acquired (shared for
   query-only `operation`/`batch` jobs and `stats`, exclusive for every other
-  kind; unreleased, v0.7.0);
+  kind; since v0.7.0);
 - **execution:** time holding the graph lock.
 
 Import preparation (parse and candidate construction) runs on the worker
@@ -328,7 +328,7 @@ exactly constant after churn. Results: section 18. The approach:
 
 No campaign has been run.
 
-## 7. First M6.2 slice (implemented, unreleased)
+## 7. First M6.2 slice (released in v0.4.0)
 
 **Enablement.** `KNOTREL_METRICS_ENABLED` is exactly `true` or `false`
 (default `false`). Any other value fails startup. The embedded equivalent is
@@ -445,7 +445,7 @@ checks `readiness_state` against `/ready` for every phase and sync status,
 including expired leases, without changing the published word.
 `configuration.rs` covers strict parsing.
 
-## 8. Second M6.2 increment: rejection and uncertain outcomes (implemented, unreleased)
+## 8. Second M6.2 increment: rejection and uncertain outcomes (released in v0.4.0)
 
 Two counters separate work that was refused before it ran from work whose
 effect its caller did not learn. Each is recorded where the decision is
@@ -559,7 +559,7 @@ check. They cover:
 5. **Overhead budget.** Resolved on 2026-11-15 (section 6): median at most
    3%, 95% interval upper bound at most 6%, one fixed extension.
 
-## 10. Third M6.2 increment: graph node and edge gauges (implemented, unreleased)
+## 10. Third M6.2 increment: graph node and edge gauges (released in v0.4.0)
 
 **Series.** `knotrel_graph_nodes` and `knotrel_graph_edges`, unlabelled
 gauges. They report the backend's maintained `node_count()` and
@@ -633,7 +633,7 @@ source-managed** (now 1414 and 1834; section 16).
 - a scrape that completes while a real `Service::run` worker holds the graph
   lock, checked with `try_lock` before and after the scrape.
 
-## 11. Fourth M6.2 increment: graph-job queue, lock-wait and execution histograms (implemented, unreleased)
+## 11. Fourth M6.2 increment: graph-job queue, lock-wait and execution histograms (released in v0.4.0)
 
 **Series.** Three histograms in seconds, each labelled by `kind`:
 `knotrel_graph_job_queue_seconds`, `knotrel_graph_lock_wait_seconds` and
@@ -772,7 +772,7 @@ function. Dropping its handle releases the worker.
 
 **Overhead.** Not qualified. Section 6 applies unchanged.
 
-## 12. Fifth M6.2 increment: graph-operation and feeder-event outcome counters (implemented, unreleased)
+## 12. Fifth M6.2 increment: graph-operation and feeder-event outcome counters (released in v0.4.0)
 
 **Series.** Two counters, with pre-created series and fixed labels:
 `knotrel_graph_operations_total{op,outcome}` and
@@ -868,7 +868,7 @@ nothing.
 
 **Overhead.** Not qualified. Section 6 applies unchanged.
 
-## 13. Sixth M6.2 increment: feeder rejection and desynchronization counters (implemented, unreleased)
+## 13. Sixth M6.2 increment: feeder rejection and desynchronization counters (released in v0.4.0)
 
 **Series.** Two counters, registered only in source-managed mode, with
 pre-created series and fixed labels:
@@ -998,7 +998,7 @@ classification test.
 
 **Overhead.** Not qualified. Section 6 applies unchanged.
 
-## 14. Seventh M6.2 increment: feeder lease remaining and last-applied age (implemented, unreleased)
+## 14. Seventh M6.2 increment: feeder lease remaining and last-applied age (released in v0.4.0)
 
 **Series.** Two unlabelled gauges, emitted only in source-managed mode by the
 scrape-time `HealthCollector`, and only once they have a value:
@@ -1102,7 +1102,7 @@ lag, and independent instances.
 enabled, each feeder events request that applied an event adds one clock
 read and one atomic `fetch_max` under the graph lock, not one per event.
 
-## 15. Eighth M6.2 increment: import gauge, results and phase durations (implemented, unreleased)
+## 15. Eighth M6.2 increment: import gauge, results and phase durations (released in v0.4.0)
 
 **Series.** Source-managed mode only, the only mode whose router accepts
 imports. All are pre-created at zero:
@@ -1291,7 +1291,7 @@ histogram observations, none in a per-node or per-edge loop. These counts
 exclude other instrumentation on the same request, such as the HTTP request
 metrics and the `import_publish` graph-job histograms (section 11).
 
-## 16. Ninth M6.2 increment: catch-up duration (implemented, unreleased)
+## 16. Ninth M6.2 increment: catch-up duration (released in v0.4.0)
 
 Adds the remaining essential (`E`) metric from section 4 in source-managed
 mode:
@@ -1406,7 +1406,7 @@ In [`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs) (module
   HELP/TYPE checks, HTTP initial + replacement end-to-end counts and isolated
   instances.
 
-## 17. M6.3 structured logs (implemented, unreleased)
+## 17. M6.3 structured logs (released in v0.4.0)
 
 Logs answer "which one": they correlate a request with the worker that ran
 it and with the graph coordinates it observed. They are an operational

@@ -127,8 +127,9 @@ scripts/smoke-container.sh knotrel-console:dev knotrel-server:example dist
      to `ghcr.io/knotrel/knotrel-console:<version>` and checks the pushed digest;
    - attests build provenance for the image and the archive;
    - uploads the archive and its checksum to the GitHub Release `v<version>`
-     (only missing files; existing files are never replaced) and appends the
-     image reference and digest to the release notes;
+     (only missing files; existing files are never replaced) and appends a
+     `### Console` section with the image reference and digest to the release
+     notes (once: skipped if the notes already have that heading);
    - moves `latest` only for a stable version with `update_latest` = true.
 6. Perform the post-publication checks.
 7. For the stable release, repeat from step 1 with `0.8.0` and choose

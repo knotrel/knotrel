@@ -330,7 +330,7 @@ the graph lock is requested; `knotrel_imports_total` classifies it as
 ## Concurrency and order
 
 Every graph request, including queries and `GET /v1/stats`, takes the same
-graph lock (unreleased, v0.7.0: a read-write lock). A request whose operations
+graph lock (since v0.7.0: a read-write lock). A request whose operations
 are all queries (`connected`, `node_state`, `edge_state`) and `GET /v1/stats`
 take it shared and can run in parallel with each other; any request with a
 mutation, and every feeder and import request, takes it exclusively. The
@@ -413,13 +413,13 @@ draining (with `Connection: close`). It exposes HTTP request counts and
 server-side durations by route template, outstanding graph jobs, the
 graph-job admission permit limit, the unavailable flag, the state `/ready` would report, and build
 information. Names, labels, exact semantics and the series bound are
-specified in the [observability contract](observability-contract.md#7-first-m62-slice-implemented-unreleased).
+specified in the [observability contract](observability-contract.md#7-first-m62-slice-released-in-v040).
 An HTTP `503 request_timeout` or a cancelled request in these metrics never
 means the graph job finished or did not run; see
 [admission and cancellation](#admission-and-cancellation).
 
 Two further counters are recorded where the decision is made, not derived
-from response codes ([contract section 8](observability-contract.md#8-second-m62-increment-rejection-and-uncertain-outcomes-implemented-unreleased)):
+from response codes ([contract section 8](observability-contract.md#8-second-m62-increment-rejection-and-uncertain-outcomes-released-in-v040)):
 
 - `knotrel_requests_rejected_total{reason}`: requests refused before any
   graph job or import ran for them: `busy` (admission permits exhausted,
@@ -437,7 +437,7 @@ from response codes ([contract section 8](observability-contract.md#8-second-m62
 
 `knotrel_graph_nodes` and `knotrel_graph_edges` report the live graph's
 size without taking the graph lock or an admission permit, unlike
-`/v1/stats` ([contract section 10](observability-contract.md#10-third-m62-increment-graph-node-and-edge-gauges-implemented-unreleased)).
+`/v1/stats` ([contract section 10](observability-contract.md#10-third-m62-increment-graph-node-and-edge-gauges-released-in-v040)).
 With lifecycle support they are registered counts, and
 `knotrel_graph_active_nodes`, `knotrel_graph_enabled_edges` and
 `knotrel_graph_effective_edges` are published with them at the same
@@ -456,7 +456,7 @@ They are two independent samples, not a coherent pair.
 (`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`,
 `feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`; only the
 first three in standalone mode)
-([contract section 11](observability-contract.md#11-fourth-m62-increment-graph-job-queue-lock-wait-and-execution-histograms-implemented-unreleased)).
+([contract section 11](observability-contract.md#11-fourth-m62-increment-graph-job-queue-lock-wait-and-execution-histograms-released-in-v040)).
 They cover:
 - **queue:** submission to the blocking pool until the worker starts;
 - **lock wait:** the worker's wait for the graph lock;
@@ -497,7 +497,7 @@ Both counters count nothing for:
 Feeder events never count as operations. Workers count outcomes even after
 the caller timed out or was cancelled. A worker panic keeps the outcomes
 already counted and adds none for the interrupted item
-([contract section 12](observability-contract.md#12-fifth-m62-increment-graph-operation-and-feeder-event-outcome-counters-implemented-unreleased)).
+([contract section 12](observability-contract.md#12-fifth-m62-increment-graph-operation-and-feeder-event-outcome-counters-released-in-v040)).
 
 `knotrel_feeder_rejections_total{code}` (source-managed mode only) counts
 each session, heartbeat, events, gap or barrier request the service rejects,
@@ -520,7 +520,7 @@ including a repeated gap, add none. Out-of-order sequences and unverifiable
 duplicates are rejected without a transition. Neither counter resets on
 graph replacement, and workers count even after the caller timed out or was
 cancelled
-([contract section 13](observability-contract.md#13-sixth-m62-increment-feeder-rejection-and-desynchronization-counters-implemented-unreleased)).
+([contract section 13](observability-contract.md#13-sixth-m62-increment-feeder-rejection-and-desynchronization-counters-released-in-v040)).
 
 `knotrel_feeder_lease_remaining_seconds` (source-managed mode only) is the
 current feeder lease deadline minus the server's monotonic clock, computed at
@@ -541,7 +541,7 @@ absent before the first application. It measures inactivity, **not source
 lag**: an idle source legitimately makes it large, and only `/ready` reports
 synchronization. Both gauges are sampled independently of each other and of
 the other gauges
-([contract section 14](observability-contract.md#14-seventh-m62-increment-feeder-lease-remaining-and-last-applied-age-implemented-unreleased)).
+([contract section 14](observability-contract.md#14-seventh-m62-increment-feeder-lease-remaining-and-last-applied-age-released-in-v040)).
 
 `knotrel_import_in_progress` (source-managed mode only) is `1` while an import
 holds the single import permit (body read, worker queue, preparation and
@@ -560,11 +560,11 @@ before the permit, including
 `knotrel_import_duration_seconds{phase}` times the disjoint `receive` (permit
 acquired to body read returned), `prepare` (worker parse and candidate build)
 and `publish` (graph-lock request to the end of the worker) phases
-([contract section 15](observability-contract.md#15-eighth-m62-increment-import-gauge-results-and-phase-durations-implemented-unreleased)).
+([contract section 15](observability-contract.md#15-eighth-m62-increment-import-gauge-results-and-phase-durations-released-in-v040)).
 `knotrel_catchup_duration_seconds{kind}` (`initial` for `create_only`,
 `replacement` for `replace`) times completed catch-up intervals from import
 publication to the first `synchronized` barrier in that generation
-([contract section 16](observability-contract.md#16-ninth-m62-increment-catch-up-duration-implemented-unreleased)).
+([contract section 16](observability-contract.md#16-ninth-m62-increment-catch-up-duration-released-in-v040)).
 
 ### Graceful shutdown
 
@@ -650,7 +650,7 @@ variables are ignored by this loader. `RUST_LOG` is handled separately by the
 logging subscriber (falling back to `info` if its filter is missing or invalid),
 and `LOG_FORMAT=json` selects one JSON object per log line. Log fields, request
 correlation and redaction are described in the
-[observability contract, section 17](observability-contract.md#17-m63-structured-logs-implemented-unreleased).
+[observability contract, section 17](observability-contract.md#17-m63-structured-logs-released-in-v040).
 No configuration file or implicit engine fallback is used.
 
 `compact-bfs` uses the existing compact-adjacency `Graph`. `ett` opts into
@@ -808,7 +808,7 @@ marks this service instance unavailable: queued and subsequently admitted graph
 jobs return HTTP 503 `unavailable`,
 using the existing error envelope, even if the original caller disconnected.
 A state-changing job sets the marker under the exclusive graph lock; a
-read-only job that panics sets it before releasing its shared lock (unreleased,
+read-only job that panics sets it before releasing its shared lock (since
 v0.7.0). Read-only requests already running in parallel with a panicking
 read-only request complete normally: it could not change the state they read.
 The marker does not depend on lock poisoning.

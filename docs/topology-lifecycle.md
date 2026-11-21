@@ -147,7 +147,7 @@ which gives the amortized term above. Engine vertices stay at most
 server's graph lock. (v0.6.0 evaluated a `max(V / 4, 1024)` threshold and
 rejected it: fresh-ID churn became about 90% slower.)
 
-**Catalog tombstones** (unreleased, v0.7.0). Removing a node from the catalog
+**Catalog tombstones** (since v0.7.0). Removing a node from the catalog
 hash table can leave a tombstone that uses insert headroom without holding an
 entry. Under fresh-ID churn the headroom runs out while the number of live
 nodes stays constant, and the table would double although it is far from full

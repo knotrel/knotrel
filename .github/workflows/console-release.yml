@@ -315,9 +315,11 @@ jobs:
           for asset in "${assets[@]}"; do
             grep -qx "$(basename "$asset")" <<<"$present" || gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY"
           done
-          # Append the image reference to the release notes once.
+          # Append the image reference to the release notes once. Test for the
+          # section heading, not the image name: the notes may already name the
+          # image (as v0.8.0's did) without its digest.
           body="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
-          if ! grep -qF "$IMAGE:$VERSION" <<<"$body"; then
+          if ! grep -qE '^### Console[[:space:]]*$' <<<"$body"; then
             printf '%s\n\n### Console\n\nContainer image: `%s:%s` (`%s`). Static archive SHA-256: `%s`. See docs/console.md.\n' \
               "$body" "$IMAGE" "$VERSION" "$IMAGE_DIGEST" "$ARCHIVE_SHA256" > release-notes.md
             gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
