@@ -22,9 +22,9 @@
 
 - Keep the console outside the Cargo workspace. Cargo builds, server
   installation and the Rust binary must never require Node.js or embed console
-  assets. The console has its own version (`console/package.json`, tags
-  `console-v*`) aligned with the server on major.minor (console X.Y goes with
-  server X.Y; patches are independent), and is released only through
+  assets. The console version (`console/package.json`, tags `console-v*`) equals
+  the Rust workspace version (lockstep: console, server and core share one
+  number, see `CONTRIBUTING.md`), and the console is released only through
   [the console release procedure](docs/releases/console-release.md).
 - Toolchain: Node 24.22.3 LTS (`console/.nvmrc`) with npm 11; exact dependency
   versions and the committed `package-lock.json`. npm is development tooling
@@ -75,8 +75,9 @@ covers what is easy to miss. Check every item on the exact candidate commit.
 - **Preview what will be published:** `cargo package --list -p <crate>` and
   `cargo doc --no-deps -p <crate>`; run `python3 scripts/check-crate-docs.py`
   (it checks version references only, not coverage).
-- **Versions:** workspace version, the `knotrel-core` dependency version and
-  `Cargo.lock` agree with the release.
+- **Versions:** workspace version, the `knotrel-core` dependency version,
+  `Cargo.lock` and `console/package.json` (with its lockfile) agree with the
+  release (lockstep, see `CONTRIBUTING.md`).
 - **User-facing performance pages:** add the release to
   `docs/performance-by-version.md` and the README performance section, with
   no claim beyond the qualification and its maintainer decisions.

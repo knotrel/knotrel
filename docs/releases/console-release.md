@@ -12,15 +12,13 @@ Workflow: [`.github/workflows/console-release.yml`](../../.github/workflows/cons
 
 ## Versioning
 
-- The console has its own SemVer version in `console/package.json` and
-  `console/package-lock.json`, aligned with the server on major.minor:
-  console X.Y.z goes with server X.Y.x. The first release is `0.8.0`, together
-  with server 0.8.0. A new server minor brings a console release with the same
-  major.minor (even without UI changes); patch releases are independent.
-- The release workflow refuses a version whose major.minor differs from the
-  server workspace version (`Cargo.toml`) at the same commit.
-- Update the compatibility table in [docs/console.md](../console.md#compatibility)
-  and `console/README.md` with every console minor.
+- The console version in `console/package.json` and
+  `console/package-lock.json` equals the Rust workspace version (lockstep, see
+  `CONTRIBUTING.md`): console, `knotrel-server` and `knotrel-core` are released
+  together with the same number. The first console release is `0.8.0`.
+- The release workflow refuses a console version that differs from the
+  workspace version in `Cargo.toml` at the same commit (an `-rc.N` suffix is
+  allowed on top of it).
 - Release candidates use `X.Y.Z-rc.N`. They become GitHub prereleases and never
   move `latest`.
 - `knotrel.supportedServer` in `console/package.json` states the compatible
