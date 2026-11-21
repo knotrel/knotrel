@@ -21,6 +21,14 @@ service alongside your existing database.
 (operational console and opt-in inspection routes). Node/edge lifecycle is opt-in and supported on
 `compact-bfs` only.
 
+## Architecture
+
+![Knotrel architecture](docs/diagrams/architecture.svg)
+
+A feeder connects an external authoritative source to the in-memory server.
+See the [architecture guide](docs/architecture-site.md) and
+[documentation site](https://knotrel.github.io/knotrel/).
+
 ## Quickstart: a failure and a recovery
 
 Two routes connect a source to a destination:
