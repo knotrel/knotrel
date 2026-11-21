@@ -174,7 +174,7 @@ through it.
 | Container exits right after start              | Invalid configuration: run `docker logs knotrel-console`, fix the variable and run it again.                       |
 | Browser shows `421` / "unexpected Host header" | You opened it through a name not in `KNOTREL_CONSOLE_SERVER_NAMES`; add it.                                        |
 | UI says "Server unreachable"                   | The server is down or not on the console's network. Check `KNOTREL_UPSTREAM` and `docker network inspect knotrel`. |
-| `docker pull` fails                            | Check the tag (`0.8.0` or later) and network access to `ghcr.io`, or build it locally.                                               |
+| `docker pull` fails                            | Check the tag (`0.8.0` or later) and network access to `ghcr.io`, or build it locally.                             |
 | Port 7380 already in use                       | Publish another port, e.g. `-p 127.0.0.1:7381:8080`.                                                               |
 
 ## License
