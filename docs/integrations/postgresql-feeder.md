@@ -336,9 +336,12 @@ because it describes what the *old* process applied.
 
 ### 8.5 Lease expiry
 
-The feeder heartbeats at a third of the lease. If Knotrel reports `stale`
-(lease expired during a pause), the feeder registers a higher epoch, catches
-up and declares a new barrier, as §4.3 of the contract requires.
+The feeder heartbeats at a third of the lease, also during a bootstrap
+(reading and importing a large image can take longer than the lease). If
+Knotrel reports `stale` (lease expired during a pause), the feeder registers a
+higher epoch, catches up and declares a new barrier, as §4.3 of the contract
+requires. A heartbeat answer for an earlier epoch, arriving after the new one
+was registered, is ignored.
 
 ### 8.6 Takeover
 
