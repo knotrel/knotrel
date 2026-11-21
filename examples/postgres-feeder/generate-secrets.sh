@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Creates random passwords for the demo in deploy/secrets/ (ignored by git).
+# Creates random passwords for the demo in examples/postgres-feeder/secrets/
+# (ignored by git).
 # Existing files are kept.
 set -euo pipefail
 dir="$(cd "$(dirname "$0")" && pwd)/secrets"

@@ -27,19 +27,20 @@ logical`, finite `max_slot_wal_keep_size`. Knotrel 0.8 or later with
 PostgreSQL with a demo graph, Knotrel, the feeder and the console:
 
 ```bash
-integrations/postgres-feeder/deploy/generate-secrets.sh
-docker compose -f integrations/postgres-feeder/deploy/compose.yaml up --build
+examples/postgres-feeder/generate-secrets.sh
+docker compose -f examples/postgres-feeder/compose.yaml up --build
 ```
 
 Open <http://127.0.0.1:7380/>: the Overview shows the synchronization state,
 the Browser the 400 demo nodes. Change the source and watch Knotrel follow:
 
 ```bash
-docker compose -f integrations/postgres-feeder/deploy/compose.yaml exec postgres \
+docker compose -f examples/postgres-feeder/compose.yaml exec postgres \
   psql -U postgres -d app -c "UPDATE knotrel_graph.nodes SET active = false WHERE id = 21"
 ```
 
-The passwords are random files in `deploy/secrets/` (ignored by git) passed as
+The Compose example lives in [`examples/postgres-feeder/`](../../examples/postgres-feeder/README.md).
+The passwords are random files in its `secrets/` directory (ignored by git) passed as
 Compose secrets. Only the console port is published, on loopback.
 
 ## Set it up on your database

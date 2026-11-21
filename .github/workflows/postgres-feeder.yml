@@ -8,6 +8,7 @@ on:
       - main
     paths:
       - 'integrations/postgres-feeder/**'
+      - 'examples/postgres-feeder/**'
       - 'crates/**'
       - 'Cargo.lock'
       - 'docs/integrations/**'
@@ -15,6 +16,7 @@ on:
   pull_request:
     paths:
       - 'integrations/postgres-feeder/**'
+      - 'examples/postgres-feeder/**'
       - 'crates/**'
       - 'Cargo.lock'
       - 'docs/integrations/**'
@@ -58,7 +60,7 @@ jobs:
       - name: Dependencies (licenses, advisories, sources)
         run: cargo deny --locked check --config ../../deny.toml licenses advisories bans sources
       - name: Shell scripts
-        run: bash -n scripts/*.sh deploy/*.sh deploy/initdb/*.sh
+        run: bash -n scripts/*.sh ../../examples/postgres-feeder/*.sh ../../examples/postgres-feeder/initdb/*.sh
 
   integration:
     name: integration (PostgreSQL ${{ matrix.postgres }})
