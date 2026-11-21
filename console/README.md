@@ -23,8 +23,8 @@ Why each is optional, and what it costs: [docs/console.md](../docs/console.md#se
 > (2026-11-21).
 
 **Versions.** The console has the same version as the server (lockstep):
-use console 0.8.0 with server 0.8.0. With server 0.7, every page except the
-Browser works (server 0.7 has no inspection API).
+use console 0.9.0 with server 0.9.0. Console 0.9 also works with server 0.8
+(verified with the browser tests on Chromium and Firefox).
 
 The console ships as a container image (nginx serving the UI and forwarding
 `/api` to one Knotrel server) and as a static archive for your own web
@@ -153,6 +153,7 @@ UI (Overview → Liveness and readiness).
 | `KNOTREL_CONSOLE_SERVER_NAMES` | `localhost 127.0.0.1 [::1]` | Host names the console answers to. Add your DNS name when a gateway forwards to it.          |
 | `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL            | Server name shown in the connection indicator (display only).                                |
 | `KNOTREL_UPSTREAM_TIMEOUT`     | `35s`                       | Upstream timeout.                                                                            |
+| `KNOTREL_CONSOLE_LISTEN`       | `8080 [::]:8080`            | Listen addresses; `127.0.0.1:8080` when a gateway shares the container's network namespace.  |
 
 The container listens on port 8080 as an unprivileged user and supports a
 read-only filesystem with a tmpfs at `/tmp`.

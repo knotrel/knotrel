@@ -6,7 +6,9 @@
 //! - a crash point makes the process abort, as a crash would: no cleanup, no
 //!   acknowledgement;
 //! - `lose_events_response` discards a successful Knotrel answer, as if the
-//!   connection had dropped after Knotrel applied the events.
+//!   connection had dropped after Knotrel applied the events;
+//! - `slow_bootstrap` pauses the bootstrap after the image is read for three
+//!   lease durations, as a large image would.
 //!
 //! Unset, every point is a no-op. The points are listed in [`POINTS`].
 
@@ -22,6 +24,7 @@ pub const POINTS: &[&str] = &[
     "after_events_applied",
     "after_ack",
     "lose_events_response",
+    "slow_bootstrap",
 ];
 
 struct Armed {
@@ -74,4 +77,16 @@ pub fn lose(point: &str) -> bool {
         eprintln!("fault injection: discarding the answer at {point}");
     }
     lost
+}
+
+/// Sleeps for `duration` if the pause point `point` is armed and reached for
+/// the configured time.
+pub async fn pause(point: &str, duration: std::time::Duration) {
+    if triggered(point) {
+        eprintln!(
+            "fault injection: pausing {} ms at {point}",
+            duration.as_millis()
+        );
+        tokio::time::sleep(duration).await;
+    }
 }

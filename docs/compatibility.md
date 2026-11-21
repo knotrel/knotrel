@@ -1,8 +1,7 @@
 # Compatibility and deprecation policy
 
-**Status: PROPOSED for v0.9.0 (roadmap item 0.9.4), awaiting maintainer
-approval.** Until it is approved, nothing here binds a release. It implements
-readiness criterion 2 of the [v1.0 assessment](releases/v1.0-readiness.md).
+**Status: APPROVED by the maintainer on 2026-11-21 (roadmap item 0.9.4);
+applies from v0.9.0.** It implements readiness criterion 2 of the [v1.0 assessment](releases/v1.0-readiness.md).
 Which surfaces are stable is listed in [stability.md](stability.md).
 
 ## 1. Versions
@@ -106,8 +105,10 @@ console release procedure) includes this step. As of 2026-11-21 the range is
   with the change.
 - **HTTP API:** CI compares `docs/openapi.yaml` with the previous release's
   (`scripts/check-openapi-compat.py`). Breaking changes to stable operations
-  fail the job; operations marked `x-knotrel-stability: experimental` are
-  reported, not failed. An approved breaking change is listed, with its
+  fail the job; changes to operations marked
+  `x-knotrel-stability: experimental` in the previous release are reported,
+  not failed. Marking a stable operation experimental is itself a breaking
+  change. An approved breaking change is listed, with its
   release and justification, in `docs/api/approved-breaking-changes.yaml`.
 - **Review:** the classification in [stability.md](stability.md) is reviewed
   with every change that adds a public surface.

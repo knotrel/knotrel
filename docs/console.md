@@ -97,6 +97,7 @@ unauthenticated server just to reach it.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `KNOTREL_UPSTREAM` | required | Server base URL, `http(s)://host[:port][/path]`, no credentials, query or trailing slash. Fixed for the container's lifetime. |
+| `KNOTREL_CONSOLE_LISTEN` | `8080 [::]:8080` | Addresses the container listens on (space separated: port, `IPv4:port` or `[IPv6]:port`). Set `127.0.0.1:8080` when a gateway shares the container's network namespace, so only the gateway can reach it. The image's health check uses `127.0.0.1:8080`. |
 | `KNOTREL_CONSOLE_SERVER_NAMES` | `localhost 127.0.0.1 [::1]` | Accepted `Host` names (space separated). Requests for any other host get 421. Add the public name when a gateway forwards to the container. |
 | `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL | Server name shown in the connection indicator (display only). |
 | `KNOTREL_UPSTREAM_TIMEOUT` | `35s` | Upstream send/read timeout. It exceeds the server's 30 s request timeout so that the server's `request_timeout` is reported when it applies. |
@@ -331,14 +332,15 @@ what needs attention.
 **Versioning rule.** The console, `knotrel-server` and `knotrel-core` share
 one version number (lockstep) and are released together; use the console with
 the server of the same version. With the previous server minor the console
-still works except for features the server lacks: with server 0.7, every page
-except the Browser (no inspection API there, and the console says so).
+still works except for features the server lacks. Console 0.9 was verified
+against server 0.8.0 and 0.9.0 (browser tests, Chromium and Firefox, all
+passing on both); it adds no feature that server 0.8 lacks.
 
 Within a supported server version, the server flags decide what is available;
 see [Server flags, in short](#server-flags-in-short).
 
 The console declares the server versions it supports in
-`console/package.json` (`knotrel.supportedServer`, currently `>=0.7.0 <0.9.0`).
+`console/package.json` (`knotrel.supportedServer`, currently `>=0.8.0 <0.10.0`).
 It also records the SHA-256 of the `docs/openapi.yaml` revision it was
 generated from (`knotrel.openapiSha256`), which the archive's
 `console-manifest.json` repeats. CI fails when the generated types or that
