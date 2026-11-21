@@ -14,7 +14,7 @@ An external feeder reads the authoritative database or event stream and supplies
 
 **Scope labels:** **REQUIRED** means a release acceptance gate. **OPTIONAL** means a separately enabled capability whose absence does not invalidate the basic product contract. **DEFERRED** means no implementation commitment in that release. A future capability can be optional for operators while its safety criteria are required before shipping it.
 
-> **Execution rule:** Follow dependencies within each release, retain independent review gates, and mark tasks complete only against verified evidence. v0.1.0 is the released baseline. Its historical checklist and evidence below are preserved, including unresolved bookkeeping; this planning update does not certify previously pending platform or publication checks. Releases v0.2.0–v0.5.0 are published (GitHub Releases; crates.io for v0.3.0 onward as recorded in their release notes); release numbers beyond v0.5.0 are planning targets.
+> **Execution rule:** Follow dependencies within each release, retain independent review gates, and mark tasks complete only against verified evidence. v0.1.0 is the released baseline. Its historical checklist and evidence below are preserved, including unresolved bookkeeping; this planning update does not certify previously pending platform or publication checks. Releases v0.2.0–v0.8.0 are published (GitHub Releases; crates.io for v0.3.0 onward as recorded in their release notes); release numbers beyond v0.8.0 are planning targets.
 
 ## Release overview and scope
 
@@ -28,8 +28,9 @@ An external feeder reads the authoritative database or event stream and supplies
 | **v0.6.0 — Lifecycle Efficiency & Measured Concurrency** (published 2026-11-17) | Lower lifecycle and import costs with stated resource bounds; measure contention and batching before any synchronization change; prepare v1.0 | 0.6.1 baseline and resource model; 0.6.2 lifecycle/import efficiency; 0.6.3 contention and batch evaluation (M5, deferred M3.6); 0.6.4 evidence-driven execution changes (no-change decision valid); 0.6.5 final qualification against published v0.5.0 with a versioned performance diff; 0.6.6 v1.0 readiness assessment | Lifecycle stays `compact-bfs` only; no persistence/WAL, multi-graph, distributed execution, power flow, connectors, automatic backend switching, unrelated API expansion or dependency modernization; no inherited waivers |
 | **Unassigned — Optional Local Persistence & Fast Recovery** | Reduce startup/reconstruction cost while preserving external authority | Evaluation and independent review before shipping any selected persistence mode; synchronization after local recovery | Persistence OPTIONAL and disabled by default; deferred from v0.5.0 by the 2026-11-16 scope decision; release unassigned |
 | **v0.7.0 — Measured Concurrency** (published 2026-11-20; qualification accepted with exceptions) | Remove the measured graph-lock bottleneck for read-heavy work without weakening any service invariant | M5 implementation (M5.3–M5.5, Acceptance M5): evaluate the minimal synchronization design from the v0.6.0 contention evidence that preserves panic handling, lease/staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, import publication and shutdown/drain; measured evaluation of the 0.7.4 performance candidates (libraries and layouts aimed at the v0.6.0 non-PASS results); before/after qualification against v0.6.0 | No mechanism is prescribed in advance (a read-write lock is one option, not a decision); no sharding/RCU/snapshots/lock-free/actors without evidence; the coarse mutex stays if no design meets the invariants |
-| **Operational Console — console 0.8.0** (published 2026-11-21 with server 0.8.0) | Operate one server from a browser through the existing HTTP API, as a separate artifact | Read-only diagnostics (connectivity, liveness versus readiness, configuration, counts, identity and version, synchronization); standalone operations with structured outcomes and no automatic retries; container image and reproducible static archive; CI, coverage, SonarCloud and dry-run release workflow | No server endpoint or engine change; no authentication, visualization, multi-server, bulk import or metrics history; npm `npx` launcher DEFERRED; no performance qualification. Independent of server correctness, feeder fairness and v1.0 gates |
-| **v1.0.0 — Production Readiness** (v0.6.0 → v0.7.0 → v1.0.0-rc → v1.0.0, each step subject to its stability gates) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. A v0.7.0 exists only for concrete gaps named by the assessment |
+| **v0.8.0 — Operational Console** (published 2026-11-21; core, server and console in lockstep) | Operate one server from a browser, as a separate artifact, plus opt-in read-only inspection routes on the server for browsing a graph | Read-only diagnostics (connectivity, liveness versus readiness, configuration, counts, identity and version, synchronization); standalone operations with structured outcomes and no automatic retries; container image and reproducible static archive; CI, coverage, SonarCloud and dry-run release workflow | No engine change; the only server additions are the inspection routes (`KNOTREL_INSPECTION`, off by default, never mutating); no authentication, visualization, multi-server, bulk import or metrics history; npm `npx` launcher DEFERRED. Released without a performance qualification against v0.7.0 (maintainer decision D2) |
+| **v0.9.0 — Integration & Reliability** (planned) | Make Knotrel easy to integrate with a real authoritative store and show that it stays correct and current through failures and load | A reference PostgreSQL integration through an external feeder (one source), recovery and synchronization tests against it, feeder progress under query load, contract groundwork for 1.0 (stability classes, compatibility policy, API checks in CI), a verified gateway deployment with upgrade/rebuild procedure, and a proportionate final performance campaign; see [v0.9.0](#v090--integration--reliability) | No connector inside the server; no Kafka, extra SDKs or CLI; no local persistence/WAL, multi-graph or new engines; console limited to fixes from use; no log viewer or speculative optimizations |
+| **v1.0.0 — Production Readiness** (v0.8.0 → v0.9.0 → v1.0.0-rc → v1.0.0, each step subject to its stability gates) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. v0.9.0 addresses the integration and reliability gaps named by the assessment; the rest close in the rc cycle |
 
 **Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
 
@@ -90,20 +91,32 @@ Checks reflect verified implementation and acceptance gates. From v0.6.0 on, eve
 - [x] **0.6.5** Final qualification and operational validation — Qualified on `48bc82f` (`4148e47` on `main`, identical tree; executed code identical at `main` `121d248`); executed code identical at release commit `5db9ec4`; accepted 2026-11-17; signed tags in both repositories; published 2026-11-17
 - [x] **0.6.6** v1.0 readiness assessment — draft for maintainer review
 
-### v0.7.0 — Measured Concurrency (planned)
+### v0.7.0 — Measured Concurrency (published 2026-11-20)
 
-- [ ] **M5 implementation** (M5.3–M5.5, Acceptance M5), from the v0.6.0 contention evidence; see [v0.7.0](#v070--measured-concurrency-planned)
-- [ ] **0.7.4 Performance candidates** (evaluated, not prescribed): read concurrency (`arc-swap` snapshots or a read-write lock), flagged-import parse cost (`sonic-rs` or a hand-written visitor), global allocator for RSS (`mimalloc`/`jemalloc`), CSR adjacency for BFS; see [v0.7.0](#v070--measured-concurrency-planned)
+- [x] **M5 implementation** (M5.3–M5.5, Acceptance M5): shared read lock for query-only requests — Implemented, Qualified, Accepted with explicit exceptions (2026-11-20), Published; see [v0.7.0](#v070--measured-concurrency)
+- [x] **0.7.4 Performance candidates:** read-write lock (0.7.4a) and `sonic-rs` import parsing (0.7.4b) adopted; global allocator (0.7.4c) and CSR adjacency (0.7.4d) dropped by the maintainer; see [v0.7.0](#v070--measured-concurrency)
 
-### Operational Console — console 0.8.0
+### v0.8.0 — Operational Console (published 2026-11-21)
 
-[Design and plan](docs/superpowers/plans/2026-11-20-operational-console.md); [console documentation](docs/console.md). Statuses: see [Operational Console](#operational-console-console-080).
+[Design and plan](docs/superpowers/plans/2026-11-20-operational-console.md); [console documentation](docs/console.md). Statuses: see [v0.8.0](#v080--operational-console).
 
-- [x] **C1** Read-only console (Overview, Graph/Queries, Synchronization) — Implemented, locally validated
-- [x] **C2** Standalone operations, uncertain outcomes and session history — Implemented, locally validated
-- [x] **C3** Container image, static archive, CI and dry-run release workflow — Implemented, locally validated; external CI, SonarCloud and publication pending
-- [x] **C5** Data browser, workbench and diagnostics, with the opt-in read-only inspection API — implemented on `feature/console-data-browser`, locally validated; [plan](docs/superpowers/plans/2026-11-20-console-data-browser.md)
-- [ ] **C4** Release (RC, then stable) — awaiting maintainer setup and authorization
+- [x] **C1** Read-only console (Overview, Graph/Queries, Synchronization) — Published
+- [x] **C2** Standalone operations, uncertain outcomes and session history — Published
+- [x] **C3** Container image, static archive, CI and release workflow — Published
+- [x] **C5** Data browser, workbench and diagnostics, with the opt-in read-only inspection API — Published; [plan](docs/superpowers/plans/2026-11-20-console-data-browser.md)
+- [x] **C4** Release — Published 2026-11-21 as v0.8.0 (stable, no RC; server not performance-qualified, decision D2)
+
+### v0.9.0 — Integration & Reliability (planned)
+
+Statuses: see [v0.9.0](#v090--integration--reliability).
+
+- [x] **0.9.0a** Roadmap and readiness realignment — Implemented
+- [ ] **0.9.1** Reference PostgreSQL integration (external feeder, Compose, console)
+- [ ] **0.9.2** Recovery and synchronization tests against the reference source
+- [ ] **0.9.3** Feeder progress under query load
+- [ ] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI)
+- [ ] **0.9.5** Verified gateway deployment, upgrade and rebuild
+- [ ] **0.9.6** Final performance campaign
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
 
@@ -626,7 +639,7 @@ Retain/reject decisions from the diagnostics (`evidence/v0.6.0-diagnostics/READM
 
 ---
 
-## v0.7.0 — Measured Concurrency (planned)
+## v0.7.0 — Measured Concurrency
 
 **Scope decision (2026-11-16, maintainer option B):** v0.6.0 keeps the coarse graph mutex. v0.7.0 addresses concurrency from the bottleneck measured in v0.6.0: with read-heavy work, the single lock serializes BFS queries and lock wait dominates client latency at four or more clients.
 
@@ -641,7 +654,7 @@ retry policy. Source: knotrel-benchmarks
 design should state its effect on feeder catch-up under query load, and 0.7.3
 should measure it with probe revision 2.
 
-**Status (2026-11-20): implementation done; qualification accepted with exceptions; release gates outstanding.**
+**Status: published 2026-11-20** (GitHub Release `v0.7.0`, crates.io); qualification accepted with exceptions.
 - **Design and implementation:** 0.7.1 and 0.7.2 are complete; release candidate `fa5f3a9`.
 - **Qualification 3** (knotrel-benchmarks `results/v0.7.0-qualification-3/`), attempt q3-3, is CONFORMING.
   - Read-heavy contention improves: 2.1× the throughput with 4 clients; 4.5–5.2× for queries during imports or feeder events at 100k nodes.
@@ -656,7 +669,7 @@ should measure it with probe revision 2.
 - [x] **0.7.1 Design:** the minimal change that removes the measured bottleneck while preserving panic handling (a panic makes the graph unavailable, including to queued jobs), lease and staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, atomic import publication and shutdown/drain accounting. Candidates are evaluated, not prescribed (for example read-only jobs under a shared lock with panic state moved out of the guarded state, or shorter critical sections).
 - [x] **0.7.2 Implementation and deterministic tests** for every boundary the design changes.
 - [x] **0.7.3 Qualification** (qualification 3, q3-3 conforming; accepted with exceptions, not all gates PASS) against v0.6.0 with the v0.6.0 contention matrix (probe revision 2, which fixes the frozen v0.6.0 probe's coverage defects) and the existing release cells; no inherited waivers.
-- [ ] **Acceptance M5.** If no design preserves the invariants, the documented outcome is to keep the mutex.
+- [x] **Acceptance M5.** Accepted with explicit exceptions (maintainer, 2026-11-20): the shared read lock preserves the listed invariants. (Had no design preserved them, the documented outcome was to keep the mutex.)
 
 ### 0.7.4 Performance candidates (evaluated, not prescribed)
 
@@ -692,9 +705,9 @@ for them.
 
 ---
 
-## Operational Console (console 0.8.0)
+## v0.8.0 — Operational Console
 
-**Scope:** a static React console for one Knotrel server, distributed as the container image `ghcr.io/knotrel/knotrel-console` and a versioned static archive. It is versioned in lockstep with the crates (same version, released under the same `v*` tag) and declares its supported servers (`>=0.7.0 <0.9.0`). It uses only the existing HTTP API; the only server-side change is documentation that brings `docs/openapi.yaml` in line with the implemented behavior. Server correctness, feeder fairness and the v1.0 checklist are separate work; this milestone neither satisfies nor blocks them.
+**Scope:** a static React console for one Knotrel server, distributed as the container image `ghcr.io/knotrel/knotrel-console` and a versioned static archive. It is versioned in lockstep with the crates (same version, released under the same `v*` tag) and declares its supported servers (`>=0.7.0 <0.9.0`). The console uses only documented HTTP endpoints. The first increments (C1–C3) needed no server change beyond bringing `docs/openapi.yaml` in line with the implemented behavior; the data browser (C5) added the opt-in, read-only inspection routes to the server. Server correctness, feeder fairness and the v1.0 checklist are separate work; this milestone neither satisfies nor blocks them.
 
 **Status (2026-11-21):** released in v0.8.0 (GitHub Release `v0.8.0`, image `ghcr.io/knotrel/knotrel-console:0.8.0`).
 
@@ -707,9 +720,87 @@ for them.
   - Performance view from `/metrics`; condensed overview; synchronization with lease information.
   - Server side: the opt-in read-only inspection routes (`KNOTREL_INSPECTION`), with a targeted cost check that passed its pre-declared criteria ([results](docs/console-inspection-costs.md)).
   - With inspection off (the default) the server keeps no extra state; the inspection costs apply only when it is enabled.
-- [ ] **C4 — Release.** Maintainer setup ([console release procedure](docs/releases/console-release.md)), RC, post-publication checks and stable.
+- [x] **C4 — Release.** Published 2026-11-21 as v0.8.0 under the shared tag ([console release procedure](docs/releases/console-release.md)); post-publication checks done (digest, checksums, provenance, anonymous pull).
 
 **Acceptance:** console CI green on all jobs; SonarCloud quality gate passed in authorized CI; dry run passed on the release commit; published image and archive verified (digest, checksums, provenance, start-up). The npm launcher, a dedicated repository and the server API gaps listed in the design (software version, execution time, source lag) are separate decisions.
+
+## v0.9.0 — Integration & Reliability
+
+**Status: planned (2026-11-21).** No item below is implemented or accepted.
+
+**Goal:** with v0.8.0 the library, the server and the console exist. v0.9.0
+makes Knotrel easy to put inside an application and keep there: one real
+authoritative store, end to end, with evidence that the graph stays correct
+and current through failures and load. It targets the readiness criteria
+that are still partial for that reason (3, 4, 6, 10) and prepares the
+contract work (1, 2) of the
+[v1.0 readiness assessment](docs/releases/v1.0-readiness.md). The path is
+v0.8.0 → v0.9.0 → v1.0.0-rc → v1.0.0; 1.0 needs current evidence for
+contracts, limits and recovery, not more features.
+
+**One source only.** PostgreSQL is the reference store. Kafka, SDKs in more
+languages and a CLI are not added at the same time.
+
+- [ ] **0.9.1 Reference PostgreSQL integration.** An external reference
+  feeder (not a connector inside the server) that loads a coherent image of
+  a PostgreSQL schema and then streams ordered changes from the image's
+  position, under the [integration contract](docs/integration-contract.md):
+  import, session, ordered events, bootstrap completion, duplicate and gap
+  handling. A Compose example starts PostgreSQL, the feeder, Knotrel in
+  source-managed mode and the console, which shows the real synchronization
+  state. Documented as an example with stated limits, not a supported
+  product.
+- [ ] **0.9.2 Recovery and synchronization against the reference source.**
+  Reproducible tests with the real feeder and store: feeder disconnect and
+  reconnect, Knotrel restart and rebuild from source, duplicate and replayed
+  changes, loss of change history beyond retention (detected, followed by a
+  full rebuild), feeder takeover. Each compares the final graph with the
+  store. The existing tests (criterion 3, "met for the tested matrix") stay;
+  these extend them to a real source.
+- [ ] **0.9.3 Feeder progress under query load.** v0.6.0 measured that the
+  feeder has no priority over queued queries and that admission reserves no
+  permit for it ([v0.7.0 input](#v070--measured-concurrency)); v0.7.0
+  improved queries during feeder events but did not re-measure catch-up under
+  query load. First measure it on v0.8.0 with criteria fixed beforehand
+  (catch-up rate and staleness against query clients). Change admission or
+  scheduling only if a criterion fails, and qualify the change.
+- [ ] **0.9.4 Contracts toward 1.0.** A compatibility and deprecation policy
+  (`docs/compatibility.md`, readiness criterion 2); every public Rust item
+  and HTTP route, field, error code, variable and metric classified as
+  stable, experimental or internal (criterion 1); API checks in CI: a public
+  Rust API check (for example `cargo-semver-checks`) and an OpenAPI
+  compatibility diff against the previous release.
+- [ ] **0.9.5 Verified deployment.** A gateway example with TLS and
+  authentication in front of Knotrel and the console (Knotrel loopback-only),
+  validated by a smoke test (criterion 7, 1.0 gate); a documented upgrade and
+  rebuild procedure between minor versions (drain, restart, rebuild from
+  source; criterion 6).
+- [ ] **0.9.6 Final performance campaign.** v0.8.0 was released without a
+  qualification (decision D2), so v0.9.0 ends with one proportionate final
+  campaign: published baseline (v0.8.0, the version users run, with v0.7.0
+  as the last qualified reference), criteria and budget fixed before
+  measuring, targeted measurements during development, and no open-ended
+  reruns.
+
+**Out of scope:** local persistence and WAL (optional, not a 1.0
+prerequisite); multi-graph and new engines; large console features (only
+fixes found through use); a log viewer; speculative optimizations.
+
+**Decisions to take before implementation:**
+- **How the feeder reads PostgreSQL.** Logical replication with an exported
+  snapshot gives a coherent image and the exact position to stream from, but
+  requires replication privileges and slot management. A transactional outbox
+  table is simpler to operate but changes the application's writes. This
+  choice defines what 0.9.2 can test.
+- **Feeder language.** It must support the chosen read method well (for
+  example psycopg in Python supports logical replication; Rust support is
+  thinner). The feeder stays outside the Cargo workspace if it is not Rust.
+- **Criteria for 0.9.3 and budget for 0.9.6**, fixed before measuring.
+
+**Acceptance:** 0.9.1–0.9.5 implemented and reviewed; 0.9.2 and 0.9.5 pass
+in CI or in a documented reproducible run; 0.9.3 meets its criteria (or the
+change is qualified); the 0.9.6 campaign is classified under its predeclared
+rules, failures reported as failures; readiness assessment updated.
 
 ## Unassigned — Optional Local Persistence & Fast Recovery
 
@@ -817,6 +908,7 @@ The recovery principle is mandatory for any selected local persistence strategy:
    - **Next functional milestone after Acceptance M6: M10**, node/edge activation and node removal, per the [plan](docs/superpowers/plans/2026-11-13-topology-lifecycle.md). Release assignment remains open; it is not a v0.4.0 requirement, and M5 concurrency redesign is not a prerequisite.
 6. v0.5.0 first evaluates value using the source/rebuild contract and operational evidence. Implement only approved persistence strategies; full external rebuild remains the fallback.
 7. Move security forward whenever exposure requires it. Multi-graph and concurrency redesign remain demand/evidence-gated.
+8. After v0.8.0: v0.9.0 (integration and reliability against one real source), then v1.0.0-rc, then v1.0.0. Within v0.9.0, the PostgreSQL read method (0.9.1) comes first because 0.9.2 depends on it; 0.9.3 measures before it changes anything; 0.9.6 runs last, on the release candidate.
 
 **Planning migration:** The previous durability-first Feature 0.2.1 and M1.1–M1.6 are superseded as v0.2.0 requirements; their storage concerns are retained under P1–P5. Previous M2.1–M2.6 import concerns now map to 0.2.1–0.2.3, 0.2.5 and 0.2.6, with durability-before-ack replaced by coherent in-memory publication plus source synchronization. M3–M9 retain their purpose with integration-first dependencies. This remapping does not mark any former or future task complete.
 

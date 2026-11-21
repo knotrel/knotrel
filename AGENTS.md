@@ -83,7 +83,10 @@ covers what is easy to miss. Check every item on the exact candidate commit.
   `docs/performance-by-version.md` and the README performance section, with
   no claim beyond the qualification and its maintainer decisions.
 - **Release notes:** the "Outstanding release gates" section reflects the
-  current state; drop "draft" only at release.
+  current state. The last change before the tag sets the status to
+  `**Status: released <date>**`: the GitHub Release body is taken from the
+  notes at the tag, and `scripts/check-release-notes.sh` (run by the release
+  workflow, dry runs included) rejects a draft status.
 - **Evidence:** release code of the final commit identical to the measured
   candidate (or re-measured); raw evidence stored with checksums.
 - **CI and dry run:** all CI on all three platforms and the release dry run
