@@ -19,8 +19,8 @@ it (the Compose example turns them all on):
 
 Why each is optional, and what it costs: [docs/console.md](../docs/console.md#server-flags-in-short).
 
-> **Status: unreleased.** Console 0.8.0 will be released together with server
-> 0.8.0. Until then, build the image locally (see [Get the image](#get-the-image)).
+> **Status: released.** Console 0.8.0 was released together with server 0.8.0
+> (2026-11-21).
 
 **Versions.** The console has the same version as the server (lockstep):
 use console 0.8.0 with server 0.8.0. With server 0.7, every page except the
@@ -80,13 +80,13 @@ repository root:
 
 ## Get the image
 
-After a release, pull it from GitHub Container Registry:
+Pull it from GitHub Container Registry:
 
 ```sh
 docker pull ghcr.io/knotrel/knotrel-console:0.8.0
 ```
 
-Until then, or to test local changes, build it from the repository root:
+To test local changes, build it from the repository root:
 
 ```sh
 docker build -t knotrel-console:dev console
@@ -174,7 +174,7 @@ through it.
 | Container exits right after start              | Invalid configuration: run `docker logs knotrel-console`, fix the variable and run it again.                       |
 | Browser shows `421` / "unexpected Host header" | You opened it through a name not in `KNOTREL_CONSOLE_SERVER_NAMES`; add it.                                        |
 | UI says "Server unreachable"                   | The server is down or not on the console's network. Check `KNOTREL_UPSTREAM` and `docker network inspect knotrel`. |
-| `docker pull` fails                            | The image is not published yet (or still private): build it locally.                                               |
+| `docker pull` fails                            | Check the tag (`0.8.0` or later) and network access to `ghcr.io`, or build it locally.                                               |
 | Port 7380 already in use                       | Publish another port, e.g. `-p 127.0.0.1:7381:8080`.                                                               |
 
 ## License

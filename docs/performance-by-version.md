@@ -12,7 +12,7 @@ those results cannot be compared with this page or chained into a trend.
 
 ## v0.8.0: not qualified
 
-v0.8.0 (unreleased) is released **without** a performance qualification
+v0.8.0 (released 2026-11-21) is released **without** a performance qualification
 against v0.7.0, by maintainer decision. No performance statement is made for
 it. Its new server features are opt-in; the targeted cost check of the
 inspection routes is in [console-inspection-costs.md](console-inspection-costs.md)

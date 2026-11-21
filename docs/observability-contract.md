@@ -1598,7 +1598,7 @@ a label value.
 
 **Overhead.** Not qualified. Section 6 applies unchanged.
 
-## 20. Inspection routes (console data browser; implemented, unreleased)
+## 20. Inspection routes (console data browser; released in v0.8.0)
 
 The read-only inspection routes (`docs/http-api.md`, "Inspection (opt-in)")
 add no new metric family. They extend two existing label sets:

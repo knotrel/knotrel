@@ -15,18 +15,17 @@ Insight:
 
 ![Browser: the node list fills the height; the selected node shows its state, neighbors and a connectivity check](images/console/browser.jpg)
 
-> **Status: unreleased.** Console 0.8.0 will be released together with server
-> 0.8.0. No container image or archive is published yet. Commands that
-> reference `ghcr.io/knotrel/knotrel-console:0.8.0` or a release archive work
-> only after that release.
+> **Status: released (0.8.0, 2026-11-21)**, together with server 0.8.0.
+> Image `ghcr.io/knotrel/knotrel-console:0.8.0` (`sha256:1c4ce3fda67acda0cb44dedd5a275fb19e5ab09dac2cce9a5dbc83c3f5f25f82`);
+> archive on the [GitHub Release v0.8.0](https://github.com/knotrel/knotrel/releases/tag/v0.8.0).
 
 The console is a static React application, released as its own artifacts
 (never inside the Rust crates or binary) and distributed in two forms:
 
 | Distribution | Use | Status |
 | --- | --- | --- |
-| Container image `ghcr.io/knotrel/knotrel-console:<version>` | Run next to Knotrel, locally or on a server | Primary; not yet published |
-| Static archive `knotrel-console-<version>.tar.gz` (+ `.sha256`) on the GitHub Release `v<version>` | Host behind an existing web server or gateway | Primary; not yet published |
+| Container image `ghcr.io/knotrel/knotrel-console:<version>` | Run next to Knotrel, locally or on a server | Primary; published since 0.8.0 |
+| Static archive `knotrel-console-<version>.tar.gz` (+ `.sha256`) on the GitHub Release `v<version>` | Host behind an existing web server or gateway | Primary; published since 0.8.0 |
 | npm package with a local launcher | `npx` quick start | Deferred (separate increment) |
 
 The server binary, the console image and the archive are independent
@@ -78,7 +77,7 @@ docker compose -f console/deploy/compose.yaml down
 ```
 
 To use the console with a server you already run, start only the console
-image (after the first release, or with an image built by
+image (or an image built with
 `docker build -t knotrel-console:dev console`):
 
 ```sh
