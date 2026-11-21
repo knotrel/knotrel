@@ -64,10 +64,21 @@ async fn slot_invalidated_declares_gap_and_rebuilds() {
             .any(|(_, _, status, _)| status.as_deref() == Some("lost"))
     })
     .await;
+    // Stay stopped past the 5 s lease, as a stalled feeder would: the gap
+    // must still be declared (under a new epoch if the heartbeat did not
+    // renew the lease first).
+    tokio::time::sleep(Duration::from_secs(6)).await;
     signal(pid, "-CONT");
     env.converge().await;
     let log = env.log();
     assert!(log.contains("declared a source gap"), "no gap declared");
+    // Criterion C7: Knotrel was desynchronized before the rebuild (the
+    // feeder's next registration reports it), whichever way the lapsed
+    // lease was renewed.
+    assert!(
+        log.contains("status=desynchronized"),
+        "Knotrel was not desynchronized before the rebuild"
+    );
     let stats = env.stats().await;
     assert!(
         stats["generation"].as_u64().unwrap() >= 2,

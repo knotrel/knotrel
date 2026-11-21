@@ -23,7 +23,7 @@ for path in dest.rglob('*.md'):
         if url.scheme or url.netloc or not url.path:
             return match.group(0)
         target = (source / relative.parent / url.path).resolve()
-        if target.is_file() and target.suffix.lower() == '.md':
+        if target.is_file() and target.suffix.lower() == '.md' and target.is_relative_to(source):
             newpath = url.path[:-3] + '.html'
         elif target.is_relative_to(root) and not target.is_relative_to(source) and target.exists():
             newpath = 'https://github.com/knotrel/knotrel/blob/main/' + target.relative_to(root).as_posix()
