@@ -599,6 +599,107 @@ async fn marker(
     (at, None)
 }
 
+/// Sums and counts of the three graph-job phase histograms per `kind`.
+async fn phase_metrics(base: &str) -> BTreeMap<String, f64> {
+    let text = match reqwest::get(format!("{base}/metrics")).await {
+        Ok(r) => r.text().await.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+    let mut out = BTreeMap::new();
+    for line in text.lines() {
+        for family in [
+            "knotrel_graph_job_queue_seconds",
+            "knotrel_graph_lock_wait_seconds",
+            "knotrel_graph_job_execution_seconds",
+        ] {
+            for suffix in ["_sum", "_count"] {
+                let prefix = format!("{family}{suffix}{{");
+                if let Some(rest) = line.strip_prefix(&prefix)
+                    && let Some((labels, value)) = rest.split_once("} ")
+                    && let Some(kind) = labels
+                        .split(',')
+                        .find_map(|l| l.strip_prefix("kind=\"").and_then(|v| v.strip_suffix('"')))
+                    && let Ok(v) = value.trim().parse::<f64>()
+                {
+                    *out.entry(format!("{family}{suffix}|{kind}")).or_insert(0.0) += v;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Mean milliseconds per job of each phase and kind between two scrapes.
+fn phase_breakdown(before: &BTreeMap<String, f64>, after: &BTreeMap<String, f64>) -> Value {
+    let mut kinds = serde_json::Map::new();
+    for kind in ["feeder_events", "batch", "operation"] {
+        let mut phases = serde_json::Map::new();
+        for (name, family) in [
+            ("admission_queue_ms", "knotrel_graph_job_queue_seconds"),
+            ("lock_wait_ms", "knotrel_graph_lock_wait_seconds"),
+            ("execution_ms", "knotrel_graph_job_execution_seconds"),
+        ] {
+            let d = |suffix: &str| {
+                let key = format!("{family}{suffix}|{kind}");
+                after.get(&key).copied().unwrap_or(0.0) - before.get(&key).copied().unwrap_or(0.0)
+            };
+            let (sum, count) = (d("_sum"), d("_count"));
+            phases.insert(
+                name.into(),
+                json!({"jobs": count, "total_s": sum,
+                       "mean_ms": if count > 0.0 { Some(sum * 1000.0 / count) } else { None }}),
+            );
+        }
+        kinds.insert(kind.into(), Value::Object(phases));
+    }
+    Value::Object(kinds)
+}
+
+/// Host CPU busy fraction, sampled every second by `top` (macOS) while
+/// `stop` is false. Returns the samples (percent busy over all CPUs).
+fn spawn_cpu_sampler(stop: Arc<AtomicBool>) -> tokio::task::JoinHandle<Vec<(Instant, f64)>> {
+    tokio::spawn(async move {
+        let mut samples = Vec::new();
+        let Ok(mut child) = Command::new("top")
+            .args(["-l", "0", "-s", "1", "-n", "0"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+        else {
+            return samples;
+        };
+        let Some(stdout) = child.stdout.take() else {
+            return samples;
+        };
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let mut first = true;
+        while !stop.load(Ordering::Relaxed) {
+            match tokio::time::timeout(Duration::from_millis(1500), lines.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    if let Some(idle) = line
+                        .strip_prefix("CPU usage:")
+                        .and_then(|l| l.split(',').find(|f| f.contains("idle")))
+                        .and_then(|f| f.trim().split('%').next())
+                        .and_then(|v| v.trim().parse::<f64>().ok())
+                    {
+                        // The first `top` sample covers the time since boot.
+                        if !first {
+                            samples.push((Instant::now(), 100.0 - idle));
+                        }
+                        first = false;
+                    }
+                }
+                Ok(_) => break,
+                Err(_) => {}
+            }
+        }
+        let _ = child.kill().await;
+        samples
+    })
+}
+
 fn count_feeder_refusals(log: &str) -> usize {
     log.lines()
         .filter(|l| l.contains("events refused") && (l.contains("503") || l.contains("busy")))
@@ -760,9 +861,12 @@ async fn run_l2(s: &Settings, cell: Cell, obs: &mut Obs) -> Value {
 
     let stop = Arc::new(AtomicBool::new(false));
     let record = Arc::new(AtomicBool::new(false));
+    let cpu_stop = Arc::new(AtomicBool::new(false));
+    let cpu = spawn_cpu_sampler(cpu_stop.clone());
     let clients = spawn_clients(&obs.base, cell.clients, n, stop.clone(), record.clone());
     tokio::time::sleep(WARMUP_L2).await;
     record.store(true, Ordering::Relaxed);
+    let metrics_before = phase_metrics(&obs.base).await;
     let start = Instant::now();
     obs.start_feeder(s, &s.admin_url);
     // Ready is reached when the restarted feeder's barrier is accepted.
@@ -781,6 +885,22 @@ async fn run_l2(s: &Settings, cell: Cell, obs: &mut Obs) -> Value {
     );
     let elapsed = start.elapsed();
     record.store(false, Ordering::Relaxed);
+    let metrics_after = phase_metrics(&obs.base).await;
+    // Keep sampling one more second so a short catch-up still gets a sample
+    // that ends after it.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    cpu_stop.store(true, Ordering::Relaxed);
+    let all_cpu = cpu.await.unwrap_or_default();
+    let warmup_cpu: Vec<f64> = all_cpu
+        .iter()
+        .filter(|(t, _)| *t <= start)
+        .map(|(_, v)| *v)
+        .collect();
+    let cpu_samples: Vec<f64> = all_cpu
+        .iter()
+        .filter(|(t, _)| *t > start && *t <= start + elapsed + Duration::from_millis(1100))
+        .map(|(_, v)| *v)
+        .collect();
     stop.store(true, Ordering::Relaxed);
     let mut query_stats = Vec::new();
     for c in clients {
@@ -806,6 +926,15 @@ async fn run_l2(s: &Settings, cell: Cell, obs: &mut Obs) -> Value {
         "events_per_sec": match (events, secs) { (Some(e), Some(t)) if t > 0.0 => Some(e as f64 / t), _ => None },
         "queries": summarize_queries(query_stats, elapsed),
         "feeder_503_refusals": count_feeder_refusals(tail),
+        // The feeder waits 200 ms after each refusal before it retries.
+        "feeder_admission_backoff_s_estimate": count_feeder_refusals(tail) as f64 * 0.2,
+        "phases": phase_breakdown(&metrics_before, &metrics_after),
+        "host_cpu_busy_percent_warmup": {"samples": warmup_cpu.len(), "median": median(&warmup_cpu)},
+        "host_cpu_busy_percent": {
+            "samples": cpu_samples.len(),
+            "median": median(&cpu_samples),
+            "max": cpu_samples.iter().cloned().fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v)))),
+        },
     })
 }
 

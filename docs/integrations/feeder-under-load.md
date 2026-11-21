@@ -248,3 +248,126 @@ addresses the failing mechanisms, designed before it is coded:
 The candidate is then measured on the same cells against Q1–Q4 and Q5
 (query throughput ≥ 90 %, p99 ≤ 125 % of this baseline) and reviewed before
 merge.
+
+## Candidate A results (reserved feeder admission, 2026-11-21)
+
+**Verdict: Q1 PASS, Q2 PASS, Q3 FAIL, Q4 PASS, Q5 PASS.** Change A
+([design](feeder-admission-design.md)) removes the feeder refusals and the
+64-client lag spikes, but catch-up under query load stays below Q3's
+thresholds. By the approved design (section 4), Q3 is reported as failing,
+with the diagnostic below, for a maintainer decision; no further server change
+is made in 0.9.3.
+
+**Environment.** Same machine and conditions as the baseline (AC power, no
+thermal warning, nothing else running). Candidate: commit `96ded7a`, release,
+SHA-256 `71d60afe27be75c034416d27c98704050d60eb02cd3991d79ce01fa2ea245509`.
+The change was later rebased onto `main` for merge; `git diff` against
+`96ded7a` shows no change in `crates/` outside the service's test module (one
+added test for the lane labels), so the merged server code is the code
+measured here.
+Run 2026-11-21 17:13:22–17:35:18 UTC: diagnostic B (6 observations), then the
+21 observations of the protocol in 1,168 s; none repeated, none failed.
+
+Raw output (SHA-256):
+- [`candidate-A.jsonl`](feeder-under-load/candidate-A.jsonl)
+  `dbf82455ad0cedef1b1526768b120d6356683402fbe2cb76cad2d2b9ab786144`
+- [`candidate-A-summary.json`](feeder-under-load/candidate-A-summary.json)
+  `9b3e63d4aba8a43f2c2ecfa36a49b1e968d3be8eab594f79a65fe96daf895751`
+- [`diagnostic-B-v0.8.0.jsonl`](feeder-under-load/diagnostic-B-v0.8.0.jsonl)
+  `8cdeebd1e817f768ca843c1a3f3f144eaa1d4e1bbd8d3a45d6056539ea3bef9c`
+- [`diagnostic-B-candidate-A.jsonl`](feeder-under-load/diagnostic-B-candidate-A.jsonl)
+  `7e018d3f576841cb9a2378f7713351dabcd556b0b75066cdef493c95cf5b8306`
+
+**Disclosed:**
+- The diagnostic's v0.8.0 server was rebuilt from the same tag; its SHA-256
+  (`b7125518…5c96e`) differs from the baseline build's because release builds
+  are not byte-reproducible.
+- In these runs the tool counted L2 query requests for about 1.1 s after
+  `ready` while dividing by the time to `ready`, so the **L2 query throughput
+  of the candidate and of the diagnostic is overstated** and is not compared
+  with the baseline (fixed in the tool after the run). No criterion uses it:
+  Q5 uses L1, and latency percentiles are unaffected by the divisor.
+
+**L1, steady freshness** (median over 3 observations, range in brackets):
+
+| Cell | Marker p99 (ms) | Marker max (ms) | Query req/s | Query p99 (ms) | Feeder 503s |
+| --- | --- | --- | --- | --- | --- |
+| G100k, 0 clients | 52.3 [45.6–55.6] | 56.8 [53.8–57.4] | — | — | 0 |
+| G100k, 16 clients | 156 [104–185] | 179 [148–223] | 1,270 [1,267–1,297] | 74.7 [71.9–75.2] | 0 |
+| G100k, 64 clients | 258 [254–299] | 309 [295–384] | 1,132 [1,129–1,152] | 155 [150–169] | 0 |
+| G10k, 16 clients | 57.8 | 58.7 | 31,399 | 1.5 | 0 |
+
+**L2, catch-up** (94,604 events in every observation):
+
+| Cell | Time to `ready` (s) | Events/s | Feeder 503s |
+| --- | --- | --- | --- |
+| G100k, 0 clients | 0.50 | 190,906 [188,623–191,987] | 0 |
+| G100k, 16 clients | 3.4 [3.1–3.5] | 27,997 [26,995–30,479] | 0 |
+| G100k, 64 clients | 5.5 [5.4–6.1] | 17,075 [15,549–17,365] | 0 |
+
+**Criteria, candidate against baseline:**
+
+| ID | Baseline v0.8.0 | Candidate A | Result |
+| --- | --- | --- | --- |
+| Q1 | p99 142 ms, max 281 ms | p99 156 ms, max 179 ms | **PASS** |
+| Q2 | FAIL (one observation) | all 12 L1 observations pass | **PASS** |
+| Q3 | 16 clients 16.3 %, 64 clients 2.1 % | 16 clients 14.7 %, 64 clients 8.9 % (≥ 50 % and ≥ 25 % required) | **FAIL** |
+| Q4 | 25.0 s | 5.5 s (≤ 60 s) | **PASS** |
+| Q5 | — | 16 clients: query throughput 103 % (1,233 → 1,270 req/s), p99 97 % (77.2 → 74.7 ms); 64 clients: throughput 96 % (1,179 → 1,132 req/s), p99 82 % (190 → 155 ms) (≥ 90 % and ≤ 125 % required) | **PASS** |
+
+**Effect of change A.** At 64 clients the feeder is no longer refused (240
+refusals per window → 0), the marker lag p99 falls from 1,315 ms to 258 ms
+and its maximum from 1,515 ms to 309 ms, catch-up rises from 3,789 to 17,075
+events/s and time to `ready` from 25.0 s to 5.5 s. Query throughput and
+latency stay within Q5; the 64-client query p99 improves, the 64-client
+throughput is 4 % lower. At 16 clients, where there were no refusals, change A
+has no measurable effect, as expected.
+
+## Diagnostic B (16 clients, L2 G100k, 3 observations per build)
+
+Mean per feeder events job (about 94 jobs of about 1,000 events per
+catch-up), from Knotrel's phase histograms between feeder start and `ready`:
+
+| Build | Time to `ready` (s) | Admission queue (ms) | Lock wait (ms) | Execution (ms) | Feeder 503s | Host CPU busy, catch-up (median) |
+| --- | --- | --- | --- | --- | --- | --- |
+| v0.8.0 | 2.72 / 2.76 / 3.82 | 1.17–1.43 | 6.12–6.56 | 0.82–0.83 | 0 | 93–97 % |
+| candidate A | 3.35 / 2.97 / 3.04 | 1.15–1.27 | 6.10–6.39 | 0.81–0.84 | 0 | 93–94 % |
+
+Query batch jobs in the same windows: admission queue 0.7–0.8 ms, lock wait
+2.9–4.0 ms, execution 6.3–6.9 ms. During the warm-up with only queries running,
+host CPU was 100 % busy.
+
+What this separates:
+- **Admission wait:** none. No feeder request was refused in any observation,
+  with or without change A; the admission queue (blocking-pool scheduling) is
+  about 1.2 ms per job.
+- **Lock wait:** the largest phase inside Knotrel, about 6.2 ms per job, about
+  7.5 times the execution. The lock is task-fair, so this is the time for the
+  query batches already holding the lock (about 6.5 ms each) to finish.
+- **Execution:** about 0.8 ms per 1,000-event job.
+- **Outside Knotrel's graph jobs:** the three phases add up to about 0.8 s per
+  catch-up (0.11 + 0.60 + 0.08 s), about a quarter of the 3 s. The rest is
+  spent outside the server's graph work: HTTP, the feeder, PostgreSQL's
+  decoding, all on a host whose CPUs are 93–97 % busy.
+
+Reading, limited to what was measured:
+- The lock-wait finding matches the decision table's first row (B1), which is
+  out of scope for 0.9.3. Even removing the lock wait entirely would shorten a
+  catch-up by about 0.6 s of 3 s, to roughly 20 % of the no-query rate; by this
+  estimate a lock change alone would not reach Q3's 50 %.
+- **CPU contention remains a hypothesis.** The host was saturated throughout
+  and most of the time is outside the server's measured phases, which is
+  consistent with it, but no run varied CPU availability (for example
+  PostgreSQL and the clients on another machine), so it is not shown to be the
+  cause.
+
+## Status of 0.9.3
+
+- Change A is implemented, tested and measured: it fixes the admission
+  starvation (Q2, Q4, and Q3's 64-client case improves fourfold) without
+  costing query throughput or latency beyond Q5.
+- **Q3 still fails** at 16 and 64 clients. Per the approved scope, B1 and B2
+  are not implemented. The options for the maintainer: accept Q3 as a stated
+  limitation of v0.9.0 with these numbers; run the check with PostgreSQL and the
+  load clients on a separate machine to test the CPU hypothesis; or open B1/B2
+  in a later release.

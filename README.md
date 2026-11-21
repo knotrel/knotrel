@@ -272,6 +272,7 @@ startup.
 | `KNOTREL_MODE` | `standalone` | `standalone` or `source_managed`; the latter requires an external feeder |
 | `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
+| `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (unreleased, 0.9.0) |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges (registered edges with lifecycle support); zero allowed; `unlimited` opts out |
 | `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |

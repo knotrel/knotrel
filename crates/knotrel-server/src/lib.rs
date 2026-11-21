@@ -323,6 +323,10 @@ pub(crate) struct ServerInfo {
     /// Serialized only when the inspection routes are enabled.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     inspection: bool,
+    /// Admission permits reserved for feeder events, barriers and gaps;
+    /// serialized only in source-managed mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feeder_reserved_jobs: Option<usize>,
 }
 
 #[cfg(test)]

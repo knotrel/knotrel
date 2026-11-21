@@ -765,7 +765,7 @@ languages and a CLI are not added at the same time.
   full rebuild), feeder takeover. Each compares the final graph with the
   store. The existing tests (criterion 3, "met for the tested matrix") stay;
   these extend them to a real source.
-- [ ] **0.9.3 Feeder progress under query load.** Protocol and criteria approved (2026-11-21); baseline on v0.8.0: Q1 and Q4 pass, Q2 and Q3 fail ([results](docs/integrations/feeder-under-load.md#baseline-results-v080-2026-11-21)), so a server change follows (admission and lock precedence for feeder work). v0.6.0 measured that the
+- [ ] **0.9.3 Feeder progress under query load.** Protocol and criteria approved (2026-11-21); baseline on v0.8.0: Q1 and Q4 pass, Q2 and Q3 fail ([results](docs/integrations/feeder-under-load.md#baseline-results-v080-2026-11-21)), so a server change followed: reserved feeder admission (candidate A) passes Q1, Q2, Q4 and Q5, Q3 still fails ([results](docs/integrations/feeder-under-load.md#candidate-a-results-reserved-feeder-admission-2026-11-21)); awaiting a maintainer decision on Q3. v0.6.0 measured that the
   feeder has no priority over queued queries and that admission reserves no
   permit for it ([v0.7.0 input](#v070--measured-concurrency)); v0.7.0
   improved queries during feeder events but did not re-measure catch-up under
