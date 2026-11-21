@@ -1,8 +1,7 @@
 # Compatibility and deprecation policy
 
-**Status: PROPOSED for v0.9.0 (roadmap item 0.9.4), awaiting maintainer
-approval.** Until it is approved, nothing here binds a release. It implements
-readiness criterion 2 of the [v1.0 assessment](releases/v1.0-readiness.md).
+**Status: APPROVED by the maintainer on 2026-11-21 (roadmap item 0.9.4);
+applies from v0.9.0.** It implements readiness criterion 2 of the [v1.0 assessment](releases/v1.0-readiness.md).
 Which surfaces are stable is listed in [stability.md](stability.md).
 
 ## 1. Versions

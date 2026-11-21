@@ -115,7 +115,7 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [x] **0.9.1** Reference PostgreSQL integration (external feeder, Compose, console) — Implemented; [design](docs/integrations/postgresql-feeder.md), [feeder](integrations/postgres-feeder/README.md)
 - [x] **0.9.2** Recovery and synchronization tests against the reference source — Implemented; CI on PostgreSQL 15–19
 - [x] **0.9.3** Feeder progress under query load — Implemented and measured (reserved feeder admission); **Q3 FAIL, accepted as a declared limitation of v0.9.0** for the measured configuration; follow-up [#87](https://github.com/knotrel/knotrel/issues/87)
-- [ ] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI) — Implemented: [policy](docs/compatibility.md) and [classification](docs/stability.md) proposed, awaiting approval; API compatibility CI job
+- [x] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI) — Implemented and approved (2026-11-21): [policy](docs/compatibility.md), [classification](docs/stability.md), CI job `API compatibility`
 - [x] **0.9.5** Verified gateway deployment, upgrade and rebuild — Implemented: [gateway example](examples/gateway/compose.yaml) with smoke test in CI, [upgrade procedure](docs/deployment.md#upgrade-between-minor-versions) tested from the previous release
 - [ ] **0.9.6** Final performance campaign
 
@@ -788,8 +788,8 @@ languages and a CLI are not added at the same time.
   ([results and decision](docs/integrations/feeder-under-load.md#maintainer-decision-on-q3-2026-11-21)).
   Follow-up: [#87](https://github.com/knotrel/knotrel/issues/87), feeder
   catch-up under query load (unassigned).
-- [ ] **0.9.4 Contracts toward 1.0.** Implemented, awaiting approval of the
-  policy and the classification: [compatibility policy](docs/compatibility.md),
+- [x] **0.9.4 Contracts toward 1.0.** Implemented; policy and
+  classification approved by the maintainer on 2026-11-21: [compatibility policy](docs/compatibility.md),
   [stability classification](docs/stability.md), CI job `API compatibility`
   (`cargo-semver-checks` against the previous release, and
   `scripts/check-openapi-compat.py` on `docs/openapi.yaml`). The policy makes
