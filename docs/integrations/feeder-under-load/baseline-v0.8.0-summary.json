@@ -1,0 +1,493 @@
+{
+  "measurement_secs": 1222.000879125,
+  "summary": {
+    "cells": {
+      "L1 G100k C=0": {
+        "feeder_503_refusals": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "first10_median_ms": {
+          "max": 22.800145999999998,
+          "median": 17.9785625,
+          "min": 15.570208000000001,
+          "n": 3
+        },
+        "last10_median_ms": {
+          "max": 17.690709000000002,
+          "median": 17.378917,
+          "min": 17.286584,
+          "n": 3
+        },
+        "marker_max_ms": {
+          "max": 59.180208,
+          "median": 56.586,
+          "min": 53.880917000000004,
+          "n": 3
+        },
+        "marker_p50_ms": {
+          "max": 18.856624999999998,
+          "median": 18.39575,
+          "min": 16.746667,
+          "n": 3
+        },
+        "marker_p99_ms": {
+          "max": 55.599917,
+          "median": 53.876833999999995,
+          "min": 53.4795,
+          "n": 3
+        },
+        "marker_timeouts": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "query_503": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "query_p99_ms": {
+          "max": null,
+          "median": null,
+          "min": null,
+          "n": 0
+        },
+        "query_rps": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "writer_changes_per_sec": {
+          "max": 997.065936608267,
+          "median": 994.6465423631757,
+          "min": 991.762982432704,
+          "n": 3
+        }
+      },
+      "L1 G100k C=16": {
+        "feeder_503_refusals": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "first10_median_ms": {
+          "max": 34.914333,
+          "median": 33.811417000000006,
+          "min": 32.417458,
+          "n": 3
+        },
+        "last10_median_ms": {
+          "max": 42.865958,
+          "median": 41.386125,
+          "min": 35.688625,
+          "n": 3
+        },
+        "marker_max_ms": {
+          "max": 316.478,
+          "median": 280.65895800000004,
+          "min": 200.022125,
+          "n": 3
+        },
+        "marker_p50_ms": {
+          "max": 37.558709,
+          "median": 36.411125000000006,
+          "min": 33.170041999999995,
+          "n": 3
+        },
+        "marker_p99_ms": {
+          "max": 151.81441700000002,
+          "median": 142.325875,
+          "min": 134.254167,
+          "n": 3
+        },
+        "marker_timeouts": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "query_503": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "query_p99_ms": {
+          "max": 77.957583,
+          "median": 77.24229100000001,
+          "min": 73.942167,
+          "n": 3
+        },
+        "query_rps": {
+          "max": 1320.4679608907986,
+          "median": 1232.6330325963488,
+          "min": 1194.6234131974213,
+          "n": 3
+        },
+        "writer_changes_per_sec": {
+          "max": 970.8906622095477,
+          "median": 950.8507427605007,
+          "min": 947.0265214012848,
+          "n": 3
+        }
+      },
+      "L1 G100k C=64": {
+        "feeder_503_refusals": {
+          "max": 242.0,
+          "median": 240.0,
+          "min": 188.0,
+          "n": 3
+        },
+        "first10_median_ms": {
+          "max": 6846.624000000001,
+          "median": 262.75766600000003,
+          "min": 249.59587549999998,
+          "n": 3
+        },
+        "last10_median_ms": {
+          "max": 231.2334165,
+          "median": 227.2798125,
+          "min": 132.9237705,
+          "n": 3
+        },
+        "marker_max_ms": {
+          "max": 11122.462959,
+          "median": 1514.9703749999999,
+          "min": 1482.931417,
+          "n": 3
+        },
+        "marker_p50_ms": {
+          "max": 319.823916,
+          "median": 253.212459,
+          "min": 226.459,
+          "n": 3
+        },
+        "marker_p99_ms": {
+          "max": 10720.727165999999,
+          "median": 1315.257334,
+          "min": 1260.216125,
+          "n": 3
+        },
+        "marker_timeouts": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "query_503": {
+          "max": 57940.0,
+          "median": 57176.0,
+          "min": 53420.0,
+          "n": 3
+        },
+        "query_p99_ms": {
+          "max": 195.299917,
+          "median": 189.833209,
+          "min": 184.367458,
+          "n": 3
+        },
+        "query_rps": {
+          "max": 1218.5772585773857,
+          "median": 1179.367993135157,
+          "min": 1122.5602422641018,
+          "n": 3
+        },
+        "writer_changes_per_sec": {
+          "max": 791.301227602362,
+          "median": 781.595055723745,
+          "min": 715.0049315529949,
+          "n": 3
+        }
+      },
+      "L1 G10k C=16": {
+        "feeder_503_refusals": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "first10_median_ms": {
+          "max": 31.5434375,
+          "median": 30.999875000000003,
+          "min": 27.974958,
+          "n": 3
+        },
+        "last10_median_ms": {
+          "max": 35.817625,
+          "median": 33.799125,
+          "min": 33.468334000000006,
+          "n": 3
+        },
+        "marker_max_ms": {
+          "max": 74.872125,
+          "median": 59.762417,
+          "min": 58.456833,
+          "n": 3
+        },
+        "marker_p50_ms": {
+          "max": 30.951958,
+          "median": 30.613,
+          "min": 30.512083,
+          "n": 3
+        },
+        "marker_p99_ms": {
+          "max": 58.658041000000004,
+          "median": 57.927125000000004,
+          "min": 57.792334000000004,
+          "n": 3
+        },
+        "marker_timeouts": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "query_503": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "query_p99_ms": {
+          "max": 1.660417,
+          "median": 1.617542,
+          "min": 1.539167,
+          "n": 3
+        },
+        "query_rps": {
+          "max": 32787.61611967429,
+          "median": 32144.864899960237,
+          "min": 31340.377769112878,
+          "n": 3
+        },
+        "writer_changes_per_sec": {
+          "max": 998.7705784417606,
+          "median": 998.0497312643838,
+          "min": 997.8028322483852,
+          "n": 3
+        }
+      },
+      "L2 G100k C=0": {
+        "events": {
+          "max": 94604.0,
+          "median": 94604.0,
+          "min": 94604.0,
+          "n": 3
+        },
+        "events_per_sec": {
+          "max": 183878.30248062004,
+          "median": 180402.46545968027,
+          "min": 180170.68355552573,
+          "n": 3
+        },
+        "feeder_503_refusals": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "query_p99_ms": {
+          "max": null,
+          "median": null,
+          "min": null,
+          "n": 0
+        },
+        "query_rps": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "secs_to_ready": {
+          "max": 0.525079875,
+          "median": 0.52440525,
+          "min": 0.514492459,
+          "n": 3
+        }
+      },
+      "L2 G100k C=16": {
+        "events": {
+          "max": 94604.0,
+          "median": 94604.0,
+          "min": 94604.0,
+          "n": 3
+        },
+        "events_per_sec": {
+          "max": 29629.471102073883,
+          "median": 29416.39797677532,
+          "min": 28449.910445588783,
+          "n": 3
+        },
+        "feeder_503_refusals": {
+          "max": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "n": 3
+        },
+        "query_p99_ms": {
+          "max": 62.887791,
+          "median": 61.05725,
+          "min": 53.809917,
+          "n": 3
+        },
+        "query_rps": {
+          "max": 1423.4520540065396,
+          "median": 1410.6964559772491,
+          "min": 1408.121162736528,
+          "n": 3
+        },
+        "secs_to_ready": {
+          "max": 3.325282875,
+          "median": 3.216029375,
+          "min": 3.192902083,
+          "n": 3
+        }
+      },
+      "L2 G100k C=64": {
+        "events": {
+          "max": 94604.0,
+          "median": 94604.0,
+          "min": 94604.0,
+          "n": 3
+        },
+        "events_per_sec": {
+          "max": 6310.17432636844,
+          "median": 3789.129854242385,
+          "min": 2322.3949975841133,
+          "n": 3
+        },
+        "feeder_503_refusals": {
+          "max": 95.0,
+          "median": 87.0,
+          "min": 51.0,
+          "n": 3
+        },
+        "query_p99_ms": {
+          "max": 136.08345799999998,
+          "median": 128.64600000000002,
+          "min": 125.316666,
+          "n": 3
+        },
+        "query_rps": {
+          "max": 1510.6213498324616,
+          "median": 1475.7619387468524,
+          "min": 1422.000855708664,
+          "n": 3
+        },
+        "secs_to_ready": {
+          "max": 40.735533834,
+          "median": 24.967209792,
+          "min": 14.992295792,
+          "n": 3
+        }
+      }
+    },
+    "criteria": {
+      "Q1": {
+        "marker_max_ms": 280.65895800000004,
+        "marker_p99_ms": 142.325875,
+        "pass": true,
+        "rule": "L1 G100k C=16: p99 <= 1000 ms and max <= 3000 ms"
+      },
+      "Q2": {
+        "observations": [
+          {
+            "cell": "L1 G100k C=0",
+            "lag_ok": true,
+            "rep": 1,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G100k C=16",
+            "lag_ok": true,
+            "rep": 1,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G100k C=64",
+            "lag_ok": true,
+            "rep": 1,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G10k C=16",
+            "lag_ok": true,
+            "rep": 1,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G100k C=0",
+            "lag_ok": true,
+            "rep": 2,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G100k C=16",
+            "lag_ok": true,
+            "rep": 2,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G100k C=64",
+            "lag_ok": true,
+            "rep": 2,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G10k C=16",
+            "lag_ok": true,
+            "rep": 2,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G100k C=0",
+            "lag_ok": true,
+            "rep": 3,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G100k C=16",
+            "lag_ok": true,
+            "rep": 3,
+            "wal_ok": true
+          },
+          {
+            "cell": "L1 G100k C=64",
+            "lag_ok": true,
+            "rep": 3,
+            "wal_ok": false
+          },
+          {
+            "cell": "L1 G10k C=16",
+            "lag_ok": true,
+            "rep": 3,
+            "wal_ok": true
+          }
+        ],
+        "pass": false,
+        "rule": "every L1 observation: last10 median <= 2 x first10 median + 50 ms, retained WAL end <= start + 16 MiB"
+      },
+      "Q3": {
+        "pass": false,
+        "rate_c0": 180402.46545968027,
+        "rate_c16": 29416.39797677532,
+        "rate_c64": 3789.129854242385,
+        "ratio_c16": 0.16305984456376427,
+        "ratio_c64": 0.021003758704668318,
+        "rule": "L2 G100k: C=16 >= 50 % and C=64 >= 25 % of C=0"
+      },
+      "Q4": {
+        "pass": true,
+        "rule": "L2 G100k C=64: time to ready <= 60 s",
+        "secs_to_ready_c64": 24.967209792
+      }
+    }
+  }
+}
