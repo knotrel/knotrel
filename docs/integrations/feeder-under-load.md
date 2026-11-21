@@ -261,6 +261,10 @@ is made in 0.9.3.
 **Environment.** Same machine and conditions as the baseline (AC power, no
 thermal warning, nothing else running). Candidate: commit `96ded7a`, release,
 SHA-256 `71d60afe27be75c034416d27c98704050d60eb02cd3991d79ce01fa2ea245509`.
+The change was later rebased onto `main` for merge; `git diff` against
+`96ded7a` shows no change in `crates/` outside the service's test module (one
+added test for the lane labels), so the merged server code is the code
+measured here.
 Run 2026-11-21 17:13:22–17:35:18 UTC: diagnostic B (6 observations), then the
 21 observations of the protocol in 1,168 s; none repeated, none failed.
 
