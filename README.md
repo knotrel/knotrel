@@ -17,10 +17,10 @@ Add or remove connections, take nodes offline and restore them, then check
 whether two endpoints remain connected. Use it as a Rust library or an HTTP
 service alongside your existing database.
 
-**Published preview: [v0.6.0](https://github.com/knotrel/knotrel/releases/tag/v0.6.0).**
-Node/edge lifecycle is opt-in and supported on `compact-bfs` only.
-The v0.7.0 work described in this repository (parallel read-only requests)
-remains unreleased.
+**Latest release: [v0.7.0](https://github.com/knotrel/knotrel/releases/tag/v0.7.0)**
+(parallel read-only requests). Node/edge lifecycle is opt-in and supported on
+`compact-bfs` only. The v0.8.0 work in this repository (the operational
+console and opt-in inspection routes) remains unreleased.
 
 ## Quickstart: a failure and a recovery
 
@@ -38,8 +38,8 @@ Take A offline: B keeps the endpoints connected. Take B offline too: the
 connection is lost. Restore A: the connection returns without recreating its
 configured edges.
 
-Download and extract the **v0.6.0** server for your platform from the
-[release assets](https://github.com/knotrel/knotrel/releases/tag/v0.6.0),
+Download and extract the **v0.7.0** server for your platform from the
+[release assets](https://github.com/knotrel/knotrel/releases/tag/v0.7.0),
 [verify its checksum](#installing-a-release), and clone this repository for the
 example. With Python 3.9 or newer, run from the repository root:
 
@@ -200,7 +200,7 @@ and makes core flagged imports and fresh-ID churn measurably faster, but its
 qualification did not pass unconditionally; its non-PASS results are accepted
 as disclosed limitations
 ([release notes](docs/releases/v0.6.0-release-notes.md#performance-qualification)).
-v0.7.0 (unreleased) runs read-only requests in parallel: read-heavy
+v0.7.0 runs read-only requests in parallel: read-heavy
 throughput is about 2× v0.6.0 with 4 clients, and 4.5–5× for queries during
 imports or feeder events at 100k nodes. Its qualification was **accepted
 with exceptions**, not passed unconditionally. Three inconclusive results
@@ -221,28 +221,28 @@ the SHA-256 checksum before running.
 
 ```sh
 # Verify checksum on Linux:
-sha256sum -c knotrel-server-v0.6.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c knotrel-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 # Or on macOS:
-# shasum -a 256 -c knotrel-server-v0.6.0-aarch64-apple-darwin.tar.gz.sha256
+# shasum -a 256 -c knotrel-server-v0.7.0-aarch64-apple-darwin.tar.gz.sha256
 
 # Extract and start on Linux (x86_64):
-tar -xzf knotrel-server-v0.6.0-x86_64-unknown-linux-gnu.tar.gz
-cd knotrel-server-v0.6.0-x86_64-unknown-linux-gnu
+tar -xzf knotrel-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz
+cd knotrel-server-v0.7.0-x86_64-unknown-linux-gnu
 ./knotrel-server
 
 # Or on macOS (Apple Silicon):
-# tar -xzf knotrel-server-v0.6.0-aarch64-apple-darwin.tar.gz
-# cd knotrel-server-v0.6.0-aarch64-apple-darwin
+# tar -xzf knotrel-server-v0.7.0-aarch64-apple-darwin.tar.gz
+# cd knotrel-server-v0.7.0-aarch64-apple-darwin
 # ./knotrel-server
 ```
 
 On Windows (PowerShell):
 ```powershell
 # Compare the displayed hash with the downloaded .sha256 file before extracting.
-Get-FileHash -Algorithm SHA256 knotrel-server-v0.6.0-x86_64-pc-windows-msvc.zip
-Get-Content knotrel-server-v0.6.0-x86_64-pc-windows-msvc.zip.sha256
-Expand-Archive knotrel-server-v0.6.0-x86_64-pc-windows-msvc.zip -DestinationPath .
-cd knotrel-server-v0.6.0-x86_64-pc-windows-msvc
+Get-FileHash -Algorithm SHA256 knotrel-server-v0.7.0-x86_64-pc-windows-msvc.zip
+Get-Content knotrel-server-v0.7.0-x86_64-pc-windows-msvc.zip.sha256
+Expand-Archive knotrel-server-v0.7.0-x86_64-pc-windows-msvc.zip -DestinationPath .
+cd knotrel-server-v0.7.0-x86_64-pc-windows-msvc
 .\knotrel-server.exe
 ```
 
@@ -262,7 +262,7 @@ startup.
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges (registered edges with lifecycle support); zero allowed; `unlimited` opts out |
 | `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
-| `KNOTREL_INSPECTION` | `false` | `true` enables the read-only inspection routes (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges`) used by the console's data browser; unreleased; see [Inspection](docs/http-api.md#inspection-opt-in) |
+| `KNOTREL_INSPECTION` | `false` | `true` enables the read-only inspection routes (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges`) used by the console's data browser; v0.8.0, unreleased; see [Inspection](docs/http-api.md#inspection-opt-in) |
 | `RUST_LOG` | `info` | Logging filter |
 
 For example, to opt into the experimental forest:
@@ -299,7 +299,7 @@ Further timeouts and size limits are listed under
 
 ## Operational console
 
-A browser console (unreleased, versioned separately) explores, queries and
+A browser console (v0.8.0, unreleased; same version as the server) explores, queries and
 diagnoses one server: node and edge browser, workbench, performance from
 metrics. See [the console documentation](docs/console.md).
 
@@ -312,9 +312,9 @@ metrics. See [the console documentation](docs/console.md).
 - [Node and edge lifecycle contract](docs/topology-lifecycle.md): opt-in activation, enabling and removal semantics, costs and limits.
 - [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
-- [Operational console](docs/console.md) (unreleased, versioned separately): browser UI, container image and static archive for operating one server; [console release procedure](docs/releases/console-release.md).
+- [Operational console](docs/console.md) (v0.8.0, unreleased; same version as the server): browser UI, container image and static archive for operating one server; [console release procedure](docs/releases/console-release.md).
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
-- [v0.6.0 release notes](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
+- [v0.8.0 release notes](docs/releases/v0.8.0-release-notes.md) (draft), [v0.7.0](docs/releases/v0.7.0-release-notes.md), [v0.6.0](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
 - [Release procedure](docs/releases/release-procedure.md): verification, packaging and authorized publication.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.

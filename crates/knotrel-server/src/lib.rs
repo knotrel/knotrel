@@ -48,6 +48,29 @@
 //! See the [lifecycle contract](https://github.com/knotrel/knotrel/blob/main/docs/topology-lifecycle.md)
 //! for semantics, costs and memory limits.
 //!
+//! # Inspection (unreleased, 0.8.0)
+//!
+//! Read-only routes list nodes and edges with cursor paging and state filters
+//! (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`,
+//! `/v1/edges`), for browsing tools such as the Knotrel console. Each page
+//! examines a bounded number of entries, independent of graph size. They are
+//! opt-in: `KNOTREL_INSPECTION=true` for the executable,
+//! [`ServerConfig::with_inspection`] for embedded callers. When off, the
+//! routes answer `inspection_disabled` and the server keeps no extra state.
+//!
+//! ```rust
+//! use knotrel_core::EngineConfig;
+//! use knotrel_server::ServerConfig;
+//!
+//! let address = "127.0.0.1:0".parse()?;
+//! let config = ServerConfig::new(address, EngineConfig::CompactBfs, 32)?.with_inspection(true);
+//! assert!(config.inspection());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! See [Inspection](https://github.com/knotrel/knotrel/blob/main/docs/http-api.md#inspection-opt-in)
+//! for paging, filters, errors and costs.
+//!
 //! See the [HTTP API documentation](https://github.com/knotrel/knotrel/blob/main/docs/http-api.md)
 //! for wire formats and batch semantics. That page tracks development on `main`;
 //! use the corresponding release tag when consulting a published version.
