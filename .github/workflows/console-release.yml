@@ -28,6 +28,10 @@ on:
         type: boolean
         required: true
         default: false
+      resume_run_id:
+        description: "Resume: publish the tested artifacts of this earlier console-release run instead of rebuilding (dry_run must be false)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -57,10 +61,16 @@ jobs:
           VERSION: ${{ inputs.version }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
           UPDATE_LATEST: ${{ inputs.update_latest }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::invalid version $VERSION"; exit 1; }
           [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit_sha must be a full SHA"; exit 1; }
+          if [[ -n "$RESUME_RUN_ID" ]]; then
+            [[ "$RESUME_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::resume_run_id must be a run number"; exit 1; }
+            [[ "$DRY_RUN" == "false" ]] || { echo "::error::resume_run_id requires dry_run = false"; exit 1; }
+          fi
           prerelease=false
           [[ "$VERSION" == *-rc.* ]] && prerelease=true
           if [[ "$prerelease" == true && "$UPDATE_LATEST" == true ]]; then
@@ -114,6 +124,7 @@ jobs:
   build:
     name: build and test candidate
     needs: validate
+    if: inputs.resume_run_id == ''
     runs-on: ubuntu-latest
     outputs:
       archive_sha256: ${{ steps.record.outputs.archive_sha256 }}
@@ -209,10 +220,14 @@ jobs:
   publish:
     name: publish
     needs: [validate, build]
-    if: inputs.dry_run == false
+    # Runs after a fresh build, or alone when resuming an earlier run.
+    if: >-
+      always() && inputs.dry_run == false && needs.validate.result == 'success' &&
+      (needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.resume_run_id != ''))
     runs-on: ubuntu-latest
     environment: console-release
     permissions:
+      actions: read
       contents: write
       packages: write
       id-token: write
@@ -220,21 +235,46 @@ jobs:
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       COMMIT_SHA: ${{ needs.validate.outputs.commit_sha }}
-      ARCHIVE_SHA256: ${{ needs.build.outputs.archive_sha256 }}
-      IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
-      OCI_SHA256: ${{ needs.build.outputs.oci_sha256 }}
+      RESUME_RUN_ID: ${{ inputs.resume_run_id }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Check the run to resume
+        if: inputs.resume_run_id != ''
+        run: |
+          set -euo pipefail
+          path="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID" --jq .path)"
+          [[ "$path" == ".github/workflows/console-release.yml" ]] || { echo "::error::run $RESUME_RUN_ID is not a console-release run"; exit 1; }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: console-release-${{ env.VERSION }}
           path: release
-      - name: Verify downloaded artifacts are the tested ones
+          run-id: ${{ inputs.resume_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Load and verify the tested artifacts
+        env:
+          BUILD_ARCHIVE_SHA256: ${{ needs.build.outputs.archive_sha256 }}
+          BUILD_IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
+          BUILD_OCI_SHA256: ${{ needs.build.outputs.oci_sha256 }}
         run: |
           set -euo pipefail
-          echo "$ARCHIVE_SHA256  release/knotrel-console-$VERSION.tar.gz" | sha256sum -c -
-          echo "$OCI_SHA256  release/knotrel-console-$VERSION.oci.tar" | sha256sum -c -
+          manifest=release/release-manifest.json
+          [[ "$(jq -r .version "$manifest")" == "$VERSION" ]] || { echo "::error::manifest version differs"; exit 1; }
+          [[ "$(jq -r .commit "$manifest")" == "$COMMIT_SHA" ]] || { echo "::error::manifest commit differs"; exit 1; }
+          archive_sha256="$(jq -r .archive_sha256 "$manifest")"
+          image_digest="$(jq -r .image_digest "$manifest")"
+          oci_sha256="$(jq -r .oci_archive_sha256 "$manifest")"
+          # A fresh build must agree with its own manifest.
+          if [[ -n "$BUILD_IMAGE_DIGEST" ]]; then
+            [[ "$BUILD_ARCHIVE_SHA256" == "$archive_sha256" && "$BUILD_IMAGE_DIGEST" == "$image_digest" && "$BUILD_OCI_SHA256" == "$oci_sha256" ]] \
+              || { echo "::error::build outputs differ from the manifest"; exit 1; }
+          fi
+          echo "$archive_sha256  release/knotrel-console-$VERSION.tar.gz" | sha256sum -c -
+          echo "$oci_sha256  release/knotrel-console-$VERSION.oci.tar" | sha256sum -c -
+          [[ "sha256:$(skopeo inspect --raw "oci-archive:release/knotrel-console-$VERSION.oci.tar" | sha256sum | cut -d' ' -f1)" == "$image_digest" ]] \
+            || { echo "::error::OCI archive index digest differs from the manifest"; exit 1; }
+          { echo "ARCHIVE_SHA256=$archive_sha256"; echo "IMAGE_DIGEST=$image_digest"; echo "OCI_SHA256=$oci_sha256"; } >> "$GITHUB_ENV"
           echo "## Console $VERSION publication" >> "$GITHUB_STEP_SUMMARY"
+          [[ -z "$RESUME_RUN_ID" ]] || echo "- resumed from run $RESUME_RUN_ID (no rebuild)" >> "$GITHUB_STEP_SUMMARY"
       - name: Push image (versioned tag)
         run: |
           set -euo pipefail
@@ -252,6 +292,8 @@ jobs:
           pushed="sha256:$(skopeo inspect --raw "docker://$IMAGE:$VERSION" --creds "$GITHUB_ACTOR:$GH_TOKEN" | sha256sum | cut -d' ' -f1)"
           [[ "$pushed" == "$IMAGE_DIGEST" ]] || { echo "::error::pushed digest $pushed differs from $IMAGE_DIGEST"; exit 1; }
           echo "- pushed $IMAGE:$VERSION ($IMAGE_DIGEST)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Log in to GHCR for the attestation push
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - name: Attest image provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
