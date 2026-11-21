@@ -183,7 +183,7 @@ or release to reuse its version. To withdraw a bad version:
 ## Release checklist
 
 - [ ] `console/package.json` and `package-lock.json` at the release version on `main`.
-- [ ] `knotrel.supportedServer` and `docs/console.md` reflect the compatible servers.
+- [ ] Console compatibility verified before setting the range (mandatory from v0.9.0): browser tests against the release candidate's server and the previous release's server; then `knotrel.supportedServer` and `docs/console.md` updated to exactly the versions verified ([compatibility policy](../compatibility.md#5-console-and-server-compatibility)).
 - [ ] Console CI (`console-status`) green on the commit; Sonar and Codecov reviewed (not a gate if skipped).
 - [ ] Dry run passed on the exact commit; `release-manifest.json` kept.
 - [ ] Signed `v<version>` tag on that commit and the Rust release done (GitHub Release `v<version>` exists).

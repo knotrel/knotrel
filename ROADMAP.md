@@ -114,7 +114,7 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [x] **0.9.1** Reference PostgreSQL integration (external feeder, Compose, console) — Implemented; [design](docs/integrations/postgresql-feeder.md), [feeder](integrations/postgres-feeder/README.md)
 - [x] **0.9.2** Recovery and synchronization tests against the reference source — Implemented; CI on PostgreSQL 15–19
 - [x] **0.9.3** Feeder progress under query load — Implemented and measured (reserved feeder admission); **Q3 FAIL, accepted as a declared limitation of v0.9.0** for the measured configuration; follow-up [#87](https://github.com/knotrel/knotrel/issues/87)
-- [ ] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI)
+- [ ] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI) — Implemented: [policy](docs/compatibility.md) and [classification](docs/stability.md) proposed, awaiting approval; API compatibility CI job
 - [ ] **0.9.5** Verified gateway deployment, upgrade and rebuild
 - [ ] **0.9.6** Final performance campaign
 
@@ -775,7 +775,13 @@ languages and a CLI are not added at the same time.
   ([results and decision](docs/integrations/feeder-under-load.md#maintainer-decision-on-q3-2026-11-21)).
   Follow-up: [#87](https://github.com/knotrel/knotrel/issues/87), feeder
   catch-up under query load (unassigned).
-- [ ] **0.9.4 Contracts toward 1.0.** A compatibility and deprecation policy
+- [ ] **0.9.4 Contracts toward 1.0.** Implemented, awaiting approval of the
+  policy and the classification: [compatibility policy](docs/compatibility.md),
+  [stability classification](docs/stability.md), CI job `API compatibility`
+  (`cargo-semver-checks` against the previous release, and
+  `scripts/check-openapi-compat.py` on `docs/openapi.yaml`). The policy makes
+  console compatibility a mandatory pre-release check (section 5). Original
+  scope: A compatibility and deprecation policy
   (`docs/compatibility.md`, readiness criterion 2); every public Rust item
   and HTTP route, field, error code, variable and metric classified as
   stable, experimental or internal (criterion 1); API checks in CI: a public

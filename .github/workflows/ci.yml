@@ -62,6 +62,52 @@ jobs:
         if: runner.os == 'Windows'
         run: powershell -File ./scripts/smoke-test-release-binary.ps1 -BinaryPath target/release/knotrel-server.exe
 
+  api-compatibility:
+    name: API compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-semver-checks@0.51.0
+      # The previous stable release: the newest v* tag reachable from HEAD,
+      # excluding release candidates and a tag on HEAD itself.
+      - name: Find the previous release
+        id: base
+        shell: bash
+        run: |
+          head="$(git rev-parse HEAD)"
+          tag=""
+          for t in $(git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname); do
+            [[ "$t" == *-* ]] && continue
+            [[ "$(git rev-list -n 1 "$t")" == "$head" ]] && continue
+            tag="$t"; break
+          done
+          [[ -n "$tag" ]] || { echo "::error::no previous release tag"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Comparing against $tag"
+      # docs/compatibility.md, section 6: breaking changes to the public Rust
+      # API always fail; an approved one is declared in the crate's
+      # cargo-semver-checks lint configuration, reviewed with the change.
+      - name: Public Rust API (cargo-semver-checks)
+        run: cargo semver-checks check-release --workspace --baseline-rev "${{ steps.base.outputs.tag }}" --release-type minor
+      - name: HTTP API (OpenAPI compatibility)
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/openapi-compat"
+          "$RUNNER_TEMP/openapi-compat/bin/pip" install -r scripts/requirements-openapi.txt
+          git show "${{ steps.base.outputs.tag }}:docs/openapi.yaml" > "$RUNNER_TEMP/openapi-base.yaml"
+          "$RUNNER_TEMP/openapi-compat/bin/python" tests/test_openapi_compat.py
+          "$RUNNER_TEMP/openapi-compat/bin/python" scripts/check-openapi-compat.py \
+            "$RUNNER_TEMP/openapi-base.yaml" docs/openapi.yaml \
+            --approved docs/api/approved-breaking-changes.yaml
+
   core-msrv:
     name: core MSRV
     runs-on: ubuntu-latest

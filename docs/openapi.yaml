@@ -1174,6 +1174,7 @@ paths:
 
   /v1/nodes:
     get:
+      x-knotrel-stability: experimental
       operationId: list_nodes
       summary: List nodes in ascending ID order (inspection)
       tags:
@@ -1243,6 +1244,7 @@ paths:
 
   /v1/nodes/{node}:
     get:
+      x-knotrel-stability: experimental
       operationId: get_node
       summary: Inspect one node
       tags:
@@ -1290,6 +1292,7 @@ paths:
 
   /v1/nodes/{node}/edges:
     get:
+      x-knotrel-stability: experimental
       operationId: list_node_edges
       summary: List one node's incident edges (inspection)
       tags:
@@ -1344,6 +1347,7 @@ paths:
 
   /v1/edges:
     get:
+      x-knotrel-stability: experimental
       operationId: list_edges
       summary: List edges once each (inspection)
       tags:
