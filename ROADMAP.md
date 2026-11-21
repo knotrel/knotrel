@@ -31,6 +31,7 @@ An external feeder reads the authoritative database or event stream and supplies
 | **v0.8.0 — Operational Console** (published 2026-11-21; core, server and console in lockstep) | Operate one server from a browser, as a separate artifact, plus opt-in read-only inspection routes on the server for browsing a graph | Read-only diagnostics (connectivity, liveness versus readiness, configuration, counts, identity and version, synchronization); standalone operations with structured outcomes and no automatic retries; container image and reproducible static archive; CI, coverage, SonarCloud and dry-run release workflow | No engine change; the only server additions are the inspection routes (`KNOTREL_INSPECTION`, off by default, never mutating); no authentication, visualization, multi-server, bulk import or metrics history; npm `npx` launcher DEFERRED. Released without a performance qualification against v0.7.0 (maintainer decision D2) |
 | **v0.9.0 — Integration & Reliability** (planned) | Make Knotrel easy to integrate with a real authoritative store and show that it stays correct and current through failures and load | A reference PostgreSQL integration through an external feeder (one source), recovery and synchronization tests against it, feeder progress under query load, contract groundwork for 1.0 (stability classes, compatibility policy, API checks in CI), a verified gateway deployment with upgrade/rebuild procedure, and a proportionate final performance campaign; see [v0.9.0](#v090--integration--reliability) | No connector inside the server; no Kafka, extra SDKs or CLI; no local persistence/WAL, multi-graph or new engines; console limited to fixes from use; no log viewer or speculative optimizations |
 | **v1.0.0 — Production Readiness** (v0.8.0 → v0.9.0 → v1.0.0-rc → v1.0.0, each step subject to its stability gates) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. v0.9.0 addresses the integration and reliability gaps named by the assessment; the rest close in the rc cycle |
+| **v1.1.0 — Cluster Forest Backend** (planned) | A new dynamic connectivity backend based on the cluster forest, delivered implemented, verified and documented, opt-in and experimental | CF1–CF6: design from the paper, sequential implementation in `knotrel-core`, differential/property/adversarial tests, integration behind the existing engine abstractions with the public contract preserved, a performance qualification with criteria declared beforehand, and an adoption decision; see [v1.1.0](#v110--cluster-forest-backend) | Batch-parallel variant DEFERRED beyond v1.1 (CF7); no change of the default backend without an explicit decision; no change to the v0.9 scope or the v1.0 readiness criteria |
 
 **Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
 
@@ -131,6 +132,18 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [ ] **Feature M8:** Supported security and access control
 - [ ] **Feature M9:** Packaging, compatibility and operations
 - [ ] **Feature M7:** Multi-graph management (OPTIONAL, demand-gated)
+
+### v1.1.0 — Cluster Forest Backend (planned)
+
+Statuses: see [v1.1.0](#v110--cluster-forest-backend).
+
+- [ ] **CF1** Design from the paper, licensing check of the authors' code
+- [ ] **CF2** Sequential cluster forest in `knotrel-core` (opt-in, experimental)
+- [ ] **CF3** Differential, property-based and adversarial correctness tests
+- [ ] **CF4** Integration behind the existing engine abstractions, contract preserved
+- [ ] **CF5** Performance qualification against the existing backends
+- [ ] **CF6** Adoption decision and selection guidance
+- [ ] **CF7** Batch-parallel variant (DEFERRED beyond v1.1)
 
 ## Guiding principles
 
@@ -910,6 +923,142 @@ The recovery principle is mandatory for any selected local persistence strategy:
 - [ ] **M7.5** Test concurrent lifecycle, restart/rebuild, quotas and isolation.
 - [ ] **Acceptance M7:** Independent synchronization and resource isolation; single-graph mode remains supported. Distributed storage and general-purpose graph database features remain excluded.
 
+## v1.1.0 — Cluster Forest Backend
+
+**Status: planned (2026-11-21).** A planning entry only: nothing is
+implemented, and it changes neither the v0.9.0 scope nor the v1.0 readiness
+criteria.
+
+**Reference.** Quinten De Man, Laxman Dhulipala, Adam Karczmarz, Jakub Łącki,
+Julian Shun, Zhongqi Wang. *Towards Scalable and Practical Batch-Dynamic
+Connectivity.* PVLDB 18(3): 889–901 (VLDB 2025). DOI
+[10.14778/3712221.3712250](https://doi.org/10.14778/3712221.3712250).
+Preprint [arXiv:2411.11781](https://arxiv.org/abs/2411.11781) (v1, the only
+version, read in full for this entry).
+
+**What the paper establishes, and for which variant** (section and theorem
+numbers refer to the paper):
+- The structure is the cluster forest of Thorup and Wulff-Nilsen: edges carry
+  levels up to ⌈log n⌉, a level-i cluster holds at most 2^i vertices, roots
+  are the connected components, and path compression keeps space O(n + m)
+  (§2, §4). Deletions search for replacement edges from the two child
+  clusters and push explored edges down a level (§4). Queries are
+  `connected(u, v)` only; the paper gives no query theorem.
+- The paper's new variant is the **blocked** cluster forest (§5): every
+  child cluster touches an edge that cannot be pushed down, which bounds
+  cluster graphs to diameter at most 2.
+- **Sequential:** blocked updates in O(log² n) amortized time (Theorem 5.11);
+  no separate theorem for the basic sequential variant.
+- **Batch-parallel:** O(log² n) amortized work per edge and O(log³ n) depth
+  per batch (Theorem 7.2), with batch-dynamic local trees (§6.1); the
+  algorithm is deterministic apart from the scheduler. Linear space is
+  claimed without a separate theorem for this variant.
+- **Experiments measured only sequential implementations** (§8): two C++
+  variants against a C++ HDT and D-Tree on 16 graphs, insert-all then
+  delete-all in random order with queries after each stage. They report lower
+  memory and faster updates than that HDT on those graphs, slower queries on
+  some of them, and an earlier version slower on dense graphs. The parallel
+  algorithm was not evaluated. Whether the measured code enforces the blocked
+  invariant is not stated.
+- The vertex set is fixed (§1); vertex insertion, vertex removal and edge
+  enabling are not covered.
+
+These are the paper's results for its implementations and hardware. **None of
+them is a Knotrel result**, and no speedup is expected or promised for
+Knotrel before CF5 measures it.
+
+**Authors' code.** The artifact listed by the paper
+(`github.com/ParAlg/DynamicConnectivity`, C++) has no license file as of
+2026-11-21, so it is all rights reserved and cannot be reused or ported. CF1
+re-checks before any use; without a compatible license, the implementation is
+written from the paper.
+
+**Batch-parallel variant: deferred beyond v1.1 (CF7).** Knotrel applies
+mutations one at a time under one exclusive graph lock, has no parallel
+runtime in the core, and the paper did not measure the parallel algorithm.
+v1.1 implements the sequential blocked variant (or the basic one, if CF1
+shows the blocked invariant's cost is not justified for Knotrel; the choice
+and its reason are recorded).
+
+- [ ] **CF1 Design.** A design document before code:
+  - mapping from the paper's definitions, invariants (size invariant 2.1,
+    blocked invariant 5.2) and algorithms to Knotrel data structures, with
+    the proofs or lemmas each step relies on;
+  - complexity and memory per operation with their conditions (amortized,
+    worst case), including what the paper does not bound (queries, rebuilds);
+  - how Knotrel's sparse `u64` node IDs and its changing vertex set map onto
+    a structure defined for a fixed n (level bound ⌈log n⌉ as n grows,
+    vertex removal), and how compaction or rebuilding keeps memory bounded;
+  - how lifecycle flags (inactive nodes, disabled edges) reach the backend,
+    as with `compact-bfs` today: the backend sees the effective graph;
+  - the licensing check of the authors' code and the reuse decision.
+  - **Completion:** the document is reviewed and approved; every invariant
+    has a planned check (CF2) and every claimed bound names its source.
+- [ ] **CF2 Sequential implementation.** A new backend in `knotrel-core`
+  (`EngineConfig::ClusterForest`, configuration name `cluster-forest`),
+  experimental and opt-in. Every public item documented; private algorithms
+  documented with invariants, correctness reasoning and complexity
+  (AGENTS.md); a debug invariant checker; core MSRV preserved; no unsafe code.
+  - **Completion:** the core's existing engine-agnostic tests pass on the new
+    backend; the invariant checker passes after every operation in the test
+    suites.
+- [ ] **CF3 Correctness.**
+  - differential tests against `ReferenceGraph` and `compact-bfs` on the same
+    operation sequences;
+  - property-based tests over random insert, delete and query sequences
+    with reproducible seeds;
+  - adversarial sequences: disconnections that need deep replacement
+    searches, repeated split and merge of the same components, hub and star
+    deletions, ring breaking, edges pushed down to the lowest levels;
+  - prolonged churn and compaction: memory returns to a bound after mass
+    deletions, and answers stay exact across compactions.
+  - **Completion:** all of the above run in CI (long variants in a scheduled
+    or release job), with no oracle disagreement.
+- [ ] **CF4 Integration.** Behind the existing abstractions
+  (`ConnectivityGraph`, `LifecycleGraph`, the server's engine selection),
+  preserving the public contract: node IDs, lifecycle flags, registered and
+  effective topology, import validation and off-lock construction, and
+  per-operation atomicity under the graph lock. `KNOTREL_ENGINE=cluster-forest`
+  is an additive, experimental value (stability.md); routes the backend does
+  not support (for example incident listing, if it keeps no adjacency) answer
+  as they do for `ett` and `hdt` today.
+  - **Completion:** the server's contract, lifecycle, import and feeder test
+    suites pass with the backend selected; `docs/openapi.yaml`,
+    `docs/http-api.md` and the compatibility checks reflect the new value.
+- [ ] **CF5 Performance qualification.** A protocol and acceptance criteria
+  declared and approved before measuring (as for 0.9.3), comparing
+  `cluster-forest` with `compact-bfs`, `ett` and `hdt` under the same
+  semantics, workloads and environment:
+  - updates, queries and imports; steady and peak memory; throughput and
+    latency tails;
+  - sparse, ring and hub graphs, plus feeder-representative workloads
+    (including the steady-freshness and catch-up scenarios of the
+    [feeder-under-load check](docs/integrations/feeder-under-load.md));
+  - core results reported separately from end-to-end server results.
+    Cluster forest is not presented as a solution to the Q3 limitation of
+    v0.9.0 ([#87](https://github.com/knotrel/knotrel/issues/87)) unless the
+    end-to-end measurement shows it.
+  - **Completion:** every declared cell measured and classified under the
+    predeclared rules; negative results and regressions kept and reported.
+- [ ] **CF6 Adoption decision.** v1.1 delivers the backend implemented,
+  verified and documented, whether or not it is fastest everywhere.
+  Documentation states when to choose `cluster-forest` and when to keep
+  `compact-bfs`, `ett` or `hdt`, from the CF5 results.
+  - Changing the default backend, or promoting `cluster-forest` from
+    experimental to stable, needs evidence on Knotrel's own workloads and an
+    explicit maintainer decision; neither happens automatically.
+  - **Completion:** selection guidance published with the release; the
+    decision on default and stability recorded, even if it is "unchanged".
+- [ ] **CF7 Batch-parallel variant (DEFERRED beyond v1.1).** A separate
+  evaluation after CF6: whether Knotrel's batch paths (imports, feeder event
+  batches) benefit from Theorem 7.2's batch algorithm, what parallel runtime
+  it would need, and how it fits the single-writer lock. Requires its own
+  design, approval and qualification; not part of v1.1.
+
+**Acceptance v1.1.0:** CF1–CF6 complete; the backend is opt-in and
+experimental unless CF6 records otherwise; no public contract changed except
+the additive engine value; CF7 recorded as deferred.
+
 ## Dependencies and sequencing
 
 1. Preserve the released v0.1.0 contract and historical evidence; reconcile old checklist bookkeeping separately rather than claiming new validation here.
@@ -921,6 +1070,7 @@ The recovery principle is mandatory for any selected local persistence strategy:
 6. v0.5.0 first evaluates value using the source/rebuild contract and operational evidence. Implement only approved persistence strategies; full external rebuild remains the fallback.
 7. Move security forward whenever exposure requires it. Multi-graph and concurrency redesign remain demand/evidence-gated.
 8. After v0.8.0: v0.9.0 (integration and reliability against one real source), then v1.0.0-rc, then v1.0.0. Within v0.9.0, the PostgreSQL read method (0.9.1) comes first because 0.9.2 depends on it; 0.9.3 measures before it changes anything; 0.9.6 runs last, on the release candidate.
+9. **v1.1.0 (planned) starts after v1.0.0.** It builds on the existing engine abstractions and on the compatibility rules of 0.9.4 (the new engine value is additive and experimental). Within v1.1: CF1 → CF2 → CF3 → CF4 → CF5 → CF6, each completion criterion met before the next starts (CF3 test work may begin with CF2); CF7 is deferred and needs its own approval.
 
 **Planning migration:** The previous durability-first Feature 0.2.1 and M1.1–M1.6 are superseded as v0.2.0 requirements; their storage concerns are retained under P1–P5. Previous M2.1–M2.6 import concerns now map to 0.2.1–0.2.3, 0.2.5 and 0.2.6, with durability-before-ack replaced by coherent in-memory publication plus source synchronization. M3–M9 retain their purpose with integration-first dependencies. This remapping does not mark any former or future task complete.
 
