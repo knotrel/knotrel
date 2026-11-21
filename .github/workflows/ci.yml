@@ -176,6 +176,10 @@ jobs:
         run: |
           python3 scripts/check-crate-docs.py
           python3 tests/test_crate_documentation.py
+      - name: README versions
+        run: |
+          python3 scripts/check-readme.py
+          python3 tests/test_readme_check.py
       - name: Documentation examples
         run: cargo test --workspace --doc --locked --all-features
       - name: Documentation

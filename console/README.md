@@ -23,8 +23,8 @@ Why each is optional, and what it costs: [docs/console.md](../docs/console.md#se
 > (2026-11-21).
 
 **Versions.** The console has the same version as the server (lockstep):
-use console 0.9.0 with server 0.9.0. Console 0.9 also works with server 0.8
-(verified with the browser tests on Chromium and Firefox).
+use them at the same version. Console 0.9 (unreleased) also works with server
+0.8 (verified with the browser tests on Chromium and Firefox).
 
 The console ships as a container image (nginx serving the UI and forwarding
 `/api` to one Knotrel server) and as a static archive for your own web

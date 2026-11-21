@@ -179,6 +179,7 @@ Before tagging and publishing:
 - [ ] Working tree is clean and `git status` shows no uncommitted files.
 - [ ] Workspace and inherited crate versions are `0.5.0`, and the core dependency and lockfile agree.
 - [ ] Release notes in `docs/releases/v0.5.0-release-notes.md` report the v0.5.0 performance qualification (existing behavior against v0.4.0, lifecycle cost and sustained resources), every disclosed or owner-accepted non-PASS result, and all operational limitations.
+- [ ] `README.md` and `console/README.md` describe this release on the candidate commit: latest release line and links, download and asset names, the `knotrel-core = "MAJOR.MINOR"` snippet, the console status line and image tags, the performance summary, and no feature still marked "unreleased". `scripts/check-readme.py --release <version>` checks the mechanical part and runs in the release workflow (dry runs included); every pull request runs it without `--release`, so a README never names two different releases.
 - [ ] The release notes status is final (`**Status: released <date>**`, the planned tag date) on the candidate commit: the GitHub Release body is taken from the notes at the tag. Post-publication details (digests, links) can follow on `main` and in the release body, but never a status change from draft.
 - [ ] Candidate commit SHA is verified on `origin/main`.
 - [ ] The v0.5.0 performance qualification ran on the exact RC commit (or its executed code was shown identical), and the deployment and rebuild smoke test was repeated on it.

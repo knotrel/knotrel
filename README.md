@@ -102,7 +102,7 @@ persistent graph storage, directed reachability or electrical simulation.
 
 ```toml
 [dependencies]
-knotrel-core = "0.6.0"
+knotrel-core = "0.8"
 ```
 
 ```rust

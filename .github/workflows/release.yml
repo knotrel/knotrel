@@ -149,6 +149,15 @@ jobs:
         # candidate commit is checked before it is tagged.
         run: ./scripts/check-release-notes.sh "$VALID_VERSION"
 
+      - name: Verify the READMEs describe this release
+        env:
+          VALID_VERSION: ${{ steps.validate.outputs.version }}
+        shell: bash
+        # README.md and console/README.md at the tag are what users see for
+        # this release: latest release, download names, dependency snippet,
+        # console image, and no "unreleased" left. Runs in dry runs too.
+        run: python3 scripts/check-readme.py --release "$VALID_VERSION"
+
   candidate-quality-gates:
     name: candidate-quality-gates
     needs: [validate-inputs-and-metadata]
