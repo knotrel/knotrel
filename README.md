@@ -315,6 +315,7 @@ metrics. See [the console documentation](docs/console.md).
 - [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
 - [Operational console](docs/console.md) (since v0.8.0; same version as the server): browser UI, container image and static archive for operating one server; [console release procedure](docs/releases/console-release.md).
+- [PostgreSQL reference feeder](docs/integrations/postgresql-feeder.md) (unreleased, roadmap 0.9.1): keeps Knotrel synchronized with two PostgreSQL tables through logical replication; [feeder and Compose example](integrations/postgres-feeder/README.md).
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
 - [v0.8.0 release notes](docs/releases/v0.8.0-release-notes.md), [v0.7.0](docs/releases/v0.7.0-release-notes.md), [v0.6.0](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).

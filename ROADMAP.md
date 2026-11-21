@@ -111,8 +111,8 @@ Checks reflect verified implementation and acceptance gates. From v0.6.0 on, eve
 Statuses: see [v0.9.0](#v090--integration--reliability).
 
 - [x] **0.9.0a** Roadmap and readiness realignment — Implemented
-- [ ] **0.9.1** Reference PostgreSQL integration (external feeder, Compose, console)
-- [ ] **0.9.2** Recovery and synchronization tests against the reference source
+- [x] **0.9.1** Reference PostgreSQL integration (external feeder, Compose, console) — Implemented; [design](docs/integrations/postgresql-feeder.md), [feeder](integrations/postgres-feeder/README.md)
+- [x] **0.9.2** Recovery and synchronization tests against the reference source — Implemented; CI on PostgreSQL 15–19
 - [ ] **0.9.3** Feeder progress under query load
 - [ ] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI)
 - [ ] **0.9.5** Verified gateway deployment, upgrade and rebuild
@@ -726,7 +726,8 @@ for them.
 
 ## v0.9.0 — Integration & Reliability
 
-**Status: planned (2026-11-21).** No item below is implemented or accepted.
+**Status (2026-11-21):** 0.9.1 and 0.9.2 implemented (not yet reviewed or
+accepted); the other items are planned.
 
 **Goal:** with v0.8.0 the library, the server and the console exist. v0.9.0
 makes Knotrel easy to put inside an application and keep there: one real
@@ -741,7 +742,11 @@ contracts, limits and recovery, not more features.
 **One source only.** PostgreSQL is the reference store. Kafka, SDKs in more
 languages and a CLI are not added at the same time.
 
-- [ ] **0.9.1 Reference PostgreSQL integration.** An external reference
+- [x] **0.9.1 Reference PostgreSQL integration.** Implemented:
+  [design and correctness criteria](docs/integrations/postgresql-feeder.md),
+  [feeder and Compose example](integrations/postgres-feeder/README.md).
+  Logical replication from an exported snapshot, feeder in Rust in its own
+  workspace. An external reference
   feeder (not a connector inside the server) that loads a coherent image of
   a PostgreSQL schema and then streams ordered changes from the image's
   position, under the [integration contract](docs/integration-contract.md):
@@ -750,7 +755,10 @@ languages and a CLI are not added at the same time.
   source-managed mode and the console, which shows the real synchronization
   state. Documented as an example with stated limits, not a supported
   product.
-- [ ] **0.9.2 Recovery and synchronization against the reference source.**
+- [x] **0.9.2 Recovery and synchronization against the reference source.**
+  Implemented: 13 integration tests against real PostgreSQL 15 to 19 in CI
+  (`postgres-feeder` workflow); the design document maps them to its
+  criteria C1–C9.
   Reproducible tests with the real feeder and store: feeder disconnect and
   reconnect, Knotrel restart and rebuild from source, duplicate and replayed
   changes, loss of change history beyond retention (detected, followed by a
