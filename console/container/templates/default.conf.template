@@ -2,6 +2,8 @@
 #   KNOTREL_UPSTREAM               Knotrel server base URL (validated at startup).
 #   KNOTREL_CONSOLE_SERVER_NAMES   Accepted Host names (space separated).
 #   KNOTREL_UPSTREAM_TIMEOUT       Upstream send/read timeout (nginx time).
+# The listen directives come from KNOTREL_CONSOLE_LISTEN, written by the
+# entrypoint into /tmp/knotrel-console-listen/.
 
 # --- Cross-origin protection ------------------------------------------------
 # Browsers send Sec-Fetch-Site; only same-origin (or none, typed URL) passes.
@@ -39,8 +41,7 @@ map $upstream_bytes_sent $knotrel_504_condition {
 
 # --- Unknown Host headers (DNS rebinding) -----------------------------------
 server {
-    listen 8080 default_server;
-    listen [::]:8080 default_server;
+    include /tmp/knotrel-console-listen/default-server.conf;
     server_name _;
     default_type application/json;
 
@@ -60,8 +61,7 @@ server {
 
 # --- The console ------------------------------------------------------------
 server {
-    listen 8080;
-    listen [::]:8080;
+    include /tmp/knotrel-console-listen/console.conf;
     server_name ${KNOTREL_CONSOLE_SERVER_NAMES};
     root /usr/share/nginx/html;
     index index.html;

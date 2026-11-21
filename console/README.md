@@ -153,6 +153,7 @@ UI (Overview → Liveness and readiness).
 | `KNOTREL_CONSOLE_SERVER_NAMES` | `localhost 127.0.0.1 [::1]` | Host names the console answers to. Add your DNS name when a gateway forwards to it.          |
 | `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL            | Server name shown in the connection indicator (display only).                                |
 | `KNOTREL_UPSTREAM_TIMEOUT`     | `35s`                       | Upstream timeout.                                                                            |
+| `KNOTREL_CONSOLE_LISTEN`       | `8080 [::]:8080`            | Listen addresses; `127.0.0.1:8080` when a gateway shares the container's network namespace.   |
 
 The container listens on port 8080 as an unprivileged user and supports a
 read-only filesystem with a tmpfs at `/tmp`.
