@@ -995,14 +995,19 @@ mod outcomes {
 
         #[tokio::test]
         async fn feeder_admission_rejection_keeps_import_in_progress_and_counts_busy() {
+            // The feeder data lane has one permit; a paused feeder job holds it.
+            // (A query holding the shared permits can no longer refuse feeder
+            // requests: they have their own lane.)
             let lifecycle = Lifecycle::new();
             lifecycle.mark_ready();
-            let app = router_with_lifecycle(source_managed(1), lifecycle.clone());
+            let config = source_managed(1).with_feeder_reserved_jobs(1).unwrap();
+            let app = router_with_lifecycle(config, lifecycle.clone());
             let instance = instance_id(&app).await;
             let mut pause = lifecycle.pause_next_worker();
             let held = tokio::spawn({
                 let app = app.clone();
-                async move { send(&app, Method::GET, "/v1/stats", "").await }
+                let instance = instance.clone();
+                async move { send_feeder(&app, &instance, "/v1/feeder/gap", gap_body(&instance)).await }
             });
             pause.wait_started().await;
 
@@ -1013,7 +1018,8 @@ mod outcomes {
             assert_outcomes(&scrape(&app).await, &[("busy", 1.0)]);
 
             pause.release();
-            assert_eq!(held.await.unwrap().0, StatusCode::OK);
+            // The held job ran to its own outcome; only the admission is tested.
+            let _ = held.await.unwrap();
         }
 
         #[tokio::test]
@@ -2925,7 +2931,9 @@ mod feeder_rejections {
 
         #[tokio::test]
         async fn admission_saturation_keeps_import_in_progress_without_a_rejection() {
-            let (app, lifecycle) = paused_app(source_managed_with(1));
+            // One feeder data permit, held by a paused, successful events job.
+            let (app, lifecycle) =
+                paused_app(source_managed_with(1).with_feeder_reserved_jobs(1).unwrap());
             let instance = bootstrap(&app, &["1", "2"], &[]).await;
             let mut pause = lifecycle.pause_next_worker();
             let held = tokio::spawn({
@@ -2935,9 +2943,9 @@ mod feeder_rejections {
                     feeder(
                         &app,
                         &instance,
-                        "/v1/feeder/heartbeat",
+                        "/v1/feeder/events",
                         None,
-                        heartbeat(&instance, 1),
+                        events(&instance, 1, serde_json::json!([link(1, "1", "2")])),
                     )
                     .await
                 }

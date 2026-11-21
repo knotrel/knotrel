@@ -1914,7 +1914,15 @@ components:
           description: Whether the engine is experimental.
         max_pending_jobs:
           type: integer
-          description: Maximum queued plus running graph operations.
+          description: Maximum queued plus running graph operations on the shared admission lane.
+        feeder_reserved_jobs:
+          type: integer
+          minimum: 1
+          maximum: 64
+          description: |
+            Present only in source-managed mode. Admission permits reserved for feeder events,
+            barriers and gap declarations (`KNOTREL_FEEDER_RESERVED_JOBS`, default 4); queries never
+            use them. Feeder sessions and heartbeats have two further permits of their own.
         max_body_bytes:
           type: integer
           description: Maximum allowed request body size in bytes.

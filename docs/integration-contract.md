@@ -400,7 +400,9 @@ once **under the graph lock**, before the first event is applied
 (`service.rs` `GraphState::apply_events`). The observable result is the same: they
 reject the whole request with no graph or frontier change, except that a
 `source_epoch` mismatch and an expired lease also change synchronization status
-(see §9.3). When worker capacity is exhausted, `/v1/feeder/events` returns
+(see §9.3). When the feeder's admission lane is exhausted (since 0.9.0 feeder
+requests have reserved permits that queries never use; see `docs/http-api.md`,
+"Admission and cancellation"), `/v1/feeder/events` returns
 `503 import_in_progress`, not `busy`: no event of that request was admitted, and
 the code does not necessarily mean that an import is running. This naming is
 retained for compatibility; see §9.3.

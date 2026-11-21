@@ -46,7 +46,7 @@ The server does not provide any of the following:
 | --- | --- |
 | Request body | 1 MiB, fixed; larger bodies get 413. `POST /v1/feeder/import` is bounded instead by `KNOTREL_MAX_IMPORT_BODY_BYTES` (default 64 MiB) |
 | Batch length | 1–1024 operations, fixed |
-| Queued plus running graph jobs | `KNOTREL_MAX_PENDING_JOBS`, default 32; excess gets 503 `busy` |
+| Queued plus running graph jobs | `KNOTREL_MAX_PENDING_JOBS`, default 32; excess gets 503 `busy`. In source-managed mode, plus `KNOTREL_FEEDER_RESERVED_JOBS` (default 4) for feeder events, barriers and gaps and 2 for feeder sessions and heartbeats (excess gets 503 `import_in_progress`) |
 | Graph nodes / edges | `KNOTREL_MAX_NODES` / `KNOTREL_MAX_EDGES`; default 100 000 nodes and 500 000 edges, `unlimited` is an explicit opt-out |
 | Header read and keep-alive idle time | `KNOTREL_HEADER_READ_TIMEOUT_MS`, default 5000 ms |
 | Request time (body receipt plus handling) | `KNOTREL_REQUEST_TIMEOUT_MS`, default 30000 ms |
@@ -347,6 +347,22 @@ still complete.
 
 Each request body is limited to 1 MiB. By default, at most 32 graph jobs can be
 queued or running; `KNOTREL_MAX_PENDING_JOBS` sets this limit at startup.
+
+In source-managed mode, feeder requests are admitted on their own lanes, so
+query load can never refuse them:
+
+| Lane | Requests | Permits |
+| --- | --- | --- |
+| Shared | queries, stats, inspection (and every graph job in standalone mode) | `KNOTREL_MAX_PENDING_JOBS` (32) |
+| Feeder data | `/v1/feeder/events`, `/v1/feeder/barrier`, `/v1/feeder/gap` | `KNOTREL_FEEDER_RESERVED_JOBS` (4) |
+| Feeder control | `/v1/feeder/session`, `/v1/feeder/heartbeat` | 2 |
+| Import | `/v1/feeder/import` | 1 |
+
+A full lane refuses only its own requests: a full shared lane answers `503
+busy` to queries while heartbeats and events are still admitted. The total
+bound on queued plus running graph jobs is the sum of the lanes. Lanes only
+gate admission; admitted jobs share the same workers and graph lock. Design
+and measurement: [feeder admission](integrations/feeder-admission-design.md).
 Admission occurs after JSON parsing; this limit bounds graph work, not buffered
 HTTP bodies (those are bounded by the connection limit times 1 MiB). Workers
 run outside Tokio's async executor. `busy` means no graph operation was admitted.
@@ -422,9 +438,9 @@ Two further counters are recorded where the decision is made, not derived
 from response codes ([contract section 8](observability-contract.md#8-second-m62-increment-rejection-and-uncertain-outcomes-released-in-v040)):
 
 - `knotrel_requests_rejected_total{reason}`: requests refused before any
-  graph job or import ran for them: `busy` (admission permits exhausted,
-  including feeder session, heartbeat, events, gap and barrier calls answered
-  `503 import_in_progress`), `import_capacity`, `shutting_down` (every
+  graph job or import ran for them: `busy` (admission permits of the
+  request's lane exhausted, including feeder session, heartbeat, events, gap
+  and barrier calls answered `503 import_in_progress`), `import_capacity`, `shutting_down` (every
   non-probe request refused while draining, including `/v1/info` and
   unmatched routes that would not create a graph job) or `unavailable`. Validation, domain, feeder-protocol and
   partial batch or event failures are not counted.
@@ -636,6 +652,7 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_TOPOLOGY_LIFECYCLE` | Exactly `true` or `false`; `true` enables [node and edge lifecycle](#node-and-edge-lifecycle-opt-in) support and requires `KNOTREL_ENGINE=compact-bfs` (with `ett` or `hdt` startup fails before binding; their lifecycle support is deferred) | `false` |
 | `KNOTREL_INSPECTION` | Exactly `true` or `false`; `true` enables the read-only [inspection routes](#inspection-opt-in) and keeps an ordered node index | `false` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
+| `KNOTREL_FEEDER_RESERVED_JOBS` | ASCII decimal integer from 1 through 64; admission permits for feeder events, barriers and gaps, used in source-managed mode only | `4` |
 | `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
 | `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |
 | `KNOTREL_MAX_CONNECTIONS` | ASCII decimal integer from 1 through 1000000 | `1024` |
@@ -687,6 +704,8 @@ current `instance_id`; both are absent in standalone mode, where the instance ID
 is available from the `X-Knotrel-Instance-Id` header of `/v1/stats`,
 `/v1/operations` and `/v1/batch`. No endpoint reports the server software
 version.
+In source-managed mode it also contains `feeder_reserved_jobs`, the effective
+`KNOTREL_FEEDER_RESERVED_JOBS`.
 With `KNOTREL_TOPOLOGY_LIFECYCLE=true` it adds `"topology_lifecycle": true`;
 the field is absent when lifecycle support is off. Engine and
 limit fields describe the actual service instance, including embedded routers.

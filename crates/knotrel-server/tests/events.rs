@@ -2046,15 +2046,16 @@ async fn test_25_request_timeout_leaves_admitted_worker_pending_and_exact_retry_
 }
 
 #[tokio::test]
-async fn test_26_capacity_rejection_happens_before_execution() {
+async fn test_26_queries_cannot_refuse_feeder_events_and_feeder_capacity_is_checked_first() {
+    // Part 1: a query holding the only shared permit no longer refuses feeder
+    // events: they are admitted on the reserved feeder lane
+    // (docs/integrations/feeder-admission-design.md, section 3).
     let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 1)
         .unwrap()
         .with_mode(ServerMode::SourceManaged)
         .with_shutdown_timeout(Duration::from_secs(5))
         .unwrap();
     let (running, instance_id) = start_with_baseline(config).await;
-
-    // Hold the only worker permit with a paused query.
     let mut pause = running.lifecycle.pause_next_worker();
     let mut query_stream = running.connect().await;
     let query = r#"{"op":"connected","source":"1","target":"2"}"#;
@@ -2066,25 +2067,57 @@ async fn test_26_capacity_rejection_happens_before_execution() {
     timeout(STEP, pause.wait_started())
         .await
         .expect("query worker never reached the pause point");
-
     let events = events_array(&[link_event(1, "1", "2")]);
-    let rejected = post_events(&running, &instance_id, "f-1", 1, &events).await;
+    let accepted = post_events(&running, &instance_id, "f-1", 1, &events).await;
+    assert_eq!(accepted.status, 200, "{}", accepted.body);
+    assert_eq!(accepted.json()["applied_delivery_sequence"], 1);
+    pause.release();
+    let query_reply = read_reply(&mut query_stream).await.expect("query reply");
+    assert_eq!(query_reply.status, 200);
+    running.wait_for_jobs(0).await;
+
+    // Part 2: when the feeder lane itself is full, a feeder request is still
+    // refused before execution, with the same wire code as before.
+    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 4)
+        .unwrap()
+        .with_mode(ServerMode::SourceManaged)
+        .with_feeder_reserved_jobs(1)
+        .unwrap()
+        .with_shutdown_timeout(Duration::from_secs(5))
+        .unwrap();
+    let (running, instance_id) = start_with_baseline(config).await;
+    let mut pause = running.lifecycle.pause_next_worker();
+    let first_body = format!(
+        r#"{{"instance_id":"{instance_id}","graph_id":"default","generation":1,"feeder_session_id":"f-1","feeder_epoch":1,"source_id":"pg-1","source_epoch":"ep-1","events":{events}}}"#
+    );
+    let mut first_stream = running.connect().await;
+    let request = format!(
+        "POST /v1/feeder/events HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\nx-knotrel-instance-id: {instance_id}\r\ncontent-length: {}\r\n\r\n{first_body}",
+        first_body.len()
+    );
+    first_stream.write_all(request.as_bytes()).await.unwrap();
+    timeout(STEP, pause.wait_started())
+        .await
+        .expect("feeder worker never reached the pause point");
+    let second = events_array(&[link_event(2, "2", "3")]);
+    let rejected = post_events(&running, &instance_id, "f-1", 1, &second).await;
     assert_eq!(rejected.status, 503, "{}", rejected.body);
     // Current wire code for feeder capacity exhaustion (integration-contract.md §9.3).
     // The code is retained for compatibility; no import is running here.
     assert_eq!(rejected.json()["code"], "import_in_progress");
     assert_eq!(rejected.header("x-knotrel-state-version"), None);
     assert_eq!(running.lifecycle.outstanding_jobs(), 1);
+    // Queries still run on the shared lane meanwhile.
+    let stats = stats_json(&running).await;
+    assert_eq!(stats["source_position"], "pos-0");
 
     pause.release();
-    let query_reply = read_reply(&mut query_stream).await.expect("query reply");
-    assert_eq!(query_reply.status, 200);
+    let first_reply = read_reply(&mut first_stream).await.expect("feeder reply");
+    assert_eq!(first_reply.status, 200, "{}", first_reply.body);
     running.wait_for_jobs(0).await;
-
     let stats = stats_json(&running).await;
-    assert_eq!(stats["state_version"], "0");
-    assert_eq!(stats["source_position"], "pos-0");
-    let accepted = post_events(&running, &instance_id, "f-1", 1, &events).await;
+    assert_eq!(stats["source_position"], "pos-1");
+    let accepted = post_events(&running, &instance_id, "f-1", 1, &second).await;
     assert_eq!(accepted.status, 200, "{}", accepted.body);
 }
 

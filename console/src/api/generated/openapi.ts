@@ -1097,8 +1097,14 @@ export interface components {
       engine: 'compact-bfs' | 'ett' | 'hdt';
       /** @description Whether the engine is experimental. */
       experimental: boolean;
-      /** @description Maximum queued plus running graph operations. */
+      /** @description Maximum queued plus running graph operations on the shared admission lane. */
       max_pending_jobs: number;
+      /**
+       * @description Present only in source-managed mode. Admission permits reserved for feeder events,
+       *     barriers and gap declarations (`KNOTREL_FEEDER_RESERVED_JOBS`, default 4); queries never
+       *     use them. Feeder sessions and heartbeats have two further permits of their own.
+       */
+      feeder_reserved_jobs?: number;
       /** @description Maximum allowed request body size in bytes. */
       max_body_bytes: number;
       /** @description Maximum operations in a single batch request. */

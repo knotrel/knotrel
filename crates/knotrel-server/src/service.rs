@@ -31,6 +31,37 @@ use std::{
 use tokio::sync::Semaphore;
 
 const DEFAULT_FEEDER_LEASE_DURATION: Duration = Duration::from_secs(10);
+/// Admission permits of the feeder control lane: one heartbeat and one
+/// session registration in flight.
+const FEEDER_CONTROL_PERMITS: usize = 2;
+
+/// Which admission semaphore a graph job uses.
+///
+/// Feeder requests have their own lanes so that query load can never refuse
+/// them, and the control lane (session, heartbeat) is separate from the data
+/// lane (events, barrier, gap) so that lease renewal never waits for a burst
+/// of feeder data jobs. Every lane only gates admission: after it, jobs share
+/// the same worker path and graph lock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Lane {
+    /// Queries, stats, inspection and standalone mutations.
+    Shared,
+    /// Feeder events, barriers and gap declarations.
+    FeederData,
+    /// Feeder session registration and heartbeats.
+    FeederControl,
+}
+
+impl Lane {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::FeederData => "feeder_data",
+            Self::FeederControl => "feeder_control",
+        }
+    }
+}
+
 const IMPORT_PERMIT_CAPACITY: usize = 1;
 
 static START_INSTANT: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
@@ -792,7 +823,14 @@ impl std::ops::Deref for Service {
 /// State shared by every clone of a [`Service`].
 pub(crate) struct ServiceInner {
     graph: Arc<RwLock<GraphState>>,
+    /// Shared admission: queries, stats, inspection and standalone mutations.
     permits: Arc<Semaphore>,
+    /// Reserved admission for feeder events, barriers and gaps
+    /// (`KNOTREL_FEEDER_RESERVED_JOBS`); queries never take these.
+    feeder_permits: Arc<Semaphore>,
+    /// Reserved admission for feeder session registration and heartbeats, so
+    /// lease renewal never waits for queries or for feeder data jobs.
+    feeder_control_permits: Arc<Semaphore>,
     import_permits: Arc<Semaphore>,
     // Lock-free mirror of GraphState::failed so readiness never waits for graph work.
     unavailable: Arc<AtomicBool>,
@@ -2056,12 +2094,16 @@ impl Service {
                 instance_id: inst_id_opt,
                 topology_lifecycle,
                 inspection: graph.is_inspectable(),
+                feeder_reserved_jobs: (mode == ServerMode::SourceManaged)
+                    .then(|| config.feeder_reserved_jobs()),
             },
             graph: Arc::new(RwLock::new(GraphState::new(
                 graph,
                 config.dedup_window_size(),
             ))),
             permits: Arc::new(Semaphore::new(capacity)),
+            feeder_permits: Arc::new(Semaphore::new(config.feeder_reserved_jobs())),
+            feeder_control_permits: Arc::new(Semaphore::new(FEEDER_CONTROL_PERMITS)),
             import_permits: Arc::new(Semaphore::new(IMPORT_PERMIT_CAPACITY)),
             unavailable: Arc::new(AtomicBool::new(false)),
             published_readiness: Arc::new(AtomicU64::new(PublishedReadiness::pack(
@@ -2244,7 +2286,8 @@ impl Service {
         let published_atomic = self.published_readiness.clone();
         let instance_id = Arc::clone(&self.instance_id);
         let telemetry = self.telemetry.clone();
-        self.run(
+        self.run_in(
+            Lane::FeederControl,
             JobKind::FeederSession,
             JobEffect::MayChangeState,
             move |state| {
@@ -2277,7 +2320,8 @@ impl Service {
         let published_atomic = self.published_readiness.clone();
         let instance_id = Arc::clone(&self.instance_id);
         let telemetry = self.telemetry.clone();
-        self.run(
+        self.run_in(
+            Lane::FeederControl,
             JobKind::FeederHeartbeat,
             JobEffect::MayChangeState,
             move |state| {
@@ -2700,16 +2744,11 @@ impl Service {
             return Err(FeederError::Unavailable);
         }
 
-        let permit = self.permits.clone().try_acquire_owned().map_err(|_| {
-            tracing::warn!(
-                capacity = self.info.max_pending_jobs,
-                "request capacity exhausted; rejecting with 503 busy"
-            );
-            // Counted as `busy`; the HTTP mapping keeps `import_in_progress`.
-            self.count_rejection(Rejection::Busy);
-            FeederError::from(ServiceError::Busy)
+        let (permit, job_guard) = self.admit_in(Lane::FeederData).map_err(|error| {
+            // Counted as `busy` by `admit_in`; the HTTP mapping keeps
+            // `import_in_progress`.
+            FeederError::from(error)
         })?;
-        let job_guard = self.lifecycle.track_job();
         // One shared handle gives the worker every field it needs with a
         // single reference-count increment.
         let service = self.clone();
@@ -2862,13 +2901,37 @@ impl Service {
         ),
         ServiceError,
     > {
+        self.admit_in(Lane::Shared)
+    }
+
+    /// Admits one graph job on `lane`: refuses it when the service is
+    /// unavailable or every permit of that lane is taken. Each lane has its
+    /// own semaphore, so a full lane never refuses work of another lane. The
+    /// owned permit moves into the worker and returns to its semaphore when
+    /// the worker ends, whatever the outcome (success, error, panic, a caller
+    /// that disconnected or timed out).
+    fn admit_in(
+        &self,
+        lane: Lane,
+    ) -> Result<
+        (
+            tokio::sync::OwnedSemaphorePermit,
+            crate::lifecycle::JobGuard,
+        ),
+        ServiceError,
+    > {
         if self.is_unavailable() {
             self.count_rejection(Rejection::Unavailable);
             return Err(ServiceError::Unavailable);
         }
-        let permit = self.permits.clone().try_acquire_owned().map_err(|_| {
+        let semaphore = match lane {
+            Lane::Shared => &self.permits,
+            Lane::FeederData => &self.feeder_permits,
+            Lane::FeederControl => &self.feeder_control_permits,
+        };
+        let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
             tracing::warn!(
-                capacity = self.info.max_pending_jobs,
+                lane = lane.label(),
                 "request capacity exhausted; rejecting with 503 busy"
             );
             self.count_rejection(Rejection::Busy);
@@ -2904,7 +2967,18 @@ impl Service {
         effect: JobEffect,
         work: impl FnOnce(&mut GraphState) -> R + Send + 'static,
     ) -> Result<R, ServiceError> {
-        let (permit, job_guard) = self.admit()?;
+        self.run_in(Lane::Shared, kind, effect, work).await
+    }
+
+    /// [`Service::run`] with admission on `lane`.
+    async fn run_in<R: Send + 'static>(
+        &self,
+        lane: Lane,
+        kind: JobKind,
+        effect: JobEffect,
+        work: impl FnOnce(&mut GraphState) -> R + Send + 'static,
+    ) -> Result<R, ServiceError> {
+        let (permit, job_guard) = self.admit_in(lane)?;
         // One shared handle gives the worker the graph, lifecycle, failure
         // flag and telemetry with a single reference-count increment.
         let service = self.clone();
@@ -4242,6 +4316,375 @@ mod tests {
             instance_id,
         );
         assert_eq!(b6_res.unwrap_err(), FeederError::Unavailable);
+    }
+
+    /// Reserved admission lanes for feeder requests (design document
+    /// `docs/integrations/feeder-admission-design.md`, sections 3 and 3.1).
+    mod feeder_lanes {
+        use super::*;
+
+        const SHARED: usize = 3;
+
+        fn source_managed() -> Service {
+            let config = crate::ServerConfig::default().with_mode(ServerMode::SourceManaged);
+            Service::with_config(
+                ConnectivityGraph::default(),
+                SHARED,
+                Lifecycle::ready(),
+                &config,
+            )
+        }
+
+        async fn hold_all(semaphore: &Arc<Semaphore>) -> tokio::sync::OwnedSemaphorePermit {
+            let n = semaphore.available_permits() as u32;
+            semaphore.clone().acquire_many_owned(n).await.unwrap()
+        }
+
+        fn session(service: &Service, epoch: u64, lease_ms: u64) -> SessionRequest {
+            SessionRequest {
+                instance_id: service.instance_id().to_owned(),
+                feeder_session_id: "s".into(),
+                feeder_epoch: epoch,
+                lease_duration_ms: lease_ms,
+            }
+        }
+
+        fn heartbeat(service: &Service, epoch: u64) -> HeartbeatRequest {
+            HeartbeatRequest {
+                instance_id: service.instance_id().to_owned(),
+                feeder_session_id: "s".into(),
+                feeder_epoch: epoch,
+            }
+        }
+
+        fn barrier(service: &Service, generation: u64) -> BarrierRequest {
+            BarrierRequest {
+                instance_id: service.instance_id().to_owned(),
+                graph_id: "default".into(),
+                generation,
+                feeder_session_id: "s".into(),
+                feeder_epoch: 1,
+                barrier_delivery_sequence: 0,
+                barrier_source_position: None,
+            }
+        }
+
+        fn seed_ready(service: &Service) {
+            {
+                let mut state = service.graph.write();
+                state.generation = 1;
+                state.sync_status = SyncStatus::Ready;
+                state.source_position = Some("p-0".into());
+            }
+            service.set_sync_status_for_test(SyncStatus::Ready);
+        }
+
+        async fn wait_available(semaphore: &Arc<Semaphore>, n: usize) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while semaphore.available_permits() != n {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("expected {n} available permits"));
+        }
+
+        #[tokio::test]
+        async fn info_reports_the_reserved_permits_only_in_source_managed_mode() {
+            assert_eq!(source_managed().info().feeder_reserved_jobs, Some(4));
+            let standalone = Service::new(ConnectivityGraph::default(), 2, Lifecycle::ready());
+            assert_eq!(standalone.info().feeder_reserved_jobs, None);
+            let custom = crate::ServerConfig::default()
+                .with_mode(ServerMode::SourceManaged)
+                .with_feeder_reserved_jobs(7)
+                .unwrap();
+            let service =
+                Service::with_config(ConnectivityGraph::default(), 2, Lifecycle::ready(), &custom);
+            assert_eq!(service.feeder_permits.available_permits(), 7);
+            assert_eq!(
+                service.feeder_control_permits.available_permits(),
+                FEEDER_CONTROL_PERMITS
+            );
+        }
+
+        /// Queries holding every shared permit refuse neither feeder data nor
+        /// feeder control requests; a full data lane refuses data requests
+        /// only; a full control lane refuses control requests only.
+        #[tokio::test]
+        async fn each_lane_is_refused_only_when_it_is_full() {
+            let service = source_managed();
+            let _queries = hold_all(&service.permits).await;
+            assert_eq!(service.stats().await.unwrap_err(), ServiceError::Busy);
+            service
+                .register_session(session(&service, 1, 10_000))
+                .await
+                .unwrap();
+            service.heartbeat(heartbeat(&service, 1)).await.unwrap();
+            // Admitted on the data lane (it fails later for its own reason).
+            let not_busy = service
+                .declare_barrier(barrier(&service, 0))
+                .await
+                .unwrap_err();
+            assert_ne!(not_busy, FeederError::ImportInProgress);
+
+            let data = hold_all(&service.feeder_permits).await;
+            assert_eq!(
+                service
+                    .declare_barrier(barrier(&service, 0))
+                    .await
+                    .unwrap_err(),
+                FeederError::ImportInProgress
+            );
+            assert_eq!(
+                service
+                    .declare_gap(crate::api::GapRequest {
+                        instance_id: service.instance_id().to_owned(),
+                        graph_id: "default".into(),
+                        generation: 0,
+                        feeder_session_id: "s".into(),
+                        feeder_epoch: 1,
+                        failed_delivery_sequence: 1,
+                        reason: None,
+                    })
+                    .await
+                    .unwrap_err(),
+                FeederError::ImportInProgress
+            );
+            service.heartbeat(heartbeat(&service, 1)).await.unwrap();
+            service
+                .register_session(session(&service, 1, 10_000))
+                .await
+                .unwrap();
+            drop(data);
+
+            let _control = hold_all(&service.feeder_control_permits).await;
+            assert_eq!(
+                service.heartbeat(heartbeat(&service, 1)).await.unwrap_err(),
+                FeederError::ImportInProgress
+            );
+            assert_ne!(
+                service
+                    .declare_barrier(barrier(&service, 0))
+                    .await
+                    .unwrap_err(),
+                FeederError::ImportInProgress
+            );
+        }
+
+        /// The lease question (design section 3.1): with the shared lane full
+        /// of queries and the data lane full of feeder jobs, heartbeats keep
+        /// a 1 s lease alive for several lease periods, the status stays
+        /// `ready`, and a session registration still succeeds.
+        #[tokio::test]
+        async fn lease_survives_saturated_query_and_data_lanes() {
+            let _clock_guard = lock_clock_for_test().await;
+            reset_clock();
+            let service = source_managed();
+            service
+                .register_session(session(&service, 1, 1_000))
+                .await
+                .unwrap();
+            seed_ready(&service);
+            let _queries = hold_all(&service.permits).await;
+            let _data = hold_all(&service.feeder_permits).await;
+            for _ in 0..12 {
+                advance_clock(Duration::from_millis(300));
+                assert!(
+                    !service.is_lease_expired(),
+                    "lease expired between heartbeats"
+                );
+                let renewed = service.heartbeat(heartbeat(&service, 1)).await.unwrap();
+                assert_eq!(renewed.status, SyncStatus::Ready);
+                assert_eq!(service.sync_status(), SyncStatus::Ready);
+            }
+            // 3.6 s, more than three leases: still renewed, never stale.
+            let again = service
+                .register_session(session(&service, 1, 1_000))
+                .await
+                .unwrap();
+            assert_eq!(again.status, SyncStatus::Ready);
+            assert!(!service.is_lease_expired());
+        }
+
+        /// Control: the same scenario before the change would have refused the
+        /// heartbeat. Without a heartbeat the lease does expire, so the test
+        /// above exercises renewal, not a clock that never moves.
+        #[tokio::test]
+        async fn without_heartbeats_the_lease_expires() {
+            let _clock_guard = lock_clock_for_test().await;
+            reset_clock();
+            let service = source_managed();
+            service
+                .register_session(session(&service, 1, 1_000))
+                .await
+                .unwrap();
+            seed_ready(&service);
+            advance_clock(Duration::from_millis(1_001));
+            assert!(service.is_lease_expired());
+        }
+
+        /// A data-lane permit returns after a protocol error and after a
+        /// failed worker.
+        #[tokio::test]
+        async fn data_permits_return_after_errors_and_worker_failure() {
+            let service = source_managed();
+            let full = service.feeder_permits.available_permits();
+            service
+                .register_session(session(&service, 1, 10_000))
+                .await
+                .unwrap();
+            // Protocol error inside the worker: stale generation.
+            let error = service
+                .declare_barrier(barrier(&service, 9))
+                .await
+                .unwrap_err();
+            assert_ne!(error, FeederError::ImportInProgress);
+            wait_available(&service.feeder_permits, full).await;
+            // Failed worker: the job sees the failure marker and fails closed.
+            service.graph.write().failed = true;
+            assert_eq!(
+                service
+                    .declare_barrier(barrier(&service, 0))
+                    .await
+                    .unwrap_err(),
+                FeederError::Unavailable
+            );
+            wait_available(&service.feeder_permits, full).await;
+            assert_eq!(
+                service.heartbeat(heartbeat(&service, 1)).await.unwrap_err(),
+                FeederError::Unavailable
+            );
+            wait_available(&service.feeder_control_permits, FEEDER_CONTROL_PERMITS).await;
+        }
+
+        /// A cancelled caller and a caller that times out (the server's
+        /// request timeout drops the handler future the same way) do not
+        /// release the permit while the worker runs; the worker returns it.
+        #[tokio::test]
+        async fn permits_return_after_cancellation_and_timeout() {
+            let service = source_managed();
+            service
+                .register_session(session(&service, 1, 10_000))
+                .await
+                .unwrap();
+            let full_data = service.feeder_permits.available_permits();
+            let graph = service.graph.clone();
+            let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let holder = std::thread::spawn(move || {
+                let _guard = graph.write();
+                locked_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            });
+            locked_rx.await.unwrap();
+
+            // Cancelled data job.
+            let s1 = service.clone();
+            let cancelled = tokio::spawn(async move { s1.declare_barrier(barrier(&s1, 1)).await });
+            wait_available(&service.feeder_permits, full_data - 1).await;
+            cancelled.abort();
+            let _ = cancelled.await;
+            // Timed-out control job.
+            let s2 = service.clone();
+            let timed_out =
+                tokio::time::timeout(Duration::from_millis(50), s2.heartbeat(heartbeat(&s2, 1)))
+                    .await;
+            assert!(
+                timed_out.is_err(),
+                "the heartbeat must still be waiting for the lock"
+            );
+            assert_eq!(service.feeder_permits.available_permits(), full_data - 1);
+            assert_eq!(
+                service.feeder_control_permits.available_permits(),
+                FEEDER_CONTROL_PERMITS - 1
+            );
+
+            release_tx.send(()).unwrap();
+            holder.join().unwrap();
+            wait_available(&service.feeder_permits, full_data).await;
+            wait_available(&service.feeder_control_permits, FEEDER_CONTROL_PERMITS).await;
+        }
+
+        /// Outstanding graph jobs are bounded by shared + reserved + control
+        /// permits (imports have their own single permit), and the next job
+        /// of every full lane is refused.
+        #[tokio::test]
+        async fn outstanding_jobs_are_bounded_by_the_sum_of_the_lanes() {
+            let lifecycle = Lifecycle::ready();
+            let config = crate::ServerConfig::default().with_mode(ServerMode::SourceManaged);
+            let service = Service::with_config(
+                ConnectivityGraph::default(),
+                SHARED,
+                lifecycle.clone(),
+                &config,
+            );
+            let reserved = service.feeder_permits.available_permits();
+            service
+                .register_session(session(&service, 1, 10_000))
+                .await
+                .unwrap();
+            let graph = service.graph.clone();
+            let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let holder = std::thread::spawn(move || {
+                let _guard = graph.write();
+                locked_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            });
+            locked_rx.await.unwrap();
+            let mut jobs = Vec::new();
+            for _ in 0..SHARED {
+                let s = service.clone();
+                jobs.push(tokio::spawn(async move {
+                    let _ = s.stats().await;
+                }));
+            }
+            for _ in 0..reserved {
+                let s = service.clone();
+                jobs.push(tokio::spawn(async move {
+                    let _ = s.declare_barrier(barrier(&s, 1)).await;
+                }));
+            }
+            for _ in 0..FEEDER_CONTROL_PERMITS {
+                let s = service.clone();
+                jobs.push(tokio::spawn(async move {
+                    let _ = s.heartbeat(heartbeat(&s, 1)).await;
+                }));
+            }
+            let bound = SHARED + reserved + FEEDER_CONTROL_PERMITS;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while lifecycle.outstanding_jobs() != bound {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(service.stats().await.unwrap_err(), ServiceError::Busy);
+            assert_eq!(
+                service
+                    .declare_barrier(barrier(&service, 1))
+                    .await
+                    .unwrap_err(),
+                FeederError::ImportInProgress
+            );
+            assert_eq!(
+                service.heartbeat(heartbeat(&service, 1)).await.unwrap_err(),
+                FeederError::ImportInProgress
+            );
+            assert_eq!(lifecycle.outstanding_jobs(), bound);
+            release_tx.send(()).unwrap();
+            holder.join().unwrap();
+            for job in jobs {
+                job.await.unwrap();
+            }
+            assert_eq!(lifecycle.outstanding_jobs(), 0);
+            assert_eq!(service.permits.available_permits(), SHARED);
+            assert_eq!(service.feeder_permits.available_permits(), reserved);
+            assert_eq!(
+                service.feeder_control_permits.available_permits(),
+                FEEDER_CONTROL_PERMITS
+            );
+        }
     }
 
     #[tokio::test]

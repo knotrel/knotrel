@@ -43,10 +43,11 @@ enum Setting {
     MetricsEnabled,
     TopologyLifecycle,
     Inspection,
+    FeederReservedJobs,
 }
 
 impl Setting {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Address,
         Self::Engine,
         Self::MaxPendingJobs,
@@ -63,6 +64,7 @@ impl Setting {
         Self::MetricsEnabled,
         Self::TopologyLifecycle,
         Self::Inspection,
+        Self::FeederReservedJobs,
     ];
 
     const fn as_str(self) -> &'static str {
@@ -83,6 +85,7 @@ impl Setting {
             Self::MetricsEnabled => "KNOTREL_METRICS_ENABLED",
             Self::TopologyLifecycle => "KNOTREL_TOPOLOGY_LIFECYCLE",
             Self::Inspection => "KNOTREL_INSPECTION",
+            Self::FeederReservedJobs => "KNOTREL_FEEDER_RESERVED_JOBS",
         }
     }
 
@@ -120,6 +123,7 @@ pub struct ServerConfig {
     metrics_enabled: bool,
     topology_lifecycle: bool,
     inspection: bool,
+    feeder_reserved_jobs: usize,
 }
 
 /// A malformed or unsupported startup setting.
@@ -151,6 +155,7 @@ impl Default for ServerConfig {
             metrics_enabled: false,
             topology_lifecycle: false,
             inspection: false,
+            feeder_reserved_jobs: Self::DEFAULT_FEEDER_RESERVED_JOBS,
         }
     }
 }
@@ -177,6 +182,11 @@ impl ServerConfig {
     pub const DEFAULT_DEDUP_WINDOW_SIZE: usize = 10_000;
     /// Largest accepted deduplication window capacity.
     pub const MAX_DEDUP_WINDOW_SIZE: usize = 1_000_000;
+    /// Default number of admission permits reserved for feeder events,
+    /// barriers and gap declarations in source-managed mode.
+    pub const DEFAULT_FEEDER_RESERVED_JOBS: usize = 4;
+    /// Largest accepted number of reserved feeder permits.
+    pub const MAX_FEEDER_RESERVED_JOBS: usize = 64;
     /// Default time a client may take to send request headers or stay idle between requests.
     pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
     /// Default time allowed to receive a request body and produce its response.
@@ -259,6 +269,7 @@ impl ServerConfig {
             metrics_enabled: false,
             topology_lifecycle: false,
             inspection: false,
+            feeder_reserved_jobs: Self::DEFAULT_FEEDER_RESERVED_JOBS,
         })
     }
 
@@ -271,6 +282,23 @@ impl ServerConfig {
     /// Sets the maximum payload size accepted for graph import.
     pub fn with_max_import_body_bytes(mut self, bytes: usize) -> Result<Self, ConfigError> {
         self.max_import_body_bytes = check_import_body_bytes(bytes)?;
+        Ok(self)
+    }
+
+    /// Sets the number of admission permits reserved for feeder events,
+    /// barriers and gap declarations (source-managed mode; ignored in
+    /// standalone mode). Queries never use these permits, so they cannot
+    /// refuse feeder progress. Must be from 1 to
+    /// [`Self::MAX_FEEDER_RESERVED_JOBS`].
+    pub fn with_feeder_reserved_jobs(mut self, jobs: usize) -> Result<Self, ConfigError> {
+        if jobs == 0 || jobs > Self::MAX_FEEDER_RESERVED_JOBS {
+            return Err(ConfigError(format!(
+                "{} must be between 1 and {}",
+                Setting::FeederReservedJobs,
+                Self::MAX_FEEDER_RESERVED_JOBS
+            )));
+        }
+        self.feeder_reserved_jobs = jobs;
         Ok(self)
     }
 
@@ -366,6 +394,12 @@ impl ServerConfig {
     /// Returns the capacity of the bounded deduplication window.
     pub fn dedup_window_size(&self) -> usize {
         self.dedup_window_size
+    }
+
+    /// Returns the number of admission permits reserved for feeder events,
+    /// barriers and gap declarations.
+    pub fn feeder_reserved_jobs(&self) -> usize {
+        self.feeder_reserved_jobs
     }
 
     /// Replaces the open-connection ceiling.
@@ -572,6 +606,10 @@ impl ServerConfig {
             Some(value) => parse_decimal(Setting::DedupWindowSize, value)?,
             None => defaults.dedup_window_size,
         };
+        let feeder_reserved_jobs = match settings.get(&Setting::FeederReservedJobs) {
+            Some(value) => parse_decimal(Setting::FeederReservedJobs, value)?,
+            None => defaults.feeder_reserved_jobs,
+        };
         let max_pending_jobs = match settings.get(&Setting::MaxPendingJobs) {
             Some(value) => {
                 if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
@@ -628,6 +666,7 @@ impl ServerConfig {
             .with_inspection(inspection)
             .with_max_import_body_bytes(max_import_body_bytes)?
             .with_dedup_window_size(dedup_window_size)?
+            .with_feeder_reserved_jobs(feeder_reserved_jobs)?
             .with_graph_limits(limits)
             .with_max_connections(max_connections)?
             .with_header_read_timeout(timeout(
@@ -726,6 +765,7 @@ mod tests {
                 "KNOTREL_METRICS_ENABLED",
                 "KNOTREL_TOPOLOGY_LIFECYCLE",
                 "KNOTREL_INSPECTION",
+                "KNOTREL_FEEDER_RESERVED_JOBS",
             ]
         );
         for (setting, name) in Setting::ALL.into_iter().zip(names) {
@@ -1051,6 +1091,28 @@ mod tests {
                 .with_shutdown_timeout(Duration::from_secs(3601))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn feeder_reserved_jobs_configuration_and_limits() {
+        let defaults = ServerConfig::from_variables([]).unwrap();
+        assert_eq!(
+            defaults.feeder_reserved_jobs(),
+            ServerConfig::DEFAULT_FEEDER_RESERVED_JOBS
+        );
+        let custom =
+            ServerConfig::from_variables([("KNOTREL_FEEDER_RESERVED_JOBS".into(), "8".into())])
+                .unwrap();
+        assert_eq!(custom.feeder_reserved_jobs(), 8);
+        for bad in ["0", "65", "-1", "four", ""] {
+            assert!(
+                ServerConfig::from_variables([("KNOTREL_FEEDER_RESERVED_JOBS".into(), bad.into())])
+                    .is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+        assert!(defaults.clone().with_feeder_reserved_jobs(64).is_ok());
+        assert!(defaults.with_feeder_reserved_jobs(65).is_err());
     }
 
     #[test]
