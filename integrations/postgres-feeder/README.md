@@ -107,7 +107,9 @@ KNOTREL_PG_TESTS_REQUIRED=1 cargo test
 scripts/stop-test-postgres.sh 18
 ```
 
-`start-test-postgres.sh` accepts 15 to 19. Without `KNOTREL_PG_ADMIN_URL` the
+`start-test-postgres.sh` accepts 15 to 19. The upgrade test
+(`tests/upgrade.rs`) also needs `KNOTREL_PREVIOUS_BIN`, a `knotrel-server` built
+from the previous release tag; CI runs it on PostgreSQL 18. Without `KNOTREL_PG_ADMIN_URL` the
 integration tests are skipped (CI sets `KNOTREL_PG_TESTS_REQUIRED=1`, so they
 cannot be skipped there). Each test uses its own database, role and slot
 prefix. Feeder logs are kept in `target/feeder-test-logs/`.

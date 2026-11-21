@@ -1,0 +1,74 @@
+# Knotrel behind a gateway with TLS and authentication (roadmap 0.9.5).
+#
+#   examples/gateway/setup.sh          # certificates and credentials (once)
+#   docker compose -f examples/gateway/compose.yaml up --build
+#   open https://localhost:8443/      # trust .generated/tls/ca.crt, or use -k
+#
+# Knotrel listens on 127.0.0.1:9080 inside its own network namespace. The
+# console and the gateway share that namespace (network_mode: service:knotrel),
+# so nothing but the gateway's TLS port 8443 is reachable, and only on the
+# host's loopback. Credentials and keys are generated into .generated/ (never
+# committed). Validation: examples/gateway/smoke-test.sh.
+name: knotrel-gateway-example
+
+services:
+  knotrel:
+    build:
+      context: ../..
+      dockerfile: examples/container/Dockerfile
+    image: knotrel-server:example
+    environment:
+      # Loopback only: the image's default 0.0.0.0 bind is overridden.
+      KNOTREL_ADDR: 127.0.0.1:9080
+      KNOTREL_ALLOW_NON_LOOPBACK: 'false'
+      KNOTREL_MODE: standalone
+      KNOTREL_TOPOLOGY_LIFECYCLE: 'true'
+      KNOTREL_INSPECTION: 'true'
+      KNOTREL_METRICS_ENABLED: 'true'
+    ports:
+      # The gateway's listener, published from this shared namespace.
+      - '127.0.0.1:8443:8443'
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9080 && printf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+  console:
+    build:
+      context: ../../console
+    image: knotrel-console:local
+    network_mode: service:knotrel
+    environment:
+      KNOTREL_UPSTREAM: http://127.0.0.1:9080
+      KNOTREL_CONSOLE_SERVER_NAMES: localhost
+      KNOTREL_CONSOLE_SERVER_LABEL: gateway-example (127.0.0.1:9080)
+    depends_on:
+      knotrel:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+  gateway:
+    # Same pinned base image as the console container.
+    image: nginxinc/nginx-unprivileged:1.31-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e
+    network_mode: service:knotrel
+    command: ["nginx", "-c", "/etc/knotrel-gateway/nginx.conf", "-g", "daemon off;"]
+    volumes:
+      - ./nginx.conf:/etc/knotrel-gateway/nginx.conf:ro
+      - ./.generated/tls:/etc/knotrel-gateway/tls:ro
+      - ./.generated/auth:/etc/knotrel-gateway/auth:ro
+    depends_on:
+      knotrel:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']

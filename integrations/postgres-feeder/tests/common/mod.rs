@@ -86,6 +86,11 @@ impl Server {
         let bin = std::env::var("KNOTREL_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|_| repo_root().join("target/debug/knotrel-server"));
+        Self::start_binary(&bin, port).await
+    }
+
+    /// Starts a specific server binary (for example a previous release).
+    pub async fn start_binary(bin: &std::path::Path, port: u16) -> Self {
         assert!(
             bin.exists(),
             "{} not found: run `cargo build --bin knotrel-server` at the repository root or set KNOTREL_BIN",
@@ -123,6 +128,23 @@ impl Server {
         if let Some(mut c) = self.child.take() {
             let _ = c.kill().await;
             let _ = c.wait().await;
+        }
+    }
+
+    /// Stops the server with SIGTERM and waits for the drain; returns its exit
+    /// code.
+    pub async fn terminate(&mut self) -> Option<i32> {
+        let mut c = self.child.take()?;
+        let pid = c.id()?;
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+        match tokio::time::timeout(Duration::from_secs(20), c.wait()).await {
+            Ok(status) => status.ok().and_then(|s| s.code()),
+            Err(_) => {
+                let _ = c.kill().await;
+                None
+            }
         }
     }
 
@@ -310,6 +332,13 @@ impl Env {
             self.feeder_log.display(),
             self.log()
         );
+    }
+
+    /// Stops the server with SIGTERM and starts `bin` on the same port.
+    pub async fn replace_server(&mut self, bin: &std::path::Path) -> Option<i32> {
+        let code = self.server.terminate().await;
+        self.server = Server::start_binary(bin, self.server.port).await;
+        code
     }
 
     pub async fn restart_server(&mut self) {

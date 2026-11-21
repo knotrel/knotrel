@@ -69,6 +69,8 @@ jobs:
         postgres: ['15', '16', '17', '18', '19']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -79,6 +81,26 @@ jobs:
             integrations/postgres-feeder -> target
       - name: Build knotrel-server
         run: cargo build --locked --bin knotrel-server
+      # The upgrade test (docs/deployment.md, "Upgrade between minor versions")
+      # runs once, on PostgreSQL 18, against the previous release's server.
+      - name: Build the previous release's knotrel-server
+        if: matrix.postgres == '18'
+        shell: bash
+        run: |
+          head="$(git rev-parse HEAD)"
+          tag=""
+          for t in $(git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname); do
+            [[ "$t" == *-* ]] && continue
+            [[ "$(git rev-list -n 1 "$t")" == "$head" ]] && continue
+            tag="$t"; break
+          done
+          [[ -n "$tag" ]] || { echo "::error::no previous release tag"; exit 1; }
+          git worktree add --detach "$RUNNER_TEMP/previous" "$tag"
+          cargo build --locked --bin knotrel-server --manifest-path "$RUNNER_TEMP/previous/Cargo.toml" \
+            --target-dir "$RUNNER_TEMP/previous-target"
+          echo "KNOTREL_PREVIOUS_BIN=$RUNNER_TEMP/previous-target/debug/knotrel-server" >> "$GITHUB_ENV"
+          echo "KNOTREL_UPGRADE_TEST_REQUIRED=1" >> "$GITHUB_ENV"
+          echo "Upgrade test from $tag" 
       - name: Build the feeder and its tests
         working-directory: integrations/postgres-feeder
         run: cargo test --locked --no-run
