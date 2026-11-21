@@ -10,9 +10,19 @@ Earlier comparisons are kept in the [performance history](performance-history.md
 Each was a separate campaign with its own rules, references and binaries, so
 those results cannot be compared with this page or chained into a trend.
 
+## v0.8.0: not qualified
+
+v0.8.0 (unreleased) is released **without** a performance qualification
+against v0.7.0, by maintainer decision. No performance statement is made for
+it. Its new server features are opt-in; the targeted cost check of the
+inspection routes is in [console-inspection-costs.md](console-inspection-costs.md)
+and is not a release qualification. Details and limits:
+[v0.8.0 release notes](releases/v0.8.0-release-notes.md#performance-qualification).
+The comparison below remains the latest qualified one.
+
 ## v0.7.0 compared with v0.6.0
 
-**v0.7.0 (unreleased; qualification accepted with exceptions on 2026-11-20)
+**v0.7.0 (released 2026-11-20; qualification accepted with exceptions)
 is not demonstrated to be faster in general than v0.6.0.**
 - **Faster:**
   - read-heavy concurrent requests: about 2× the throughput with 4 clients,

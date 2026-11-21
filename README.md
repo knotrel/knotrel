@@ -207,6 +207,9 @@ with exceptions**, not passed unconditionally. Three inconclusive results
 and two unqualified lifecycle requirements on a hub topology are accepted
 for v0.7.0 only
 ([release notes](docs/releases/v0.7.0-release-notes.md#performance-qualification)).
+v0.8.0 (unreleased) is not performance-qualified, by maintainer decision: no
+performance statement is made for it; its new server features are opt-in
+([release notes](docs/releases/v0.8.0-release-notes.md#performance-qualification)).
 
 ## Installing a release
 
