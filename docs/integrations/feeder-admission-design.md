@@ -1,6 +1,8 @@
 # Feeder admission and scheduling under query load: design (roadmap 0.9.3)
 
-**Status: PROPOSED, awaiting maintainer approval. No code has been written.**
+**Status: APPROVED by the maintainer on 2026-11-21 (change A and step B; B1
+and B2 out of scope), with the control lane of section 3.1 added before
+implementation as requested.**
 
 The v0.8.0 baseline of the [feeder-under-load check](feeder-under-load.md)
 failed Q2 and Q3. By its decision rule, 0.9.3 continues with the smallest
@@ -57,15 +59,48 @@ mode, so that queries can never take the capacity the feeder needs.
   request is refused exactly as today: `503 import_in_progress`, counted as
   `busy`.
 
-**Why 4:** the reference feeder has at most one events request and one
-heartbeat in flight; a session registration or a barrier may overlap them.
-Four covers that with one spare and keeps the extra bound small.
+**Why 4:** the reference feeder has at most one events, barrier or gap
+request in flight at a time; four leaves room for a retry overlapping a slow
+request and keeps the extra bound small.
+
+### 3.1 Control lane: session and heartbeat keep access
+
+Lease renewal must not depend on how busy the data path is. The reserved
+capacity is therefore split into two independent semaphores:
+
+| Lane | Requests | Permits |
+| --- | --- | --- |
+| Feeder data | events, barrier, gap | `KNOTREL_FEEDER_RESERVED_JOBS` (default 4) |
+| Feeder control | session registration, heartbeat | 2, fixed (one heartbeat and one registration in flight) |
+
+- A session or heartbeat request never takes a permit of the shared query
+  semaphore or of the data lane, so neither query load nor a burst of events
+  and barriers can refuse it at admission.
+- After admission both lanes run through the same worker and take the graph
+  lock exclusively, as today. A heartbeat therefore waits at most for the job
+  holding the lock (one events batch or the readers present when it queues;
+  the lock is task-fair), milliseconds against a lease of at least 1 s.
+- Refusal of a control request is still possible only if more than two are in
+  flight at once; the reference feeder never does that.
+- **Test that closes the lease question:** with every shared permit held by
+  query jobs and every data-lane permit held by feeder jobs, a feeder with a
+  1 s lease heartbeats for several lease periods, and the lease never expires
+  and the status never becomes `stale`; a session registration succeeds in
+  the same state. Until this test passes, the lease risk is not considered
+  resolved.
 
 **Invariants kept** (each with a test):
 1. **Bounded work.** Outstanding graph jobs stay bounded:
-   `KNOTREL_MAX_PENDING_JOBS + KNOTREL_FEEDER_RESERVED_JOBS` plus one import,
-   instead of `KNOTREL_MAX_PENDING_JOBS` plus one import. The documented bound
-   in `docs/http-api.md` (resource bounds) changes accordingly.
+   `KNOTREL_MAX_PENDING_JOBS + KNOTREL_FEEDER_RESERVED_JOBS + 2` plus one
+   import, instead of `KNOTREL_MAX_PENDING_JOBS` plus one import. The
+   documented bound in `docs/http-api.md` (resource bounds) changes
+   accordingly, and a test fills every lane and checks the bound.
+5. **Permits are always released.** A permit of any lane returns to its
+   semaphore when the job ends, whatever the outcome: success, protocol error
+   (for example `stale_generation`), worker failure, a request cancelled by
+   its client (the permit stays with the running worker until it finishes, as
+   today), and a request that hits the server's request timeout. Each case has
+   a test that checks the lane is back at full capacity.
 2. **Same job path.** Reserved permits only change admission. The job still
    runs through the same worker, lock, failure marker, panic handling,
    cancellation (the permit stays with the worker), drain accounting and
@@ -87,8 +122,18 @@ itself address Q3 at 16 clients, where there were no refusals.
 ## 4. Step B: diagnose the 16-client slowdown before changing anything else
 
 Because the lock already gives waiting writers precedence (section 2), no lock
-change is proposed blindly. First a **diagnostic run**, declared here before
-it runs, descriptive only (no criterion):
+change is proposed blindly. CPU contention is a hypothesis to verify, not a
+finding. First a **diagnostic run**, declared here before it runs,
+descriptive only (no criterion), that separates the three places a feeder
+request can spend time:
+
+| Phase | Source |
+| --- | --- |
+| Admission wait | refusals (`503`) of feeder requests and the time the feeder spends backing off and retrying, from the feeder log; admission itself does not queue |
+| Lock wait | `graph_job_queue_seconds` (worker scheduling) and `graph_job_lock_wait_seconds` for `kind="feeder_events"` |
+| Execution | `graph_job_execution_seconds` for `kind="feeder_events"` |
+
+The same three are recorded for the query kinds. Details:
 
 - Cell L2, G100k, 16 clients, 3 observations, the baseline build (`v0.8.0`)
   and the candidate with change A, same protocol.
@@ -102,9 +147,13 @@ Decision, from the diagnostic:
 
 | Finding | Action |
 | --- | --- |
-| Feeder events wait mostly for the lock (lock wait ≫ execution) | **B1:** let a queued feeder job pass ahead of the readers it would otherwise wait for: readers that have not yet started their traversal re-check a "feeder waiting" flag and yield before taking the shared lock. Designed and reviewed as an addendum to this document before coding. |
-| Feeder events run slowly while the lock is held (execution ≫ lock wait) and the CPUs are saturated | **B2:** bound the number of query jobs that run concurrently (new setting, default the number of CPUs minus one), so a feeder job finds a core. Same addendum and review. |
-| Neither dominates (the time is in HTTP, PostgreSQL or the feeder) | **B0:** no further server change. Q3 at 16 clients is reported as failing with its cause, for a maintainer decision. |
+| Feeder events wait mostly for the lock (lock wait ≫ execution) | Out of scope for 0.9.3 (approval, 2026-11-21); reported with the numbers. Would be **B1:** let a queued feeder job pass ahead of the readers it would otherwise wait for: readers that have not yet started their traversal re-check a "feeder waiting" flag and yield before taking the shared lock. Designed and reviewed as an addendum to this document before coding. |
+| Feeder events run slowly while the lock is held (execution ≫ lock wait) and the CPUs are saturated | Out of scope for 0.9.3; reported with the numbers. Would be **B2:** bound the number of query jobs that run concurrently (new setting, default the number of CPUs minus one), so a feeder job finds a core. Same addendum and review. |
+| Neither dominates (the time is in HTTP, PostgreSQL or the feeder) | **B0:** no further server change. |
+
+In every case 0.9.3 implements only change A; a criterion that still fails is
+reported as failing, with the diagnostic's breakdown, for a maintainer
+decision.
 
 B1 and B2 trade query throughput for feeder progress; Q5 (query throughput ≥
 90 %, p99 ≤ 125 % of the baseline) bounds that trade.
