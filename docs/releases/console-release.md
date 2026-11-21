@@ -161,7 +161,7 @@ every completed step.
 | State after failure | Safe resume |
 | --- | --- |
 | Nothing pushed | Re-run the workflow (same inputs). |
-| Image pushed, release missing or incomplete | Re-run with the same inputs. The workflow detects the tag with the identical digest and continues; it uploads only missing release assets and never replaces existing ones. |
+| Image pushed, a later step failed (attestation, release assets) | Run the workflow again with the same inputs, `dry_run` = false and `resume_run_id` = the failed run's number (fix the workflow on `main` first if the failure was in the workflow). It does not rebuild: it publishes that run's tested artifacts after checking the manifest's version and commit and every SHA-256, sees the image tag already at the identical digest, and continues; it uploads only missing release assets and never replaces existing ones. A plain re-run would rebuild, and the image build is not byte-reproducible, so it would refuse to overwrite the tag. |
 | Image tag exists with a **different** digest | The workflow refuses to overwrite it. Do not delete and re-push the tag. Publish a new version (the next patch or RC, for all artifacts in lockstep) instead. |
 | Console files added but checks failed | Edit the release notes to warn about the console files, fix forward and release a new version. Do not replace published files. |
 
