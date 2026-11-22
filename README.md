@@ -169,8 +169,8 @@ is fastest for every topology and operation mix; measure your own workload.
 | Engine | Status | Costs (logical) | Consider it for | Design |
 | --- | --- | --- | --- | --- |
 | `compact-bfs` / `EngineConfig::CompactBfs` | **Default** | Queries $O(V + E)$ worst case; link/cut $O(\deg u + \deg v)$ amortized; memory $O(V + E)$ | General and mutation-heavy workloads; simplest, lowest memory | [ADR 0004](docs/architecture/0004-compact-core.md) |
-| `ett` / `EngineConfig::EulerTour` | Experimental, opt-in | Queries $O(\log V)$; tree cuts may scan non-tree edges of the smaller side | Query-heavy workloads on tree-like topologies | [ADR 0005](docs/architecture/0005-experimental-euler-tour-forest.md), [0006](docs/architecture/0006-candidate-pruning.md) |
-| `hdt` / `EngineConfig::Hdt` | Experimental, opt-in | Queries $O(\log V)$; updates $O(\log^2 V)$ amortized; memory $O(E + V \log V)$ | Dense graphs with frequent bridge cuts | [ADR 0008](docs/architecture/0008-experimental-hdt.md) |
+| `ett` / `EngineConfig::EulerTour` | Experimental engine with a stable interface ([compatibility](docs/compatibility.md#22-stable-interface-experimental-engine)), opt-in | Queries $O(\log V)$; tree cuts may scan non-tree edges of the smaller side | Query-heavy workloads on tree-like topologies | [ADR 0005](docs/architecture/0005-experimental-euler-tour-forest.md), [0006](docs/architecture/0006-candidate-pruning.md) |
+| `hdt` / `EngineConfig::Hdt` | Experimental engine with a stable interface ([compatibility](docs/compatibility.md#22-stable-interface-experimental-engine)), opt-in | Queries $O(\log V)$; updates $O(\log^2 V)$ amortized; memory $O(E + V \log V)$ | Dense graphs with frequent bridge cuts | [ADR 0008](docs/architecture/0008-experimental-hdt.md) |
 
 Library callers can also reuse traversal scratch space with the opt-in
 `BfsWorkspace`, and compare against the original ordered-adjacency

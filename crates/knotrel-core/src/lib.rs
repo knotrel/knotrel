@@ -217,8 +217,13 @@
 //! - **Stability classes**: every public item is classified **stable**, **experimental** or **internal** in the
 //!   [stability classification](https://github.com/knotrel/knotrel/blob/main/docs/stability.md). Stable items change
 //!   only as the [compatibility policy](https://github.com/knotrel/knotrel/blob/main/docs/compatibility.md) allows,
-//!   after a deprecation. The `EulerTour` and `Hdt` engines with their types, and [`LifecycleStorage`], are
-//!   experimental; [`ReferenceGraph`] is an internal test oracle.
+//!   after a deprecation. The ETT engine ([`EngineConfig::EulerTour`], [`ForestGraph`], [`ForestStats`]) and the
+//!   HDT engine ([`EngineConfig::Hdt`], [`HdtGraph`], [`HdtStats`], [`HdtStorageStats`], [`HdtLevelStorage`]) are
+//!   *stable interfaces with an experimental engine*: their public API stays compatible across 1.x, while their
+//!   performance, maturity and usage recommendation carry no promise ([`EngineConfig::is_experimental`] returns
+//!   `true`). [`LifecycleStorage`] is stable. For these diagnostic structs, the fields, units and the properties
+//!   their documentation lists as guaranteed are stable; the exact values are implementation-dependent.
+//!   [`ReferenceGraph`] is an internal test oracle.
 
 use fixedbitset::FixedBitSet;
 use nohash_hasher::IntMap;

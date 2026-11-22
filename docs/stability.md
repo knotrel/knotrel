@@ -13,6 +13,17 @@ H8, C1, C2 and M2. Every item that moves from Stable to Experimental is listed
 in [Reclassified from Stable to Experimental](#reclassified-from-stable-to-experimental);
 nothing else was narrowed.
 
+**Later decisions of 2026-11-22** ([freeze review, section 7.1](releases/v1.0-contract-freeze-review.md#71-later-maintainer-decisions-2026-11-22)):
+`LifecycleGraph::storage_stats` stays Stable and `LifecycleStorage` becomes
+Stable with it; every public ETT and HDT interface becomes Stable as a
+*stable interface of an experimental engine*
+([compatibility.md](compatibility.md#22-stable-interface-experimental-engine)).
+Both are widenings: nothing was narrowed. For the diagnostic structs, the
+fields, units and the properties documented as guaranteed are stable and the
+exact values are implementation-dependent
+([compatibility.md](compatibility.md#3-what-compatible-means), *Diagnostic
+values*).
+
 ## How the Rust tables are checked
 
 The Rust tables below are checked in CI (job `public API`,
@@ -54,12 +65,15 @@ fail when it disagrees with the classification file.
 | `ConnectivityGraph`, `ConnectivityGraph::new`, `ConnectivityGraph::with_limits`, `ConnectivityGraph::try_from_edges`, `ConnectivityGraph::limits`, `ConnectivityGraph::engine`, `ConnectivityGraph::contains_node` | Stable | Every other method too, including `From<Graph>` |
 | `ConnectivityGraph::as_compact`, `ConnectivityGraph::enable_neighbor_listing` | Stable | Added in 0.8.0 |
 | `EngineConfig`, `EngineConfig::CompactBfs`, `EngineConfig::as_str` | Stable | `#[non_exhaustive]` from 1.0. `as_str` returns the stable `KNOTREL_ENGINE` values |
-| `EngineConfig::EulerTour`, `EngineConfig::Hdt`, `EngineConfig::is_experimental` | Experimental | The ETT (`as_str` value `ett`) and HDT engines ([v1.0 assessment](releases/v1.0-readiness.md#experimental-engines)). Before 2026-11-22 this row named `EngineConfig::Ett`, which does not exist (R7) |
-| `ForestGraph`, `ForestStats`, `HdtGraph`, `HdtStats`, `HdtLevelStorage`, `HdtStorageStats` | Experimental | Engine types and their work and storage counters |
+| `EngineConfig::EulerTour` | Stable | Stable interface, experimental engine ([compatibility.md](compatibility.md#22-stable-interface-experimental-engine)): the ETT variant and its `as_str` value `ett` are kept for 1.x; `#[non_exhaustive]` does not authorize removing it. Experimental only as to performance, maturity and usage recommendation. Experimental before the later decisions of 2026-11-22; before the first corrections of that day this row named `EngineConfig::Ett`, which does not exist (R7) |
+| `ForestGraph`, `ForestStats` | Stable | Stable interface, experimental engine: every method, field and trait implementation. `ForestStats` is frozen exhaustive; its fields, units and the properties its rustdoc lists as guaranteed are stable, the exact counter values are implementation-dependent. Experimental before the later decisions of 2026-11-22 |
+| `EngineConfig::Hdt` | Stable | Stable interface, experimental engine ([compatibility.md](compatibility.md#22-stable-interface-experimental-engine)): the variant and its `as_str` value `hdt` are kept for 1.x; `#[non_exhaustive]` does not authorize removing it. Experimental only as to performance, maturity and usage recommendation. Experimental before the later decisions of 2026-11-22 |
+| `EngineConfig::is_experimental` | Stable | Reports the *experimental engine* qualification, not the stability class: `false` for `CompactBfs`, `true` for `EulerTour` and `Hdt`; the value for `EulerTour` and `Hdt` may stay `true` for 1.x and becomes `false` only on a recorded promotion. Experimental before the later decisions of 2026-11-22 |
+| `HdtGraph`, `HdtStats`, `HdtStorageStats`, `HdtLevelStorage` | Stable | Stable interface, experimental engine: every method, field and trait implementation. `HdtStats`, `HdtStorageStats` and `HdtLevelStorage` are frozen exhaustive; their fields, units and the properties their rustdoc lists as guaranteed are stable, the exact counter and storage values are implementation-dependent. Experimental before the later decisions of 2026-11-22 |
 | `LifecycleGraph`, `LifecycleError`, `NodeSpec`, `EdgeSpec` | Stable | Lifecycle on `compact-bfs` ([topology-lifecycle.md](topology-lifecycle.md)). `NodeSpec` and `EdgeSpec` are frozen as is (struct literals; a new field requires a major release); `LifecycleError` is `#[non_exhaustive]` |
 | `LifecycleGraph::degree`, `LifecycleGraph::incident_after` | Stable | Added in 0.8.0 |
 | `EdgeState`, `EdgeState::new` | Stable | `#[non_exhaustive]` from 1.0; `EdgeState::new` (new in 1.0) builds expected values outside the crate |
-| `LifecycleStorage` | Experimental | Storage introspection. `LifecycleGraph::storage_stats`, which returns it, stays Stable under the `LifecycleGraph` row: the freeze review proposes Experimental, which is not among the approved corrections |
+| `LifecycleStorage` | Stable | Storage introspection, returned by `LifecycleGraph::storage_stats` (Stable under the `LifecycleGraph` row, maintainer decision of 2026-11-22). `#[non_exhaustive]`: fields may be added. Guaranteed: the fields, their unit (element counts, never bytes), that values are computed at the call, and the relations listed in its rustdoc (`catalog_nodes == node_count()`, `engine_vertices == catalog_nodes + retired_vertices`, `incident_entries == 2 × edge_count()`, capacities at least the logical sizes, `engine_vertices <= 2 × catalog_nodes + 1024`). Implementation-dependent: capacity values and growth, retention after removals, when retired slots are compacted below that bound. Experimental before the later decisions of 2026-11-22 |
 | `ReferenceGraph` | Internal | Test oracle; public for the test suites and benchmarks, no promise |
 
 ## Rust: `knotrel-server`
@@ -112,9 +126,10 @@ a breaking change that requires deprecation and a major release
 ([compatibility.md](compatibility.md#3-what-compatible-means)), and an
 experimental one follows the rules of [Experimental items](#experimental-items).
 
-`ServerMode`, `ShutdownOutcome`, `GraphLimits`, `NodeSpec` and `EdgeSpec` are
-frozen as they are: exhaustive, so a new variant or field requires a major
-release.
+`ServerMode`, `ShutdownOutcome`, `GraphLimits`, `NodeSpec`, `EdgeSpec`,
+`ForestStats`, `HdtStats`, `HdtStorageStats` and `HdtLevelStorage` are
+frozen as they are:
+exhaustive, so a new variant or field requires a major release.
 
 ## Experimental items
 
@@ -134,9 +149,20 @@ guarantees ([compatibility.md](compatibility.md#21-guarantees-of-experimental-it
   removing an experimental HTTP field or error code that OpenAPI does not mark
   (see [HTTP API](#http-api)) is listed in `docs/api/approved-breaking-changes.yaml`;
 - an experimental member never makes its stable parent experimental: for
-  example, removing `EngineConfig::Hdt` would not change `EngineConfig` or
-  `EngineConfig::CompactBfs`;
+  example, the experimental `/v1/info` field `inspection` does not make
+  `GET /v1/info` experimental;
 - promotion to Stable is recorded in the release notes and here.
+
+An *experimental engine* is not an experimental item. The ETT and HDT
+interfaces (`EngineConfig::EulerTour`, `ForestGraph`, `ForestStats`,
+`EngineConfig::Hdt`, `HdtGraph`, `HdtStats`, `HdtStorageStats`,
+`HdtLevelStorage`, `EngineConfig::is_experimental`, the `KNOTREL_ENGINE`
+and `/v1/info` `engine` values `ett` and `hdt`, `engine="ett"` and
+`engine="hdt"`) are Stable: none of them is
+removed or changed incompatibly in a 1.x release, minor releases included,
+and `#[non_exhaustive]` on `EngineConfig` does not change that. Only the
+engine's performance, maturity and usage recommendation are experimental
+([compatibility.md](compatibility.md#22-stable-interface-experimental-engine)).
 
 ## Reclassified from Stable to Experimental
 
@@ -154,21 +180,30 @@ requires for any stable Rust item that is narrowed.
 | `ServerConfig::DEFAULT_FEEDER_RESERVED_JOBS`, `ServerConfig::MAX_FEEDER_RESERVED_JOBS` | The `ServerConfig` row ("`DEFAULT_*`/`MAX_*` constants") | R6 |
 | HTTP error codes `inspection_disabled`, `inspection_unsupported`, `invalid_cursor` | "Every error `code` in `docs/openapi.yaml` is stable" | H8 |
 | `/v1/info` field `inspection` | The stable `GET /v1/info` row | H8 |
-| `knotrel_build_info` label values `engine="ett"` and `engine="hdt"` | "All 27 families … are stable", closed label value sets | M2 |
-| Label values `route="/v1/nodes"`, `route="/v1/nodes/{node}"`, `route="/v1/nodes/{node}/edges"`, `route="/v1/edges"` of `knotrel_http_requests_total` and `knotrel_http_request_duration_seconds`, and their series | Same | M2 |
+| Label values `route="/v1/nodes"`, `route="/v1/nodes/{node}"`, `route="/v1/nodes/{node}/edges"`, `route="/v1/edges"` of `knotrel_http_requests_total` and `knotrel_http_request_duration_seconds`, and their series | "All 27 families … are stable", closed label value sets | M2 |
+
+The M2 correction also named the `knotrel_build_info` label values
+`engine="ett"` and `engine="hdt"`. The later decisions of 2026-11-22 made
+both Stable again (stable interface, experimental engine), so they are not
+narrowed.
 
 Items that move the other way (now Stable): `router_with_lifecycle`
 (Internal before), `EngineConfig::as_str`, `ConnectivityGraph::new`,
 `with_limits`, `limits` and `engine` (unnamed before, R8), `LOG_FORMAT` (C2) and
 the console variables `KNOTREL_UPSTREAM_TIMEOUT`, `KNOTREL_CONSOLE_LISTEN` and
-`KNOTREL_CONSOLE_SERVER_NAMES` (C1).
+`KNOTREL_CONSOLE_SERVER_NAMES` (C1); from the later decisions of 2026-11-22,
+`LifecycleStorage` and every ETT and HDT interface (`EngineConfig::EulerTour`,
+`ForestGraph`, `ForestStats`, `EngineConfig::Hdt`, `HdtGraph`, `HdtStats`,
+`HdtStorageStats`, `HdtLevelStorage`, `EngineConfig::is_experimental`,
+`KNOTREL_ENGINE=ett` and `=hdt`, `engine="ett"` and `engine="hdt"`),
+Experimental before.
 
 ## HTTP API
 
 | Route | Class | Notes |
 | --- | --- | --- |
 | `GET /health`, `GET /ready` | Stable | |
-| `GET /v1/info`, `GET /v1/stats` | Stable | Fields `feeder_reserved_jobs` (new in 0.9.0) and `inspection` of `/v1/info`: Experimental |
+| `GET /v1/info`, `GET /v1/stats` | Stable | Fields `feeder_reserved_jobs` (new in 0.9.0) and `inspection` of `/v1/info`: Experimental. The `engine` values `ett` and `hdt` are Stable (stable interface, experimental engine); `experimental` reports the engine qualification and may stay `true` for them |
 | `POST /v1/operations`, `POST /v1/batch` | Stable | Including the lifecycle operations |
 | `POST /v1/feeder/session`, `/heartbeat`, `/import`, `/events`, `/barrier`, `/gap` | Stable | The feeder protocol of the [integration contract](integration-contract.md) |
 | `GET /v1/nodes`, `GET /v1/nodes/{node}`, `GET /v1/nodes/{node}/edges`, `GET /v1/edges` | Experimental | Inspection routes, opt-in, added in 0.8.0; marked `x-knotrel-stability: experimental` in `docs/openapi.yaml` |
@@ -192,7 +227,7 @@ done only with an entry in `docs/api/approved-breaking-changes.yaml`.
 | Variable | Class |
 | --- | --- |
 | `KNOTREL_ADDR`, `KNOTREL_ALLOW_NON_LOOPBACK`, `KNOTREL_MODE`, `KNOTREL_MAX_PENDING_JOBS`, `KNOTREL_MAX_NODES`, `KNOTREL_MAX_EDGES`, `KNOTREL_MAX_CONNECTIONS`, `KNOTREL_HEADER_READ_TIMEOUT_MS`, `KNOTREL_REQUEST_TIMEOUT_MS`, `KNOTREL_SHUTDOWN_TIMEOUT_MS`, `KNOTREL_MAX_IMPORT_BODY_BYTES`, `KNOTREL_DEDUP_WINDOW_SIZE`, `KNOTREL_METRICS_ENABLED`, `KNOTREL_TOPOLOGY_LIFECYCLE` | Stable |
-| `KNOTREL_ENGINE` | Stable for `compact-bfs`; the values `ett` and `hdt` are Experimental |
+| `KNOTREL_ENGINE` | Stable for `compact-bfs`, `ett` and `hdt` (`ett` and `hdt`: stable interface, experimental engine, [compatibility.md](compatibility.md#22-stable-interface-experimental-engine)) |
 | `KNOTREL_INSPECTION` | Experimental (with the inspection routes) |
 | `KNOTREL_FEEDER_RESERVED_JOBS` | Experimental (new in 0.9.0) |
 | `LOG_FORMAT` | Stable: `json` (any case) selects JSON log lines, any other value or none selects text. The content of log lines is internal |
@@ -209,9 +244,10 @@ describe:
 - `kind="inspect"`, with the inspection routes;
 - `route="/v1/nodes"`, `route="/v1/nodes/{node}"`, `route="/v1/nodes/{node}/edges"`
   and `route="/v1/edges"`, with every series that carries them, with the
-  inspection routes (the series are registered even when inspection is off);
-- `engine="ett"` and `engine="hdt"` of `knotrel_build_info`, with the
-  experimental engines.
+  inspection routes (the series are registered even when inspection is off).
+
+`engine="ett"` and `engine="hdt"` of `knotrel_build_info` are stable, with
+the stable interfaces of the experimental engines.
 
 `knotrel_build_info{version}` is an open set: it carries the crate version.
 

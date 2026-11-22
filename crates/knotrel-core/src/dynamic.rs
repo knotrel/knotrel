@@ -4,7 +4,51 @@ use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
 use std::collections::{BTreeSet, hash_map::Entry};
 
-/// Cumulative replacement-search work; counters saturate at u64::MAX.
+/// Cumulative replacement-search work, from [`ForestGraph::stats`].
+///
+/// A stable interface of the experimental ETT engine
+/// ([`crate::EngineConfig::EulerTour`]). The struct is exhaustive: its four
+/// public fields are frozen for 1.x, and a new field requires a major release.
+///
+/// # Guaranteed
+///
+/// - Each field counts the event its documentation names, in units of events.
+/// - Every counter is `0` on a new graph ([`ForestGraph::new`], `Default`) and
+///   after [`ForestGraph::reset_stats`].
+/// - Between resets, counters only grow, and each saturates at `u64::MAX`
+///   instead of wrapping.
+/// - Queries ([`ForestGraph::connected`], [`ForestGraph::node_count`],
+///   [`ForestGraph::edge_count`], [`ForestGraph::stats`]) never change them.
+/// - `replacements <= tree_cuts` (at most one replacement per removed
+///   spanning edge), `replacements <= candidate_edges` (a replacement is a
+///   tested entry) and `replacements <= scanned_vertices` (it is found while
+///   scanning a vertex).
+///
+/// # Implementation-dependent
+///
+/// The exact values for a given operation sequence: which edges belong to the
+/// spanning forest, which side is scanned, the order in which vertices and
+/// entries are examined and where the search stops depend on the
+/// implementation and may change in any release. Do not compare values across
+/// versions.
+///
+/// # Examples
+///
+/// ```
+/// use knotrel_core::{ForestGraph, ForestStats};
+///
+/// let mut graph = ForestGraph::new();
+/// graph.link(1, 2)?;
+/// graph.link(2, 3)?;
+/// graph.link(3, 1)?;
+/// graph.cut(1, 2)?;
+/// let stats = graph.stats();
+/// assert!(stats.replacements <= stats.tree_cuts);
+/// assert!(stats.replacements <= stats.candidate_edges);
+/// graph.reset_stats();
+/// assert_eq!(graph.stats(), ForestStats::default());
+/// # Ok::<(), knotrel_core::GraphError>(())
+/// ```
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ForestStats {
     /// Deleted edges that belonged to the maintained spanning forest.
@@ -18,7 +62,15 @@ pub struct ForestStats {
     pub replacements: u64,
 }
 
-/// Experimental exact connectivity with deterministic Euler-tour trees.
+/// Exact connectivity with deterministic Euler-tour trees.
+///
+/// **Stable interface, experimental engine.** This type, its methods and its
+/// trait implementations are stable for 1.x: they are removed or changed
+/// incompatibly only after a deprecation and in a major release. The
+/// experimental qualification covers performance, maturity and usage
+/// recommendation only: the cost bounds below describe the current
+/// implementation and are not a compatibility promise
+/// ([compatibility policy](https://github.com/knotrel/knotrel/blob/main/docs/compatibility.md#22-stable-interface-experimental-engine)).
 ///
 /// Maintains a spanning forest: each graph component has exactly one tree.
 /// Non-tree edges are stored at both endpoints. Removing a forest edge scans
@@ -184,12 +236,15 @@ impl ForestGraph {
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
-    /// Returns cumulative replacement-search counters in O(1) time.
+    /// Returns the replacement-search counters accumulated since creation or
+    /// the last [`Self::reset_stats`], in O(1) time without changing any state.
+    ///
+    /// [`ForestStats`] lists which properties of the values are guaranteed.
     #[must_use]
     pub fn stats(&self) -> ForestStats {
         self.stats
     }
-    /// Clears only diagnostic counters, preserving all graph state.
+    /// Sets every diagnostic counter to zero, preserving all graph state.
     pub fn reset_stats(&mut self) {
         self.stats = ForestStats::default();
     }
@@ -198,6 +253,40 @@ impl ForestGraph {
 #[cfg(test)]
 mod tests {
     use super::ForestGraph;
+
+    /// Counters saturate at `u64::MAX` instead of wrapping (a guaranteed
+    /// property of `ForestStats`).
+    #[test]
+    fn stats_counters_saturate_instead_of_wrapping() {
+        let mut g = ForestGraph::new();
+        for (a, b) in [(1, 2), (2, 3), (3, 1)] {
+            g.link(a, b).unwrap();
+        }
+        g.stats = super::ForestStats {
+            tree_cuts: u64::MAX,
+            scanned_vertices: u64::MAX,
+            candidate_edges: u64::MAX,
+            replacements: u64::MAX,
+        };
+        let tree_edge = [(1, 2), (2, 3), (3, 1)]
+            .into_iter()
+            .find(|&(a, b)| {
+                let (a, b) = (g.ids[&a], g.ids[&b]);
+                g.edges[&(a.min(b), a.max(b))].is_some()
+            })
+            .expect("a triangle has spanning edges");
+        assert_eq!(g.cut(tree_edge.0, tree_edge.1), Ok(true));
+        assert!(g.connected(1, 3).unwrap());
+        assert_eq!(
+            g.stats(),
+            super::ForestStats {
+                tree_cuts: u64::MAX,
+                scanned_vertices: u64::MAX,
+                candidate_edges: u64::MAX,
+                replacements: u64::MAX,
+            }
+        );
+    }
     #[test]
     fn general_graph_updates_preserve_avl_and_edge_classification() {
         let mut g = ForestGraph::new();
