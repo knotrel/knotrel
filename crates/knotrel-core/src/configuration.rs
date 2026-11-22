@@ -29,7 +29,17 @@ pub enum EngineConfig {
     ///
     /// This is not HDT and does not provide polylogarithmic update bounds.
     EulerTour,
-    /// Experimental deterministic HDT with level-based replacement search.
+    /// Deterministic HDT with level-based replacement search: a stable
+    /// interface for an experimental engine.
+    ///
+    /// The variant, its selector `"hdt"` ([`EngineConfig::as_str`]) and the
+    /// [`HdtGraph`] API stay compatible across 1.x: they are removed or
+    /// renamed only after a deprecation and in a major release, and
+    /// `#[non_exhaustive]` on this enum does not authorize removing them.
+    /// "Experimental" qualifies only the engine's performance, maturity and
+    /// usage recommendation ([`EngineConfig::is_experimental`] returns `true`):
+    /// it carries no performance, latency or memory promise, lifecycle support
+    /// is not available, and [`EngineConfig::CompactBfs`] remains the default.
     Hdt,
 }
 
@@ -43,7 +53,28 @@ impl EngineConfig {
         }
     }
 
-    /// Whether this engine is experimental rather than the default backend.
+    /// Whether this engine is qualified as experimental: its performance,
+    /// maturity and usage recommendation carry no promise, although its
+    /// public interface may be stable.
+    ///
+    /// Returns `false` for [`EngineConfig::CompactBfs`] and `true` for
+    /// [`EngineConfig::EulerTour`] and [`EngineConfig::Hdt`] in this release.
+    /// The value for `Hdt` may stay `true` for the whole 1.x series; it
+    /// becomes `false` only when the engine is promoted, which the release
+    /// notes record. The value says nothing about the interface's stability
+    /// class: [`EngineConfig::Hdt`] is a stable interface either way. The
+    /// server reports the same value as the `experimental` field of
+    /// `GET /v1/info`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use knotrel_core::EngineConfig;
+    ///
+    /// assert!(!EngineConfig::CompactBfs.is_experimental());
+    /// assert!(EngineConfig::Hdt.is_experimental());
+    /// assert_eq!(EngineConfig::Hdt.as_str(), "hdt");
+    /// ```
     pub fn is_experimental(self) -> bool {
         matches!(self, Self::EulerTour | Self::Hdt)
     }

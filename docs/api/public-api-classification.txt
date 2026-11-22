@@ -112,9 +112,9 @@ stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::Engi
 stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::EngineConfig
 stable       knotrel_core::EngineConfig::CompactBfs
 experimental knotrel_core::EngineConfig::EulerTour
-experimental knotrel_core::EngineConfig::Hdt
+stable       knotrel_core::EngineConfig::Hdt
 stable       knotrel_core::EngineConfig::as_str
-experimental knotrel_core::EngineConfig::is_experimental
+stable       knotrel_core::EngineConfig::is_experimental
 experimental knotrel_core::ForestGraph
 experimental impl core::default::Default for knotrel_core::ForestGraph
 experimental impl core::fmt::Debug for knotrel_core::ForestGraph
@@ -219,94 +219,94 @@ stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::Grap
 stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::GraphLimits
 stable       knotrel_core::GraphLimits::max_edges
 stable       knotrel_core::GraphLimits::max_nodes
-experimental knotrel_core::HdtGraph
-experimental impl core::default::Default for knotrel_core::HdtGraph
-experimental impl core::fmt::Debug for knotrel_core::HdtGraph
+stable       knotrel_core::HdtGraph
+stable       impl core::default::Default for knotrel_core::HdtGraph
+stable       impl core::fmt::Debug for knotrel_core::HdtGraph
 internal     impl core::marker::Freeze for knotrel_core::HdtGraph
-experimental impl core::marker::Send for knotrel_core::HdtGraph
-experimental impl core::marker::Sync for knotrel_core::HdtGraph
-experimental impl core::marker::Unpin for knotrel_core::HdtGraph
+stable       impl core::marker::Send for knotrel_core::HdtGraph
+stable       impl core::marker::Sync for knotrel_core::HdtGraph
+stable       impl core::marker::Unpin for knotrel_core::HdtGraph
 internal     impl core::marker::UnsafeUnpin for knotrel_core::HdtGraph
-experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtGraph
-experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtGraph
-experimental knotrel_core::HdtGraph::add_node
-experimental knotrel_core::HdtGraph::connected
-experimental knotrel_core::HdtGraph::cut
-experimental knotrel_core::HdtGraph::edge_count
-experimental knotrel_core::HdtGraph::link
-experimental knotrel_core::HdtGraph::new
-experimental knotrel_core::HdtGraph::node_count
-experimental knotrel_core::HdtGraph::reset_stats
-experimental knotrel_core::HdtGraph::stats
-experimental knotrel_core::HdtGraph::storage_stats
-experimental knotrel_core::HdtLevelStorage
-experimental impl core::clone::Clone for knotrel_core::HdtLevelStorage
-experimental impl core::cmp::Eq for knotrel_core::HdtLevelStorage
-experimental impl core::cmp::PartialEq for knotrel_core::HdtLevelStorage
-experimental impl core::default::Default for knotrel_core::HdtLevelStorage
-experimental impl core::fmt::Debug for knotrel_core::HdtLevelStorage
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtGraph
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtGraph
+stable       knotrel_core::HdtGraph::add_node
+stable       knotrel_core::HdtGraph::connected
+stable       knotrel_core::HdtGraph::cut
+stable       knotrel_core::HdtGraph::edge_count
+stable       knotrel_core::HdtGraph::link
+stable       knotrel_core::HdtGraph::new
+stable       knotrel_core::HdtGraph::node_count
+stable       knotrel_core::HdtGraph::reset_stats
+stable       knotrel_core::HdtGraph::stats
+stable       knotrel_core::HdtGraph::storage_stats
+stable       knotrel_core::HdtLevelStorage
+stable       impl core::clone::Clone for knotrel_core::HdtLevelStorage
+stable       impl core::cmp::Eq for knotrel_core::HdtLevelStorage
+stable       impl core::cmp::PartialEq for knotrel_core::HdtLevelStorage
+stable       impl core::default::Default for knotrel_core::HdtLevelStorage
+stable       impl core::fmt::Debug for knotrel_core::HdtLevelStorage
 internal     impl core::marker::Freeze for knotrel_core::HdtLevelStorage
-experimental impl core::marker::Send for knotrel_core::HdtLevelStorage
+stable       impl core::marker::Send for knotrel_core::HdtLevelStorage
 internal     impl core::marker::StructuralPartialEq for knotrel_core::HdtLevelStorage
-experimental impl core::marker::Sync for knotrel_core::HdtLevelStorage
-experimental impl core::marker::Unpin for knotrel_core::HdtLevelStorage
+stable       impl core::marker::Sync for knotrel_core::HdtLevelStorage
+stable       impl core::marker::Unpin for knotrel_core::HdtLevelStorage
 internal     impl core::marker::UnsafeUnpin for knotrel_core::HdtLevelStorage
-experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtLevelStorage
-experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtLevelStorage
-experimental knotrel_core::HdtLevelStorage::adjacency_capacity_bytes
-experimental knotrel_core::HdtLevelStorage::free_list_capacity_bytes
-experimental knotrel_core::HdtLevelStorage::level
-experimental knotrel_core::HdtLevelStorage::mapping_capacity_bytes
-experimental knotrel_core::HdtLevelStorage::mapping_payload_bytes
-experimental knotrel_core::HdtLevelStorage::non_tree_incidences
-experimental knotrel_core::HdtLevelStorage::token_capacity_bytes
-experimental knotrel_core::HdtLevelStorage::tree_edges
-experimental knotrel_core::HdtLevelStorage::tree_incidences
-experimental knotrel_core::HdtLevelStorage::vertex_index_capacity_bytes
-experimental knotrel_core::HdtLevelStorage::vertices
-experimental knotrel_core::HdtStats
-experimental impl core::clone::Clone for knotrel_core::HdtStats
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtLevelStorage
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtLevelStorage
+stable       knotrel_core::HdtLevelStorage::adjacency_capacity_bytes
+stable       knotrel_core::HdtLevelStorage::free_list_capacity_bytes
+stable       knotrel_core::HdtLevelStorage::level
+stable       knotrel_core::HdtLevelStorage::mapping_capacity_bytes
+stable       knotrel_core::HdtLevelStorage::mapping_payload_bytes
+stable       knotrel_core::HdtLevelStorage::non_tree_incidences
+stable       knotrel_core::HdtLevelStorage::token_capacity_bytes
+stable       knotrel_core::HdtLevelStorage::tree_edges
+stable       knotrel_core::HdtLevelStorage::tree_incidences
+stable       knotrel_core::HdtLevelStorage::vertex_index_capacity_bytes
+stable       knotrel_core::HdtLevelStorage::vertices
+stable       knotrel_core::HdtStats
+stable       impl core::clone::Clone for knotrel_core::HdtStats
 internal     impl core::clone::TrivialClone for knotrel_core::HdtStats
-experimental impl core::cmp::Eq for knotrel_core::HdtStats
-experimental impl core::cmp::PartialEq for knotrel_core::HdtStats
-experimental impl core::default::Default for knotrel_core::HdtStats
-experimental impl core::fmt::Debug for knotrel_core::HdtStats
-experimental impl core::marker::Copy for knotrel_core::HdtStats
+stable       impl core::cmp::Eq for knotrel_core::HdtStats
+stable       impl core::cmp::PartialEq for knotrel_core::HdtStats
+stable       impl core::default::Default for knotrel_core::HdtStats
+stable       impl core::fmt::Debug for knotrel_core::HdtStats
+stable       impl core::marker::Copy for knotrel_core::HdtStats
 internal     impl core::marker::Freeze for knotrel_core::HdtStats
-experimental impl core::marker::Send for knotrel_core::HdtStats
+stable       impl core::marker::Send for knotrel_core::HdtStats
 internal     impl core::marker::StructuralPartialEq for knotrel_core::HdtStats
-experimental impl core::marker::Sync for knotrel_core::HdtStats
-experimental impl core::marker::Unpin for knotrel_core::HdtStats
+stable       impl core::marker::Sync for knotrel_core::HdtStats
+stable       impl core::marker::Unpin for knotrel_core::HdtStats
 internal     impl core::marker::UnsafeUnpin for knotrel_core::HdtStats
-experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtStats
-experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtStats
-experimental knotrel_core::HdtStats::candidate_edges
-experimental knotrel_core::HdtStats::levels_visited
-experimental knotrel_core::HdtStats::non_tree_promotions
-experimental knotrel_core::HdtStats::replacements
-experimental knotrel_core::HdtStats::tree_cuts
-experimental knotrel_core::HdtStats::tree_promotions
-experimental knotrel_core::HdtStorageStats
-experimental impl core::clone::Clone for knotrel_core::HdtStorageStats
-experimental impl core::cmp::Eq for knotrel_core::HdtStorageStats
-experimental impl core::cmp::PartialEq for knotrel_core::HdtStorageStats
-experimental impl core::fmt::Debug for knotrel_core::HdtStorageStats
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtStats
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtStats
+stable       knotrel_core::HdtStats::candidate_edges
+stable       knotrel_core::HdtStats::levels_visited
+stable       knotrel_core::HdtStats::non_tree_promotions
+stable       knotrel_core::HdtStats::replacements
+stable       knotrel_core::HdtStats::tree_cuts
+stable       knotrel_core::HdtStats::tree_promotions
+stable       knotrel_core::HdtStorageStats
+stable       impl core::clone::Clone for knotrel_core::HdtStorageStats
+stable       impl core::cmp::Eq for knotrel_core::HdtStorageStats
+stable       impl core::cmp::PartialEq for knotrel_core::HdtStorageStats
+stable       impl core::fmt::Debug for knotrel_core::HdtStorageStats
 internal     impl core::marker::Freeze for knotrel_core::HdtStorageStats
-experimental impl core::marker::Send for knotrel_core::HdtStorageStats
+stable       impl core::marker::Send for knotrel_core::HdtStorageStats
 internal     impl core::marker::StructuralPartialEq for knotrel_core::HdtStorageStats
-experimental impl core::marker::Sync for knotrel_core::HdtStorageStats
-experimental impl core::marker::Unpin for knotrel_core::HdtStorageStats
+stable       impl core::marker::Sync for knotrel_core::HdtStorageStats
+stable       impl core::marker::Unpin for knotrel_core::HdtStorageStats
 internal     impl core::marker::UnsafeUnpin for knotrel_core::HdtStorageStats
-experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtStorageStats
-experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtStorageStats
-experimental knotrel_core::HdtStorageStats::available_levels
-experimental knotrel_core::HdtStorageStats::edge_arc_capacity_bytes
-experimental knotrel_core::HdtStorageStats::edge_count
-experimental knotrel_core::HdtStorageStats::level_capacity_bytes
-experimental knotrel_core::HdtStorageStats::levels
-experimental knotrel_core::HdtStorageStats::ordered_payload_bytes
-experimental knotrel_core::HdtStorageStats::vector_capacity_bytes
-experimental knotrel_core::HdtStorageStats::vertex_count
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtStorageStats
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtStorageStats
+stable       knotrel_core::HdtStorageStats::available_levels
+stable       knotrel_core::HdtStorageStats::edge_arc_capacity_bytes
+stable       knotrel_core::HdtStorageStats::edge_count
+stable       knotrel_core::HdtStorageStats::level_capacity_bytes
+stable       knotrel_core::HdtStorageStats::levels
+stable       knotrel_core::HdtStorageStats::ordered_payload_bytes
+stable       knotrel_core::HdtStorageStats::vector_capacity_bytes
+stable       knotrel_core::HdtStorageStats::vertex_count
 stable       knotrel_core::IncidenceError
 stable       impl core::clone::Clone for knotrel_core::IncidenceError
 internal     impl core::clone::TrivialClone for knotrel_core::IncidenceError
@@ -389,27 +389,27 @@ stable       knotrel_core::LifecycleGraph::storage_stats
 stable       knotrel_core::LifecycleGraph::supports_engine
 stable       knotrel_core::LifecycleGraph::try_from_topology
 stable       knotrel_core::LifecycleGraph::with_limits
-experimental knotrel_core::LifecycleStorage
-experimental impl core::clone::Clone for knotrel_core::LifecycleStorage
+stable       knotrel_core::LifecycleStorage
+stable       impl core::clone::Clone for knotrel_core::LifecycleStorage
 internal     impl core::clone::TrivialClone for knotrel_core::LifecycleStorage
-experimental impl core::cmp::Eq for knotrel_core::LifecycleStorage
-experimental impl core::cmp::PartialEq for knotrel_core::LifecycleStorage
-experimental impl core::fmt::Debug for knotrel_core::LifecycleStorage
-experimental impl core::marker::Copy for knotrel_core::LifecycleStorage
+stable       impl core::cmp::Eq for knotrel_core::LifecycleStorage
+stable       impl core::cmp::PartialEq for knotrel_core::LifecycleStorage
+stable       impl core::fmt::Debug for knotrel_core::LifecycleStorage
+stable       impl core::marker::Copy for knotrel_core::LifecycleStorage
 internal     impl core::marker::Freeze for knotrel_core::LifecycleStorage
-experimental impl core::marker::Send for knotrel_core::LifecycleStorage
+stable       impl core::marker::Send for knotrel_core::LifecycleStorage
 internal     impl core::marker::StructuralPartialEq for knotrel_core::LifecycleStorage
-experimental impl core::marker::Sync for knotrel_core::LifecycleStorage
-experimental impl core::marker::Unpin for knotrel_core::LifecycleStorage
+stable       impl core::marker::Sync for knotrel_core::LifecycleStorage
+stable       impl core::marker::Unpin for knotrel_core::LifecycleStorage
 internal     impl core::marker::UnsafeUnpin for knotrel_core::LifecycleStorage
-experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::LifecycleStorage
-experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::LifecycleStorage
-experimental knotrel_core::LifecycleStorage::catalog_node_capacity
-experimental knotrel_core::LifecycleStorage::catalog_nodes
-experimental knotrel_core::LifecycleStorage::engine_vertices
-experimental knotrel_core::LifecycleStorage::incident_capacity
-experimental knotrel_core::LifecycleStorage::incident_entries
-experimental knotrel_core::LifecycleStorage::retired_vertices
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::LifecycleStorage
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::LifecycleStorage
+stable       knotrel_core::LifecycleStorage::catalog_node_capacity
+stable       knotrel_core::LifecycleStorage::catalog_nodes
+stable       knotrel_core::LifecycleStorage::engine_vertices
+stable       knotrel_core::LifecycleStorage::incident_capacity
+stable       knotrel_core::LifecycleStorage::incident_entries
+stable       knotrel_core::LifecycleStorage::retired_vertices
 stable       knotrel_core::NodeId
 stable       knotrel_core::NodeSpec
 stable       impl core::clone::Clone for knotrel_core::NodeSpec

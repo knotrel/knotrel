@@ -26,7 +26,8 @@ Which surfaces are stable is listed in [stability.md](stability.md).
 
 New surfaces may start as experimental. Promotion to stable is recorded in
 the release notes and in [stability.md](stability.md). Every surface that is
-not listed is internal.
+not listed is internal. An engine may be *experimental* as a qualification
+while its interfaces are Stable (section 2.2).
 
 ### 2.1 Guarantees of experimental items
 
@@ -57,6 +58,52 @@ Removing an experimental HTTP element that OpenAPI does not mark
 `docs/api/approved-breaking-changes.yaml` (section 6). These declarations
 document the change; they need no deprecation window.
 
+### 2.2 Stable interface, experimental engine
+
+*Experimental engine* is a qualification of an engine, not a fourth class:
+every interface of such an engine is classified **Stable** and follows the
+Stable promise of section 3 in full. The qualification says that the
+engine's performance, maturity and usage recommendation carry no promise.
+It applies to the HDT engine (maintainer decision of 2026-11-22,
+[freeze review](releases/v1.0-contract-freeze-review.md#71-later-maintainer-decisions-2026-11-22)):
+`EngineConfig::Hdt`, `EngineConfig::is_experimental`, `HdtGraph`,
+`HdtStats`, `HdtStorageStats` and `HdtLevelStorage` with their methods,
+fields and trait implementations, the
+`KNOTREL_ENGINE` value `hdt`, the `/v1/info` `engine` value `hdt` and the
+`knotrel_build_info` label value `engine="hdt"`
+([stability.md](stability.md#rust-knotrel-core)).
+
+It promises, for the whole 1.x series:
+- no item, variant, field, method or trait implementation is removed or
+  renamed, and no signature is narrowed; a removal needs the deprecation of
+  section 4 and a major release. `#[non_exhaustive]` on `EngineConfig` does
+  not authorize removing `EngineConfig::Hdt`;
+- the documented behavior and error contract hold: exact connectivity under
+  the same contract as `compact-bfs`, the selector values above, the meaning
+  and unit of every counter and storage field, and the properties their
+  documentation lists as guaranteed (see *Diagnostic values* in section 3);
+- the counter and storage structs are exhaustive, so their field sets are
+  frozen: a new field requires a major release.
+
+It does not promise:
+- performance, latency or memory: the cost bounds in the documentation
+  describe the current implementation; they and the measured results may
+  change in any release (section 7);
+- maturity or a usage recommendation: `compact-bfs` stays the default and the
+  recommended engine; lifecycle support is not available on the engine
+  (adding it later is an addition);
+- promotion: `EngineConfig::is_experimental()` returns `true` for `Hdt`, and
+  `/v1/info` reports `"experimental": true`, possibly for the whole 1.x
+  series. The value becomes `false` only when the engine is promoted, which
+  the release notes and [stability.md](stability.md) record; that change is
+  not breaking, because the value describes the qualification, not the
+  interface;
+- exact counter and storage values, which are implementation-dependent.
+
+This section does not apply to the ETT engine (`EngineConfig::EulerTour`,
+`ForestGraph`, `ForestStats`, `KNOTREL_ENGINE=ett`), whose interfaces remain
+Experimental items under section 2.1.
+
 ## 3. What "compatible" means
 
 **Rust crates (stable items).** No item removed or renamed, no signature
@@ -66,8 +113,21 @@ including new methods, new variants of `#[non_exhaustive]` enums, new fields
 of `#[non_exhaustive]` structs and new optional configuration.
 `#[non_exhaustive]` only permits these additions: it does **not** authorize
 removing or renaming a public variant, field or engine, which stays a breaking
-change under section 4 (experimental ones follow section 2.1). The types that
-stay exhaustive are listed in [stability.md](stability.md#exhaustiveness-and-non_exhaustive).
+change under section 4 (only items classified Experimental follow section
+2.1; the stable interfaces of an experimental engine, section 2.2, do not).
+The types that stay exhaustive are listed in [stability.md](stability.md#exhaustiveness-and-non_exhaustive).
+
+**Diagnostic values.** Some stable structs report counters or storage
+figures: `LifecycleStorage` (from `LifecycleGraph::storage_stats`), `HdtStats`,
+`HdtStorageStats` and `HdtLevelStorage`. For them the stable contract is the
+field set, each field's type, meaning and unit (counts or bytes, as
+documented), when the values are computed, and the properties their rustdoc
+lists under "Guaranteed" (equalities with the graph's counts, sums, bounds,
+orderings, reset and saturation behavior). The exact numbers, capacity growth
+and retention, allocator and standard-library effects are listed under
+"Implementation-dependent": they may change in any release, including a
+patch release, and such a change is not breaking. Breaking a guaranteed
+property is.
 
 **Public dependencies.** `knotrel-server`'s stable API exposes `axum::Router`
 (axum 0.8) and `tokio::net::TcpListener` (tokio 1); these dependency versions

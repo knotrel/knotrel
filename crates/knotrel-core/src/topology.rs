@@ -149,6 +149,60 @@ impl EdgeState {
 /// and hash maps keep capacity after removals, so capacity can exceed the
 /// logical size. Capacities count elements, not bytes, and exclude allocator
 /// overhead and the inner engine's own capacities.
+///
+/// The type, its six fields and its trait implementations are stable. It is
+/// `#[non_exhaustive]`: a minor release may add fields, but none of these is
+/// removed or changes meaning or unit in 1.x.
+///
+/// # Guaranteed
+///
+/// For a value `s` returned by `g.storage_stats()`:
+///
+/// - Every field is a count of elements (entries, vertices or slots), never
+///   bytes.
+/// - The values are computed at the call; `s` is a copy that does not follow
+///   later mutations of `g`.
+/// - `s.catalog_nodes == g.node_count()`,
+///   `s.engine_vertices == g.engine_vertex_count()`,
+///   `s.engine_vertices == s.catalog_nodes + s.retired_vertices` and
+///   `s.incident_entries == 2 * g.edge_count()` (registered edges, enabled or
+///   not, counted at both endpoints).
+/// - `s.catalog_node_capacity >= s.catalog_nodes` and
+///   `s.incident_capacity >= s.incident_entries`.
+/// - `s.engine_vertices <= 2 * s.catalog_nodes + 1024`, the bound of
+///   [`LifecycleGraph::engine_vertex_count`].
+/// - On a graph with no registered node and no removal (for example a new
+///   one), `engine_vertices`, `retired_vertices`, `catalog_nodes` and
+///   `incident_entries` are `0`.
+///
+/// # Implementation-dependent
+///
+/// The capacities (initial values, growth, what is retained after removals
+/// and catalog rebuilds), and how many retired slots exist below the bound
+/// above, that is when retired slots are compacted, depend on the
+/// implementation, the operation history and the standard library's growth
+/// policy, and may change in any release. None of the values measures heap
+/// usage or RSS.
+///
+/// # Examples
+///
+/// ```
+/// use knotrel_core::{EngineConfig, LifecycleGraph};
+///
+/// let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs)?;
+/// graph.link(1, 2)?;
+/// graph.link(2, 3)?;
+/// assert!(graph.remove_node(3));
+/// let storage = graph.storage_stats();
+/// assert_eq!(storage.catalog_nodes, graph.node_count());
+/// assert_eq!(storage.incident_entries, 2 * graph.edge_count());
+/// assert_eq!(
+///     storage.engine_vertices,
+///     storage.catalog_nodes + storage.retired_vertices
+/// );
+/// assert!(storage.incident_capacity >= storage.incident_entries);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LifecycleStorage {
@@ -1288,7 +1342,9 @@ impl LifecycleGraph {
 
     /// Returns storage diagnostics: logical sizes and retained capacities.
     ///
-    /// Costs `O(V)` time (one pass over the catalog) and no allocation.
+    /// Costs `O(V)` time (one pass over the catalog) and no allocation, and
+    /// changes no state. [`LifecycleStorage`] lists which properties of the
+    /// values are guaranteed and which are implementation-dependent.
     #[must_use]
     pub fn storage_stats(&self) -> LifecycleStorage {
         let (incident_entries, incident_capacity) =

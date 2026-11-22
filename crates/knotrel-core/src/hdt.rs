@@ -15,7 +15,51 @@ const LEVEL_ARCS_INLINE_CAPACITY: usize = 4;
 type Key = (usize, usize);
 type Arcs = (usize, usize);
 
-/// Cumulative HDT repair work; each counter saturates at u64::MAX.
+/// Cumulative HDT repair work, from [`HdtGraph::stats`].
+///
+/// A stable interface of the experimental HDT engine
+/// ([`crate::EngineConfig::Hdt`]). The struct is exhaustive: its six public
+/// fields are frozen for 1.x, and a new field requires a major release.
+///
+/// # Guaranteed
+///
+/// - Each field counts the event its documentation names, in units of events.
+/// - Every counter is `0` on a new graph ([`HdtGraph::new`], `Default`) and
+///   after [`HdtGraph::reset_stats`].
+/// - Between resets, counters only grow, and each saturates at `u64::MAX`
+///   instead of wrapping.
+/// - Queries ([`HdtGraph::connected`], [`HdtGraph::node_count`],
+///   [`HdtGraph::edge_count`], [`HdtGraph::stats`],
+///   [`HdtGraph::storage_stats`]) never change them.
+/// - `replacements <= tree_cuts` (at most one replacement per removed
+///   spanning edge), `replacements <= candidate_edges` (a replacement is an
+///   examined candidate) and `tree_cuts <= levels_visited` (each removed
+///   spanning edge visits at least one level).
+///
+/// # Implementation-dependent
+///
+/// The exact values for a given operation sequence: which edges belong to the
+/// spanning forest, which edges are promoted, the order in which candidates
+/// are examined and how many levels are visited depend on the implementation
+/// and may change in any release. Do not compare values across versions.
+///
+/// # Examples
+///
+/// ```
+/// use knotrel_core::{HdtGraph, HdtStats};
+///
+/// let mut graph = HdtGraph::new();
+/// graph.link(1, 2)?;
+/// graph.link(2, 3)?;
+/// graph.link(3, 1)?;
+/// graph.cut(1, 2)?;
+/// let stats = graph.stats();
+/// assert!(stats.replacements <= stats.tree_cuts);
+/// assert!(stats.replacements <= stats.candidate_edges);
+/// graph.reset_stats();
+/// assert_eq!(graph.stats(), HdtStats::default());
+/// # Ok::<(), knotrel_core::GraphError>(())
+/// ```
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct HdtStats {
     /// Removed edges that belonged to the spanning forest.
@@ -180,11 +224,19 @@ impl Level {
     }
 }
 
-/// Experimental exact connectivity using deterministic HDT levels and AVL tours.
+/// Exact connectivity using deterministic HDT levels and AVL tours.
 ///
 /// Preserves the [`crate::Graph`] contract, including growing arbitrary `u64`
 /// vertices. This is an experimental implementation, not a production latency
 /// guarantee. Compact BFS remains the default engine.
+///
+/// **Stable interface, experimental engine.** This type, its methods and its
+/// trait implementations are stable for 1.x: they are removed or changed
+/// incompatibly only after a deprecation and in a major release. The
+/// experimental qualification covers performance, maturity and usage
+/// recommendation only: the cost bounds below describe the current
+/// implementation and are not a compatibility promise
+/// ([compatibility policy](https://github.com/knotrel/knotrel/blob/main/docs/compatibility.md#22-stable-interface-experimental-engine)).
 ///
 /// Queries cost O(log V) algorithmically on the base forest, with expected O(1) hash map ID lookup, and allocate no
 /// scratch. Across a history with at most N registered vertices, edge updates
@@ -416,22 +468,32 @@ impl HdtGraph {
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
-    /// Returns diagnostic counters in O(1).
+    /// Returns the diagnostic counters accumulated since creation or the last
+    /// [`Self::reset_stats`], in O(1) without changing any state.
+    ///
+    /// [`HdtStats`] lists which properties of the values are guaranteed.
     #[must_use]
     pub fn stats(&self) -> HdtStats {
         self.stats
     }
-    /// Clears diagnostic counters without altering graph state.
+    /// Sets every diagnostic counter to zero without altering graph state.
     pub fn reset_stats(&mut self) {
         self.stats = HdtStats::default();
     }
 
     /// Collects structural storage accounting without changing graph state.
     ///
-    /// Takes O(V log V + E) time in the worst case and allocates the returned
-    /// per-level snapshot. Call outside measured operations. Vector capacities
-    /// exclude allocator overhead; mapping payload excludes hash table overhead
-    /// and spare slots. This is deliberately not a total heap or RSS estimate.
+    /// The values are computed at the call and describe the graph at that
+    /// moment; the returned snapshot does not follow later mutations. Calling
+    /// it changes neither the graph nor [`Self::stats`]. Takes O(V log V + E)
+    /// time in the worst case and allocates the returned per-level snapshot.
+    /// Call outside measured operations. Vector capacities exclude allocator
+    /// overhead; mapping payload excludes hash table overhead and spare slots.
+    /// This is deliberately not a total heap or RSS estimate.
+    ///
+    /// [`crate::HdtStorageStats`] and [`crate::HdtLevelStorage`] list which
+    /// properties of the values are guaranteed and which are
+    /// implementation-dependent.
     #[must_use]
     pub fn storage_stats(&self) -> crate::HdtStorageStats {
         let levels: Vec<_> = self
@@ -504,6 +566,39 @@ impl HdtGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Counters saturate at `u64::MAX` instead of wrapping (a guaranteed
+    /// property of `HdtStats`), and keep their documented relations.
+    #[test]
+    fn stats_counters_saturate_instead_of_wrapping() {
+        let mut graph = HdtGraph::new();
+        for (a, b) in [(1, 2), (2, 3), (3, 1)] {
+            graph.link(a, b).unwrap();
+        }
+        graph.stats = HdtStats {
+            tree_cuts: u64::MAX,
+            candidate_edges: u64::MAX,
+            replacements: u64::MAX,
+            tree_promotions: u64::MAX,
+            non_tree_promotions: u64::MAX,
+            levels_visited: u64::MAX,
+        };
+        // A spanning-edge cut with a replacement touches every counter that
+        // a replacement search updates.
+        let tree_edge = [(1, 2), (2, 3), (3, 1)]
+            .into_iter()
+            .find(|&(a, b)| {
+                let key = HdtGraph::key(graph.ids[&a], graph.ids[&b]);
+                !graph.edges[&key].arcs.is_empty()
+            })
+            .expect("a triangle has spanning edges");
+        assert_eq!(graph.cut(tree_edge.0, tree_edge.1), Ok(true));
+        assert!(graph.connected(1, 3).unwrap());
+        assert_eq!(graph.stats().tree_cuts, u64::MAX);
+        assert_eq!(graph.stats().candidate_edges, u64::MAX);
+        assert_eq!(graph.stats().replacements, u64::MAX);
+        assert_eq!(graph.stats().levels_visited, u64::MAX);
+    }
 
     /// The dense base level never releases a record, even when isolated.
     #[test]
