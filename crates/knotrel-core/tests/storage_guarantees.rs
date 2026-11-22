@@ -1,14 +1,14 @@
 //! The properties of the stable diagnostic structs that their documentation
 //! lists as guaranteed: `LifecycleStorage` (from
-//! `LifecycleGraph::storage_stats`), `HdtStats`, `HdtStorageStats` and
-//! `HdtLevelStorage` (docs/compatibility.md, "Diagnostic values").
+//! `LifecycleGraph::storage_stats`), `ForestStats`, `HdtStats`,
+//! `HdtStorageStats` and `HdtLevelStorage` (docs/compatibility.md, "Diagnostic values").
 //!
 //! Only guaranteed properties are asserted here. Exact counter, capacity and
 //! byte values are implementation-dependent and deliberately not checked.
 
 use knotrel_core::{
-    ConnectivityGraph, EngineConfig, HdtGraph, HdtStats, HdtStorageStats, LifecycleGraph,
-    LifecycleStorage,
+    ConnectivityGraph, EngineConfig, ForestGraph, ForestStats, HdtGraph, HdtStats, HdtStorageStats,
+    LifecycleGraph, LifecycleStorage,
 };
 use std::collections::BTreeSet;
 
@@ -339,4 +339,87 @@ fn lifecycle_storage_snapshot_is_taken_at_the_call() {
     let now = graph.storage_stats();
     assert_eq!(now.catalog_nodes, 3);
     assert_eq!(now.incident_entries, 4);
+}
+
+/// Asserts the guaranteed relations between `ForestStats` counters.
+fn check_forest_stats_relations(stats: ForestStats) {
+    assert!(stats.replacements <= stats.tree_cuts);
+    assert!(stats.replacements <= stats.candidate_edges);
+    assert!(stats.replacements <= stats.scanned_vertices);
+}
+
+#[test]
+fn ett_new_graph_reports_zero_counters() {
+    assert_eq!(ForestGraph::new().stats(), ForestStats::default());
+    assert_eq!(ForestGraph::default().stats(), ForestStats::default());
+}
+
+/// Random links and cuts of existing edges force tree cuts with and without
+/// replacements; the counter relations hold after every operation, counters
+/// never decrease, queries change nothing, and a reset zeroes the counters but
+/// keeps the graph.
+#[test]
+fn ett_guaranteed_counter_properties_hold_along_random_histories() {
+    for seed in [5_u64, 13, 77] {
+        let mut rng = Lcg(seed);
+        let mut graph = ForestGraph::new();
+        let mut edges = BTreeSet::new();
+        let mut previous = graph.stats();
+        for _ in 0..3_000 {
+            let a = rng.below(24);
+            let b = rng.below(24);
+            match rng.below(10) {
+                0 => {
+                    graph.add_node(a);
+                }
+                1..=5 if a != b => {
+                    graph.link(a, b).unwrap();
+                    edges.insert((a.min(b), a.max(b)));
+                }
+                6..=9 if !edges.is_empty() => {
+                    // Cut an existing edge, so the graph stays sparse enough
+                    // for some tree cuts to split a component.
+                    let index = usize::try_from(rng.below(edges.len() as u64)).unwrap();
+                    let (x, y) = *edges.iter().nth(index).unwrap();
+                    edges.remove(&(x, y));
+                    assert_eq!(graph.cut(x, y), Ok(true));
+                }
+                _ => {}
+            }
+            let stats = graph.stats();
+            check_forest_stats_relations(stats);
+            assert!(stats.tree_cuts >= previous.tree_cuts);
+            assert!(stats.scanned_vertices >= previous.scanned_vertices);
+            assert!(stats.candidate_edges >= previous.candidate_edges);
+            assert!(stats.replacements >= previous.replacements);
+            previous = stats;
+
+            let counts = (graph.node_count(), graph.edge_count());
+            let _ = graph.connected(a, b);
+            assert_eq!(graph.stats(), stats, "queries change no counter");
+            assert_eq!((graph.node_count(), graph.edge_count()), counts);
+        }
+        assert!(
+            previous.replacements > 0,
+            "seed {seed}: history replaced edges"
+        );
+        assert!(
+            previous.replacements < previous.tree_cuts,
+            "seed {seed}: history also split components"
+        );
+        let counts = (graph.node_count(), graph.edge_count());
+        graph.reset_stats();
+        assert_eq!(graph.stats(), ForestStats::default());
+        assert_eq!((graph.node_count(), graph.edge_count()), counts);
+    }
+}
+
+#[test]
+fn ett_selector_and_qualification_are_stable_values() {
+    assert_eq!(EngineConfig::EulerTour.as_str(), "ett");
+    assert!(EngineConfig::EulerTour.is_experimental());
+    assert_eq!(
+        ConnectivityGraph::new(EngineConfig::EulerTour).engine(),
+        EngineConfig::EulerTour
+    );
 }

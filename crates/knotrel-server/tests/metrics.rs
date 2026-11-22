@@ -579,24 +579,27 @@ async fn disabled_metrics_path_is_not_a_probe_while_draining() {
     assert!(body.contains("shutting_down"));
 }
 
-/// `engine="hdt"` of `knotrel_build_info` is a stable label value (stable
-/// interface, experimental engine; docs/stability.md, "Metrics").
+/// `engine="ett"` and `engine="hdt"` of `knotrel_build_info` are stable label
+/// values (stable interfaces, experimental engines; docs/stability.md,
+/// "Metrics").
 #[tokio::test]
-async fn build_info_reports_the_stable_hdt_engine_label() {
-    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::Hdt, 4)
-        .unwrap()
-        .with_metrics_enabled(true);
-    let samples = scrape(&router_with_config(config)).await;
-    let build = value(
-        &samples,
-        "knotrel_build_info",
-        &[
-            ("version", env!("CARGO_PKG_VERSION")),
-            ("engine", "hdt"),
-            ("mode", "standalone"),
-        ],
-    );
-    assert_eq!(build, Some(1.0));
+async fn build_info_reports_the_stable_experimental_engine_labels() {
+    for (engine, label) in [(EngineConfig::EulerTour, "ett"), (EngineConfig::Hdt, "hdt")] {
+        let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 4)
+            .unwrap()
+            .with_metrics_enabled(true);
+        let samples = scrape(&router_with_config(config)).await;
+        let build = value(
+            &samples,
+            "knotrel_build_info",
+            &[
+                ("version", env!("CARGO_PKG_VERSION")),
+                ("engine", label),
+                ("mode", "standalone"),
+            ],
+        );
+        assert_eq!(build, Some(1.0), "{label}");
+    }
 }
 
 #[tokio::test]

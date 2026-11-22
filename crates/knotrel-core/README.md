@@ -120,7 +120,7 @@ not a snapshot of a graph that changes between them.
 Knotrel provides three dynamic connectivity engines via `EngineConfig`:
 
 - **Compact BFS (`EngineConfig::CompactBfs`) — Default**: Sorted adjacency vectors of stable internal indices; `O(V + E)` worst-case BFS queries; `O(deg(u) + deg(v))` amortized link and cut; `O(V + E)` logical memory. Best for general use or mutation-heavy workloads.
-- **Euler Tour Trees (`EngineConfig::EulerTour`) — Experimental**: Spanning forest using AVL Euler tour sequences. `O(log V)` algorithmic queries and link operations. Non-tree cuts cost `O(log V + log E)`; tree cuts scan the smaller side (`O(log V + log E + s + c log V)` amortized) using candidate-pruned subtrees. Effective for query-dominated workloads on tree-like topologies.
+- **Euler Tour Trees (`EngineConfig::EulerTour`) — Experimental engine, stable interface**: Spanning forest using AVL Euler tour sequences. `O(log V)` algorithmic queries and link operations. Non-tree cuts cost `O(log V + log E)`; tree cuts scan the smaller side (`O(log V + log E + s + c log V)` amortized) using candidate-pruned subtrees. Effective for query-dominated workloads on tree-like topologies.
 - **HDT (`EngineConfig::Hdt`) — Experimental engine, stable interface**: Deterministic Holm–de Lichtenberg–Thorup dynamic connectivity with an append-only growth policy for expanding vertices. Maintains a hierarchy of `O(log V)` levels materialized lazily as promotions require them. Bounds amortized update costs to `O(log² V)`, eliminating repeated scan storms in dense bridge-churn workloads.
 
 ### Complexity & Memory Notes
@@ -139,15 +139,16 @@ Every public item is classified **stable**, **experimental** or **internal**
 in the [stability classification](https://github.com/knotrel/knotrel/blob/main/docs/stability.md).
 Stable items change only as the
 [compatibility policy](https://github.com/knotrel/knotrel/blob/main/docs/compatibility.md)
-allows, after a deprecation. The HDT engine (`EngineConfig::Hdt`,
-`HdtGraph`, `HdtStats`, `HdtStorageStats`, `HdtLevelStorage`) is a *stable
-interface with an experimental engine*: its public API stays compatible
-across 1.x, while its performance, maturity and usage recommendation carry no
-promise (`EngineConfig::is_experimental` returns `true`). `LifecycleStorage`
-is stable. For these diagnostic structs, the fields, units and the properties
-their documentation lists as guaranteed are stable; the exact values are
-implementation-dependent. The `EulerTour` engine with its types is
-experimental; `ReferenceGraph` is an internal test oracle.
+allows, after a deprecation. The ETT engine (`EngineConfig::EulerTour`,
+`ForestGraph`, `ForestStats`) and the HDT engine (`EngineConfig::Hdt`,
+`HdtGraph`, `HdtStats`, `HdtStorageStats`, `HdtLevelStorage`) are *stable
+interfaces with an experimental engine*: their public API stays compatible
+across 1.x, while their performance, maturity and usage recommendation carry
+no promise (`EngineConfig::is_experimental` returns `true`).
+`LifecycleStorage` is stable. For these diagnostic structs, the fields, units
+and the properties their documentation lists as guaranteed are stable; the
+exact values are implementation-dependent. `ReferenceGraph` is an internal
+test oracle.
 
 ## Examples
 

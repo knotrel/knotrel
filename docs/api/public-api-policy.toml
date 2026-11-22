@@ -5,9 +5,9 @@
 # Items that may carry #[non_exhaustive]. The attribute must appear exactly
 # on these items: adding it anywhere else (for example to the types frozen
 # exhaustive in docs/stability.md: GraphLimits, NodeSpec, EdgeSpec, ServerMode,
-# ShutdownOutcome, HdtStats, HdtStorageStats, HdtLevelStorage) or removing it
-# from one of them fails the check, because the cargo-semver-checks exceptions
-# below cover a whole crate.
+# ShutdownOutcome, ForestStats, HdtStats, HdtStorageStats, HdtLevelStorage) or
+# removing it from one of them fails the check, because the cargo-semver-checks
+# exceptions below cover a whole crate.
 [non_exhaustive]
 items = [
     # Approved for v1.0.0 (contract freeze, decision 1 of 2026-11-22).

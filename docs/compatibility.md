@@ -64,20 +64,25 @@ document the change; they need no deprecation window.
 every interface of such an engine is classified **Stable** and follows the
 Stable promise of section 3 in full. The qualification says that the
 engine's performance, maturity and usage recommendation carry no promise.
-It applies to the HDT engine (maintainer decision of 2026-11-22,
-[freeze review](releases/v1.0-contract-freeze-review.md#71-later-maintainer-decisions-2026-11-22)):
-`EngineConfig::Hdt`, `EngineConfig::is_experimental`, `HdtGraph`,
-`HdtStats`, `HdtStorageStats` and `HdtLevelStorage` with their methods,
-fields and trait implementations, the
-`KNOTREL_ENGINE` value `hdt`, the `/v1/info` `engine` value `hdt` and the
-`knotrel_build_info` label value `engine="hdt"`
-([stability.md](stability.md#rust-knotrel-core)).
+It applies to the two non-default engines (maintainer decisions of
+2026-11-22,
+[freeze review](releases/v1.0-contract-freeze-review.md#71-later-maintainer-decisions-2026-11-22)),
+with their methods, fields and trait implementations
+([stability.md](stability.md#rust-knotrel-core)):
+- ETT: `EngineConfig::EulerTour`, `ForestGraph`, `ForestStats`, the
+  `KNOTREL_ENGINE` value `ett`, the `/v1/info` `engine` value `ett` and the
+  `knotrel_build_info` label value `engine="ett"`;
+- HDT: `EngineConfig::Hdt`, `HdtGraph`, `HdtStats`, `HdtStorageStats`,
+  `HdtLevelStorage`, the `KNOTREL_ENGINE` value `hdt`, the `/v1/info`
+  `engine` value `hdt` and the `knotrel_build_info` label value
+  `engine="hdt"`;
+- both: `EngineConfig::is_experimental`, which reports the qualification.
 
 It promises, for the whole 1.x series:
 - no item, variant, field, method or trait implementation is removed or
   renamed, and no signature is narrowed; a removal needs the deprecation of
   section 4 and a major release. `#[non_exhaustive]` on `EngineConfig` does
-  not authorize removing `EngineConfig::Hdt`;
+  not authorize removing `EngineConfig::EulerTour` or `EngineConfig::Hdt`;
 - the documented behavior and error contract hold: exact connectivity under
   the same contract as `compact-bfs`, the selector values above, the meaning
   and unit of every counter and storage field, and the properties their
@@ -90,19 +95,15 @@ It does not promise:
   describe the current implementation; they and the measured results may
   change in any release (section 7);
 - maturity or a usage recommendation: `compact-bfs` stays the default and the
-  recommended engine; lifecycle support is not available on the engine
+  recommended engine; lifecycle support is not available on these engines
   (adding it later is an addition);
-- promotion: `EngineConfig::is_experimental()` returns `true` for `Hdt`, and
-  `/v1/info` reports `"experimental": true`, possibly for the whole 1.x
-  series. The value becomes `false` only when the engine is promoted, which
+- promotion: `EngineConfig::is_experimental()` returns `true` for
+  `EulerTour` and `Hdt`, and `/v1/info` reports `"experimental": true`,
+  possibly for the whole 1.x series. The value becomes `false` only when the engine is promoted, which
   the release notes and [stability.md](stability.md) record; that change is
   not breaking, because the value describes the qualification, not the
   interface;
 - exact counter and storage values, which are implementation-dependent.
-
-This section does not apply to the ETT engine (`EngineConfig::EulerTour`,
-`ForestGraph`, `ForestStats`, `KNOTREL_ENGINE=ett`), whose interfaces remain
-Experimental items under section 2.1.
 
 ## 3. What "compatible" means
 
@@ -118,8 +119,8 @@ change under section 4 (only items classified Experimental follow section
 The types that stay exhaustive are listed in [stability.md](stability.md#exhaustiveness-and-non_exhaustive).
 
 **Diagnostic values.** Some stable structs report counters or storage
-figures: `LifecycleStorage` (from `LifecycleGraph::storage_stats`), `HdtStats`,
-`HdtStorageStats` and `HdtLevelStorage`. For them the stable contract is the
+figures: `LifecycleStorage` (from `LifecycleGraph::storage_stats`),
+`ForestStats`, `HdtStats`, `HdtStorageStats` and `HdtLevelStorage`. For them the stable contract is the
 field set, each field's type, meaning and unit (counts or bytes, as
 documented), when the values are computed, and the properties their rustdoc
 lists under "Guaranteed" (equalities with the graph's counts, sums, bounds,
