@@ -12,8 +12,8 @@ those results cannot be compared with this page or chained into a trend.
 
 ## v0.9.0 compared with v0.7.0
 
-**v0.9.0 is not released yet.** These results were measured on its release
-candidate; the release notes become authoritative at the tag.
+v0.9.0 was released on 2026-11-22. These results were measured on its
+release candidate, whose executed code is identical to the release.
 
 **v0.9.0 is not demonstrated to be faster in general than v0.7.0 or v0.8.0.**
 The measured workloads stayed within their tolerances, with the exceptions
