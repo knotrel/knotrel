@@ -134,9 +134,14 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [ ] **Feature M8:** Supported security and access control
 - [ ] **Feature M9:** Packaging, compatibility and operations
 - [ ] **Feature M7:** Multi-graph management (OPTIONAL, demand-gated)
+- [ ] **1.0.0a** rc plan — proposed, [plan](docs/releases/v1.0.0-rc-plan.md)
 - [ ] **R1** Disposition of every non-PASS result and unqualified requirement of the 0.9.6 campaign
 - [ ] **R2** [#87](https://github.com/knotrel/knotrel/issues/87) diagnosis: CPU hypothesis tested under an approved protocol variant; declared supported envelope
 - [ ] **R3** rc gates of the [readiness assessment](docs/releases/v1.0-readiness.md) (contract freeze review, randomized soak, reproducible build, threat model, acceptance review)
+  - [x] Threat model and `SECURITY.md` merged (#106); Private Vulnerability Reporting still to enable and verify
+  - [x] Randomized soak and §9 traceability merged (#105); found defect D1, fixed (#104)
+  - [ ] Reproducible-build check merged (#107); Linux and workflow runs pending
+  - [ ] Contract freeze review; independent AI review of the 1.0 contract set
 
 ### v1.1.0 — Cluster Forest Backend (planned)
 
@@ -964,6 +969,16 @@ The recovery principle is mandatory for any selected local persistence strategy:
 **Status: proposed (2026-11-22).** v1.0 needs a *declared* supported
 envelope, not the resolution of every performance limitation. The
 resolution belongs to v1.2.0, before the external comparison.
+
+- [ ] **1.0.0a rc plan.** Order, dependencies, proposed R1 dispositions and
+  the R2 protocol variant (two Macs: Knotrel alone on the Apple M3, source,
+  feeder and clients on a second host): [v1.0.0-rc
+  plan](docs/releases/v1.0.0-rc-plan.md), proposed 2026-11-22 and revised
+  with the maintainer's decisions of that day (own v1.0 campaign against the
+  latest 0.9.x, dispositions decided on its results; AI review for criterion
+  9, declared as such; GitHub Private Vulnerability Reporting). Perimeter and
+  R2 protocol await approval. R3a–R3c (threat model, soak, reproducible
+  build) have started in parallel.
 
 - [ ] **R1 0.9.6 dispositions.** The maintainer disposes of every non-PASS
   result of the v0.9.0 campaign and of the two `hub` 10k lifecycle

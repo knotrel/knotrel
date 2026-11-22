@@ -18,8 +18,11 @@ whether two endpoints remain connected. Use it as a Rust library or an HTTP
 service alongside your existing database.
 
 **Latest release: [v0.9.0](https://github.com/knotrel/knotrel/releases/tag/v0.9.0)**
-(operational console and opt-in inspection routes). Node/edge lifecycle is opt-in and supported on
-`compact-bfs` only.
+(reference PostgreSQL integration, reserved feeder admission, compatibility
+policy and a verified gateway deployment). Node/edge lifecycle is opt-in and
+supported on `compact-bfs` only. **Next: v1.0.0**, through a release-candidate
+cycle that is in progress on `main` (nothing of it is released yet); see the
+[roadmap](ROADMAP.md#r--release-candidate-cycle-v100-rc--v100).
 
 ## Architecture
 
@@ -153,7 +156,9 @@ and the restart/rebuild procedure.
 > `KNOTREL_ALLOW_NON_LOOPBACK=true`. Run it inside a trusted deployment boundary,
 > or behind an external gateway that you configure separately; no gateway is
 > included or configured by Knotrel. A private network alone is not sufficient;
-> see the [trust model](docs/http-api.md#trust-model).
+> see the [trust model](docs/http-api.md#trust-model) and the
+> [threat model](docs/threat-model.md). Report vulnerabilities as described in
+> [SECURITY.md](SECURITY.md).
 
 ## Choosing an engine
 
@@ -335,6 +340,9 @@ metrics. See [the console documentation](docs/console.md).
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
 - [Operational console](docs/console.md) (since v0.8.0; same version as the server): browser UI, container image and static archive for operating one server; [console release procedure](docs/releases/console-release.md).
 - [PostgreSQL reference feeder](docs/integrations/postgresql-feeder.md) (since v0.9.0): keeps Knotrel synchronized with two PostgreSQL tables through logical replication; [feeder and Compose example](integrations/postgres-feeder/README.md).
+- [Compatibility policy](docs/compatibility.md) and [stability classes](docs/stability.md) (since v0.9.0): what may change between releases, and how.
+- [Threat model](docs/threat-model.md) (unreleased, v1.0.0-rc cycle): threats per trust boundary for the supported exposure, each mitigation with the test that validates it, and residual risks. Vulnerability reporting: [SECURITY.md](SECURITY.md).
+- [Reproducible release builds](docs/releases/reproducible-build.md) (unreleased, v1.0.0-rc cycle): how to rebuild a release binary from its tag and compare it, Linux and macOS only.
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
 - [v0.9.0 release notes](docs/releases/v0.9.0-release-notes.md), [v0.8.0](docs/releases/v0.8.0-release-notes.md), [v0.7.0](docs/releases/v0.7.0-release-notes.md), [v0.6.0](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
