@@ -63,9 +63,19 @@ internal.
 
 All 27 families of the [observability contract](observability-contract.md)
 are stable: name, type, unit and label names. Label values documented as
-closed sets (for example `kind`, `reason`, `result`) are extended only
+closed sets (for example `kind`, `reason`, `result`, `lane`) are extended only
 additively. The `kind="inspect"` label value is experimental with the
 inspection routes.
+
+The `lane` label of `knotrel_graph_jobs_outstanding`,
+`knotrel_graph_job_capacity` and `knotrel_requests_rejected_total` (new in
+1.0.0, [contract section 21](observability-contract.md#21-per-lane-admission-metrics-v100-unreleased))
+is stable. Its values are a closed set: `shared`, `feeder_data`,
+`feeder_control`, `import`, plus `none` on `knotrel_requests_rejected_total`
+for `shutting_down` and `unavailable`. For a lane, outstanding and capacity
+always refer to that same lane, and outstanding never exceeds capacity.
+Adding the label to these existing families is an approved exception of the
+1.0 contract freeze (decision 7), to be listed in the v1.0.0 release notes.
 
 ## Other artifacts
 

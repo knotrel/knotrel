@@ -29,6 +29,12 @@ jobs:
     permissions:
       pages: write
       id-token: write
+    # One Pages deployment at a time: two merges in quick succession made the
+    # second deployment fail while the first was in progress. Queue instead,
+    # without cancelling the deployment already running.
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

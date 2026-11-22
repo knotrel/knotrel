@@ -1619,7 +1619,10 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
                 Lane::FeederControl => {
                     "feeder control capacity (session, heartbeat) exhausted; retry later"
                 }
-                Lane::FeederData | Lane::Shared => {
+                // Only the two feeder lanes produce `LaneBusy`: feeder calls
+                // never use the shared lane, and imports take the import
+                // permit (`ImportInProgress`), not an admission lane.
+                Lane::FeederData | Lane::Shared | Lane::Import => {
                     "feeder data capacity (events, barrier, gap) exhausted; retry later"
                 }
             }
