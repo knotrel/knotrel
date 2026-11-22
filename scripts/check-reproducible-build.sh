@@ -172,6 +172,9 @@ git -C "$REPO_ROOT" archive "$COMMIT" | tar -x -C "$SRC"
 unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS RUSTC RUSTC_WRAPPER \
     CARGO_BUILD_RUSTC_WRAPPER CARGO_BUILD_TARGET_DIR
 while IFS= read -r var; do unset "$var"; done < <(env | sed -n 's/^\(CARGO_PROFILE_[A-Z0-9_]*\)=.*/\1/p')
+# CARGO_HOME may not exist yet (GitHub's macOS runners set it before
+# anything creates it); cargo would create it anyway.
+mkdir -p "${CARGO_HOME:-$HOME/.cargo}"
 LOCAL_CARGO_HOME="$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd -P)"
 if [[ "$LOCAL_CARGO_HOME" != "$RUNNER_CARGO_HOME" ]]; then
     export RUSTFLAGS="--remap-path-prefix=${LOCAL_CARGO_HOME}=${RUNNER_CARGO_HOME}"

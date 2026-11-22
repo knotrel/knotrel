@@ -208,25 +208,28 @@ Rust 1.100.0 on a `git archive` export of the tag.
 Local rebuilds are deterministic: repeated clean rebuilds gave the same file
 (`b858415abb47f8d92593cb74480674d93efad9504cab85bcf9f3528f5349ce69`).
 
-### Linux x86-64: not done yet
-
-Not rebuilt. This host has no x86-64 Linux, and a container rebuild has not
-been approved (it needs an Ubuntu image, its packages and the Rust toolchain
-from outside the project's release). Run the `reproducible-build` workflow
-with:
-
-- `ref`: `v0.9.0`
-- `source_date_epoch`: `1795244644` (2026-11-21 07:04:04 UTC, the time
-  embedded in the published binary)
-- `accept`: `byte`
-
-Expected: byte-identical, if the runner image still has the GCC, binutils and
-glibc of the original build.
+### Workflow runs on GitHub's runners (2026-11-22)
 
 The two v0.9.0 binaries embed different C build times, and
-`source_date_epoch` applies to both jobs of a run. So in this run only the
-Linux job counts. A second run with `source_date_epoch` set to `1795353290`
-checks macOS byte identity on the runner.
+`source_date_epoch` applies to both jobs of a run, so each run counts for
+one platform only; the other job is expected to differ.
+
+| Platform | Run | `source_date_epoch` | Byte-identical | Equivalent after excluding named metadata | Code section |
+|---|---|---|---|---|---|
+| Linux x86-64 | [45058546623](https://github.com/knotrel/knotrel/actions/runs/45058546623) (`main`, `accept: byte`) | `1795244644` (2026-11-21 07:04:04 UTC, embedded in the published binary) | **yes** | not applicable (ELF: nothing excluded) | identical |
+| macOS arm64 | [45058870559](https://github.com/knotrel/knotrel/actions/runs/45058870559) (this fix's branch, `accept: equivalent`) | `1795353290` (2026-11-22 13:14:50 UTC) | **no** | **yes**: `LC_UUID` (16 bytes at offset 2024) and `LC_CODE_SIGNATURE` (32,320 bytes at offset 4117504) excluded; 46 differing bytes in total; both ad-hoc signatures verified (1006 page hashes each), equal apart from the page hashes | identical |
+
+The first macOS run on `main`
+([45058549512](https://github.com/knotrel/knotrel/actions/runs/45058549512))
+stopped before building: `CARGO_HOME` did not exist yet on the macOS runner.
+The script now creates it.
+
+**Verdicts for v0.9.0:**
+
+- **Linux x86-64: byte-identical** on the runner, from the tag and the
+  embedded C build time.
+- **macOS arm64: not byte-identical; equivalent after excluding `LC_UUID`
+  and `LC_CODE_SIGNATURE`**, on the runner as locally.
 
 ### Release-process finding
 
@@ -248,12 +251,15 @@ From v1.0.0 the `build-binaries` job builds without a cache and sets
 
 ### Gate status
 
-The gate is **open**. These steps remain before it can close:
+The gate is **open**. Steps:
 
-1. The Linux v0.9.0 rebuild.
-2. The workflow merged into `main` and run: on `v0.9.0` (Linux, and macOS
-   with the runner's toolchain path), then on the v1.0.0 release candidate
-   against its dry-run bundle.
+1. ~~The Linux v0.9.0 rebuild~~: done on the runner, byte-identical.
+2. ~~The workflow run on `v0.9.0`~~: done (Linux byte-identical; macOS
+   equivalent after excluding `LC_UUID` and `LC_CODE_SIGNATURE`).
+3. The run on the v1.0.0 release candidate against its dry-run bundle, the
+   first release built without cache and with `SOURCE_DATE_EPOCH`; whether a
+   macOS result that is equivalent but not byte-identical is accepted needs
+   the recorded maintainer decision of the release procedure.
 
 Even when closed, the gate covers Linux and macOS only; Windows remains
 untested.
