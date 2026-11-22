@@ -1299,10 +1299,6 @@ struct RunSpec {
     lifecycle: bool,
     lease_expiries: u32,
     trace: bool,
-    /// Also send requests that trigger known, reported server defects
-    /// (`KNOTREL_SOAK_KNOWN_BUGS`); off by default so the soak stays green
-    /// until they are fixed. See `docs/releases/v1.0-criterion-3-evidence.md`.
-    known_bugs: bool,
 }
 
 /// Counters printed at the end of a run, to show what was exercised.
@@ -1468,17 +1464,12 @@ impl Driver {
         let _ = writeln!(
             report,
             "reproduce: KNOTREL_SOAK_SEED=0x{:x} KNOTREL_SOAK_STEPS={} KNOTREL_SOAK_LIFECYCLE={} \
-             KNOTREL_SOAK_LEASE_EXPIRIES={}{} \
+             KNOTREL_SOAK_LEASE_EXPIRIES={} \
              cargo test -p knotrel-server --test soak soak_long -- --ignored --nocapture",
             self.spec.seed,
             self.step,
             if self.spec.lifecycle { "on" } else { "off" },
             self.spec.lease_expiries,
-            if self.spec.known_bugs {
-                " KNOTREL_SOAK_KNOWN_BUGS=1"
-            } else {
-                ""
-            }
         );
         let _ = writeln!(report, "\n{what}\n\nlast steps:");
         for line in &self.recent {
@@ -2214,13 +2205,9 @@ impl Driver {
                 if min_retained > 1 {
                     let seq = 1 + self.rng.below((min_retained - 1) as usize) as u64;
                     events.push(self.source.event(self.base + seq, self.base));
-                } else if feed.applied == 0 && !self.spec.known_bugs {
-                    // Known defect: sequence 0 while nothing is applied in the
-                    // generation panics the graph worker (reported; see
-                    // `docs/releases/v1.0-criterion-3-evidence.md`). Send a valid event instead.
-                    events.extend(next(self, 1));
                 } else {
-                    // Sequence 0 is outside every window.
+                    // Sequence 0 is outside every window, also while nothing
+                    // is applied in the generation (defect D1, fixed).
                     let mut e = next(self, 1)
                         .pop()
                         .unwrap_or_else(|| self.source.event(head.max(1), 0));
@@ -2958,7 +2945,6 @@ async fn soak_short_lifecycle_off() {
             lifecycle: false,
             lease_expiries: 3,
             trace: false,
-            known_bugs: false,
         })
         .await;
     }
@@ -2975,7 +2961,6 @@ async fn soak_short_lifecycle_on() {
             lifecycle: true,
             lease_expiries: 3,
             trace: false,
-            known_bugs: false,
         })
         .await;
     }
@@ -3004,22 +2989,18 @@ async fn soak_long() {
         lifecycle,
         lease_expiries: env_u64("KNOTREL_SOAK_LEASE_EXPIRIES").unwrap_or(4) as u32,
         trace: std::env::var_os("KNOTREL_SOAK_TRACE").is_some(),
-        known_bugs: std::env::var_os("KNOTREL_SOAK_KNOWN_BUGS").is_some(),
     })
     .await;
 }
 
-/// Minimal deterministic reproduction of the defect found by the soak
-/// (seed `0x2`, step 8, with `KNOTREL_SOAK_KNOWN_BUGS=1`): an event with
-/// `delivery_sequence` 0 while nothing is applied in the generation must be
-/// rejected with 409 `unverifiable_duplicate` (`docs/http-api.md`,
-/// invariant 7; `docs/integration-contract.md` §9.2), but reaches an
-/// `unreachable!()` in the graph worker, which marks the server permanently
-/// `unavailable`. Remove `#[ignore]` (and the `known_bugs` gate of the soak)
-/// once fixed.
+/// Regression test for defect D1, found by the soak (seed `0x2`, step 8): an
+/// event with `delivery_sequence` 0 while nothing is applied in the
+/// generation must be rejected with 409 `unverifiable_duplicate`
+/// (`docs/http-api.md`, invariant 7; `docs/integration-contract.md` §9.2).
+/// Before the fix it reached an `unreachable!()` in the graph worker, which
+/// marked the server permanently `unavailable`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "known defect: sequence 0 before the first applied event panics the graph worker"]
-async fn known_defect_sequence_zero_at_generation_start() {
+async fn regression_d1_sequence_zero_at_generation_start() {
     let server = Server::spawn(ServerSpec {
         managed: true,
         engine: "compact-bfs",
