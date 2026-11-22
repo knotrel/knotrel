@@ -18,7 +18,7 @@ use crate::{
     Lifecycle, ServerMode,
     api::{ErrorCode, Operation, Outcome, Route},
     lifecycle::{self, ReadinessState},
-    service::{self, FeederError, Service},
+    service::{self, FeederError, Lane, Service},
 };
 use axum::{
     extract::{MatchedPath, Request, State},
@@ -79,10 +79,12 @@ const REQUEST_LABEL_COUNT: usize = 3;
 const ROUTE_LABEL_COUNT: usize = 1;
 const OUTCOME_LABEL_COUNT: usize = 1;
 const OPERATION_LABEL_COUNT: usize = 2;
+const REJECTION_LABEL_COUNT: usize = 2;
 
 type RequestLabels = [(&'static str, &'static str); REQUEST_LABEL_COUNT];
 type RouteLabels = [(&'static str, &'static str); ROUTE_LABEL_COUNT];
 type OutcomeLabels = [(&'static str, &'static str); OUTCOME_LABEL_COUNT];
+type RejectionLabels = [(&'static str, &'static str); REJECTION_LABEL_COUNT];
 type OperationLabels = [(&'static str, &'static str); OPERATION_LABEL_COUNT];
 type DurationFamily = Family<RouteLabels, Histogram, fn() -> Histogram>;
 type PhaseFamily = Family<OutcomeLabels, Histogram, fn() -> Histogram>;
@@ -123,29 +125,79 @@ impl Metrics {
     }
 }
 
-/// Why a request was refused before any graph job or import ran for it.
+/// Why a request was refused before any graph job or import ran for it,
+/// and on which admission lane: one variant per `(reason, lane)` series of
+/// `knotrel_requests_rejected_total`.
+///
+/// `busy` is split by the lane whose permits were exhausted; the import
+/// lane's refusal is `import_capacity`; `shutting_down` and `unavailable`
+/// are refused before or regardless of a lane and carry `lane="none"`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Rejection {
-    Busy,
+    BusyShared,
+    BusyFeederData,
+    BusyFeederControl,
     ImportCapacity,
     ShuttingDown,
     Unavailable,
 }
 
+/// `lane` label value of rejections not tied to an admission lane.
+const NO_LANE: &str = "none";
+
 impl Rejection {
-    const ALL: [Self; 4] = [
-        Self::Busy,
+    const ALL: [Self; 6] = [
+        Self::BusyShared,
+        Self::BusyFeederData,
+        Self::BusyFeederControl,
         Self::ImportCapacity,
         Self::ShuttingDown,
         Self::Unavailable,
     ];
 
+    /// The refusal of a full `lane`: `busy` on that lane, or
+    /// `import_capacity` for the import lane.
+    pub(crate) fn busy(lane: Lane) -> Self {
+        match lane {
+            Lane::Shared => Self::BusyShared,
+            Lane::FeederData => Self::BusyFeederData,
+            Lane::FeederControl => Self::BusyFeederControl,
+            Lane::Import => Self::ImportCapacity,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
-            Self::Busy => "busy",
+            Self::BusyShared | Self::BusyFeederData | Self::BusyFeederControl => "busy",
             Self::ImportCapacity => "import_capacity",
             Self::ShuttingDown => "shutting_down",
             Self::Unavailable => "unavailable",
+        }
+    }
+
+    /// The admission lane, if the refusal belongs to one.
+    fn lane(self) -> Option<Lane> {
+        match self {
+            Self::BusyShared => Some(Lane::Shared),
+            Self::BusyFeederData => Some(Lane::FeederData),
+            Self::BusyFeederControl => Some(Lane::FeederControl),
+            Self::ImportCapacity => Some(Lane::Import),
+            Self::ShuttingDown | Self::Unavailable => None,
+        }
+    }
+
+    fn lane_label(self) -> &'static str {
+        self.lane().map_or(NO_LANE, Lane::label)
+    }
+
+    /// Whether the series exists in `mode`. `busy` on a feeder lane exists
+    /// only in source-managed mode; every other series exists in both
+    /// modes, including `import_capacity`, which predates the `lane` label
+    /// and is kept at zero in standalone mode.
+    fn exists_in(self, mode: ServerMode) -> bool {
+        match self {
+            Self::BusyFeederData | Self::BusyFeederControl => mode == ServerMode::SourceManaged,
+            _ => true,
         }
     }
 }
@@ -684,8 +736,11 @@ struct PhaseHistograms {
 /// registry.
 #[derive(Debug)]
 pub(crate) struct ServiceTelemetry {
-    rejected_family: Family<OutcomeLabels, Counter>,
+    rejected_family: Family<RejectionLabels, Counter>,
     uncertain_family: Family<OutcomeLabels, Counter>,
+    // Indexed by `Rejection`. A series that does not exist in this mode
+    // (refusals HTTP cannot produce there) is an unregistered counter, so
+    // recording stays a single atomic increment and is never exposed.
     rejected: [Counter; Rejection::ALL.len()],
     uncertain: [Counter; Uncertainty::ALL.len()],
     graph_nodes: Gauge,
@@ -713,12 +768,16 @@ pub(crate) struct ServiceTelemetry {
 
 impl ServiceTelemetry {
     pub(crate) fn new(mode: ServerMode, lifecycle: bool, inspection: bool) -> Arc<Self> {
-        let rejected_family = Family::<OutcomeLabels, Counter>::default();
+        let rejected_family = Family::<RejectionLabels, Counter>::default();
         let uncertain_family = Family::<OutcomeLabels, Counter>::default();
         let rejected = Rejection::ALL.map(|reason| {
-            rejected_family
-                .get_or_create(&[("reason", reason.label())])
-                .clone()
+            if reason.exists_in(mode) {
+                rejected_family
+                    .get_or_create(&[("reason", reason.label()), ("lane", reason.lane_label())])
+                    .clone()
+            } else {
+                Counter::default()
+            }
         });
         let uncertain = Uncertainty::ALL.map(|cause| {
             uncertain_family
@@ -832,7 +891,7 @@ impl ServiceTelemetry {
     fn register(&self, registry: &mut Registry) {
         registry.register(
             "knotrel_requests_rejected",
-            "Requests refused before any graph job or import ran for them, by refusing boundary; shutting_down includes non-probe requests that would not create a graph job",
+            "Requests refused before any graph job or import ran for them, by refusing boundary and admission lane (busy by the full lane, import_capacity on the import lane, none for shutting_down and unavailable); shutting_down includes non-probe requests that would not create a graph job",
             self.rejected_family.clone(),
         );
         registry.register(
@@ -1445,7 +1504,8 @@ pub(crate) fn lease_remaining_seconds(deadline_millis: u64, now_millis: u64) -> 
 }
 
 /// Service-health gauges sampled at encode time, without the graph mutex or
-/// any permit. The outstanding-job count is a single atomic load.
+/// any permit. Each lane's held-permit count is a single atomic load of its
+/// semaphore; at most four lanes, so a scrape does constant extra work.
 struct HealthCollector {
     service: Service,
     lifecycle: Lifecycle,
@@ -1480,18 +1540,37 @@ fn gauge_seconds(
 impl Collector for HealthCollector {
     fn encode(&self, mut encoder: DescriptorEncoder) -> Result<(), std::fmt::Error> {
         let info = self.service.info();
-        gauge(
-            &mut encoder,
+        // One occupancy read per lane, so numerator and capacity of a lane
+        // come from the same instant.
+        let server_mode = self.service.mode();
+        let lanes = Lane::ALL.map(|lane| {
+            lane.reachable_in(server_mode).then(|| {
+                let (held, capacity) = self.service.lane_occupancy(lane);
+                (lane, held, capacity)
+            })
+        });
+        let mut outstanding = encoder.encode_descriptor(
             "knotrel_graph_jobs_outstanding",
-            "Graph jobs admitted and not yet finished by their blocking worker, including jobs whose HTTP caller has gone.",
-            i64::try_from(self.lifecycle.outstanding_jobs()).unwrap_or(i64::MAX),
+            "Admission permits of the lane held by work not yet finished by its blocking worker, including work whose HTTP caller has gone (the import lane from permit acquisition, before body receipt, to the import's end); never above knotrel_graph_job_capacity of the same lane.",
+            None,
+            MetricType::Gauge,
         )?;
-        gauge(
-            &mut encoder,
+        for (lane, held, _) in lanes.iter().flatten() {
+            let labels = [("lane", lane.label())];
+            ConstGauge::new(i64::try_from(*held).unwrap_or(i64::MAX))
+                .encode(outstanding.encode_family(&labels)?)?;
+        }
+        let mut capacity = encoder.encode_descriptor(
             "knotrel_graph_job_capacity",
-            "Graph-job admission permit limit (max_pending_jobs).",
-            i64::try_from(info.max_pending_jobs).unwrap_or(i64::MAX),
+            "Admission permit limit of the lane: shared max_pending_jobs, feeder_data KNOTREL_FEEDER_RESERVED_JOBS, feeder_control 2, import 1.",
+            None,
+            MetricType::Gauge,
         )?;
+        for (lane, _, limit) in lanes.iter().flatten() {
+            let labels = [("lane", lane.label())];
+            ConstGauge::new(i64::try_from(*limit).unwrap_or(i64::MAX))
+                .encode(capacity.encode_family(&labels)?)?;
+        }
         gauge(
             &mut encoder,
             "knotrel_service_unavailable",
@@ -1685,6 +1764,29 @@ mod tests {
         assert_eq!(status_label(StatusCode::from_u16(999).unwrap()), "other");
         let request = Request::new(axum::body::Body::empty());
         assert_eq!(route_label(&request), "unmatched");
+    }
+
+    #[test]
+    fn rejection_series_pair_each_reason_with_its_lane() {
+        let series: Vec<_> = Rejection::ALL
+            .iter()
+            .map(|r| (r.label(), r.lane_label()))
+            .collect();
+        assert_eq!(
+            series,
+            [
+                ("busy", "shared"),
+                ("busy", "feeder_data"),
+                ("busy", "feeder_control"),
+                ("import_capacity", "import"),
+                ("shutting_down", "none"),
+                ("unavailable", "none"),
+            ]
+        );
+        for lane in Lane::ALL {
+            assert_eq!(Rejection::busy(lane).lane(), Some(lane));
+        }
+        assert_eq!(Rejection::busy(Lane::Import), Rejection::ImportCapacity);
     }
 
     #[test]
