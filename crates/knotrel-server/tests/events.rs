@@ -2077,7 +2077,7 @@ async fn test_26_queries_cannot_refuse_feeder_events_and_feeder_capacity_is_chec
     running.wait_for_jobs(0).await;
 
     // Part 2: when the feeder lane itself is full, a feeder request is still
-    // refused before execution, with the same wire code as before.
+    // refused before execution, with 503 `busy`.
     let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 4)
         .unwrap()
         .with_mode(ServerMode::SourceManaged)
@@ -2102,9 +2102,9 @@ async fn test_26_queries_cannot_refuse_feeder_events_and_feeder_capacity_is_chec
     let second = events_array(&[link_event(2, "2", "3")]);
     let rejected = post_events(&running, &instance_id, "f-1", 1, &second).await;
     assert_eq!(rejected.status, 503, "{}", rejected.body);
-    // Current wire code for feeder capacity exhaustion (integration-contract.md §9.3).
-    // The code is retained for compatibility; no import is running here.
-    assert_eq!(rejected.json()["code"], "import_in_progress");
+    // An exhausted feeder data lane is `busy`; `import_in_progress` is only
+    // for a concurrent import, and no import is running here.
+    assert_eq!(rejected.json()["code"], "busy");
     assert_eq!(rejected.header("x-knotrel-state-version"), None);
     assert_eq!(running.lifecycle.outstanding_jobs(), 1);
     // Queries still run on the shared lane meanwhile.

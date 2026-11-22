@@ -525,6 +525,7 @@ impl FeederRejection {
             FeederError::BarrierNotReached { .. } => Self::BarrierNotReached,
             FeederError::SupersededBarrier { .. } => Self::SupersededBarrier,
             FeederError::ImportInProgress
+            | FeederError::LaneBusy(_)
             | FeederError::Unavailable
             | FeederError::ModeMismatch
             | FeederError::StaleInstanceId(_)

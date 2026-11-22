@@ -6,7 +6,11 @@ use hyper_util::{
     rt::{TokioIo, TokioTimer},
     service::TowerToHyperService,
 };
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{Semaphore, watch},
@@ -34,13 +38,30 @@ pub enum ShutdownOutcome {
     },
 }
 
-// Static so rejecting an over-limit connection allocates nothing.
-const REJECT_CONNECTION: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
-content-type: application/json\r\n\
-connection: close\r\n\
-content-length: 85\r\n\
-\r\n\
-{\"result\":\"error\",\"code\":\"too_many_connections\",\"message\":\"connection limit reached\"}";
+/// The response written to a connection beyond the limit.
+///
+/// Built once, on the first rejection, with the same serializer and
+/// `ErrorCode` as every other error body, so the code cannot drift from the
+/// enum and `content-length` always matches the body; later rejections
+/// allocate nothing.
+static REJECT_CONNECTION: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    let body = serde_json::to_string(&crate::api::Outcome::Error {
+        code: crate::api::ErrorCode::TooManyConnections,
+        message: "connection limit reached".into(),
+        expected_sequence: None,
+    })
+    .expect("an error outcome always serializes");
+    format!(
+        "HTTP/1.1 503 Service Unavailable\r\n\
+         content-type: application/json\r\n\
+         connection: close\r\n\
+         content-length: {}\r\n\
+         \r\n\
+         {body}",
+        body.len()
+    )
+    .into_bytes()
+});
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
@@ -158,7 +179,7 @@ fn admit(
         // Best effort on the raw socket: a fresh socket has an empty send buffer, so the
         // write neither blocks nor needs a readiness event from the reactor.
         if let Ok(mut raw) = stream.into_std() {
-            let _ = std::io::Write::write(&mut raw, REJECT_CONNECTION);
+            let _ = std::io::Write::write(&mut raw, &REJECT_CONNECTION);
         }
         return;
     };
@@ -193,8 +214,13 @@ fn admit(
 mod tests {
     #[test]
     fn rejection_body_length_matches_content_length() {
-        let text = std::str::from_utf8(super::REJECT_CONNECTION).unwrap();
+        let text = std::str::from_utf8(&super::REJECT_CONNECTION).unwrap();
         let (head, body) = text.split_once("\r\n\r\n").unwrap();
+        assert!(head.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
         assert!(head.contains(&format!("content-length: {}", body.len())));
+        assert_eq!(
+            body,
+            r#"{"result":"error","code":"too_many_connections","message":"connection limit reached"}"#
+        );
     }
 }

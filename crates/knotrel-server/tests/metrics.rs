@@ -1073,7 +1073,7 @@ mod outcomes {
         }
 
         #[tokio::test]
-        async fn feeder_admission_rejection_keeps_import_in_progress_and_counts_busy() {
+        async fn feeder_admission_rejection_answers_busy_and_counts_busy() {
             // The feeder data lane has one permit; a paused feeder job holds it.
             // (A query holding the shared permits can no longer refuse feeder
             // requests: they have their own lane.)
@@ -1093,7 +1093,8 @@ mod outcomes {
             let (status, body) =
                 send_feeder(&app, &instance, "/v1/feeder/gap", gap_body(&instance)).await;
             assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-            assert!(body.contains("import_in_progress"), "{body}");
+            assert!(body.contains("\"busy\""), "{body}");
+            assert!(!body.contains("import_in_progress"), "{body}");
             assert_outcomes(&scrape(&app).await, &[("busy:feeder_data", 1.0)]);
 
             pause.release();
@@ -3009,7 +3010,7 @@ mod feeder_rejections {
         }
 
         #[tokio::test]
-        async fn admission_saturation_keeps_import_in_progress_without_a_rejection() {
+        async fn admission_saturation_answers_busy_without_a_feeder_rejection() {
             // One feeder data permit, held by a paused, successful events job.
             let (app, lifecycle) =
                 paused_app(source_managed_with(1).with_feeder_reserved_jobs(1).unwrap());
@@ -3036,7 +3037,7 @@ mod feeder_rejections {
                 "/v1/feeder/gap",
                 gap(&instance, 1),
                 StatusCode::SERVICE_UNAVAILABLE,
-                "import_in_progress",
+                "busy",
             )
             .await;
             pause.release();

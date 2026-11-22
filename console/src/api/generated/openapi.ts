@@ -987,7 +987,14 @@ export interface components {
       effective: boolean;
     };
     /**
-     * @description Machine-readable error code. Clients should branch on it, not on the message.
+     * @description Machine-readable error code. Clients should branch on it, not on the message, and handle an
+     *     unknown code as an error of its status class.
+     *
+     *     `too_many_connections` is not produced by any operation: the accept loop writes a static
+     *     `503` with this code to a connection opened beyond `KNOTREL_MAX_CONNECTIONS`, before any
+     *     request is read, and closes it (best effort; a client may instead see a reset).
+     *     `busy` is the code of every exhausted admission lane (shared, feeder data, feeder control);
+     *     `import_in_progress` only means that another import holds the import permit.
      * @enum {string}
      */
     ErrorCode:
@@ -1033,6 +1040,7 @@ export interface components {
       | 'stale_generation'
       | 'stale_instance_id'
       | 'superseded_barrier'
+      | 'too_many_connections'
       | 'topology_lifecycle_disabled'
       | 'unavailable'
       | 'uninitialized'
@@ -1250,6 +1258,7 @@ export interface components {
       graph_id: 'default';
       source_id: string;
       source_epoch: string;
+      /** @description Opaque source cursor of the imported snapshot, 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit. */
       source_position: string;
       feeder_session_id: string;
       feeder_epoch: number;
@@ -1287,13 +1296,13 @@ export interface components {
      *     rejected with 409 `topology_lifecycle_disabled`.
      */
     FeederEvent: {
-      /** @description At most 64 bytes of UTF-8. */
+      /** @description At most 64 bytes of UTF-8 (no minimum). The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit. */
       event_id: string;
       delivery_sequence: number;
       prev_delivery_sequence: number;
-      /** @description At most 256 bytes of UTF-8. */
+      /** @description 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit. */
       source_position: string;
-      /** @description At most 256 bytes of UTF-8. */
+      /** @description 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit. */
       prev_source_position: string;
       /** @enum {string} */
       op:
@@ -1431,6 +1440,7 @@ export interface components {
       graph_id: 'default';
       generation: components['schemas']['FeederU64'];
       barrier_delivery_sequence: components['schemas']['FeederU64'];
+      /** @description Optional; when present, 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit. */
       barrier_source_position?: string | null;
     };
     BarrierResponse: {
@@ -1601,7 +1611,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Admission exhausted, import in progress, worker unavailable, server draining or request_timeout (a dispatched worker may still complete; outcome is uncertain). */
+      /** @description The feeder control lane (session and heartbeat, 2 permits) is exhausted (`busy`), the graph worker is unavailable (`unavailable`), the server is draining (`shutting_down`) or the request timed out (`request_timeout`; a dispatched worker may still complete, so the outcome is uncertain). `busy` means nothing of the request was applied; retry later. This route never answers `import_in_progress`. */
       503: {
         headers: {
           [name: string]: unknown;
@@ -1682,7 +1692,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Admission exhausted, import in progress, worker unavailable, server draining or request_timeout (a dispatched worker may still complete; outcome is uncertain). */
+      /** @description The feeder control lane (session and heartbeat, 2 permits) is exhausted (`busy`), the graph worker is unavailable (`unavailable`), the server is draining (`shutting_down`) or the request timed out (`request_timeout`; a dispatched worker may still complete, so the outcome is uncertain). `busy` means nothing of the request was applied; retry later. This route never answers `import_in_progress`. */
       503: {
         headers: {
           [name: string]: unknown;
@@ -1781,7 +1791,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Admission exhausted, import in progress, worker unavailable, server draining or request_timeout (a dispatched worker may still complete; outcome is uncertain). */
+      /** @description Another import holds the single import permit (`import_in_progress`, answered before the body is read), the graph worker is unavailable (`unavailable`), the server is draining (`shutting_down`) or the request timed out (`request_timeout`; a dispatched worker may still complete, so the outcome is uncertain). Imports use no feeder admission lane and never answer `busy`. */
       503: {
         headers: {
           [name: string]: unknown;
@@ -1887,7 +1897,7 @@ export interface operations {
             components['schemas']['ErrorOutcome'] | components['schemas']['PartialBatchFailure'];
         };
       };
-      /** @description Admission exhausted, import in progress, worker unavailable, server draining or request_timeout (a dispatched worker may still complete; outcome is uncertain). */
+      /** @description The feeder data lane (events, barrier and gap, `KNOTREL_FEEDER_RESERVED_JOBS` permits) is exhausted (`busy`), the graph worker is unavailable (`unavailable`), the server is draining (`shutting_down`) or the request timed out (`request_timeout`; a dispatched worker may still complete, so the outcome is uncertain). `busy` means nothing of the request was applied; it may be resubmitted unchanged. This route never answers `import_in_progress`. */
       503: {
         headers: {
           [name: string]: unknown;
@@ -1975,7 +1985,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Admission exhausted, import in progress, worker unavailable, server draining or request_timeout (a dispatched worker may still complete; outcome is uncertain). */
+      /** @description The feeder data lane (events, barrier and gap, `KNOTREL_FEEDER_RESERVED_JOBS` permits) is exhausted (`busy`), the graph worker is unavailable (`unavailable`), the server is draining (`shutting_down`) or the request timed out (`request_timeout`; a dispatched worker may still complete, so the outcome is uncertain). `busy` means nothing of the request was applied; it may be resubmitted unchanged. This route never answers `import_in_progress`. */
       503: {
         headers: {
           [name: string]: unknown;
@@ -2063,7 +2073,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Admission exhausted, import in progress, worker unavailable, server draining or request_timeout (a dispatched worker may still complete; outcome is uncertain). */
+      /** @description The feeder data lane (events, barrier and gap, `KNOTREL_FEEDER_RESERVED_JOBS` permits) is exhausted (`busy`), the graph worker is unavailable (`unavailable`), the server is draining (`shutting_down`) or the request timed out (`request_timeout`; a dispatched worker may still complete, so the outcome is uncertain). `busy` means nothing of the request was applied; it may be resubmitted unchanged. This route never answers `import_in_progress`. */
       503: {
         headers: {
           [name: string]: unknown;

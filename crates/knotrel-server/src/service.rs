@@ -733,10 +733,49 @@ fn validate_replacement_precondition(
     Ok(())
 }
 
+/// Checks a source position (`source_position`, `prev_source_position`,
+/// import `source_position`, `barrier_source_position`) against the
+/// documented bound: 1 to [`MAX_SOURCE_POSITION_BYTES`] bytes of UTF-8.
+/// The bound counts bytes, not characters: a multibyte string may be refused
+/// below 256 characters.
+fn check_source_position(field: &str, value: &str) -> Result<(), FeederError> {
+    if value.is_empty() || value.len() > MAX_SOURCE_POSITION_BYTES {
+        return Err(FeederError::InvalidRequest(format!(
+            "{field} must be 1 to {MAX_SOURCE_POSITION_BYTES} bytes of UTF-8, got {} bytes",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
+/// [`check_source_position`] for an optional field: an absent value is
+/// accepted, a present one must be 1 to 256 bytes.
+fn check_optional_source_position(field: &str, value: Option<&str>) -> Result<(), FeederError> {
+    value.map_or(Ok(()), |value| check_source_position(field, value))
+}
+
+/// Checks an `event_id` against the documented bound: at most
+/// [`MAX_EVENT_ID_BYTES`] bytes of UTF-8 (bytes, not characters).
+fn check_event_id(value: &str) -> Result<(), FeederError> {
+    if value.len() > MAX_EVENT_ID_BYTES {
+        return Err(FeederError::InvalidRequest(format!(
+            "event_id must not exceed {MAX_EVENT_ID_BYTES} bytes of UTF-8, got {} bytes",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Feeder protocol or admission errors.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum FeederError {
+    /// The single import permit is held by a concurrent import (HTTP 503
+    /// `import_in_progress`). Only imports produce it.
     ImportInProgress,
+    /// The request's feeder admission lane is exhausted (HTTP 503 `busy`):
+    /// [`Lane::FeederData`] for events, barrier and gap, [`Lane::FeederControl`]
+    /// for session and heartbeat. Nothing of the request was applied.
+    LaneBusy(Lane),
     Unavailable,
     ModeMismatch,
     StaleInstanceId(String),
@@ -826,10 +865,14 @@ pub(crate) enum FeederEventsResult {
     },
 }
 
-impl From<ServiceError> for FeederError {
-    fn from(err: ServiceError) -> Self {
+impl FeederError {
+    /// Converts an admission or worker error of a feeder request admitted on
+    /// `lane`: an exhausted lane becomes [`FeederError::LaneBusy`], never
+    /// [`FeederError::ImportInProgress`], which is reserved for a concurrent
+    /// import.
+    pub(crate) fn from_service(err: ServiceError, lane: Lane) -> Self {
         match err {
-            ServiceError::Busy => Self::ImportInProgress,
+            ServiceError::Busy => Self::LaneBusy(lane),
             ServiceError::Unavailable => Self::Unavailable,
         }
     }
@@ -1294,6 +1337,11 @@ impl GraphState {
             return Err(FeederError::GraphDesynchronized);
         }
 
+        check_optional_source_position(
+            "barrier_source_position",
+            req.barrier_source_position.as_deref(),
+        )?;
+
         // Decision table: B8 (Premature sequence)
         if req.barrier_delivery_sequence > self.applied_delivery_sequence {
             return Err(FeederError::BarrierNotReached {
@@ -1422,21 +1470,9 @@ impl GraphState {
 
         let lifecycle = self.graph.is_lifecycle();
         for event in &req.events {
-            if event.event_id.len() > MAX_EVENT_ID_BYTES {
-                return Err(FeederError::InvalidRequest(format!(
-                    "event_id must not exceed {MAX_EVENT_ID_BYTES} bytes"
-                )));
-            }
-            if event.source_position.len() > MAX_SOURCE_POSITION_BYTES {
-                return Err(FeederError::InvalidRequest(format!(
-                    "source_position must not exceed {MAX_SOURCE_POSITION_BYTES} bytes"
-                )));
-            }
-            if event.prev_source_position.len() > MAX_SOURCE_POSITION_BYTES {
-                return Err(FeederError::InvalidRequest(format!(
-                    "prev_source_position must not exceed {MAX_SOURCE_POSITION_BYTES} bytes"
-                )));
-            }
+            check_event_id(&event.event_id)?;
+            check_source_position("source_position", &event.source_position)?;
+            check_source_position("prev_source_position", &event.prev_source_position)?;
             let _ = CanonicalOp::from_feeder_event(event, lifecycle)?;
         }
 
@@ -2336,7 +2372,7 @@ impl Service {
             },
         )
         .await
-        .map_err(FeederError::from)?
+        .map_err(|error| FeederError::from_service(error, Lane::FeederControl))?
     }
 
     /// Renews the active feeder lease under graph lock.
@@ -2370,7 +2406,7 @@ impl Service {
             },
         )
         .await
-        .map_err(FeederError::from)?
+        .map_err(|error| FeederError::from_service(error, Lane::FeederControl))?
     }
 
     /// Atomically constructs and publishes a new graph topology on a blocking worker.
@@ -2494,6 +2530,8 @@ impl Service {
                     req.graph_id,
                 )));
             }
+
+            check_source_position("source_position", &req.source_position)?;
 
             // 2. Off-lock candidate building
             let engine_config = engine_from_label(engine);
@@ -2780,11 +2818,10 @@ impl Service {
             return Err(FeederError::Unavailable);
         }
 
-        let (permit, job_guard) = self.admit_in(Lane::FeederData).map_err(|error| {
-            // Counted as `busy` by `admit_in`; the HTTP mapping keeps
-            // `import_in_progress`.
-            FeederError::from(error)
-        })?;
+        // Counted as `busy` by `admit_in`; answered 503 `busy`.
+        let (permit, job_guard) = self
+            .admit_in(Lane::FeederData)
+            .map_err(|error| FeederError::from_service(error, Lane::FeederData))?;
         // One shared handle gives the worker every field it needs with a
         // single reference-count increment.
         let service = self.clone();
@@ -4496,7 +4533,7 @@ mod tests {
                 .declare_barrier(barrier(&service, 0))
                 .await
                 .unwrap_err();
-            assert_ne!(not_busy, FeederError::ImportInProgress);
+            assert_ne!(not_busy, FeederError::LaneBusy(Lane::FeederData));
 
             let data = hold_all(&service.feeder_permits).await;
             assert_eq!(
@@ -4504,7 +4541,7 @@ mod tests {
                     .declare_barrier(barrier(&service, 0))
                     .await
                     .unwrap_err(),
-                FeederError::ImportInProgress
+                FeederError::LaneBusy(Lane::FeederData)
             );
             assert_eq!(
                 service
@@ -4519,7 +4556,7 @@ mod tests {
                     })
                     .await
                     .unwrap_err(),
-                FeederError::ImportInProgress
+                FeederError::LaneBusy(Lane::FeederData)
             );
             service.heartbeat(heartbeat(&service, 1)).await.unwrap();
             service
@@ -4531,15 +4568,58 @@ mod tests {
             let _control = hold_all(&service.feeder_control_permits).await;
             assert_eq!(
                 service.heartbeat(heartbeat(&service, 1)).await.unwrap_err(),
-                FeederError::ImportInProgress
+                FeederError::LaneBusy(Lane::FeederControl)
             );
             assert_ne!(
                 service
                     .declare_barrier(barrier(&service, 0))
                     .await
                     .unwrap_err(),
-                FeederError::ImportInProgress
+                FeederError::LaneBusy(Lane::FeederData)
             );
+        }
+
+        /// Lane saturation and a concurrent import are distinct conditions:
+        /// a held import permit refuses neither feeder lane, and full feeder
+        /// lanes do not refuse the import permit (decision 4 of the 1.0
+        /// contract freeze review).
+        #[tokio::test]
+        async fn lane_saturation_is_not_a_concurrent_import() {
+            let service = source_managed();
+            let import = service.acquire_import_permit().unwrap();
+            assert!(matches!(
+                service.acquire_import_permit(),
+                Err(FeederError::ImportInProgress)
+            ));
+            service
+                .register_session(session(&service, 1, 10_000))
+                .await
+                .unwrap();
+            service.heartbeat(heartbeat(&service, 1)).await.unwrap();
+            let error = service
+                .declare_barrier(barrier(&service, 0))
+                .await
+                .unwrap_err();
+            assert!(!matches!(
+                error,
+                FeederError::ImportInProgress | FeederError::LaneBusy(_)
+            ));
+            drop(import);
+
+            let _data = hold_all(&service.feeder_permits).await;
+            let _control = hold_all(&service.feeder_control_permits).await;
+            assert_eq!(
+                service
+                    .declare_barrier(barrier(&service, 0))
+                    .await
+                    .unwrap_err(),
+                FeederError::LaneBusy(Lane::FeederData)
+            );
+            assert_eq!(
+                service.heartbeat(heartbeat(&service, 1)).await.unwrap_err(),
+                FeederError::LaneBusy(Lane::FeederControl)
+            );
+            assert!(service.acquire_import_permit().is_ok());
         }
 
         /// The lease question (design section 3.1): with the shared lane full
@@ -4609,7 +4689,7 @@ mod tests {
                 .declare_barrier(barrier(&service, 9))
                 .await
                 .unwrap_err();
-            assert_ne!(error, FeederError::ImportInProgress);
+            assert_ne!(error, FeederError::LaneBusy(Lane::FeederData));
             wait_available(&service.feeder_permits, full).await;
             // Failed worker: the job sees the failure marker and fails closed.
             service.graph.write().failed = true;
@@ -4736,11 +4816,11 @@ mod tests {
                     .declare_barrier(barrier(&service, 1))
                     .await
                     .unwrap_err(),
-                FeederError::ImportInProgress
+                FeederError::LaneBusy(Lane::FeederData)
             );
             assert_eq!(
                 service.heartbeat(heartbeat(&service, 1)).await.unwrap_err(),
-                FeederError::ImportInProgress
+                FeederError::LaneBusy(Lane::FeederControl)
             );
             assert_eq!(lifecycle.outstanding_jobs(), bound);
             release_tx.send(()).unwrap();
@@ -4950,7 +5030,7 @@ mod tests {
             delivery_sequence: 1,
             prev_delivery_sequence: 0,
             source_position: "1".into(),
-            prev_source_position: "".into(),
+            prev_source_position: "0".into(),
             op: "link".into(),
             active: None,
             enabled: None,
@@ -5044,14 +5124,16 @@ mod tests {
         assert_eq!(percent_decode_position("%ZZ"), None);
 
         // 4. FeederError from ServiceError
-        assert_eq!(
-            FeederError::from(ServiceError::Busy),
-            FeederError::ImportInProgress
-        );
-        assert_eq!(
-            FeederError::from(ServiceError::Unavailable),
-            FeederError::Unavailable
-        );
+        for lane in [Lane::FeederData, Lane::FeederControl] {
+            assert_eq!(
+                FeederError::from_service(ServiceError::Busy, lane),
+                FeederError::LaneBusy(lane)
+            );
+            assert_eq!(
+                FeederError::from_service(ServiceError::Unavailable, lane),
+                FeederError::Unavailable
+            );
+        }
     }
 
     #[tokio::test]
@@ -5165,7 +5247,7 @@ mod tests {
             delivery_sequence: 1,
             prev_delivery_sequence: 0,
             source_position: "1".into(),
-            prev_source_position: "".into(),
+            prev_source_position: "0".into(),
             op: "add_node".into(),
             active: None,
             enabled: None,
@@ -5431,7 +5513,7 @@ mod tests {
             delivery_sequence: 1,
             prev_delivery_sequence: 0,
             source_position: "1".into(),
-            prev_source_position: "".into(),
+            prev_source_position: "0".into(),
             op: "add_node".into(),
             active: None,
             enabled: None,
@@ -5533,13 +5615,15 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, FeederError::PreconditionFailed(_)));
 
-        // 10. Cut self-loop in apply_events
+        // 10. Cut self-loop in apply_events (source positions are 1 to 256
+        // bytes, so the seeded state carries a non-empty one).
+        service.graph.write().source_position = Some("0".into());
         let cut_self_loop_evt = FeederEvent {
             event_id: "e_cut_loop".into(),
             delivery_sequence: 1,
             prev_delivery_sequence: 0,
             source_position: "1".into(),
-            prev_source_position: "".into(),
+            prev_source_position: "0".into(),
             op: "cut".into(),
             active: None,
             enabled: None,
@@ -5562,7 +5646,7 @@ mod tests {
             delivery_sequence: 1,
             prev_delivery_sequence: 0,
             source_position: "1".into(),
-            prev_source_position: "".into(),
+            prev_source_position: "0".into(),
             op: "add_node".into(),
             active: None,
             enabled: None,
