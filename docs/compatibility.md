@@ -269,11 +269,16 @@ server.
   public item gets an explicit class in the change that adds it.
 - **HTTP API:** CI compares `docs/openapi.yaml` with the previous release's
   (`scripts/check-openapi-compat.py`). Breaking changes to stable operations
-  fail the job; changes to operations marked
-  `x-knotrel-stability: experimental` in the previous release are reported,
-  not failed. Marking a stable operation experimental is itself a breaking
-  change. An approved breaking change is listed, with its
-  release and justification, in `docs/api/approved-breaking-changes.yaml`.
+  fail the job, including a value removed from an enum reachable from a
+  stable response (an error code, an `engine` value, a status or mode), a
+  response enum dropped (an open set of values) and a response constant
+  changed or removed; new response enum values pass. Changes to operations
+  marked `x-knotrel-stability: experimental` in the previous release are
+  reported, not failed. Marking a stable operation experimental is itself a
+  breaking change. An approved breaking change is listed, with its release
+  and justification, in `docs/api/approved-breaking-changes.yaml`, either by
+  its per-operation message or, for a value of a shared schema (for example
+  an `ErrorCode` value), once by the schema-level message the job prints.
 - **Review:** the classification in [stability.md](stability.md) is reviewed
   with every change that adds a public surface.
 
