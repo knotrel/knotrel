@@ -143,9 +143,10 @@ endpoints. The promotion order, component bounds and synchronous repair remain
 unchanged. Sparse mappings introduce extra lookups on upper-level repairs;
 less storage is not a promise of faster cuts.
 
-`HdtGraph::storage_stats()` returns vector capacity bytes, live ordered-container
-payload and per-level counts. It excludes B-tree node overhead/spare slots,
-allocator overhead and its own returned snapshot. Collect it outside timers;
+`HdtGraph::storage_stats()` returns vector capacity bytes, live ordered (B-tree)
+and hashed container payload and per-level counts. It excludes B-tree node
+overhead/spare slots, hash table overhead, allocator overhead and its own
+returned snapshot. Collect it outside timers;
 it is neither total heap usage nor RSS. A separate benchmark `hdt-profile`
 binary groups instrumented cuts with/without promotions. Normal benchmark
 timing remains uninstrumented. Frozen `hdt-v2` and v3 share a comparison build.

@@ -1,8 +1,10 @@
 //! Read-only structural storage accounting for HDT.
 //!
 //! Vector capacities measure requested buffer storage, not allocator usable size.
-//! Ordered payloads exclude B-tree spare slots and node metadata. Neither value
-//! is total heap usage or RSS; allocator overhead and the snapshot are excluded.
+//! Payload byte values count live keys and values of the ordered (B-tree) and
+//! hashed containers, and exclude B-tree spare slots, node metadata and hash
+//! table overhead. Neither value is total heap usage or RSS; allocator overhead
+//! and the snapshot are excluded.
 
 /// Structural storage snapshot of an [`crate::HdtGraph`], from
 /// [`crate::HdtGraph::storage_stats`], collected outside timed graph
@@ -82,7 +84,11 @@ pub struct HdtStorageStats {
     pub available_levels: usize,
     /// Owned vector capacities in bytes, excluding this snapshot.
     pub vector_capacity_bytes: usize,
-    /// Live ordered-container key/value payload bytes; excludes B-tree overhead.
+    /// Live key/value payload bytes of the graph's ordered (B-tree) and hashed
+    /// containers: the vertex-ID and edge hash maps, and for every level its
+    /// B-tree adjacency sets and its `mapping_payload_bytes`. Despite the
+    /// name, hashed containers are included; B-tree and hash table overhead
+    /// are excluded.
     pub ordered_payload_bytes: usize,
     /// Capacity bytes of per-edge tour handle vectors.
     pub edge_arc_capacity_bytes: usize,
@@ -122,6 +128,7 @@ pub struct HdtLevelStorage {
     pub adjacency_capacity_bytes: usize,
     /// Capacity bytes of the local-to-global mapping and released-slot vectors.
     pub mapping_capacity_bytes: usize,
-    /// Live global-to-local mapping payload, excluding B-tree overhead.
+    /// Live key/value payload bytes of the global-to-local mapping, a hash
+    /// map; excludes hash table overhead.
     pub mapping_payload_bytes: usize,
 }

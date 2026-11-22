@@ -281,7 +281,7 @@ startup.
 | --- | --- | --- |
 | `KNOTREL_ADDR` | `127.0.0.1:8080` | IP address and port; non-loopback needs `KNOTREL_ALLOW_NON_LOOPBACK=true` |
 | `KNOTREL_ALLOW_NON_LOOPBACK` | `false` | `true` permits a non-loopback `KNOTREL_ADDR` (no auth/TLS; see [trust model](docs/http-api.md#trust-model)) |
-| `KNOTREL_MODE` | `standalone` | `standalone` or `source_managed`; the latter requires an external feeder |
+| `KNOTREL_MODE` | `standalone` | `standalone` or `source_managed` (alternative spelling `source-managed`); the latter requires an external feeder |
 | `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
 | `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (since v0.9.0) |

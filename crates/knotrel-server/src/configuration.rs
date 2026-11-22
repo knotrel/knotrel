@@ -593,7 +593,7 @@ impl ServerConfig {
             Some("source_managed") | Some("source-managed") => ServerMode::SourceManaged,
             Some(_) => {
                 return Err(ConfigError(format!(
-                    "{} must be standalone or source_managed",
+                    "{} must be standalone, source_managed or source-managed",
                     Setting::Mode
                 )));
             }

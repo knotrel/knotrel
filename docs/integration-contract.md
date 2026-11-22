@@ -98,7 +98,7 @@ To ensure deterministic synchronization and prevent split-brain anomalies or cro
 +-----------------------------------------------------------------------------------------------+
 |                                      IDENTITY HIERARCHY                                       |
 +-----------------------------------------------------------------------------------------------+
-| Service Instance Identity:  instance_id (UUID, ephemeral, changes every process restart)      |
+| Service Instance Identity:  instance_id (opaque, ephemeral, changes every process restart)    |
 |   |                                                                                           |
 |   +--> Feeder Lease:  feeder_session_id & feeder_epoch (fencing token, renewed by heartbeat)  |
 |   |                                                                                           |
@@ -117,9 +117,9 @@ To ensure deterministic synchronization and prevent split-brain anomalies or cro
 ### 3.1 Token Definitions
 
 1. **Service Instance Identity (`instance_id`):**
-   - Type: Ephemeral string (UUIDv4 generated at process startup, e.g. `"srv-550e8400-e29b-41d4-a716-446655440000"`).
+   - Type: Ephemeral opaque string generated at process startup (for example `"srv-1a2b-0187f3c2d4e5f607-0001"`). Its format is not part of the contract: feeders must compare it for equality only and must not parse it or validate its shape.
    - Invariant: **Changes on every process launch/restart.**
-   - Discovery: Exposed in `GET /ready`, `GET /v1/info`, and `GET /v1/stats`.
+   - Discovery: Exposed as `instance_id` in `GET /v1/info` and `GET /v1/stats` (source-managed mode). `GET /ready` does not expose it.
    - **Enforcement Rule:** Every feeder request (`import`, `session`, `heartbeat`, `events`, `barrier`, `gap`) **must** supply `instance_id` in the HTTP header `X-Knotrel-Instance-Id` (and in the JSON payload). If the request `instance_id` does not match the active server `instance_id`, Knotrel rejects it immediately with **`409 Conflict` (`code: "stale_instance_id"`)** before reading the graph or acquiring permits. This prevents stale in-flight requests from a previous incarnation from colliding with a new incarnation that happens to be at generation 1.
 
 2. **Logical Graph Identity (`graph_id`):**
@@ -128,7 +128,7 @@ To ensure deterministic synchronization and prevent split-brain anomalies or cro
    - Invariant: A Knotrel instance validates `graph_id` in every feeder payload. Mismatched IDs are rejected with HTTP 400 (`invalid_graph_id`).
 
 3. **Published Graph Generation (`generation`):**
-   - Type: Unsigned 64-bit integer (`u64`), represented as a decimal integer or string in JSON.
+   - Type: Unsigned 64-bit integer (`u64`), represented as a JSON integer (for example `"generation": 3`). A JSON string such as `"3"` is rejected with 422 `invalid_request`.
    - Lifecycle: Starts at `0` before any import. Set to `1` on the initial baseline import, and increments monotonically ($g \to g + 1$) on every subsequent atomic graph replacement.
    - Scoping: Generational lineage is strictly scoped to `instance_id`.
    - Invariant: Every incremental event, progress event, and barrier declaration **must** specify the exact current `generation`. Any request bearing an older or newer generation is rejected immediately with HTTP 409 (`stale_generation`).
@@ -143,7 +143,7 @@ To ensure deterministic synchronization and prevent split-brain anomalies or cro
    - Invariant: Bound at import. Updates from another `source_id` are rejected with HTTP 409 (`source_mismatch`).
 
 6. **Source Epoch (`source_epoch`):**
-   - Type: UTF-8 string or 64-bit integer identifying the timeline, failover epoch, or schema version of the source stream.
+   - Type: JSON string (UTF-8) identifying the timeline, failover epoch, or schema version of the source stream. A JSON number is rejected with 422 `invalid_request`; a feeder whose epoch is numeric sends its decimal string form (for example `"3"`).
    - Invariant: If the external database undergoes failover, timeline reset, or schema change, it increments its epoch. An event carrying a different `source_epoch` is rejected with HTTP 409 (`source_epoch_mismatch`) and forces a full graph rebuild.
 
 7. **Applied Source Position (`applied_source_position`):**
@@ -504,8 +504,7 @@ In `POST /v1/feeder/import`, the payload explicitly declares `mode`:
    - Precondition: **Mandatory composite precondition.**
    - Header format (RFC 3986 percent-encoded cursor):
      `If-Match: "<expected_generation>.<expected_state_version>.<percent_encoded_source_position>"`
-   - Body format (explicit fields):
-     `"expected_generation": u64`, `"expected_state_version": string`, `"expected_source_position": string`.
+   - The `If-Match` header is the only carrier of the precondition. The import body has no precondition fields: it rejects unknown fields, so a body that carries `expected_generation`, `expected_state_version` or `expected_source_position` is rejected with `422 invalid_request`. In the checks below, `expected_generation`, `expected_state_version` and `expected_source_position` denote the three components parsed from `If-Match`.
    - **Post-Build Mutex Recheck:** After candidate graph is built off-lock, worker acquires graph mutex and rechecks:
      1. Feeder lease and session epoch remain active and valid (failure $\to$ `409 fenced_feeder_session` or `409 lease_expired`).
      2. `live.generation == expected_generation`.
@@ -1223,7 +1222,7 @@ To enable immediate, unambiguous implementation of Feature 0.2.2 without prematu
 
 ### 13.1 Implementation Prerequisites
 1. **Startup Mode Support:** Implement configuration flag `KNOTREL_MODE` (`standalone` default, `source-managed` opt-in).
-2. **Identity Model:** Implement `instance_id` (UUIDv4), `generation` (`u64`), `source_id` (`String`), `source_epoch` (`String`), `applied_source_position` (`String`), and `feeder_session_id` (`String`).
+2. **Identity Model:** Implement `instance_id` (opaque string), `generation` (`u64`), `source_id` (`String`), `source_epoch` (`String`), `applied_source_position` (`String`), and `feeder_session_id` (`String`).
 3. **Endpoint:** Implement `POST /v1/feeder/import` (enforcing `X-Knotrel-Instance-Id`).
 4. **Import Mode Preconditions & Error Segregation:**
    - If `mode: "create_only"`: Server must be `Uninitialized` (`generation == 0`). Otherwise return `409 Conflict` (`graph_already_initialized`).
