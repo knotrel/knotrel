@@ -8,7 +8,7 @@ use crate::{
 use axum::{
     Json,
     extract::{Request, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -680,17 +680,27 @@ pub(crate) fn readiness_state(lifecycle: &Lifecycle, service: &Service) -> Readi
     }
 }
 
-fn is_probe(path: &str) -> bool {
-    path == Route::Health.as_str() || path == Route::Ready.as_str()
+/// True for a `GET` or `HEAD` request on `/health` or `/ready`. Any other
+/// method on those paths is new work and gets `503 shutting_down` while
+/// draining, like every other non-probe request.
+fn is_probe(method: &Method, path: &str) -> bool {
+    is_read_method(method) && (path == Route::Health.as_str() || path == Route::Ready.as_str())
 }
 
-/// True only for the registered `/metrics` route; when metrics are disabled
-/// the path is unmatched and draining rejects it like any other request.
+/// True for the methods a probe or scrape may use: `GET` and `HEAD`.
+fn is_read_method(method: &Method) -> bool {
+    *method == Method::GET || *method == Method::HEAD
+}
+
+/// True only for a `GET` or `HEAD` request on the registered `/metrics`
+/// route; when metrics are disabled the path is unmatched and draining
+/// rejects it like any other request.
 pub(crate) fn is_metrics_scrape(request: &Request) -> bool {
-    request
-        .extensions()
-        .get::<axum::extract::MatchedPath>()
-        .is_some_and(|matched| matched.as_str() == Route::Metrics.as_str())
+    is_read_method(request.method())
+        && request
+            .extensions()
+            .get::<axum::extract::MatchedPath>()
+            .is_some_and(|matched| matched.as_str() == Route::Metrics.as_str())
 }
 
 fn close_connection(response: &mut Response) {
@@ -722,7 +732,7 @@ pub(crate) async fn shutdown_gate(
 ) -> Response {
     let path = request.uri().path();
     let is_draining = lifecycle.phase() == Phase::Draining;
-    let probe = is_probe(path) || is_metrics_scrape(&request);
+    let probe = is_probe(request.method(), path) || is_metrics_scrape(&request);
 
     #[cfg(feature = "test-support")]
     {
@@ -855,9 +865,11 @@ mod tests {
     fn test_lifecycle_default_and_debug_impls() {
         let lifecycle = Lifecycle::default();
         assert_eq!(lifecycle.phase(), Phase::Starting);
-        assert!(!is_probe("/v1/stats"));
-        assert!(is_probe("/health"));
-        assert!(is_probe("/ready"));
+        assert!(!is_probe(&Method::GET, "/v1/stats"));
+        assert!(is_probe(&Method::GET, "/health"));
+        assert!(is_probe(&Method::HEAD, "/ready"));
+        assert!(!is_probe(&Method::POST, "/ready"));
+        assert!(!is_probe(&Method::POST, "/health"));
 
         #[cfg(feature = "test-support")]
         {

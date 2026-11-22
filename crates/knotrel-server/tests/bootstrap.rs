@@ -666,6 +666,77 @@ async fn test_7_equal_sequence_different_position_rejected_without_changing_prog
     assert_eq!(running.finished().await, ShutdownOutcome::Drained);
 }
 
+/// `barrier_source_position` is optional (OpenAPI, `http-api.md`): when it is
+/// omitted or null only the delivery sequence is validated; when supplied it
+/// must equal the applied position (B7). Checked at generation 1 after events.
+#[tokio::test]
+async fn test_7b_barrier_source_position_is_optional_at_generation_one() {
+    let _guard = TEST_MUTEX.lock().await;
+    let mut running = Running::start(config_source_managed()).await;
+    register_session(&running, "feeder-1", 1, 30_000).await;
+    let import = import_graph(
+        &running,
+        "feeder-1",
+        1,
+        "create_only",
+        "pos-0",
+        &[1, 2],
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(import.status, 201);
+    let events = r#"[{"event_id":"e-1","delivery_sequence":1,"prev_delivery_sequence":0,"source_position":"pos-1","prev_source_position":"pos-0","op":"progress"}]"#;
+    assert_eq!(
+        apply_events(&running, "feeder-1", 1, 1, events)
+            .await
+            .status,
+        200
+    );
+
+    // Supplied and wrong: 409, progress unchanged.
+    let wrong = declare_barrier(&running, "feeder-1", 1, 1, 1, Some("pos-0")).await;
+    assert_eq!(wrong.status, 409);
+    assert_eq!(wrong.json()["code"], "barrier_position_mismatch");
+
+    // Omitted: only the delivery sequence is validated.
+    let instance_id = running.instance_id().await;
+    let omitted = format!(
+        r#"{{"instance_id":"{instance_id}","graph_id":"default","generation":1,"feeder_session_id":"feeder-1","feeder_epoch":1,"barrier_delivery_sequence":1}}"#
+    );
+    let mut stream = running.connect().await;
+    let reply = post(
+        &mut stream,
+        "/v1/feeder/barrier",
+        &[("X-Knotrel-Instance-Id", &instance_id)],
+        &omitted,
+    )
+    .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(reply.json()["result"], "synchronized");
+    assert_eq!(reply.json()["applied_source_position"], "pos-1");
+
+    // Null: same as omitted.
+    let null = declare_barrier(&running, "feeder-1", 1, 1, 1, None).await;
+    assert_eq!(null.status, 200, "{}", null.body);
+    assert_eq!(null.json()["result"], "already_synchronized");
+
+    // Supplied and matching.
+    let exact = declare_barrier(&running, "feeder-1", 1, 1, 1, Some("pos-1")).await;
+    assert_eq!(exact.status, 200, "{}", exact.body);
+    assert_eq!(exact.json()["result"], "already_synchronized");
+
+    // An omitted position still cannot skip the sequence checks.
+    let premature = declare_barrier(&running, "feeder-1", 1, 1, 2, None).await;
+    assert_eq!(premature.json()["code"], "barrier_not_reached");
+
+    let mut stream = running.connect().await;
+    assert_eq!(get(&mut stream, "/ready").await.status, 200);
+
+    running.shutdown();
+    assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+}
+
 #[tokio::test]
 async fn test_8_premature_and_older_barriers_rejected_without_changing_progress() {
     let _guard = TEST_MUTEX.lock().await;

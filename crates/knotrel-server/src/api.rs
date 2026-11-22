@@ -1381,7 +1381,7 @@ fn check_default_graph_id(graph_id: &str) -> Option<Response> {
         return Some(error_response(
             StatusCode::BAD_REQUEST,
             ErrorCode::InvalidGraphId,
-            format!("unsupported graph ID '{graph_id}'; only '{DEFAULT_GRAPH_ID}' is supported"),
+            format!("unsupported graph ID; only '{DEFAULT_GRAPH_ID}' is supported"),
         ));
     }
     None
@@ -1729,13 +1729,10 @@ fn feeder_error(err: crate::service::FeederError) -> Response {
             ErrorCode::PreconditionFailed,
             msg,
         ),
-        FeederError::BarrierPositionMismatch { expected, received } => error_response(
+        FeederError::BarrierPositionMismatch { expected } => error_response(
             StatusCode::CONFLICT,
             ErrorCode::BarrierPositionMismatch,
-            format!(
-                "barrier source position '{}' does not match applied position '{}'",
-                received, expected
-            ),
+            format!("barrier_source_position does not match applied position '{expected}'"),
         ),
         FeederError::BarrierNotReached { expected, received } => error_response(
             StatusCode::CONFLICT,
@@ -1910,7 +1907,15 @@ impl<'a> InspectQuery<'a> {
         let mut seen: Vec<(&str, &str)> = Vec::with_capacity(pairs.len());
         for (name, value) in pairs {
             if !allowed.contains(&name.as_str()) {
-                return Err(format!("unknown query parameter `{name}`"));
+                // The unknown name is client input and is never quoted (T1.9).
+                return Err(format!(
+                    "unknown query parameter; allowed: {}",
+                    if allowed.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        allowed.join(", ")
+                    }
+                ));
             }
             if seen.iter().any(|(seen_name, _)| *seen_name == name) {
                 return Err(format!("duplicate query parameter `{name}`"));
@@ -2076,12 +2081,38 @@ fn path_node(node: &str) -> Result<u64, String> {
         .map_err(|reason| format!("node: {reason}"))
 }
 
+/// The `{node}` segment of an inspection path. Axum rejects a segment that
+/// does not percent-decode to UTF-8 (e.g. `%FF`) with a plain-text 400; the
+/// handlers turn that rejection into the JSON error envelope instead.
+type PathNode = Result<Path<String>, axum::extract::rejection::PathRejection>;
+
+/// The response for a [`PathNode`] rejection (a segment that is not UTF-8):
+/// 409 `inspection_disabled` when inspection is off (the switch is checked
+/// first, so a disabled route never parses its path), and otherwise 422
+/// `invalid_request`, like any other malformed node ID.
+fn path_rejection(service: &Service) -> Response {
+    if service.inspection() {
+        // Like every other malformed node ID: no `Cache-Control`.
+        invalid_query("node: path segment is not valid UTF-8")
+    } else {
+        let mut response = inspect_error(crate::graph::InspectError::Disabled);
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        response
+    }
+}
+
 /// `GET /v1/nodes/{node}`: one node.
 pub(crate) async fn get_node(
     State(service): State<Service>,
-    Path(node): Path<String>,
+    node: PathNode,
     query: QueryPairs,
 ) -> Response {
+    let Ok(Path(node)) = node else {
+        return path_rejection(&service);
+    };
     let parsed = query_pairs(query)
         .and_then(|pairs| InspectQuery::new(&pairs, &[]).map(|_| ()))
         .and_then(|()| path_node(&node));
@@ -2100,9 +2131,12 @@ pub(crate) async fn get_node(
 /// `GET /v1/nodes/{node}/edges`: incident edges of one node.
 pub(crate) async fn list_node_edges(
     State(service): State<Service>,
-    Path(node): Path<String>,
+    node: PathNode,
     query: QueryPairs,
 ) -> Response {
+    let Ok(Path(node)) = node else {
+        return path_rejection(&service);
+    };
     let parsed = query_pairs(query).and_then(|pairs| {
         let query = InspectQuery::new(&pairs, &["after", "limit", "state"])?;
         Ok((
@@ -3165,10 +3199,7 @@ mod tests {
             ),
             (FeederError::InvalidRequest(s()), Some("invalid_request")),
             (
-                FeederError::BarrierPositionMismatch {
-                    expected: s(),
-                    received: s(),
-                },
+                FeederError::BarrierPositionMismatch { expected: s() },
                 Some("barrier_position_mismatch"),
             ),
             (

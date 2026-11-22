@@ -322,3 +322,33 @@ async fn source_managed_reads_are_available_without_mutation() {
     assert_eq!(body["nodes"], json!([]));
     assert_eq!(headers["x-knotrel-sync-status"], "uninitialized");
 }
+
+/// A `{node}` segment that does not percent-decode to UTF-8 gets the JSON
+/// error envelope: 409 `inspection_disabled` when inspection is off, else 422
+/// `invalid_request` (never Axum's plain-text 400).
+#[tokio::test]
+async fn non_utf8_node_paths_get_the_json_error_envelope() {
+    for (inspection, status, code) in [
+        (false, StatusCode::CONFLICT, "inspection_disabled"),
+        (true, StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"),
+    ] {
+        let app = app(EngineConfig::CompactBfs, false, inspection);
+        for path in [
+            "/v1/nodes/%FF",
+            "/v1/nodes/%FF/edges",
+            "/v1/nodes/%C3%28/edges?limit=1",
+        ] {
+            let (actual, headers, body) = get(&app, path).await;
+            assert_eq!(actual, status, "{path}");
+            assert_eq!(headers["content-type"], "application/json", "{path}");
+            // Like the other malformed-ID 422s, only the 409 carries `no-store`.
+            assert_eq!(
+                headers.get("cache-control").is_some(),
+                !inspection,
+                "{path}"
+            );
+            assert_eq!(body["result"], "error", "{path}");
+            assert_eq!(body["code"], code, "{path}");
+        }
+    }
+}
