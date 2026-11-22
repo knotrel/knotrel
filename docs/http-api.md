@@ -746,8 +746,8 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_ADDR` | IP socket address, such as `127.0.0.1:8080` or `[::1]:8080`; non-loopback requires `KNOTREL_ALLOW_NON_LOOPBACK=true` | `127.0.0.1:8080` |
 | `KNOTREL_ALLOW_NON_LOOPBACK` | Exactly `true` or `false` | `false` |
 | `KNOTREL_ENGINE` | Exactly `compact-bfs`, `ett` or `hdt` | `compact-bfs` |
-| `KNOTREL_MODE` | Exactly `standalone` or `source_managed` | `standalone` |
-| `KNOTREL_MAX_IMPORT_BODY_BYTES` | ASCII decimal integer from 1 through 1073741824 | `67108864` (64 MiB) |
+| `KNOTREL_MODE` | Exactly `standalone`, `source_managed` or `source-managed`; `source-managed` is an accepted, stable alternative spelling of `source_managed` | `standalone` |
+| `KNOTREL_MAX_IMPORT_BODY_BYTES` | ASCII decimal integer from 1 through 536870912 (512 MiB) | `67108864` (64 MiB) |
 | `KNOTREL_DEDUP_WINDOW_SIZE` | ASCII decimal integer from 1 through 1000000 | `10000` |
 | `KNOTREL_METRICS_ENABLED` | Exactly `true` or `false`; `true` serves [`GET /metrics`](#metrics-opt-in) | `false` |
 | `KNOTREL_TOPOLOGY_LIFECYCLE` | Exactly `true` or `false`; `true` enables [node and edge lifecycle](#node-and-edge-lifecycle-opt-in) support and requires `KNOTREL_ENGINE=compact-bfs` (with `ett` or `hdt` startup fails before binding; their lifecycle support is deferred) | `false` |
