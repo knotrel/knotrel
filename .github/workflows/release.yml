@@ -251,10 +251,11 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-
+      # No build cache and a fixed SOURCE_DATE_EPOCH (commit time) so the binary
+      # can be rebuilt byte for byte from the tag (docs/releases/reproducible-build.md).
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }} -p knotrel-server
+        shell: bash
+        run: SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)" cargo build --release --locked --target ${{ matrix.target }} -p knotrel-server
 
       - name: Record build provenance receipt
         shell: bash

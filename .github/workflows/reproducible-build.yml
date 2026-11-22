@@ -1,0 +1,130 @@
+name: reproducible-build
+run-name: "Reproducible build (ref: ${{ inputs.ref }}, reference: ${{ inputs.dry_run_run_id != '' && format('dry run {0}', inputs.dry_run_run_id) || 'GitHub Release' }})"
+
+# Rebuilds knotrel-server from a release tag or candidate commit and compares
+# it with the published release binary or with the binary of a release dry
+# run (rc gate, see docs/releases/release-procedure.md). The check script is
+# taken from the workflow's own commit; the source comes from `ref`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Release tag (e.g. v1.0.0) or full candidate commit SHA"
+        required: true
+      version:
+        description: "Version of the reference assets (e.g. 1.0.0); required when ref is a commit"
+        required: false
+        default: ""
+      dry_run_run_id:
+        description: "Release workflow run ID whose release bundle is the reference (empty: the GitHub Release of the tag)"
+        required: false
+        default: ""
+      source_date_epoch:
+        description: "Override SOURCE_DATE_EPOCH (empty: commit time; releases up to v0.9.0 need the original build time)"
+        required: false
+        default: ""
+      accept:
+        description: "Weakest accepted result: byte (SHA-256 identical), equivalent (Mach-O: identical after excluding LC_UUID and LC_CODE_SIGNATURE), code (only the code section compared; cannot close the gate without a maintainer decision). Windows is not covered."
+        type: choice
+        options: [byte, equivalent, code]
+        default: byte
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rebuild-and-compare:
+    name: rebuild-and-compare (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    env:
+      INPUT_REF: ${{ inputs.ref }}
+      INPUT_VERSION: ${{ inputs.version }}
+      INPUT_RUN_ID: ${{ inputs.dry_run_run_id }}
+      INPUT_EPOCH: ${{ inputs.source_date_epoch }}
+      ACCEPT: ${{ inputs.accept }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve commit, version and toolchain
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse --verify "${INPUT_REF}^{commit}")"
+          VERSION="${INPUT_VERSION:-${INPUT_REF#v}}"
+          VERSION="${VERSION#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "ERROR: cannot derive a version from '$INPUT_REF'; set the version input." >&2
+            exit 1
+          fi
+          if [[ -n "$INPUT_RUN_ID" && ! "$INPUT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: dry_run_run_id must be numeric." >&2
+            exit 1
+          fi
+          if [[ -n "$INPUT_EPOCH" && ! "$INPUT_EPOCH" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: source_date_epoch must be numeric." >&2
+            exit 1
+          fi
+          CHANNEL="$(git show "$COMMIT:rust-toolchain.toml" | sed -n 's/^channel *= *"\(.*\)"/\1/p')"
+          [[ -n "$CHANNEL" ]] || { echo "ERROR: no toolchain channel at $COMMIT" >&2; exit 1; }
+          {
+            echo "commit=$COMMIT"
+            echo "version=$VERSION"
+            echo "toolchain=$CHANNEL"
+          } >> "$GITHUB_OUTPUT"
+          echo "ref=$INPUT_REF commit=$COMMIT version=$VERSION toolchain=$CHANNEL"
+          echo "runner image: ${ImageOS:-?} ${ImageVersion:-?}"
+
+      # Same toolchain action as the release workflow, no build cache.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.resolve.outputs.toolchain }}
+          targets: ${{ matrix.target }}
+
+      - name: Download the dry-run release bundle
+        if: inputs.dry_run_run_id != ''
+        shell: bash
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/reference"
+          gh run download "$INPUT_RUN_ID" -R "$GITHUB_REPOSITORY" \
+            -n "knotrel-release-bundle-v${VERSION}" -D "$RUNNER_TEMP/reference"
+          echo "PUBLISHED_DIR=$RUNNER_TEMP/reference" >> "$GITHUB_ENV"
+
+      - name: Rebuild and compare
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.resolve.outputs.version }}
+          COMMIT: ${{ steps.resolve.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$INPUT_EPOCH" ]]; then export SOURCE_DATE_EPOCH="$INPUT_EPOCH"; fi
+          ./scripts/check-reproducible-build.sh "$COMMIT" "${{ matrix.target }}" 2>&1 \
+            | tee "$RUNNER_TEMP/reproducible-build-${{ matrix.target }}.log"
+
+      - name: Upload comparison log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reproducible-build-${{ matrix.target }}
+          path: ${{ runner.temp }}/reproducible-build-${{ matrix.target }}.log
+          if-no-files-found: ignore
