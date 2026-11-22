@@ -13,7 +13,21 @@
 //!
 //! [`ServerConfig`] controls startup settings, including opt-in Prometheus metrics.
 //! Embedded callers can build a router with [`router_with_config`] or provide an
-//! explicit lifecycle with [`router_with_lifecycle`].
+//! explicit lifecycle with [`router_with_lifecycle`], whose `/ready` follows
+//! startup and the shutdown drain.
+//!
+//! # Public dependencies
+//!
+//! The stable API exposes two foreign types: [`axum::Router`] (axum 0.8),
+//! returned by [`router`], [`router_with_config`] and [`router_with_lifecycle`]
+//! and accepted by [`serve()`], and [`tokio::net::TcpListener`] (tokio 1),
+//! accepted by [`serve()`], which also requires a Tokio runtime. Both
+//! dependencies are part of this crate's stable API: use the same major
+//! versions in your own crate to pass these values. An upgrade of either to an
+//! incompatible version (axum 0.9, tokio 2) changes these signatures, so it
+//! requires a SemVer assessment of Knotrel and, from 1.0, is released only as
+//! a major version unless the assessment shows the public API unchanged. See the
+//! [stability classification](https://github.com/knotrel/knotrel/blob/main/docs/stability.md#public-dependencies-of-knotrel-server).
 //!
 //! # Node and edge lifecycle
 //!
@@ -141,6 +155,48 @@ pub fn router_with_config(config: ServerConfig) -> axum::Router {
 
 /// Like [`router_with_config`], but readiness and shutdown rejection follow
 /// the supplied [`Lifecycle`], which [`serve()`] drives.
+///
+/// This is the way to connect a [`Lifecycle`] to a router: use it whenever
+/// `/ready` must follow startup and the shutdown drain, as the executable does.
+/// Clones of `lifecycle` (for example the one passed to [`serve()`]) share
+/// the phase. The behavior below is Stable.
+///
+/// # Readiness and drain
+///
+/// - [`Phase::Starting`]: `GET /ready` answers 503 `{"status":"starting"}`;
+///   other routes are served normally.
+/// - [`Phase::Ready`]: `GET /ready` answers 200 `{"status":"ready"}` in
+///   [`ServerMode::Standalone`]. In [`ServerMode::SourceManaged`] it reports
+///   the graph's synchronization status instead (503 `uninitialized`,
+///   `loading`, `catching_up`, `stale` or `desynchronized` until the feeder
+///   has bootstrapped and synchronized the graph).
+/// - [`Phase::Draining`]: `GET /ready` answers 503 `{"status":"draining"}`,
+///   whatever the synchronization status. `GET /health`, and `GET /metrics`
+///   when metrics are enabled, are still answered normally so orchestrators can
+///   observe the drain; every other request, including unknown routes, is
+///   rejected with 503 `shutting_down` before it reaches a handler. A request
+///   admitted before draining began runs to completion. While draining, every
+///   response carries `Connection: close`.
+/// - A failed graph worker makes `/ready` answer 503 `{"status":"unavailable"}`
+///   in every phase.
+///
+/// Every `/ready` response carries `Cache-Control: no-store`. The phase only
+/// moves forward ([`Lifecycle`]), so a draining router never becomes ready
+/// again.
+///
+/// ```rust
+/// use knotrel_core::EngineConfig;
+/// use knotrel_server::{Lifecycle, Phase, ServerConfig, router_with_lifecycle};
+///
+/// let config = ServerConfig::new("127.0.0.1:0".parse()?, EngineConfig::CompactBfs, 32)?;
+/// let lifecycle = Lifecycle::new();
+/// let app: axum::Router = router_with_lifecycle(config.clone(), lifecycle.clone());
+/// // `serve(listener, app, &config, &lifecycle, shutdown)` marks the lifecycle
+/// // ready before accepting and moves it to draining when `shutdown` completes.
+/// assert_eq!(lifecycle.phase(), Phase::Starting);
+/// # drop(app);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn router_with_lifecycle(config: ServerConfig, lifecycle: Lifecycle) -> axum::Router {
     build_router(empty_graph(&config), config, lifecycle)
 }

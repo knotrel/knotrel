@@ -420,7 +420,11 @@ records `Stale` and reports 503 without blocking on slow graph workers. In the s
 rather than `starting` before readiness. Embedded routers created with `router(...)` or
 `router_with_config(...)` in standalone mode are initially ready; however, they can transition to 503
 `unavailable` if a graph worker fails or panics. `router_with_lifecycle(config, lifecycle)` exposes all
-lifecycle phases, and `serve(...)` drives them.
+lifecycle phases, and `serve(...)` drives them: `starting` before `serve` marks the lifecycle ready,
+then the states above, and `503 draining` from the moment the drain begins, whatever the
+synchronization status, while `/health` (and `/metrics` when enabled) stay answerable and every
+other request gets `503 shutting_down` with `Connection: close`. This behavior is stable
+([stability.md](stability.md)).
 
 ### Metrics (opt-in)
 

@@ -895,25 +895,30 @@ fn lifecycle_outcome(result: crate::graph::LifecycleResult) -> Outcome {
 
 /// Stable code and message for a lifecycle domain error.
 pub(crate) fn lifecycle_error_code(error: LifecycleError) -> (ErrorCode, String) {
-    let code = match error {
-        LifecycleError::Graph(error) => graph_error_code(error),
-        LifecycleError::UnknownEdge { .. } => ErrorCode::UnknownEdge,
-        LifecycleError::ConflictingNode { .. } => ErrorCode::InvalidNode,
-        LifecycleError::ConflictingEdge { .. } => ErrorCode::InvalidEdge,
-        // `LifecycleError` is non-exhaustive; a future variant is still an
-        // ordinary rejected request, never a silent success.
-        _ => ErrorCode::InvalidRequest,
-    };
-    (code, error.to_string())
+    (core_error_code(error), error.to_string())
 }
 
 /// Stable code for a core graph error.
 pub(crate) fn graph_error_code(error: GraphError) -> ErrorCode {
+    core_error_code(LifecycleError::Graph(error))
+}
+
+/// Stable code for a core error. `LifecycleError::Graph` carries every
+/// `GraphError`, so the two `#[non_exhaustive]` core enums share one fallback.
+fn core_error_code(error: LifecycleError) -> ErrorCode {
     match error {
-        GraphError::NodeLimitExceeded { .. } => ErrorCode::NodeLimitExceeded,
-        GraphError::EdgeLimitExceeded { .. } => ErrorCode::EdgeLimitExceeded,
-        GraphError::SelfLoop { .. } => ErrorCode::SelfLoop,
-        GraphError::UnknownNode { .. } => ErrorCode::UnknownNode,
+        LifecycleError::Graph(GraphError::NodeLimitExceeded { .. }) => ErrorCode::NodeLimitExceeded,
+        LifecycleError::Graph(GraphError::EdgeLimitExceeded { .. }) => ErrorCode::EdgeLimitExceeded,
+        LifecycleError::Graph(GraphError::SelfLoop { .. }) => ErrorCode::SelfLoop,
+        LifecycleError::Graph(GraphError::UnknownNode { .. }) => ErrorCode::UnknownNode,
+        LifecycleError::UnknownEdge { .. } => ErrorCode::UnknownEdge,
+        LifecycleError::ConflictingNode { .. } => ErrorCode::InvalidNode,
+        LifecycleError::ConflictingEdge { .. } => ErrorCode::InvalidEdge,
+        // `LifecycleError` and `GraphError` are non-exhaustive; a future
+        // variant of either (and `UnsupportedEngine`, which a configured
+        // server never reaches) is still an ordinary rejected request, never
+        // a silent success.
+        _ => ErrorCode::InvalidRequest,
     }
 }
 

@@ -1,0 +1,79 @@
+# Separately reviewed public Rust API decisions, checked by
+# scripts/public-api.py (CI job "public API"; docs/compatibility.md, section 6).
+# Each entry records a maintainer decision; change it only with one.
+
+# Items that may carry #[non_exhaustive]. The attribute must appear exactly
+# on these items: adding it anywhere else (for example to the types frozen
+# exhaustive in docs/stability.md: GraphLimits, NodeSpec, EdgeSpec, ServerMode,
+# ShutdownOutcome) or removing it from one of them fails the check, because
+# the cargo-semver-checks exceptions below cover a whole crate.
+[non_exhaustive]
+items = [
+    # Approved for v1.0.0 (contract freeze, decision 1 of 2026-11-22).
+    "knotrel_core::EdgeState",
+    "knotrel_core::EngineConfig",
+    "knotrel_core::GraphError",
+    "knotrel_core::IncidenceError",
+    "knotrel_server::Phase",
+    # Non-exhaustive since they were added (v0.7.0).
+    "knotrel_core::LifecycleError",
+    "knotrel_core::LifecycleStorage",
+]
+
+# Narrowings: a stable item or implementation made experimental, internal or
+# removed ("removed"). The check compares the classification with the pull
+# request's base and fails on any such change without an entry here; every
+# entry must match the current classification. docs/stability.md lists each
+# one in "Reclassified from Stable to Experimental".
+[[narrowing]]
+item = "knotrel_server::ServerConfig::with_inspection"
+from = "stable"
+to = "experimental"
+release = "1.0.0"
+reason = "R6, decision 8 of 2026-11-22: follows KNOTREL_INSPECTION and the inspection routes."
+
+[[narrowing]]
+item = "knotrel_server::ServerConfig::inspection"
+from = "stable"
+to = "experimental"
+release = "1.0.0"
+reason = "R6, decision 8 of 2026-11-22: follows KNOTREL_INSPECTION and the inspection routes."
+
+[[narrowing]]
+item = "knotrel_server::ServerConfig::DEFAULT_FEEDER_RESERVED_JOBS"
+from = "stable"
+to = "experimental"
+release = "1.0.0"
+reason = "R6, decision 8 of 2026-11-22: follows KNOTREL_FEEDER_RESERVED_JOBS."
+
+[[narrowing]]
+item = "knotrel_server::ServerConfig::MAX_FEEDER_RESERVED_JOBS"
+from = "stable"
+to = "experimental"
+release = "1.0.0"
+reason = "R6, decision 8 of 2026-11-22: follows KNOTREL_FEEDER_RESERVED_JOBS."
+
+# cargo-semver-checks lint exceptions ([package.metadata.cargo-semver-checks.lints]
+# in a crate's Cargo.toml). Every configured lint needs an entry here naming
+# the release that ships the change ("until"); once the workspace version is
+# past "until", the check fails until the lint and the entry are removed.
+# While an exception exists, the snapshot, the non_exhaustive list and the
+# narrowing check above stay the per-item guard.
+[[semver_exception]]
+crate = "knotrel-core"
+lints = ["enum_marked_non_exhaustive", "struct_marked_non_exhaustive"]
+until = "1.0.0"
+items = [
+    "knotrel_core::EdgeState",
+    "knotrel_core::EngineConfig",
+    "knotrel_core::GraphError",
+    "knotrel_core::IncidenceError",
+]
+decision = "Contract freeze decision 1 of 2026-11-22 (docs/releases/v1.0-contract-freeze-review.md, R1-R3)."
+
+[[semver_exception]]
+crate = "knotrel-server"
+lints = ["enum_marked_non_exhaustive"]
+until = "1.0.0"
+items = ["knotrel_server::Phase"]
+decision = "Contract freeze decision 1 of 2026-11-22 (docs/releases/v1.0-contract-freeze-review.md, R2)."

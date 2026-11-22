@@ -1,0 +1,642 @@
+# Stability classification of every named public Rust item.
+#
+# Format: one line per public item, "<class> <key>", class = stable |
+# experimental | internal (docs/compatibility.md, section 2). The key is the
+# item's public path in docs/api/public-api-knotrel-core.txt or
+# public-api-knotrel-server.txt, or "impl <Trait> for <Type>" for a trait
+# implementation (listed after its type's members).
+#
+# Checked in CI by scripts/public-api.py (job "public API"):
+# - every public item and trait implementation has exactly one line here, and
+#   every line names one: a new item or implementation fails CI until it is
+#   classified here;
+# - a member or implementation never has a higher class than its parent
+#   (stable > experimental > internal); items behind the test-support feature
+#   are internal; implementations of unstable traits (Freeze, UnsafeUnpin,
+#   StructuralPartialEq, TrivialClone) are internal;
+# - a stable key may become experimental, internal or disappear only with an
+#   approved [[narrowing]] in docs/api/public-api-policy.toml (compared with
+#   the pull request's base);
+# - docs/stability.md agrees: it lists every crate-root item and every member
+#   whose class differs from its parent's, with the same class.
+# Keep the file in this order: by path within each crate, implementations
+# after their type's members.
+
+# knotrel-core
+stable       knotrel_core::BfsWorkspace
+stable       impl core::default::Default for knotrel_core::BfsWorkspace
+stable       impl core::fmt::Debug for knotrel_core::BfsWorkspace
+internal     impl core::marker::Freeze for knotrel_core::BfsWorkspace
+stable       impl core::marker::Send for knotrel_core::BfsWorkspace
+stable       impl core::marker::Sync for knotrel_core::BfsWorkspace
+stable       impl core::marker::Unpin for knotrel_core::BfsWorkspace
+internal     impl core::marker::UnsafeUnpin for knotrel_core::BfsWorkspace
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::BfsWorkspace
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::BfsWorkspace
+stable       knotrel_core::ConnectivityGraph
+stable       impl core::convert::From<knotrel_core::Graph> for knotrel_core::ConnectivityGraph
+stable       impl core::default::Default for knotrel_core::ConnectivityGraph
+stable       impl core::fmt::Debug for knotrel_core::ConnectivityGraph
+internal     impl core::marker::Freeze for knotrel_core::ConnectivityGraph
+stable       impl core::marker::Send for knotrel_core::ConnectivityGraph
+stable       impl core::marker::Sync for knotrel_core::ConnectivityGraph
+stable       impl core::marker::Unpin for knotrel_core::ConnectivityGraph
+internal     impl core::marker::UnsafeUnpin for knotrel_core::ConnectivityGraph
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::ConnectivityGraph
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::ConnectivityGraph
+stable       knotrel_core::ConnectivityGraph::add_node
+stable       knotrel_core::ConnectivityGraph::as_compact
+stable       knotrel_core::ConnectivityGraph::connected
+stable       knotrel_core::ConnectivityGraph::contains_node
+stable       knotrel_core::ConnectivityGraph::cut
+stable       knotrel_core::ConnectivityGraph::edge_count
+stable       knotrel_core::ConnectivityGraph::enable_neighbor_listing
+stable       knotrel_core::ConnectivityGraph::engine
+stable       knotrel_core::ConnectivityGraph::limits
+stable       knotrel_core::ConnectivityGraph::link
+stable       knotrel_core::ConnectivityGraph::new
+stable       knotrel_core::ConnectivityGraph::node_count
+stable       knotrel_core::ConnectivityGraph::try_from_edges
+stable       knotrel_core::ConnectivityGraph::with_limits
+stable       knotrel_core::EdgeSpec
+stable       impl core::clone::Clone for knotrel_core::EdgeSpec
+internal     impl core::clone::TrivialClone for knotrel_core::EdgeSpec
+stable       impl core::cmp::Eq for knotrel_core::EdgeSpec
+stable       impl core::cmp::PartialEq for knotrel_core::EdgeSpec
+stable       impl core::fmt::Debug for knotrel_core::EdgeSpec
+stable       impl core::marker::Copy for knotrel_core::EdgeSpec
+internal     impl core::marker::Freeze for knotrel_core::EdgeSpec
+stable       impl core::marker::Send for knotrel_core::EdgeSpec
+internal     impl core::marker::StructuralPartialEq for knotrel_core::EdgeSpec
+stable       impl core::marker::Sync for knotrel_core::EdgeSpec
+stable       impl core::marker::Unpin for knotrel_core::EdgeSpec
+internal     impl core::marker::UnsafeUnpin for knotrel_core::EdgeSpec
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::EdgeSpec
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::EdgeSpec
+stable       knotrel_core::EdgeSpec::enabled
+stable       knotrel_core::EdgeSpec::source
+stable       knotrel_core::EdgeSpec::target
+stable       knotrel_core::EdgeState
+stable       impl core::clone::Clone for knotrel_core::EdgeState
+internal     impl core::clone::TrivialClone for knotrel_core::EdgeState
+stable       impl core::cmp::Eq for knotrel_core::EdgeState
+stable       impl core::cmp::PartialEq for knotrel_core::EdgeState
+stable       impl core::fmt::Debug for knotrel_core::EdgeState
+stable       impl core::marker::Copy for knotrel_core::EdgeState
+internal     impl core::marker::Freeze for knotrel_core::EdgeState
+stable       impl core::marker::Send for knotrel_core::EdgeState
+internal     impl core::marker::StructuralPartialEq for knotrel_core::EdgeState
+stable       impl core::marker::Sync for knotrel_core::EdgeState
+stable       impl core::marker::Unpin for knotrel_core::EdgeState
+internal     impl core::marker::UnsafeUnpin for knotrel_core::EdgeState
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::EdgeState
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::EdgeState
+stable       knotrel_core::EdgeState::effective
+stable       knotrel_core::EdgeState::enabled
+stable       knotrel_core::EdgeState::new
+stable       knotrel_core::EngineConfig
+stable       impl core::clone::Clone for knotrel_core::EngineConfig
+internal     impl core::clone::TrivialClone for knotrel_core::EngineConfig
+stable       impl core::cmp::Eq for knotrel_core::EngineConfig
+stable       impl core::cmp::PartialEq for knotrel_core::EngineConfig
+stable       impl core::default::Default for knotrel_core::EngineConfig
+stable       impl core::fmt::Debug for knotrel_core::EngineConfig
+stable       impl core::marker::Copy for knotrel_core::EngineConfig
+internal     impl core::marker::Freeze for knotrel_core::EngineConfig
+stable       impl core::marker::Send for knotrel_core::EngineConfig
+internal     impl core::marker::StructuralPartialEq for knotrel_core::EngineConfig
+stable       impl core::marker::Sync for knotrel_core::EngineConfig
+stable       impl core::marker::Unpin for knotrel_core::EngineConfig
+internal     impl core::marker::UnsafeUnpin for knotrel_core::EngineConfig
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::EngineConfig
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::EngineConfig
+stable       knotrel_core::EngineConfig::CompactBfs
+experimental knotrel_core::EngineConfig::EulerTour
+experimental knotrel_core::EngineConfig::Hdt
+stable       knotrel_core::EngineConfig::as_str
+experimental knotrel_core::EngineConfig::is_experimental
+experimental knotrel_core::ForestGraph
+experimental impl core::default::Default for knotrel_core::ForestGraph
+experimental impl core::fmt::Debug for knotrel_core::ForestGraph
+internal     impl core::marker::Freeze for knotrel_core::ForestGraph
+experimental impl core::marker::Send for knotrel_core::ForestGraph
+experimental impl core::marker::Sync for knotrel_core::ForestGraph
+experimental impl core::marker::Unpin for knotrel_core::ForestGraph
+internal     impl core::marker::UnsafeUnpin for knotrel_core::ForestGraph
+experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::ForestGraph
+experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::ForestGraph
+experimental knotrel_core::ForestGraph::add_node
+experimental knotrel_core::ForestGraph::connected
+experimental knotrel_core::ForestGraph::cut
+experimental knotrel_core::ForestGraph::edge_count
+experimental knotrel_core::ForestGraph::link
+experimental knotrel_core::ForestGraph::new
+experimental knotrel_core::ForestGraph::node_count
+experimental knotrel_core::ForestGraph::reset_stats
+experimental knotrel_core::ForestGraph::stats
+experimental knotrel_core::ForestStats
+experimental impl core::clone::Clone for knotrel_core::ForestStats
+internal     impl core::clone::TrivialClone for knotrel_core::ForestStats
+experimental impl core::cmp::Eq for knotrel_core::ForestStats
+experimental impl core::cmp::PartialEq for knotrel_core::ForestStats
+experimental impl core::default::Default for knotrel_core::ForestStats
+experimental impl core::fmt::Debug for knotrel_core::ForestStats
+experimental impl core::marker::Copy for knotrel_core::ForestStats
+internal     impl core::marker::Freeze for knotrel_core::ForestStats
+experimental impl core::marker::Send for knotrel_core::ForestStats
+internal     impl core::marker::StructuralPartialEq for knotrel_core::ForestStats
+experimental impl core::marker::Sync for knotrel_core::ForestStats
+experimental impl core::marker::Unpin for knotrel_core::ForestStats
+internal     impl core::marker::UnsafeUnpin for knotrel_core::ForestStats
+experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::ForestStats
+experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::ForestStats
+experimental knotrel_core::ForestStats::candidate_edges
+experimental knotrel_core::ForestStats::replacements
+experimental knotrel_core::ForestStats::scanned_vertices
+experimental knotrel_core::ForestStats::tree_cuts
+stable       knotrel_core::Graph
+stable       impl core::default::Default for knotrel_core::Graph
+stable       impl core::fmt::Debug for knotrel_core::Graph
+internal     impl core::marker::Freeze for knotrel_core::Graph
+stable       impl core::marker::Send for knotrel_core::Graph
+stable       impl core::marker::Sync for knotrel_core::Graph
+stable       impl core::marker::Unpin for knotrel_core::Graph
+internal     impl core::marker::UnsafeUnpin for knotrel_core::Graph
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::Graph
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::Graph
+stable       knotrel_core::Graph::add_node
+stable       knotrel_core::Graph::connected
+stable       knotrel_core::Graph::connected_with_workspace
+stable       knotrel_core::Graph::cut
+stable       knotrel_core::Graph::degree
+stable       knotrel_core::Graph::edge_count
+stable       knotrel_core::Graph::enable_neighbor_listing
+stable       knotrel_core::Graph::link
+stable       knotrel_core::Graph::neighbors_after
+stable       knotrel_core::Graph::new
+stable       knotrel_core::Graph::node_count
+stable       knotrel_core::GraphError
+stable       impl core::clone::Clone for knotrel_core::GraphError
+internal     impl core::clone::TrivialClone for knotrel_core::GraphError
+stable       impl core::cmp::Eq for knotrel_core::GraphError
+stable       impl core::cmp::PartialEq for knotrel_core::GraphError
+stable       impl core::convert::From<knotrel_core::GraphError> for knotrel_core::LifecycleError
+stable       impl core::error::Error for knotrel_core::GraphError
+stable       impl core::fmt::Debug for knotrel_core::GraphError
+stable       impl core::fmt::Display for knotrel_core::GraphError
+stable       impl core::marker::Copy for knotrel_core::GraphError
+internal     impl core::marker::Freeze for knotrel_core::GraphError
+stable       impl core::marker::Send for knotrel_core::GraphError
+internal     impl core::marker::StructuralPartialEq for knotrel_core::GraphError
+stable       impl core::marker::Sync for knotrel_core::GraphError
+stable       impl core::marker::Unpin for knotrel_core::GraphError
+internal     impl core::marker::UnsafeUnpin for knotrel_core::GraphError
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::GraphError
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::GraphError
+stable       knotrel_core::GraphError::EdgeLimitExceeded
+stable       knotrel_core::GraphError::EdgeLimitExceeded::limit
+stable       knotrel_core::GraphError::NodeLimitExceeded
+stable       knotrel_core::GraphError::NodeLimitExceeded::limit
+stable       knotrel_core::GraphError::SelfLoop
+stable       knotrel_core::GraphError::SelfLoop::node
+stable       knotrel_core::GraphError::UnknownNode
+stable       knotrel_core::GraphError::UnknownNode::node
+stable       knotrel_core::GraphLimits
+stable       impl core::clone::Clone for knotrel_core::GraphLimits
+internal     impl core::clone::TrivialClone for knotrel_core::GraphLimits
+stable       impl core::cmp::Eq for knotrel_core::GraphLimits
+stable       impl core::cmp::PartialEq for knotrel_core::GraphLimits
+stable       impl core::default::Default for knotrel_core::GraphLimits
+stable       impl core::fmt::Debug for knotrel_core::GraphLimits
+stable       impl core::marker::Copy for knotrel_core::GraphLimits
+internal     impl core::marker::Freeze for knotrel_core::GraphLimits
+stable       impl core::marker::Send for knotrel_core::GraphLimits
+internal     impl core::marker::StructuralPartialEq for knotrel_core::GraphLimits
+stable       impl core::marker::Sync for knotrel_core::GraphLimits
+stable       impl core::marker::Unpin for knotrel_core::GraphLimits
+internal     impl core::marker::UnsafeUnpin for knotrel_core::GraphLimits
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::GraphLimits
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::GraphLimits
+stable       knotrel_core::GraphLimits::max_edges
+stable       knotrel_core::GraphLimits::max_nodes
+experimental knotrel_core::HdtGraph
+experimental impl core::default::Default for knotrel_core::HdtGraph
+experimental impl core::fmt::Debug for knotrel_core::HdtGraph
+internal     impl core::marker::Freeze for knotrel_core::HdtGraph
+experimental impl core::marker::Send for knotrel_core::HdtGraph
+experimental impl core::marker::Sync for knotrel_core::HdtGraph
+experimental impl core::marker::Unpin for knotrel_core::HdtGraph
+internal     impl core::marker::UnsafeUnpin for knotrel_core::HdtGraph
+experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtGraph
+experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtGraph
+experimental knotrel_core::HdtGraph::add_node
+experimental knotrel_core::HdtGraph::connected
+experimental knotrel_core::HdtGraph::cut
+experimental knotrel_core::HdtGraph::edge_count
+experimental knotrel_core::HdtGraph::link
+experimental knotrel_core::HdtGraph::new
+experimental knotrel_core::HdtGraph::node_count
+experimental knotrel_core::HdtGraph::reset_stats
+experimental knotrel_core::HdtGraph::stats
+experimental knotrel_core::HdtGraph::storage_stats
+experimental knotrel_core::HdtLevelStorage
+experimental impl core::clone::Clone for knotrel_core::HdtLevelStorage
+experimental impl core::cmp::Eq for knotrel_core::HdtLevelStorage
+experimental impl core::cmp::PartialEq for knotrel_core::HdtLevelStorage
+experimental impl core::default::Default for knotrel_core::HdtLevelStorage
+experimental impl core::fmt::Debug for knotrel_core::HdtLevelStorage
+internal     impl core::marker::Freeze for knotrel_core::HdtLevelStorage
+experimental impl core::marker::Send for knotrel_core::HdtLevelStorage
+internal     impl core::marker::StructuralPartialEq for knotrel_core::HdtLevelStorage
+experimental impl core::marker::Sync for knotrel_core::HdtLevelStorage
+experimental impl core::marker::Unpin for knotrel_core::HdtLevelStorage
+internal     impl core::marker::UnsafeUnpin for knotrel_core::HdtLevelStorage
+experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtLevelStorage
+experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtLevelStorage
+experimental knotrel_core::HdtLevelStorage::adjacency_capacity_bytes
+experimental knotrel_core::HdtLevelStorage::free_list_capacity_bytes
+experimental knotrel_core::HdtLevelStorage::level
+experimental knotrel_core::HdtLevelStorage::mapping_capacity_bytes
+experimental knotrel_core::HdtLevelStorage::mapping_payload_bytes
+experimental knotrel_core::HdtLevelStorage::non_tree_incidences
+experimental knotrel_core::HdtLevelStorage::token_capacity_bytes
+experimental knotrel_core::HdtLevelStorage::tree_edges
+experimental knotrel_core::HdtLevelStorage::tree_incidences
+experimental knotrel_core::HdtLevelStorage::vertex_index_capacity_bytes
+experimental knotrel_core::HdtLevelStorage::vertices
+experimental knotrel_core::HdtStats
+experimental impl core::clone::Clone for knotrel_core::HdtStats
+internal     impl core::clone::TrivialClone for knotrel_core::HdtStats
+experimental impl core::cmp::Eq for knotrel_core::HdtStats
+experimental impl core::cmp::PartialEq for knotrel_core::HdtStats
+experimental impl core::default::Default for knotrel_core::HdtStats
+experimental impl core::fmt::Debug for knotrel_core::HdtStats
+experimental impl core::marker::Copy for knotrel_core::HdtStats
+internal     impl core::marker::Freeze for knotrel_core::HdtStats
+experimental impl core::marker::Send for knotrel_core::HdtStats
+internal     impl core::marker::StructuralPartialEq for knotrel_core::HdtStats
+experimental impl core::marker::Sync for knotrel_core::HdtStats
+experimental impl core::marker::Unpin for knotrel_core::HdtStats
+internal     impl core::marker::UnsafeUnpin for knotrel_core::HdtStats
+experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtStats
+experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtStats
+experimental knotrel_core::HdtStats::candidate_edges
+experimental knotrel_core::HdtStats::levels_visited
+experimental knotrel_core::HdtStats::non_tree_promotions
+experimental knotrel_core::HdtStats::replacements
+experimental knotrel_core::HdtStats::tree_cuts
+experimental knotrel_core::HdtStats::tree_promotions
+experimental knotrel_core::HdtStorageStats
+experimental impl core::clone::Clone for knotrel_core::HdtStorageStats
+experimental impl core::cmp::Eq for knotrel_core::HdtStorageStats
+experimental impl core::cmp::PartialEq for knotrel_core::HdtStorageStats
+experimental impl core::fmt::Debug for knotrel_core::HdtStorageStats
+internal     impl core::marker::Freeze for knotrel_core::HdtStorageStats
+experimental impl core::marker::Send for knotrel_core::HdtStorageStats
+internal     impl core::marker::StructuralPartialEq for knotrel_core::HdtStorageStats
+experimental impl core::marker::Sync for knotrel_core::HdtStorageStats
+experimental impl core::marker::Unpin for knotrel_core::HdtStorageStats
+internal     impl core::marker::UnsafeUnpin for knotrel_core::HdtStorageStats
+experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::HdtStorageStats
+experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::HdtStorageStats
+experimental knotrel_core::HdtStorageStats::available_levels
+experimental knotrel_core::HdtStorageStats::edge_arc_capacity_bytes
+experimental knotrel_core::HdtStorageStats::edge_count
+experimental knotrel_core::HdtStorageStats::level_capacity_bytes
+experimental knotrel_core::HdtStorageStats::levels
+experimental knotrel_core::HdtStorageStats::ordered_payload_bytes
+experimental knotrel_core::HdtStorageStats::vector_capacity_bytes
+experimental knotrel_core::HdtStorageStats::vertex_count
+stable       knotrel_core::IncidenceError
+stable       impl core::clone::Clone for knotrel_core::IncidenceError
+internal     impl core::clone::TrivialClone for knotrel_core::IncidenceError
+stable       impl core::cmp::Eq for knotrel_core::IncidenceError
+stable       impl core::cmp::PartialEq for knotrel_core::IncidenceError
+stable       impl core::error::Error for knotrel_core::IncidenceError
+stable       impl core::fmt::Debug for knotrel_core::IncidenceError
+stable       impl core::fmt::Display for knotrel_core::IncidenceError
+stable       impl core::marker::Copy for knotrel_core::IncidenceError
+internal     impl core::marker::Freeze for knotrel_core::IncidenceError
+stable       impl core::marker::Send for knotrel_core::IncidenceError
+internal     impl core::marker::StructuralPartialEq for knotrel_core::IncidenceError
+stable       impl core::marker::Sync for knotrel_core::IncidenceError
+stable       impl core::marker::Unpin for knotrel_core::IncidenceError
+internal     impl core::marker::UnsafeUnpin for knotrel_core::IncidenceError
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::IncidenceError
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::IncidenceError
+stable       knotrel_core::IncidenceError::NotEnabled
+stable       knotrel_core::IncidenceError::UnknownCursor
+stable       knotrel_core::IncidenceError::UnknownNode
+stable       knotrel_core::LifecycleError
+stable       impl core::clone::Clone for knotrel_core::LifecycleError
+internal     impl core::clone::TrivialClone for knotrel_core::LifecycleError
+stable       impl core::cmp::Eq for knotrel_core::LifecycleError
+stable       impl core::cmp::PartialEq for knotrel_core::LifecycleError
+stable       impl core::error::Error for knotrel_core::LifecycleError
+stable       impl core::fmt::Debug for knotrel_core::LifecycleError
+stable       impl core::fmt::Display for knotrel_core::LifecycleError
+stable       impl core::marker::Copy for knotrel_core::LifecycleError
+internal     impl core::marker::Freeze for knotrel_core::LifecycleError
+stable       impl core::marker::Send for knotrel_core::LifecycleError
+internal     impl core::marker::StructuralPartialEq for knotrel_core::LifecycleError
+stable       impl core::marker::Sync for knotrel_core::LifecycleError
+stable       impl core::marker::Unpin for knotrel_core::LifecycleError
+internal     impl core::marker::UnsafeUnpin for knotrel_core::LifecycleError
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::LifecycleError
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::LifecycleError
+stable       knotrel_core::LifecycleError::ConflictingEdge
+stable       knotrel_core::LifecycleError::ConflictingEdge::source
+stable       knotrel_core::LifecycleError::ConflictingEdge::target
+stable       knotrel_core::LifecycleError::ConflictingNode
+stable       knotrel_core::LifecycleError::ConflictingNode::node
+stable       knotrel_core::LifecycleError::Graph
+stable       knotrel_core::LifecycleError::Graph::0
+stable       knotrel_core::LifecycleError::UnknownEdge
+stable       knotrel_core::LifecycleError::UnknownEdge::source
+stable       knotrel_core::LifecycleError::UnknownEdge::target
+stable       knotrel_core::LifecycleError::UnsupportedEngine
+stable       knotrel_core::LifecycleError::UnsupportedEngine::engine
+stable       knotrel_core::LifecycleGraph
+stable       impl core::fmt::Debug for knotrel_core::LifecycleGraph
+internal     impl core::marker::Freeze for knotrel_core::LifecycleGraph
+stable       impl core::marker::Send for knotrel_core::LifecycleGraph
+stable       impl core::marker::Sync for knotrel_core::LifecycleGraph
+stable       impl core::marker::Unpin for knotrel_core::LifecycleGraph
+internal     impl core::marker::UnsafeUnpin for knotrel_core::LifecycleGraph
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::LifecycleGraph
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::LifecycleGraph
+stable       knotrel_core::LifecycleGraph::active_node_count
+stable       knotrel_core::LifecycleGraph::add_node
+stable       knotrel_core::LifecycleGraph::connected
+stable       knotrel_core::LifecycleGraph::cut
+stable       knotrel_core::LifecycleGraph::degree
+stable       knotrel_core::LifecycleGraph::edge_count
+stable       knotrel_core::LifecycleGraph::edge_state
+stable       knotrel_core::LifecycleGraph::effective_edge_count
+stable       knotrel_core::LifecycleGraph::enabled_edge_count
+stable       knotrel_core::LifecycleGraph::engine
+stable       knotrel_core::LifecycleGraph::engine_vertex_count
+stable       knotrel_core::LifecycleGraph::incident_after
+stable       knotrel_core::LifecycleGraph::limits
+stable       knotrel_core::LifecycleGraph::link
+stable       knotrel_core::LifecycleGraph::new
+stable       knotrel_core::LifecycleGraph::node_active
+stable       knotrel_core::LifecycleGraph::node_count
+stable       knotrel_core::LifecycleGraph::remove_node
+stable       knotrel_core::LifecycleGraph::set_edge_enabled
+stable       knotrel_core::LifecycleGraph::set_node_active
+stable       knotrel_core::LifecycleGraph::storage_stats
+stable       knotrel_core::LifecycleGraph::supports_engine
+stable       knotrel_core::LifecycleGraph::try_from_topology
+stable       knotrel_core::LifecycleGraph::with_limits
+experimental knotrel_core::LifecycleStorage
+experimental impl core::clone::Clone for knotrel_core::LifecycleStorage
+internal     impl core::clone::TrivialClone for knotrel_core::LifecycleStorage
+experimental impl core::cmp::Eq for knotrel_core::LifecycleStorage
+experimental impl core::cmp::PartialEq for knotrel_core::LifecycleStorage
+experimental impl core::fmt::Debug for knotrel_core::LifecycleStorage
+experimental impl core::marker::Copy for knotrel_core::LifecycleStorage
+internal     impl core::marker::Freeze for knotrel_core::LifecycleStorage
+experimental impl core::marker::Send for knotrel_core::LifecycleStorage
+internal     impl core::marker::StructuralPartialEq for knotrel_core::LifecycleStorage
+experimental impl core::marker::Sync for knotrel_core::LifecycleStorage
+experimental impl core::marker::Unpin for knotrel_core::LifecycleStorage
+internal     impl core::marker::UnsafeUnpin for knotrel_core::LifecycleStorage
+experimental impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::LifecycleStorage
+experimental impl core::panic::unwind_safe::UnwindSafe for knotrel_core::LifecycleStorage
+experimental knotrel_core::LifecycleStorage::catalog_node_capacity
+experimental knotrel_core::LifecycleStorage::catalog_nodes
+experimental knotrel_core::LifecycleStorage::engine_vertices
+experimental knotrel_core::LifecycleStorage::incident_capacity
+experimental knotrel_core::LifecycleStorage::incident_entries
+experimental knotrel_core::LifecycleStorage::retired_vertices
+stable       knotrel_core::NodeId
+stable       knotrel_core::NodeSpec
+stable       impl core::clone::Clone for knotrel_core::NodeSpec
+internal     impl core::clone::TrivialClone for knotrel_core::NodeSpec
+stable       impl core::cmp::Eq for knotrel_core::NodeSpec
+stable       impl core::cmp::PartialEq for knotrel_core::NodeSpec
+stable       impl core::fmt::Debug for knotrel_core::NodeSpec
+stable       impl core::marker::Copy for knotrel_core::NodeSpec
+internal     impl core::marker::Freeze for knotrel_core::NodeSpec
+stable       impl core::marker::Send for knotrel_core::NodeSpec
+internal     impl core::marker::StructuralPartialEq for knotrel_core::NodeSpec
+stable       impl core::marker::Sync for knotrel_core::NodeSpec
+stable       impl core::marker::Unpin for knotrel_core::NodeSpec
+internal     impl core::marker::UnsafeUnpin for knotrel_core::NodeSpec
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::NodeSpec
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::NodeSpec
+stable       knotrel_core::NodeSpec::active
+stable       knotrel_core::NodeSpec::node
+internal     knotrel_core::ReferenceGraph
+internal     impl core::default::Default for knotrel_core::ReferenceGraph
+internal     impl core::fmt::Debug for knotrel_core::ReferenceGraph
+internal     impl core::marker::Freeze for knotrel_core::ReferenceGraph
+internal     impl core::marker::Send for knotrel_core::ReferenceGraph
+internal     impl core::marker::Sync for knotrel_core::ReferenceGraph
+internal     impl core::marker::Unpin for knotrel_core::ReferenceGraph
+internal     impl core::marker::UnsafeUnpin for knotrel_core::ReferenceGraph
+internal     impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::ReferenceGraph
+internal     impl core::panic::unwind_safe::UnwindSafe for knotrel_core::ReferenceGraph
+internal     knotrel_core::ReferenceGraph::add_node
+internal     knotrel_core::ReferenceGraph::connected
+internal     knotrel_core::ReferenceGraph::cut
+internal     knotrel_core::ReferenceGraph::edge_count
+internal     knotrel_core::ReferenceGraph::link
+internal     knotrel_core::ReferenceGraph::new
+internal     knotrel_core::ReferenceGraph::node_count
+
+# knotrel-server
+stable       knotrel_server::ConfigError
+stable       impl core::clone::Clone for knotrel_server::ConfigError
+stable       impl core::cmp::Eq for knotrel_server::ConfigError
+stable       impl core::cmp::PartialEq for knotrel_server::ConfigError
+stable       impl core::error::Error for knotrel_server::ConfigError
+stable       impl core::fmt::Debug for knotrel_server::ConfigError
+stable       impl core::fmt::Display for knotrel_server::ConfigError
+internal     impl core::marker::Freeze for knotrel_server::ConfigError
+stable       impl core::marker::Send for knotrel_server::ConfigError
+internal     impl core::marker::StructuralPartialEq for knotrel_server::ConfigError
+stable       impl core::marker::Sync for knotrel_server::ConfigError
+stable       impl core::marker::Unpin for knotrel_server::ConfigError
+internal     impl core::marker::UnsafeUnpin for knotrel_server::ConfigError
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_server::ConfigError
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_server::ConfigError
+internal     knotrel_server::GateDecision
+internal     impl core::clone::Clone for knotrel_server::GateDecision
+internal     impl core::clone::TrivialClone for knotrel_server::GateDecision
+internal     impl core::cmp::Eq for knotrel_server::GateDecision
+internal     impl core::cmp::PartialEq for knotrel_server::GateDecision
+internal     impl core::fmt::Debug for knotrel_server::GateDecision
+internal     impl core::marker::Copy for knotrel_server::GateDecision
+internal     impl core::marker::Freeze for knotrel_server::GateDecision
+internal     impl core::marker::Send for knotrel_server::GateDecision
+internal     impl core::marker::StructuralPartialEq for knotrel_server::GateDecision
+internal     impl core::marker::Sync for knotrel_server::GateDecision
+internal     impl core::marker::Unpin for knotrel_server::GateDecision
+internal     impl core::marker::UnsafeUnpin for knotrel_server::GateDecision
+internal     impl core::panic::unwind_safe::RefUnwindSafe for knotrel_server::GateDecision
+internal     impl core::panic::unwind_safe::UnwindSafe for knotrel_server::GateDecision
+internal     knotrel_server::GateDecision::Admitted
+internal     knotrel_server::GateDecision::Probe
+internal     knotrel_server::GateDecision::RejectedShuttingDown
+stable       knotrel_server::Lifecycle
+internal     impl !core::panic::unwind_safe::RefUnwindSafe for knotrel_server::Lifecycle
+internal     impl !core::panic::unwind_safe::UnwindSafe for knotrel_server::Lifecycle
+stable       impl core::clone::Clone for knotrel_server::Lifecycle
+stable       impl core::default::Default for knotrel_server::Lifecycle
+stable       impl core::fmt::Debug for knotrel_server::Lifecycle
+internal     impl core::marker::Freeze for knotrel_server::Lifecycle
+stable       impl core::marker::Send for knotrel_server::Lifecycle
+stable       impl core::marker::Sync for knotrel_server::Lifecycle
+stable       impl core::marker::Unpin for knotrel_server::Lifecycle
+internal     impl core::marker::UnsafeUnpin for knotrel_server::Lifecycle
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_server::Lifecycle
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_server::Lifecycle
+stable       knotrel_server::Lifecycle::begin_draining
+stable       knotrel_server::Lifecycle::mark_ready
+stable       knotrel_server::Lifecycle::new
+internal     knotrel_server::Lifecycle::on_drain_loop
+internal     knotrel_server::Lifecycle::on_gate
+stable       knotrel_server::Lifecycle::outstanding_jobs
+internal     knotrel_server::Lifecycle::pause_next_lock_request
+internal     knotrel_server::Lifecycle::pause_next_ready_probe
+internal     knotrel_server::Lifecycle::pause_next_worker
+internal     knotrel_server::Lifecycle::pause_next_worker_after_lock
+stable       knotrel_server::Lifecycle::phase
+stable       knotrel_server::Phase
+stable       impl core::clone::Clone for knotrel_server::Phase
+internal     impl core::clone::TrivialClone for knotrel_server::Phase
+stable       impl core::cmp::Eq for knotrel_server::Phase
+stable       impl core::cmp::PartialEq for knotrel_server::Phase
+stable       impl core::fmt::Debug for knotrel_server::Phase
+stable       impl core::marker::Copy for knotrel_server::Phase
+internal     impl core::marker::Freeze for knotrel_server::Phase
+stable       impl core::marker::Send for knotrel_server::Phase
+internal     impl core::marker::StructuralPartialEq for knotrel_server::Phase
+stable       impl core::marker::Sync for knotrel_server::Phase
+stable       impl core::marker::Unpin for knotrel_server::Phase
+internal     impl core::marker::UnsafeUnpin for knotrel_server::Phase
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_server::Phase
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_server::Phase
+stable       knotrel_server::Phase::Draining
+stable       knotrel_server::Phase::Ready
+stable       knotrel_server::Phase::Starting
+stable       knotrel_server::ServerConfig
+stable       impl core::clone::Clone for knotrel_server::ServerConfig
+stable       impl core::default::Default for knotrel_server::ServerConfig
+stable       impl core::fmt::Debug for knotrel_server::ServerConfig
+internal     impl core::marker::Freeze for knotrel_server::ServerConfig
+stable       impl core::marker::Send for knotrel_server::ServerConfig
+stable       impl core::marker::Sync for knotrel_server::ServerConfig
+stable       impl core::marker::Unpin for knotrel_server::ServerConfig
+internal     impl core::marker::UnsafeUnpin for knotrel_server::ServerConfig
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_server::ServerConfig
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_server::ServerConfig
+stable       knotrel_server::ServerConfig::DEFAULT_ADDRESS
+stable       knotrel_server::ServerConfig::DEFAULT_DEDUP_WINDOW_SIZE
+experimental knotrel_server::ServerConfig::DEFAULT_FEEDER_RESERVED_JOBS
+stable       knotrel_server::ServerConfig::DEFAULT_GRAPH_LIMITS
+stable       knotrel_server::ServerConfig::DEFAULT_HEADER_READ_TIMEOUT
+stable       knotrel_server::ServerConfig::DEFAULT_MAX_CONNECTIONS
+stable       knotrel_server::ServerConfig::DEFAULT_MAX_EDGES
+stable       knotrel_server::ServerConfig::DEFAULT_MAX_IMPORT_BODY_BYTES
+stable       knotrel_server::ServerConfig::DEFAULT_MAX_NODES
+stable       knotrel_server::ServerConfig::DEFAULT_MAX_PENDING_JOBS
+stable       knotrel_server::ServerConfig::DEFAULT_REQUEST_TIMEOUT
+stable       knotrel_server::ServerConfig::DEFAULT_SHUTDOWN_TIMEOUT
+stable       knotrel_server::ServerConfig::MAX_CONNECTIONS_LIMIT
+stable       knotrel_server::ServerConfig::MAX_DEDUP_WINDOW_SIZE
+experimental knotrel_server::ServerConfig::MAX_FEEDER_RESERVED_JOBS
+stable       knotrel_server::ServerConfig::MAX_IMPORT_BODY_LIMIT
+stable       knotrel_server::ServerConfig::MAX_TIMEOUT
+stable       knotrel_server::ServerConfig::address
+stable       knotrel_server::ServerConfig::dedup_window_size
+stable       knotrel_server::ServerConfig::engine
+experimental knotrel_server::ServerConfig::feeder_reserved_jobs
+stable       knotrel_server::ServerConfig::from_env
+stable       knotrel_server::ServerConfig::graph_limits
+stable       knotrel_server::ServerConfig::header_read_timeout
+experimental knotrel_server::ServerConfig::inspection
+stable       knotrel_server::ServerConfig::is_exposed
+stable       knotrel_server::ServerConfig::max_connections
+stable       knotrel_server::ServerConfig::max_import_body_bytes
+stable       knotrel_server::ServerConfig::max_pending_jobs
+stable       knotrel_server::ServerConfig::metrics_enabled
+stable       knotrel_server::ServerConfig::mode
+stable       knotrel_server::ServerConfig::new
+stable       knotrel_server::ServerConfig::new_allowing_non_loopback
+stable       knotrel_server::ServerConfig::request_timeout
+stable       knotrel_server::ServerConfig::shutdown_timeout
+stable       knotrel_server::ServerConfig::topology_lifecycle
+stable       knotrel_server::ServerConfig::with_dedup_window_size
+experimental knotrel_server::ServerConfig::with_feeder_reserved_jobs
+stable       knotrel_server::ServerConfig::with_graph_limits
+stable       knotrel_server::ServerConfig::with_header_read_timeout
+experimental knotrel_server::ServerConfig::with_inspection
+stable       knotrel_server::ServerConfig::with_max_connections
+stable       knotrel_server::ServerConfig::with_max_import_body_bytes
+stable       knotrel_server::ServerConfig::with_metrics_enabled
+stable       knotrel_server::ServerConfig::with_mode
+stable       knotrel_server::ServerConfig::with_request_timeout
+stable       knotrel_server::ServerConfig::with_shutdown_timeout
+stable       knotrel_server::ServerConfig::with_topology_lifecycle
+stable       knotrel_server::ServerMode
+stable       impl core::clone::Clone for knotrel_server::ServerMode
+internal     impl core::clone::TrivialClone for knotrel_server::ServerMode
+stable       impl core::cmp::Eq for knotrel_server::ServerMode
+stable       impl core::cmp::PartialEq for knotrel_server::ServerMode
+stable       impl core::default::Default for knotrel_server::ServerMode
+stable       impl core::fmt::Debug for knotrel_server::ServerMode
+stable       impl core::marker::Copy for knotrel_server::ServerMode
+internal     impl core::marker::Freeze for knotrel_server::ServerMode
+stable       impl core::marker::Send for knotrel_server::ServerMode
+internal     impl core::marker::StructuralPartialEq for knotrel_server::ServerMode
+stable       impl core::marker::Sync for knotrel_server::ServerMode
+stable       impl core::marker::Unpin for knotrel_server::ServerMode
+internal     impl core::marker::UnsafeUnpin for knotrel_server::ServerMode
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_server::ServerMode
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_server::ServerMode
+stable       knotrel_server::ServerMode::SourceManaged
+stable       knotrel_server::ServerMode::Standalone
+stable       knotrel_server::ServerMode::as_str
+stable       knotrel_server::ShutdownOutcome
+stable       impl core::clone::Clone for knotrel_server::ShutdownOutcome
+internal     impl core::clone::TrivialClone for knotrel_server::ShutdownOutcome
+stable       impl core::cmp::Eq for knotrel_server::ShutdownOutcome
+stable       impl core::cmp::PartialEq for knotrel_server::ShutdownOutcome
+stable       impl core::fmt::Debug for knotrel_server::ShutdownOutcome
+stable       impl core::marker::Copy for knotrel_server::ShutdownOutcome
+internal     impl core::marker::Freeze for knotrel_server::ShutdownOutcome
+stable       impl core::marker::Send for knotrel_server::ShutdownOutcome
+internal     impl core::marker::StructuralPartialEq for knotrel_server::ShutdownOutcome
+stable       impl core::marker::Sync for knotrel_server::ShutdownOutcome
+stable       impl core::marker::Unpin for knotrel_server::ShutdownOutcome
+internal     impl core::marker::UnsafeUnpin for knotrel_server::ShutdownOutcome
+stable       impl core::panic::unwind_safe::RefUnwindSafe for knotrel_server::ShutdownOutcome
+stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_server::ShutdownOutcome
+stable       knotrel_server::ShutdownOutcome::DeadlineExceeded
+stable       knotrel_server::ShutdownOutcome::DeadlineExceeded::abandoned
+stable       knotrel_server::ShutdownOutcome::Drained
+internal     knotrel_server::WorkerPauseHandle
+internal     impl !core::panic::unwind_safe::RefUnwindSafe for knotrel_server::WorkerPauseHandle
+internal     impl !core::panic::unwind_safe::UnwindSafe for knotrel_server::WorkerPauseHandle
+internal     impl core::marker::Freeze for knotrel_server::WorkerPauseHandle
+internal     impl core::marker::Send for knotrel_server::WorkerPauseHandle
+internal     impl core::marker::Sync for knotrel_server::WorkerPauseHandle
+internal     impl core::marker::Unpin for knotrel_server::WorkerPauseHandle
+internal     impl core::marker::UnsafeUnpin for knotrel_server::WorkerPauseHandle
+internal     knotrel_server::WorkerPauseHandle::panic_on_release
+internal     knotrel_server::WorkerPauseHandle::release
+internal     knotrel_server::WorkerPauseHandle::wait_started
+internal     knotrel_server::advance_clock
+internal     knotrel_server::lock_clock_for_test
+internal     knotrel_server::percent_decode_position
+internal     knotrel_server::percent_encode_position
+internal     knotrel_server::reset_clock
+stable       knotrel_server::router
+stable       knotrel_server::router_with_config
+stable       knotrel_server::router_with_lifecycle
+internal     knotrel_server::router_with_seeded_state
+internal     knotrel_server::router_with_seeded_version
+stable       knotrel_server::serve

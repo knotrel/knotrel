@@ -248,6 +248,7 @@ Additive; `Graph`, `ConnectivityGraph` and `GraphError` are unchanged.
 pub struct LifecycleGraph { /* private */ }
 pub struct NodeSpec { pub node: NodeId, pub active: bool }
 pub struct EdgeSpec { pub source: NodeId, pub target: NodeId, pub enabled: bool }
+#[non_exhaustive] // from 1.0; build expected values with EdgeState::new
 pub struct EdgeState { pub enabled: bool, pub effective: bool }
 #[non_exhaustive]
 pub enum LifecycleError {
