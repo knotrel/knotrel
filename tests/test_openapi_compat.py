@@ -65,6 +65,7 @@ BASE = {
                 "required": ["engine", "count"],
                 "properties": {
                     "engine": {"type": "string", "enum": ["compact-bfs", "ett", "hdt"]},
+                    "mode": {"type": "string", "const": "source_managed"},
                     "count": {"type": "integer"},
                     "tags": {"type": "array", "items": {"type": "string"}},
                 },
@@ -201,6 +202,42 @@ class Rules(unittest.TestCase):
         self.assert_break(readiness, "GET /ready 200<oneOf #/components/schemas/ReadinessNotReady>.status: "
                                      "response values removed ['catching_up']")
 
+    def test_response_enum_dropped(self):
+        self.assert_break(lambda h: h["components"]["schemas"]["Info"]["properties"]["engine"].pop("enum"),
+                          "GET /v1/info 200.engine: response enum removed")
+
+        def pin(h):
+            engine = h["components"]["schemas"]["Info"]["properties"]["engine"]
+            engine.pop("enum")
+            engine["const"] = "ett"
+
+        breaking, _ = breaks(pin)
+        self.assertFalse(any("200.engine" in b for b in breaking), breaking)
+
+    def test_response_constant_changed_or_removed(self):
+        def change(h):
+            h["components"]["schemas"]["Info"]["properties"]["mode"]["const"] = "source-managed"
+
+        self.assert_break(change, "GET /v1/info 200.mode: response constant changed from "
+                                  "'source_managed' to 'source-managed'")
+        self.assert_break(lambda h: h["components"]["schemas"]["Info"]["properties"]["mode"].pop("const"),
+                          "GET /v1/info 200.mode: response constant removed ('source_managed')")
+
+        def as_enum(h):
+            mode = h["components"]["schemas"]["Info"]["properties"]["mode"]
+            mode.pop("const")
+            mode["enum"] = ["source_managed"]
+
+        self.assertEqual(breaks(as_enum), ([], []))
+
+    def test_schema_level_location_of_shared_values(self):
+        breaking, _ = breaks(lambda h: h["components"]["schemas"]["ErrorCode"]["enum"].remove("busy"))
+        self.assertEqual({b.schema_change for b in breaking},
+                         {"#/components/schemas/ErrorCode: response values removed ['busy']"})
+        breaking, _ = breaks(lambda h: h["components"]["schemas"]["Info"]["properties"]["engine"]["enum"].remove("hdt"))
+        self.assertEqual({b.schema_change for b in breaking},
+                         {"#/components/schemas/Info/properties/engine: response values removed ['hdt']"})
+
     def test_response_enum_removal_on_experimental_operation_only_notes(self):
         base = copy.deepcopy(BASE)
         base["paths"]["/v1/info"]["get"]["x-knotrel-stability"] = "experimental"
@@ -223,7 +260,8 @@ class Rules(unittest.TestCase):
             info = h["components"]["schemas"]["Info"]
             h["components"]["schemas"]["Info"] = {
                 "allOf": [
-                    {"type": "object", "required": ["engine"], "properties": {"engine": info["properties"]["engine"]}},
+                    {"type": "object", "required": ["engine"], "properties": {
+                        "engine": info["properties"]["engine"], "mode": info["properties"]["mode"]}},
                     {"type": "object", "required": ["count"], "properties": {
                         "count": info["properties"]["count"], "tags": info["properties"]["tags"]}},
                 ]
@@ -308,11 +346,11 @@ class Rules(unittest.TestCase):
 
 
 class CommandLine(unittest.TestCase):
-    def run_cli(self, head, approved=None):
+    def run_cli(self, head, approved=None, base=None):
         with tempfile.TemporaryDirectory() as d:
             b, h = os.path.join(d, "b.yaml"), os.path.join(d, "h.yaml")
             with open(b, "w") as f:
-                yaml.safe_dump(BASE, f)
+                yaml.safe_dump(BASE if base is None else base, f)
             with open(h, "w") as f:
                 yaml.safe_dump(head, f)
             args = [sys.executable, SCRIPT, b, h]
@@ -345,6 +383,24 @@ class CommandLine(unittest.TestCase):
         approved = self.run_cli(head, [{"change": change, "release": "v2.0.0", "justification": "test"}])
         self.assertEqual(approved.returncode, 0, approved.stdout)
         self.assertIn(f"approved: {change}", approved.stdout)
+
+    def test_schema_level_approval_covers_every_operation(self):
+        head = copy.deepcopy(BASE)
+        head["paths"]["/v1/operations"]["post"]["responses"]["503"] = copy.deepcopy(
+            head["paths"]["/v1/info"]["get"]["responses"]["503"])
+        head["components"]["schemas"]["ErrorCode"]["enum"].remove("busy")
+        base = copy.deepcopy(BASE)
+        base["paths"]["/v1/operations"]["post"]["responses"]["503"] = copy.deepcopy(
+            base["paths"]["/v1/info"]["get"]["responses"]["503"])
+        schema_change = "#/components/schemas/ErrorCode: response values removed ['busy']"
+        failed = self.run_cli(head, base=base)
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn(f"one approval entry covers its 2 message(s)): {schema_change}", failed.stdout)
+        approved = self.run_cli(head, [{"change": schema_change, "release": "v2.0.0", "justification": "test"}],
+                                base=base)
+        self.assertEqual(approved.returncode, 0, approved.stdout)
+        self.assertIn("approved: GET /v1/info 503.code: response values removed ['busy']", approved.stdout)
+        self.assertIn("approved: POST /v1/operations 503.code: response values removed ['busy']", approved.stdout)
 
     def test_usage_error(self):
         out = subprocess.run([sys.executable, SCRIPT], capture_output=True, text=True)

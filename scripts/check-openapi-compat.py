@@ -13,6 +13,10 @@ Usage:
 Exit status: 0 when every breaking change is approved (or there is none),
 1 otherwise, 2 for usage or input errors. FILE is a YAML list of entries with
 `change` (the exact message printed below), `release` and `justification`.
+A change to a value of a named schema (enum value, enum, constant) can also be
+approved once by its schema-level message, printed on failure as
+`schema-level change ...: <$ref>[/properties/<name>...]: <change>`; it covers
+every operation that reaches that schema.
 
 Rules, for each operation present in BASE:
 - the operation, a parameter, a documented response status or a documented
@@ -24,7 +28,8 @@ Rules, for each operation present in BASE:
   `minItems`, `pattern`);
 - a response property disappears or stops being required, a documented
   response enum value disappears (an error code, an `engine` value, a status
-  or mode), or a response type widens (for example a field becomes nullable, also through a `null`
+  or mode), a response enum is dropped (the set of values becomes open), a
+  response constant changes or disappears, or a response type widens (for example a field becomes nullable, also through a `null`
   alternative of `oneOf`/`anyOf`).
 `oneOf`/`anyOf` alternatives present in both versions (matched by reference,
 otherwise by position) are compared recursively.
@@ -73,7 +78,7 @@ class Spec:
             part = self.flatten(member)
             props.update(part.get("properties", {}))
             required += part.get("required", [])
-            for key in ("type", "enum", "items", "additionalProperties"):
+            for key in ("type", "enum", "const", "items", "additionalProperties"):
                 if key in part and key not in merged:
                     merged[key] = part[key]
         if props:
@@ -138,9 +143,26 @@ def variants(spec, schema, key):
     return {spec.resolve(v)[1] or repr(v) for v in schema.get(key, [])}
 
 
-def compare(base_spec, head_spec, base, head, direction, where, out, seen):
+class Finding(str):
+    """A message that a schema-level approval can also cover.
+
+    `schema_change` names the same change by its location in BASE (the
+    `$ref` of the schema that declares the value, followed by the property
+    path, `/items` or the `oneOf`/`anyOf` member), so one approval entry
+    covers every operation that reaches a shared schema.
+    """
+
+    def __new__(cls, message, schema_change=None):
+        obj = super().__new__(cls, message)
+        obj.schema_change = schema_change
+        return obj
+
+
+def compare(base_spec, head_spec, base, head, direction, where, out, seen, loc=None):
     """Appends breaking changes of one schema pair to `out`."""
     _, bref = base_spec.resolve(base)
+    if bref:
+        loc = bref
     _, href = head_spec.resolve(head)
     key = (bref, href, direction)
     if bref and href:
@@ -162,14 +184,28 @@ def compare(base_spec, head_spec, base, head, direction, where, out, seen):
         for change in tightened(b, h):
             out.append(f"{where}: request constraint tightened ({change})")
 
+    def schema_finding(change):
+        return Finding(f"{where}: {change}", f"{loc}: {change}" if loc else None)
+
     if "enum" in b and "enum" in h:
         removed = [v for v in b["enum"] if v not in h["enum"]]
         if removed and direction == "request":
             out.append(f"{where}: accepted values removed {removed}")
         elif removed:
-            out.append(f"{where}: response values removed {removed}")
+            out.append(schema_finding(f"response values removed {removed}"))
+    elif "enum" in b and direction == "response":
+        # A closed set of documented values becomes open, unless HEAD pins
+        # one of them with `const`.
+        if "const" not in h or h["const"] not in b["enum"]:
+            out.append(schema_finding("response enum removed"))
     if "const" in b and direction == "request" and h.get("const", b["const"]) != b["const"]:
         out.append(f"{where}: accepted constant changed")
+    if "const" in b and direction == "response":
+        if "const" in h:
+            if h["const"] != b["const"]:
+                out.append(schema_finding(f"response constant changed from {b['const']!r} to {h['const']!r}"))
+        elif h.get("enum") != [b["const"]]:
+            out.append(schema_finding(f"response constant removed ({b['const']!r})"))
 
     for comb in ("oneOf", "anyOf"):
         if comb in b and comb in h and direction == "request":
@@ -178,7 +214,8 @@ def compare(base_spec, head_spec, base, head, direction, where, out, seen):
                 out.append(f"{where}: request alternatives removed {sorted(gone)}")
         if comb in b and comb in h:
             for label, bm, hm in matched_members(base_spec, head_spec, b[comb], h[comb]):
-                compare(base_spec, head_spec, bm, hm, direction, f"{where}<{comb} {label}>", out, seen)
+                compare(base_spec, head_spec, bm, hm, direction, f"{where}<{comb} {label}>", out, seen,
+                        f"{loc}/{comb}/{label}" if loc else None)
 
     bprops = b.get("properties", {})
     hprops = h.get("properties", {})
@@ -194,13 +231,15 @@ def compare(base_spec, head_spec, base, head, direction, where, out, seen):
             continue
         if direction == "response" and name in breq and name not in hreq:
             out.append(f"{path}: response property no longer required")
-        compare(base_spec, head_spec, bprop, hprops[name], direction, path, out, seen)
+        compare(base_spec, head_spec, bprop, hprops[name], direction, path, out, seen,
+                f"{loc}/properties/{name}" if loc else None)
     if direction == "request":
         for name in sorted(hreq - breq):
             out.append(f"{where}.{name}: request property became required")
 
     if "items" in b and "items" in h:
-        compare(base_spec, head_spec, b["items"], h["items"], direction, f"{where}[]", out, seen)
+        compare(base_spec, head_spec, b["items"], h["items"], direction, f"{where}[]", out, seen,
+                f"{loc}/items" if loc else None)
 
 
 def json_schema(spec, holder):
@@ -329,11 +368,21 @@ def main(argv):
     breaking, info = check(base_doc, head_doc)
     for line in info:
         print(f"note: {line}")
-    unapproved = [b for b in breaking if b not in approved_changes]
+
+    def is_approved(line):
+        return line in approved_changes or getattr(line, "schema_change", None) in approved_changes
+
+    unapproved = [b for b in breaking if not is_approved(b)]
     for line in breaking:
-        status = "approved" if line in approved_changes else "BREAKING"
+        status = "approved" if is_approved(line) else "BREAKING"
         print(f"{status}: {line}")
     if unapproved:
+        shared = {}
+        for line in unapproved:
+            if getattr(line, "schema_change", None):
+                shared[line.schema_change] = shared.get(line.schema_change, 0) + 1
+        for change, count in shared.items():
+            print(f"schema-level change (one approval entry covers its {count} message(s)): {change}")
         print(f"{len(unapproved)} unapproved breaking change(s) to stable operations "
               "(docs/compatibility.md, sections 3 and 6)")
         return 1
