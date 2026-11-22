@@ -467,8 +467,15 @@ fn drain_deadline_exit_status_is_distinct() {
     let mut server = Server::start(&[("KNOTREL_SHUTDOWN_TIMEOUT_MS", "300")]);
     let mut stuck = TcpStream::connect(server.address).unwrap();
     stuck
-        .write_all(b"POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: 40\r\n\r\n{")
+        .write_all(b"POST /v1/operations HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\ncontent-length: 40\r\nexpect: 100-continue\r\n\r\n")
         .unwrap();
+    // `100 Continue` is sent only after the request has passed the shutdown
+    // gate, so the request is admitted (and will stay stuck on its body)
+    // before the signal. Without this wait, a slow server could still be
+    // parsing the head when draining begins, close the connection as idle and
+    // exit 0.
+    assert_eq!(read_interim_continue(&mut stuck), "HTTP/1.1 100 Continue");
+    stuck.write_all(b"{").unwrap();
     assert_eq!(call(&server, "GET", "/ready", "").0, 200);
     let started = Instant::now();
     server.signal("TERM");

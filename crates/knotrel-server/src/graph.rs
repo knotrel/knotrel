@@ -331,15 +331,9 @@ impl ServiceGraph {
             }
             Topology::Plain(graph) => {
                 let compact = graph.as_compact().ok_or(InspectError::Unsupported)?;
-                let neighbors =
-                    compact
-                        .neighbors_after(node, after)
-                        .map_err(|error| match error {
-                            IncidenceError::UnknownNode => InspectError::UnknownNode,
-                            IncidenceError::UnknownCursor => InspectError::InvalidCursor,
-                            // Unreachable: inspection enables listing on compact-bfs.
-                            IncidenceError::NotEnabled => InspectError::Unsupported,
-                        })?;
+                let neighbors = compact
+                    .neighbors_after(node, after)
+                    .map_err(inspect_incidence_error)?;
                 for neighbor in neighbors {
                     if !visit(EdgeRecord {
                         neighbor,
@@ -581,6 +575,20 @@ pub(crate) enum InspectError {
     InvalidCursor,
 }
 
+/// Maps a core incidence-listing error to the inspection error it reports.
+///
+/// `NotEnabled` cannot occur in practice (inspection enables neighbor
+/// listing on `compact-bfs`), and `IncidenceError` is `#[non_exhaustive]`:
+/// both, like any variant a later core release adds, are reported as an
+/// unsupported listing, never as a success.
+fn inspect_incidence_error(error: IncidenceError) -> InspectError {
+    match error {
+        IncidenceError::UnknownNode => InspectError::UnknownNode,
+        IncidenceError::UnknownCursor => InspectError::InvalidCursor,
+        _ => InspectError::Unsupported,
+    }
+}
+
 /// A lifecycle operation reached a plain graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LifecycleUnsupported;
@@ -612,6 +620,23 @@ impl From<LifecycleError> for LifecycleFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incidence_errors_map_to_inspection_errors() {
+        assert_eq!(
+            inspect_incidence_error(IncidenceError::UnknownNode),
+            InspectError::UnknownNode
+        );
+        assert_eq!(
+            inspect_incidence_error(IncidenceError::UnknownCursor),
+            InspectError::InvalidCursor
+        );
+        // The fallback arm: never reported as a successful listing.
+        assert_eq!(
+            inspect_incidence_error(IncidenceError::NotEnabled),
+            InspectError::Unsupported
+        );
+    }
 
     fn graph(lifecycle: bool, inspection: bool) -> ServiceGraph {
         ServiceGraph::empty(

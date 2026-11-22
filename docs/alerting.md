@@ -27,8 +27,8 @@ To find the request behind an alert, search the structured logs
 | Alert | Severity | Condition | Mode |
 | --- | --- | --- | --- |
 | `KnotrelServiceUnavailable` | critical | `knotrel_service_unavailable == 1` | both |
-| `KnotrelQueueSaturated` | warning | outstanding jobs above 80% of capacity for 5 min | both |
-| `KnotrelRequestsRejectedBusy` | warning | any `busy` rejection rate for 5 min | both |
+| `KnotrelQueueSaturated` | warning | one admission lane (except `import`) above 80% of its permits for 5 min, per `lane` | both |
+| `KnotrelRequestsRejectedBusy` | warning | any `busy` rejection rate on a lane for 5 min, per `lane` and scrape target | both |
 | `KnotrelHighServerErrorRatio` | warning | over 5% of completed requests are 5xx for 10 min | both |
 | `KnotrelFeederLost` | critical | lease remaining below zero for 30 s | source-managed |
 | `KnotrelDesynchronized` | critical | readiness state `desynchronized` | source-managed |
@@ -51,20 +51,42 @@ crash: panic payloads are not logged, so keep the process's stderr.
 
 ### KnotrelQueueSaturated
 
-Admitted graph jobs (queued plus running) stay near `max_pending_jobs`.
-Callers see rising latency and soon `busy`. Check
-`knotrel_graph_lock_wait_seconds` and `knotrel_graph_job_execution_seconds`
-by `kind` to tell contention from expensive work (large batches, `compact-bfs`
-queries on big graphs, imports). Reduce load, batch differently, or raise
-`KNOTREL_MAX_PENDING_JOBS` only if latency allows. Outstanding jobs can
-briefly exceed capacity (contract section 4); do not alert on a ratio above 1.
+Admitted work on one admission lane (queued plus running) stays near that
+lane's permit limit; the alert's `lane` label says which
+([contract section 21](observability-contract.md#21-per-lane-admission-metrics-v100-unreleased)).
+The expression divides `knotrel_graph_jobs_outstanding` by
+`knotrel_graph_job_capacity` with the same label set, so each lane's
+numerator meets only its own capacity; the ratio never exceeds 1 and is 1
+only when the lane's next request would be refused. Keep that matching if you
+adapt the rule: aggregate both sides `by (lane)` (plus your target labels),
+never one side alone. The `import` lane has a single permit and is full for
+the whole duration of every import, so it is excluded; watch
+`KnotrelSlowBootstrap` and `knotrel_import_duration_seconds` instead.
+
+- `shared`: queries, stats and inspection (every graph job in standalone
+  mode) stay near `KNOTREL_MAX_PENDING_JOBS`. Callers see rising latency and
+  soon `busy`. Check `knotrel_graph_lock_wait_seconds` and
+  `knotrel_graph_job_execution_seconds` by `kind` to tell contention from
+  expensive work (large batches, `compact-bfs` queries on big graphs, imports
+  holding the graph lock). Reduce load, batch differently, or raise
+  `KNOTREL_MAX_PENDING_JOBS` only if latency allows.
+- `feeder_data`: the feeder keeps `KNOTREL_FEEDER_RESERVED_JOBS` events,
+  barrier or gap requests in flight. Expected briefly during catch-up with a
+  pipelining feeder; sustained, it means feeder jobs wait on the graph lock
+  (check the `feeder_events` kind) and the feeder is being throttled. Lower
+  the feeder's concurrency or raise `KNOTREL_FEEDER_RESERVED_JOBS`.
+- `feeder_control`: two session or heartbeat requests stay in flight; a
+  heartbeat waiting this long risks lease expiry. Check lock wait for the
+  `feeder_heartbeat` and `feeder_session` kinds and for competing feeders.
 
 ### KnotrelRequestsRejectedBusy
 
-Requests are refused with 503 `busy` because admission capacity is
-exhausted. Logs: `request capacity exhausted; rejecting with 503 busy`.
-Same diagnosis as saturation. Clients should back off and retry; state
-changes of rejected requests did not happen.
+Requests are refused because the admission permits of the lane in the
+alert's `lane` label are exhausted (`shared`, `feeder_data` or
+`feeder_control`; the import lane's refusals are `import_capacity`). Logs:
+`request capacity exhausted; rejecting with 503 busy`, with the same `lane`
+field. Same diagnosis as saturation of that lane. Clients and feeders should
+back off and retry; state changes of rejected requests did not happen.
 
 ### KnotrelHighServerErrorRatio
 
@@ -145,5 +167,10 @@ The integration contract's retry table gives the expected feeder reaction.
 `tests/metrics.rs` (`alert_rules_reference_only_exported_series`) checks that
 every metric name and every exact label value used in the rules file exists
 in the exposition of a source-managed server, so a renamed metric or label
-breaks the build. The file is not validated with `promtool` in CI; validate
+breaks the build. `lanes::alert_expressions_divide_and_count_by_lane` parses
+the `KnotrelQueueSaturated` expression, evaluates it against a real
+exposition with one-to-one matching on identical label sets (each lane's
+numerator paired with its own capacity) and checks that
+`KnotrelRequestsRejectedBusy` keeps `lane` and the target labels (`sum without (reason)`); the per-lane tests
+evaluate it while lanes fill. The file is not validated with `promtool` in CI; validate
 it with `promtool check rules` before loading it.

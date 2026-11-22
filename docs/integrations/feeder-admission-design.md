@@ -117,7 +117,9 @@ capacity is therefore split into two independent semaphores:
    and the query path are unchanged.
 
 **Observability:** `requests_rejected_total{reason="busy"}` keeps counting
-feeder refusals. The capacity gauge gains no new series. `GET /v1/info`
+feeder refusals. The capacity gauge gained no new series in v0.9.0; since
+v1.0.0 the admission gauges and the rejection counter carry a `lane` label
+([observability contract, section 21](../observability-contract.md#21-per-lane-admission-metrics-v100-unreleased)). `GET /v1/info`
 reports the new setting as `feeder_reserved_jobs` in source-managed mode
 (additive field; documented in `docs/openapi.yaml` and `docs/http-api.md`).
 

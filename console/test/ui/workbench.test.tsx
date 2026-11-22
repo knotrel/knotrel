@@ -7,7 +7,14 @@ import type { ConsoleApi, Result } from '../../src/api/endpoints';
 import { deriveCapabilities } from '../../src/domain/capabilities';
 import { appendHistory, type HistoryEntry } from '../../src/domain/history';
 import { MetricsStore } from '../../src/state/metrics';
-import { PerformancePage, windowScrapes } from '../../src/ui/PerformancePage';
+import { parseExposition } from '../../src/domain/prometheus';
+import {
+  byLane,
+  laneSaturation,
+  PerformancePage,
+  rejectionSeries,
+  windowScrapes,
+} from '../../src/ui/PerformancePage';
 import type { QueryPreset } from '../../src/ui/presets';
 import { WorkbenchPage } from '../../src/ui/WorkbenchPage';
 import { exposition, failed, fakeApi, info, ok } from '../helpers';
@@ -274,6 +281,120 @@ describe('performance view', () => {
     });
     expect(await screen.findByText(/Scrape failed/)).toBeInTheDocument();
     store.stop();
+  });
+
+  it('pairs outstanding work with the capacity of the same lane (1.0.0 servers)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const perLane = (requests: number) =>
+      exposition(requests, [1, 2, 3])
+        .replace(
+          /knotrel_requests_rejected_total\{reason="busy"\} \d+/,
+          [
+            `knotrel_requests_rejected_total{reason="busy",lane="shared"} 0`,
+            `knotrel_requests_rejected_total{reason="busy",lane="feeder_data"} ${requests / 50}`,
+            'knotrel_requests_rejected_total{reason="shutting_down",lane="none"} 0',
+          ].join('\n'),
+        )
+        .replace(
+          'knotrel_graph_jobs_outstanding 2\nknotrel_graph_job_capacity 2',
+          [
+            'knotrel_graph_jobs_outstanding{lane="import"} 1',
+            'knotrel_graph_jobs_outstanding{lane="feeder_data"} 4',
+            'knotrel_graph_jobs_outstanding{lane="shared"} 3',
+            'knotrel_graph_job_capacity{lane="import"} 1',
+            'knotrel_graph_job_capacity{lane="feeder_data"} 4',
+            'knotrel_graph_job_capacity{lane="shared"} 32',
+          ].join('\n'),
+        );
+    const scrapes = [perLane(100), perLane(200)];
+    let n = 0;
+    const metrics = vi.fn(async (): Promise<Result<string>> => ok(scrapes[Math.min(n++, 1)]!));
+    let clock = 1_000_000;
+    const store = new MetricsStore(fakeApi({ metrics }), {
+      intervalMs: 5_000,
+      now: () => (clock += 10_000),
+    });
+    store.start();
+    render(<PerformancePage store={store} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    const table = await screen.findByRole('table', { name: /by admission lane/ });
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(rows).toHaveLength(3);
+    const [shared, data, imports] = rows as [HTMLElement, HTMLElement, HTMLElement];
+    expect(shared).toHaveTextContent(/^shared3 \/ 32$/);
+    expect(data).toHaveTextContent(/^feeder_data4 \/ 4/);
+    expect(within(data).getByText(/new work on this lane is refused/)).toBeInTheDocument();
+    expect(imports).toHaveTextContent(/^import1 \/ 1/);
+    expect(within(imports).getByText(/an import is in progress/)).toBeInTheDocument();
+    const rejected = screen.getAllByText(/Rejected/).map((li) => li.textContent);
+    expect(rejected).toEqual([
+      'Rejected (busy, lane shared): 0.0/s (0 in window)',
+      'Rejected (busy, lane feeder_data): 0.2/s (2 in window)',
+      'Rejected (shutting_down): 0.0/s (0 in window)',
+    ]);
+    store.stop();
+  });
+
+  it('keeps one unlabelled saturation row for servers before 1.0.0 and orders lanes', () => {
+    const legacy = { at: 0, samples: parseExposition(exposition(1, [1, 1, 1])).samples };
+    expect(laneSaturation(legacy)).toEqual([{ lane: undefined, outstanding: 2, capacity: 2 }]);
+    expect(laneSaturation({ at: 0, samples: [] })).toEqual([
+      { lane: undefined, outstanding: undefined, capacity: undefined },
+    ]);
+    expect(
+      ['zeta', 'import', 'alpha', 'shared', 'feeder_control', 'feeder_data'].sort(byLane),
+    ).toEqual(['shared', 'feeder_data', 'feeder_control', 'import', 'alpha', 'zeta']);
+  });
+
+  it('lists rejection series by reason, then lane, with or without the lane label', () => {
+    const scrape = (lines: string[]) => ({
+      at: 0,
+      samples: parseExposition(lines.join('\n')).samples,
+    });
+    // A server before 1.0.0: reasons only, sorted; a sample without a reason is ignored.
+    expect(
+      rejectionSeries(
+        scrape([
+          'knotrel_requests_rejected_total{reason="unavailable"} 0',
+          'knotrel_requests_rejected_total{reason="busy"} 3',
+          'knotrel_requests_rejected_total 1',
+        ]),
+      ),
+    ).toEqual([
+      { reason: 'busy', lane: undefined },
+      { reason: 'unavailable', lane: undefined },
+    ]);
+    // An unlabelled series (or an empty lane) sorts after the known lanes of its reason.
+    expect(
+      rejectionSeries(
+        scrape([
+          'knotrel_requests_rejected_total{reason="busy",lane="shared"} 0',
+          'knotrel_requests_rejected_total{reason="busy",lane=""} 0',
+          'knotrel_requests_rejected_total{reason="busy",lane="feeder_data"} 0',
+        ]),
+      ),
+    ).toEqual([
+      { reason: 'busy', lane: 'shared' },
+      { reason: 'busy', lane: 'feeder_data' },
+      { reason: 'busy', lane: undefined },
+    ]);
+    // A 1.0.0 server: reason first, then lanes in server order; duplicates collapse.
+    expect(
+      rejectionSeries(
+        scrape([
+          'knotrel_requests_rejected_total{reason="busy",lane="feeder_control"} 0',
+          'knotrel_requests_rejected_total{reason="unavailable",lane="none"} 0',
+          'knotrel_requests_rejected_total{reason="busy",lane="shared"} 0',
+          'knotrel_requests_rejected_total{reason="busy",lane="shared"} 0',
+        ]),
+      ),
+    ).toEqual([
+      { reason: 'busy', lane: 'shared' },
+      { reason: 'busy', lane: 'feeder_control' },
+      { reason: 'unavailable', lane: 'none' },
+    ]);
   });
 
   it('picks the window boundaries', () => {

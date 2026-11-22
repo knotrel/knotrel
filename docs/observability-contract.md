@@ -14,8 +14,9 @@ status code or body of the [HTTP API](http-api.md), the
 [deployment runbook](deployment.md). Section 19 adds the metrics of the M10
 node and edge lifecycle support (v0.5.0), which exist only when
 `KNOTREL_TOPOLOGY_LIFECYCLE=true`. Section 20 adds the label values of the
-inspection routes (v0.8.0). As a whole, the document describes the metrics
-served by v0.9.0.
+inspection routes (v0.8.0) and section 21 the per-lane admission metrics
+(v1.0.0, unreleased). Apart from section 21, the document describes the
+metrics served by v0.9.0.
 
 Scope: service health, workload pressure and feeder synchronization of one
 `knotrel-server` process, including structured logs (section 17) and the
@@ -39,7 +40,7 @@ the v0.3.0 release.
 | Request log | `api::logging_middleware` | Exposed (tracing) | Runs inside a `request` span (`request_id`, `method`, `route`, and when known `generation`, `state_version`, `sync_status`); the line records `uri`, `status`, `latency_us`. `info` level; probes (and `/metrics` when enabled) at `trace`. Outermost layer, so it sees `request_timeout`, `shutting_down` and handler responses. A request future dropped before a response logs `request cancelled before response` (section 17). |
 | Rejection and failure logs | `Service::run`, `Service::execute_feeder_worker`, `Service::acquire_import_permit`, `lifecycle::request_timeout`, `declare_gap`, worker `JoinError` handlers | Exposed (tracing) | Messages for capacity exhaustion, import capacity, request time limit, declared gap (`failed_delivery_sequence`, caller-supplied `reason`), worker panic and unavailable service. |
 | Process lifecycle logs | [`main.rs`](../crates/knotrel-server/src/main.rs), [`serve.rs`](../crates/knotrel-server/src/serve.rs) | Exposed (tracing) | Startup configuration, shutdown requested, draining (`open_connections`, `outstanding_jobs`), shutdown deadline (`abandoned`), accept backoff, connection limit. |
-| Outstanding worker jobs | `Lifecycle::outstanding_jobs`, `JobGuard` | Exposed via opt-in `/metrics` | Queued plus running graph jobs, including import workers. Otherwise logged only when draining. |
+| Outstanding worker jobs | `Lifecycle::outstanding_jobs`, `JobGuard` | Logged when draining; not exported since v1.0.0 | Queued plus running graph jobs, including import workers. Until v0.9.x it was `/metrics`' `graph_jobs_outstanding`; since v1.0.0 that gauge reports held admission permits per lane instead (section 21). |
 | Admission capacity | `Service` permit semaphores: shared (`max_pending_jobs`), feeder data (`KNOTREL_FEEDER_RESERVED_JOBS`), feeder control (2); import semaphore (1) | Exposed via opt-in `/metrics` | Rejections are logged and counted by `requests_rejected_total` (section 8). |
 | Lifecycle phase, worker failure | `Phase`, `unavailable` flag | Exposed via `/ready` and opt-in `/metrics` | `readiness_state` and `service_unavailable` gauges. |
 | Synchronization state | `GraphState` (`generation`, `version`, `sync_status`, `applied_delivery_sequence`, `source_position`, session, epoch, `lease_deadline`) | Internal | Partly visible through `/v1/stats`, headers and `/ready`; lease time remaining via opt-in `/metrics` (section 14). |
@@ -198,10 +199,10 @@ durable state. "Replacement" means publication of a new generation by import.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `http_requests_total` | counter | What are callers sending and receiving? | One per request (section 3), recorded by `metrics::track_http` when the inner service returns a response, or by its drop guard as `cancelled` if the future is dropped first. Never both. | section 7 | continues | **implemented** | E |
 | `http_request_duration_seconds` | histogram, s | How long does the server take to produce a response? | Server-side, from middleware entry to response construction (section 2). Includes `request_timeout` and `shutting_down` responses. Excludes body transmission, cancelled requests and worker time after the caller has gone. | `route` | continues | **implemented** | E |
-| `requests_rejected_total` | counter | Is work refused before execution, and why? | One per request refused before its graph job or import runs, at the boundary that refuses it (section 8). At most one per request. | `reason` ∈ {`busy`, `import_capacity`, `shutting_down`, `unavailable`} | continues | **implemented** | E |
+| `requests_rejected_total` | counter | Is work refused before execution, why, and on which admission lane? | One per request refused before its graph job or import runs, at the boundary that refuses it (section 8). At most one per request. `lane` names the admission lane whose permits were exhausted (section 21). | `reason` ∈ {`busy`, `import_capacity`, `shutting_down`, `unavailable`}; `lane` ∈ {`shared`, `feeder_data`, `feeder_control`, `import`, `none`}, only the 6 combinations of section 21 | continues | **implemented** | E |
 | `requests_outcome_uncertain_total` | counter | How often may a state change have happened without its caller learning the result? | One per **observation**, not per distinct request (section 8): a caller stopped waiting for an admitted state-changing job (`request_timeout`, `cancelled`), or such a job's worker panicked (`worker_panic`). One request can contribute a caller observation and later a `worker_panic`. `http_requests_total{status_class="cancelled"}` is unchanged and counts every dropped request, including probes and reads. | `cause` ∈ {`request_timeout`, `cancelled`, `worker_panic`} | continues | **implemented** | E |
-| `graph_jobs_outstanding` | gauge, jobs | How deep is the backlog? | `Lifecycle::outstanding_jobs` read at scrape: queued plus running, including import, and including jobs whose caller timed out or was cancelled. Not bounded by `max_pending_jobs`: an import can add one, and a finishing worker releases its admission permit just before its `JobGuard` (drop order in `Service::run` and `execute_feeder_worker`), so a newly admitted job can briefly be counted alongside it. Do not alert on `outstanding / capacity > 1`. | none | unaffected | **implemented** | E |
-| `graph_job_capacity` | gauge, jobs | What is the admission limit? | Graph-job admission permit limit (`max_pending_jobs`), constant after startup. Not a bound on `graph_jobs_outstanding`: imports and worker teardown can make outstanding jobs exceed it (see that row). | none | constant | **implemented** | E |
+| `graph_jobs_outstanding` | gauge, jobs | How deep is each lane's backlog? | Admission permits of the lane held at scrape (section 21): jobs admitted on the lane and not yet finished by their worker, queued or running, including jobs whose caller timed out or was cancelled; for the import lane, the import from permit acquisition (before body receipt) to its end. Never above `graph_job_capacity` of the same lane. The process-wide drain count (`Lifecycle::outstanding_jobs`) is not exported. | `lane` ∈ {`shared`, `feeder_data`, `feeder_control`, `import`} | unaffected | **implemented** | E |
+| `graph_job_capacity` | gauge, jobs | What is each lane's admission limit? | Permit limit of the lane, constant after startup: `shared` = `max_pending_jobs`, `feeder_data` = `KNOTREL_FEEDER_RESERVED_JOBS`, `feeder_control` = 2, `import` = 1 (section 21). | `lane`, same values and series as `graph_jobs_outstanding` | constant | **implemented** | E |
 | `graph_job_queue_seconds`, `graph_lock_wait_seconds`, `graph_job_execution_seconds` | histograms, s | Is latency queueing, contention or work? | Section 2 split, recorded inside the worker closure, so it is observed even when the caller has gone. Exact boundaries in section 11. | `kind` ∈ {`operation`, `batch`, `stats`, `feeder_session`, `feeder_heartbeat`, `feeder_events`, `feeder_gap`, `feeder_barrier`, `import_publish`, `inspect`} | continues | **implemented** | E |
 | `graph_operations_total` | counter | What mix of operations runs, and how many change the graph? | One per executed operation (section 3), counted by the worker when `GraphState::apply` returns, under the graph lock (section 12). Feeder events and imports are never counted here. | `op` ∈ {`add_node`, `link`, `cut`, `connected`, and with lifecycle support `set_node_active`, `set_edge_enabled`, `remove_node`, `node_state`, `edge_state`}; `outcome` ∈ {`changed`, `unchanged`, `error`} for mutations, {`true`, `false`, `error`} for `connected`, {`registered`, `unregistered`, `error`} for `node_state` and `edge_state` (section 19) | continues | **implemented** | E |
 | `graph_nodes`, `graph_edges` | gauges | How big is the graph? | Published by the worker, under the graph lock, when a state-changing job's graph work returns and at import publication; initialized at construction. Retains the last published values; not rolled back by a later worker panic. Read at scrape without the graph lock. Not a coherent pair (section 10). With lifecycle support they are registered counts, whatever the flags (section 19). | none | jump to published import counts | **implemented** | E |
@@ -292,7 +293,7 @@ accepted on that basis; Acceptance M6 still requires M6.4 and M6.5.
 | Operations | `GraphState::apply`, called per operation for single and batch requests. |
 | Imports | `api::feeder_import` and `Service::import` (implemented, section 15). |
 | Catch-up | Start instant stored in `GraphState` at publication; observed in `declare_barrier` B2 and recorded on worker drop (implemented, section 16). |
-| `/metrics` reads | Atomics (including `outstanding_jobs`), the published readiness word and the registry. No graph lock, admission permit or import permit; registry synchronization still applies. |
+| `/metrics` reads | Atomics (including the lane semaphores' available permits), the published readiness word and the registry. No graph lock, admission permit or import permit; registry synchronization still applies. |
 
 These can reuse the per-instance `ServiceTelemetry` handle that `Service`
 now owns (section 8).
@@ -380,8 +381,8 @@ metrics therefore see `shutting_down` and `request_timeout` responses.
 | --- | --- | --- |
 | `knotrel_http_requests_total{route,method,status_class}` | counter | Section 4. Exactly one increment per request: a drop guard records `cancelled` only if no response was constructed. |
 | `knotrel_http_request_duration_seconds{route}` | histogram, s | Section 4. Buckets: 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, `+Inf`. The upper buckets cover `request_timeout` (default 30 s, configurable to 1 h; longer values fall in `+Inf`). |
-| `knotrel_graph_jobs_outstanding` | gauge | Section 4. |
-| `knotrel_graph_job_capacity` | gauge | Section 4. |
+| `knotrel_graph_jobs_outstanding{lane}` | gauge | Section 4; `lane` since v1.0.0 (section 21). |
+| `knotrel_graph_job_capacity{lane}` | gauge | Section 4; `lane` since v1.0.0 (section 21). |
 | `knotrel_service_unavailable` | gauge 0/1 | Section 4. |
 | `knotrel_readiness_state{state}` | gauge, one-hot | Section 4. Standalone exposes 4 states, source-managed 9. Computed once per scrape, so the output is never torn. |
 | `knotrel_build_info{version,engine,mode}` | gauge = 1 | Crate version, configured engine (`/v1/info` value) and `standalone` or `source_managed`. Constant for the process. |
@@ -468,10 +469,10 @@ jobs are state-changing.
 
 | Case | Observation boundary | Series | Unit | Recorded by |
 | --- | --- | --- | --- | --- |
-| Admission capacity exhausted | `try_acquire_owned` failure of the request's lane in `Service::admit_in` (shared, feeder data or feeder control) | `requests_rejected_total{reason="busy"}`. HTTP `503 busy` on every lane, including feeder session, heartbeat, events, gap and barrier calls (section 2; `503 import_in_progress` until v0.9.x). | request | caller |
-| Import permit exhausted | `Service::acquire_import_permit` | `requests_rejected_total{reason="import_capacity"}` | request | caller |
-| Shutdown | `lifecycle::shutdown_gate` refusing a non-probe request while draining. This includes requests that would never create a graph job, such as `/v1/info` and unmatched routes. | `requests_rejected_total{reason="shutting_down"}` | request | caller |
-| Service already unavailable | The first check that refuses: `api::check_service_available`; the entry checks of `Service::run` and `execute_feeder_worker`; or the in-worker check under the graph lock (`graph.failed` or the unavailable flag) in `run`, `execute_feeder_worker` and `Service::import`. That check refuses before any change is applied to the live graph or a candidate is published; for import, JSON parsing and candidate construction may already have happened off-lock. | `requests_rejected_total{reason="unavailable"}` | request | caller, or worker for the in-worker check |
+| Admission capacity exhausted | `try_acquire_owned` failure of the request's lane in `Service::admit_in` (shared, feeder data or feeder control) | `requests_rejected_total{reason="busy",lane=<that lane>}` (section 21). HTTP `503 busy` on every lane, including feeder session, heartbeat, events, gap and barrier calls (section 2; `503 import_in_progress` until v0.9.x). | request | caller |
+| Import permit exhausted | `Service::acquire_import_permit` | `requests_rejected_total{reason="import_capacity",lane="import"}` | request | caller |
+| Shutdown | `lifecycle::shutdown_gate` refusing a non-probe request while draining. This includes requests that would never create a graph job, such as `/v1/info` and unmatched routes. | `requests_rejected_total{reason="shutting_down",lane="none"}` | request | caller |
+| Service already unavailable | The first check that refuses: `api::check_service_available`; the entry checks of `Service::run` and `execute_feeder_worker`; or the in-worker check under the graph lock (`graph.failed` or the unavailable flag) in `run`, `execute_feeder_worker` and `Service::import`. That check refuses before any change is applied to the live graph or a candidate is published; for import, JSON parsing and candidate construction may already have happened off-lock. | `requests_rejected_total{reason="unavailable",lane="none"}` | request | caller, or worker for the in-worker check |
 | Request timeout | `lifecycle::request_timeout` drops a caller that is still waiting for an admitted state-changing job | `requests_outcome_uncertain_total{cause="request_timeout"}` | observation | caller-side drop guard |
 | Request-future cancellation | The same caller is dropped for any other reason | `requests_outcome_uncertain_total{cause="cancelled"}` | observation | caller-side drop guard |
 | Worker panic | `WorkerPanicGuard` dropped while panicking in a state-changing job's worker, including after its caller has gone | `requests_outcome_uncertain_total{cause="worker_panic"}` | observation | worker |
@@ -531,7 +532,7 @@ already disarmed its drop guard.
 
 | Series | Type | Values |
 | --- | --- | --- |
-| `knotrel_requests_rejected_total{reason}` | counter | 4 |
+| `knotrel_requests_rejected_total{reason,lane}` | counter | 4 (`lane` added in v1.0.0; 6 series in source-managed mode: section 21) |
 | `knotrel_requests_outcome_uncertain_total{cause}` | counter | 3 |
 
 These add 7 series. The maximum becomes **1247 standalone, 1252
@@ -1641,3 +1642,123 @@ pinned by the unit tests of `metrics::JobKind`, and the route templates by
 **Overhead.** Not qualified. The page cost and its interference with
 concurrent work are measured in
 [console inspection costs](console-inspection-costs.md).
+
+## 21. Per-lane admission metrics (v1.0.0, unreleased)
+
+**Problem (contract freeze review, finding M1).** Until v0.9.x,
+`knotrel_graph_job_capacity` reported only the shared lane
+(`max_pending_jobs`) while `knotrel_graph_jobs_outstanding` counted jobs of
+every lane plus the import. In source-managed mode the ratio could exceed 1 by
+the reserved feeder permits, the 2 control permits and the import in normal
+operation, so `KnotrelQueueSaturated` could fire although no lane was full,
+and `requests_rejected_total{reason="busy"}` did not say which lane refused.
+Maintainer decision 7 (2026-11-22) adds a `lane` label so that numerator and
+capacity always refer to the same lane.
+
+**Lanes.** The `lane` label values are the server's admission semaphores
+(`service::Lane`), a closed set frozen at 1.0:
+
+| `lane` | Admits | Capacity (`graph_job_capacity`) | Modes |
+| --- | --- | --- | --- |
+| `shared` | queries, stats, inspection; every graph job in standalone mode | `KNOTREL_MAX_PENDING_JOBS` (`max_pending_jobs`) | both |
+| `feeder_data` | `/v1/feeder/events`, `/v1/feeder/barrier`, `/v1/feeder/gap` | `KNOTREL_FEEDER_RESERVED_JOBS` | source-managed |
+| `feeder_control` | `/v1/feeder/session`, `/v1/feeder/heartbeat` | 2 | source-managed |
+| `import` | `/v1/feeder/import` (the single import permit) | 1 | source-managed |
+
+**Semantics.**
+
+- `knotrel_graph_jobs_outstanding{lane}` is `capacity − available permits` of
+  the lane's semaphore, read with one atomic load per lane at scrape
+  (`Service::lane_occupancy`). A permit is held from admission until the
+  worker that owns it ends (success, error, panic, or after its caller timed
+  out or was cancelled); the import permit from acquisition, before the body
+  is read, until the import ends, so `{lane="import"}` matches
+  `knotrel_import_in_progress`, except briefly at the end of an import:
+  `ImportPermit` clears `in_progress` just before it releases the permit, so
+  a scrape in between reads `in_progress` 0 with the import lane still 1.
+- No permit is ever added to or removed from a lane semaphore, so for every
+  lane `0 ≤ outstanding ≤ capacity` in every scrape, and
+  `outstanding == capacity` exactly when the lane's next admission would be
+  refused with `busy` (`import_capacity` for the import lane). Numerator and
+  capacity of a lane are read in the same scrape and carry identical label
+  sets, so PromQL's default one-to-one matching pairs them by `lane`.
+- The sum over lanes is not the drain count: `Lifecycle::outstanding_jobs`
+  counts tracked graph jobs (an import only once its body has been received),
+  and a finishing worker releases its permit just before its job guard. It stays internal (shutdown logs).
+- `knotrel_requests_rejected_total{reason,lane}`: `busy` carries the lane
+  whose permits were exhausted, `import_capacity` carries `lane="import"`,
+  and `shutting_down` and `unavailable`, refused before or regardless of a
+  lane, carry `lane="none"`. Only these combinations exist:
+
+| `reason` | `lane` | Modes |
+| --- | --- | --- |
+| `busy` | `shared` | both |
+| `busy` | `feeder_data` | source-managed |
+| `busy` | `feeder_control` | source-managed |
+| `import_capacity` | `import` | both (always 0 in standalone mode, kept from v0.4.0) |
+| `shutting_down` | `none` | both |
+| `unavailable` | `none` | both |
+
+**Series count.** Fixed at compile time and independent of load:
+
+| Family | Standalone | Source-managed |
+| --- | ---: | ---: |
+| `graph_jobs_outstanding{lane}` | 1 | 4 |
+| `graph_job_capacity{lane}` | 1 | 4 |
+| `requests_rejected_total{reason,lane}` | 4 | 6 |
+
+Standalone mode is unchanged (one series per gauge, four rejection series);
+source-managed mode gains 8 series. The calculated maximum of section 20
+becomes:
+
+| Lifecycle support | Inspection | Standalone | Source-managed |
+| --- | --- | --- | --- |
+| off | off | 1766 | 2195 (2187 + 8) |
+| off | on | 1817 | 2246 |
+| on | off | 1784 | 2204 |
+| on | on | 1835 | 2255 |
+
+`series_count_is_constant_under_sustained_churn` checks the churned exposition
+against the source-managed bound without lifecycle support or inspection
+(2195).
+
+**Compatibility.** Adding a label to existing families changes their label
+names, which [compatibility.md](compatibility.md) treats as breaking for
+stable families. It is an approved exception of the 1.0 contract freeze
+(decision 7), to be listed in the v1.0.0 release notes. Effect on existing
+queries: in standalone mode each gauge keeps exactly one series; in
+source-managed mode `outstanding / capacity` now yields one ratio per lane,
+and a query that summed or selected the families without labels must
+aggregate `by (lane)` or select a lane. Prometheus treats a missing label as
+empty, so `{lane=""}` matches nothing from v1.0.0.
+
+**Alerts.** `KnotrelQueueSaturated` divides the two gauges per lane, excluding
+the import lane (full for the whole duration of every import), and
+`KnotrelRequestsRejectedBusy` sums `busy` rejections `without (reason)`, keeping `lane` and the scrape target's labels
+([alerting.md](alerting.md)).
+
+**Tests** ([`tests/metrics.rs`](../crates/knotrel-server/tests/metrics.rs),
+module `lanes`):
+
+- `each_mode_exposes_its_lanes_with_their_capacities`: the lane set and
+  capacities per mode;
+- `saturation_ratio_per_lane_stays_within_one_and_reaches_one_only_when_full`:
+  source-managed operation with reserved feeder permits in use and the shared
+  lane full (the old ratio read 2/1): every lane's ratio stays at most 1 in
+  every scrape and is 1 exactly on the lanes whose next admission is refused,
+  each refusal counted as `busy` on its lane;
+- `import_lane_is_full_only_while_an_import_holds_its_permit`;
+- `alert_expressions_divide_and_count_by_lane`: parses the shipped
+  `KnotrelQueueSaturated` expression, evaluates it against a real exposition
+  with one-to-one matching on identical label sets, and checks that
+  `KnotrelRequestsRejectedBusy` keeps `lane` and the target labels;
+- the label-domain check of `exposition_is_valid_and_uses_only_bounded_labels`
+  and the per-series checks of the `outcomes` module.
+
+**Overhead.** Recording a rejection is still one atomic increment of a
+pre-created counter. A scrape reads up to four semaphore permit counts
+(atomic loads) instead of one atomic counter and encodes up to 8 gauge
+samples instead of 2. No request path changes. The metrics overhead budget
+of section 6 applies; the change is part of the v1.0.0 candidate measured by
+the v1.0.0 performance campaign, and no overhead claim is made before that
+measurement.

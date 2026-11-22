@@ -198,7 +198,7 @@ shown as "Unavailable", with the reason; they are never inferred.
 | Browser: edge detail | `edge_state` via `POST /v1/operations`, `GET /v1/nodes/{id}` for both endpoints | Desired state (`enabled`) and effectiveness with the endpoints' `active` flags |
 | Browser and Workbench operations | `POST /v1/operations`, `POST /v1/batch` | `changed`, error envelopes, per-operation batch results, `X-Knotrel-State-Version` |
 | Workbench queries | `POST /v1/operations` | `connected`, `node_state`, `edge_state` and the version headers of the same response |
-| Performance | `GET /metrics` | `knotrel_http_requests_total`, `knotrel_http_request_duration_seconds`, `knotrel_requests_rejected_total`, `knotrel_requests_outcome_uncertain_total`, `knotrel_graph_jobs_outstanding`, `knotrel_graph_job_capacity`, job queue/lock-wait/execution histograms |
+| Performance | `GET /metrics` | `knotrel_http_requests_total`, `knotrel_http_request_duration_seconds`, `knotrel_requests_rejected_total` (by `reason` and, from 1.0.0, `lane`), `knotrel_requests_outcome_uncertain_total`, `knotrel_graph_jobs_outstanding` and `knotrel_graph_job_capacity` (one row per `lane` from 1.0.0, each lane's outstanding count over that lane's capacity; one unlabelled row for earlier servers), job queue/lock-wait/execution histograms |
 | Synchronization | `GET /v1/stats`, `GET /ready`, `GET /v1/info`, `GET /metrics` | `sync_status`, `generation`, `source_position`, state version, readiness label, `knotrel_feeder_lease_remaining_seconds`, `knotrel_feeder_last_applied_age_seconds` |
 
 Not exposed, so shown as unavailable:

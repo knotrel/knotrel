@@ -69,6 +69,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+`router_with_config` owns a lifecycle that is always ready. To make `/ready`
+follow startup and the graceful drain, as the standalone executable does,
+build the router with `router_with_lifecycle` and serve it with
+`knotrel_server::serve`, which bounds connections and timeouts and drains on
+shutdown:
+
+```rust
+use knotrel_server::{Lifecycle, ServerConfig, router_with_lifecycle, serve};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = ServerConfig::default();
+    let lifecycle = Lifecycle::new();
+    let app = router_with_lifecycle(config.clone(), lifecycle.clone());
+    let listener = tokio::net::TcpListener::bind(config.address()).await?;
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    // While draining, `/ready` answers 503 `draining`, probes stay answerable
+    // and other routes answer 503 `shutting_down`.
+    let _outcome = serve(listener, app, &config, &lifecycle, shutdown).await;
+    Ok(())
+}
+```
+
+Both functions return an `axum::Router` (axum 0.8) and `serve` takes a
+`tokio::net::TcpListener` (tokio 1): these two dependencies are part of the
+stable API ([stability classification](https://github.com/knotrel/knotrel/blob/main/docs/stability.md)).
+
 ## Security Notice
 
 Knotrel does not include authentication, authorization, or TLS. The service is intended

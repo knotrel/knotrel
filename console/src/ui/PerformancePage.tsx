@@ -54,6 +54,62 @@ function labelValues(scrape: Scrape, name: string, label: string): string[] {
     .sort(byCodeUnit);
 }
 
+/** Server admission lanes in display order (`lane` label, since 1.0.0). */
+const LANE_ORDER = ['shared', 'feeder_data', 'feeder_control', 'import'];
+
+/** Orders known lanes first, then any other value by code unit. */
+export function byLane(a: string, b: string): number {
+  const ia = LANE_ORDER.indexOf(a);
+  const ib = LANE_ORDER.indexOf(b);
+  if (ia !== ib) return (ia < 0 ? LANE_ORDER.length : ia) - (ib < 0 ? LANE_ORDER.length : ib);
+  return byCodeUnit(a, b);
+}
+
+/** Outstanding work and capacity of one admission lane. */
+export interface LaneSaturation {
+  /** `lane` label value, or `undefined` for a server without the label. */
+  lane: string | undefined;
+  outstanding: number | undefined;
+  capacity: number | undefined;
+}
+
+/**
+ * Saturation per admission lane. Each lane's outstanding count is paired
+ * with that lane's capacity only. A server before 1.0.0 exports the two
+ * gauges without a `lane` label: one unlabelled row is returned.
+ */
+export function laneSaturation(scrape: Scrape): LaneSaturation[] {
+  const lanes = labelValues(scrape, 'knotrel_graph_job_capacity', 'lane').sort(byLane);
+  if (lanes.length === 0) {
+    return [
+      {
+        lane: undefined,
+        outstanding: gauge(scrape, 'knotrel_graph_jobs_outstanding'),
+        capacity: gauge(scrape, 'knotrel_graph_job_capacity'),
+      },
+    ];
+  }
+  return lanes.map((lane) => ({
+    lane,
+    outstanding: gauge(scrape, 'knotrel_graph_jobs_outstanding', { lane }),
+    capacity: gauge(scrape, 'knotrel_graph_job_capacity', { lane }),
+  }));
+}
+
+/** `(reason, lane)` pairs of the rejection counter; `lane` is absent before 1.0.0. */
+export function rejectionSeries(scrape: Scrape): { reason: string; lane: string | undefined }[] {
+  const keys = new Map<string, { reason: string; lane: string | undefined }>();
+  for (const s of select(scrape, 'knotrel_requests_rejected_total')) {
+    const reason = s.labels['reason'];
+    if (!reason) continue;
+    const lane = s.labels['lane'] || undefined;
+    keys.set(`${reason}\u0000${lane ?? ''}`, { reason, lane });
+  }
+  return [...keys.values()].sort(
+    (a, b) => byCodeUnit(a.reason, b.reason) || byLane(a.lane ?? '', b.lane ?? ''),
+  );
+}
+
 /** The Performance page. */
 export function PerformancePage({ store }: { store: MetricsStore }) {
   const state = useSyncExternalStore(store.subscribe, store.getState);
@@ -131,11 +187,10 @@ function PerformanceBody({ from, to }: { from: Scrape; to: Scrape }) {
   const total = increase(from, to, 'knotrel_http_requests_total');
   const reset = total?.reset === true;
   const routes = labelValues(to, 'knotrel_http_requests_total', 'route');
-  const rejected = labelValues(to, 'knotrel_requests_rejected_total', 'reason');
+  const rejected = rejectionSeries(to);
   const uncertain = labelValues(to, 'knotrel_requests_outcome_uncertain_total', 'cause');
   const kinds = labelValues(to, 'knotrel_graph_job_execution_seconds_bucket', 'kind');
-  const outstanding = gauge(to, 'knotrel_graph_jobs_outstanding');
-  const capacity = gauge(to, 'knotrel_graph_job_capacity');
+  const lanes = laneSaturation(to);
   return (
     <>
       <p className="source">
@@ -149,25 +204,48 @@ function PerformanceBody({ from, to }: { from: Scrape; to: Scrape }) {
         </div>
       )}
       <h3>Saturation</h3>
-      <dl>
-        <div className="field">
-          <dt>Graph jobs outstanding / capacity</dt>
-          <dd>
-            {outstanding === undefined || capacity === undefined
-              ? '—'
-              : `${outstanding} / ${capacity}`}
-            {outstanding !== undefined && capacity !== undefined && outstanding >= capacity && (
-              <>
-                {' '}
-                <StatusBadge
-                  severity="warning"
-                  label="At capacity: new graph work is refused (busy)"
-                />
-              </>
-            )}
-          </dd>
-        </div>
-      </dl>
+      <table className="list">
+        <caption className="visually-hidden">
+          Graph jobs outstanding and capacity by admission lane
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Admission lane</th>
+            <th scope="col">Graph jobs outstanding / capacity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lanes.map(({ lane, outstanding, capacity }) => (
+            <tr key={lane ?? ''}>
+              <td>
+                {lane === undefined ? (
+                  'all (server without lane label)'
+                ) : (
+                  <code className="exact">{lane}</code>
+                )}
+              </td>
+              <td>
+                {outstanding === undefined || capacity === undefined
+                  ? '—'
+                  : `${outstanding} / ${capacity}`}
+                {outstanding !== undefined && capacity !== undefined && outstanding >= capacity && (
+                  <>
+                    {' '}
+                    <StatusBadge
+                      severity="warning"
+                      label={
+                        lane === 'import'
+                          ? 'At capacity: an import is in progress; another is refused'
+                          : 'At capacity: new work on this lane is refused (busy)'
+                      }
+                    />
+                  </>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
       <h3>Requests by route</h3>
       <table className="list">
         <caption className="visually-hidden">
@@ -233,12 +311,22 @@ function PerformanceBody({ from, to }: { from: Scrape; to: Scrape }) {
         <p>No rejection series reported.</p>
       ) : (
         <ul>
-          {rejected.map((reason) => {
-            const r = increase(from, to, 'knotrel_requests_rejected_total', { reason });
+          {rejected.map(({ reason, lane }) => {
+            const r = increase(
+              from,
+              to,
+              'knotrel_requests_rejected_total',
+              lane === undefined ? { reason } : { reason, lane },
+            );
             return (
-              <li key={reason}>
-                Rejected (<code className="exact">{reason}</code>): {rate(r && r.value / r.seconds)}{' '}
-                ({r?.value ?? 0} in window)
+              <li key={`${reason} ${lane ?? ''}`}>
+                Rejected (<code className="exact">{reason}</code>
+                {lane !== undefined && lane !== 'none' && (
+                  <>
+                    , lane <code className="exact">{lane}</code>
+                  </>
+                )}
+                ): {rate(r && r.value / r.seconds)} ({r?.value ?? 0} in window)
               </li>
             );
           })}

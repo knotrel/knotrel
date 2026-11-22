@@ -214,7 +214,11 @@
 //!   disk persistence, or crash recovery.
 //! - **No generic graph properties**: Knotrel is not an attributed property graph; it does not store node labels,
 //!   edge weights, directed edges, or multi-edges.
-//! - **Pre-1.0 stability**: APIs are subject to refinement before 1.0 based on user adoption feedback.
+//! - **Stability classes**: every public item is classified **stable**, **experimental** or **internal** in the
+//!   [stability classification](https://github.com/knotrel/knotrel/blob/main/docs/stability.md). Stable items change
+//!   only as the [compatibility policy](https://github.com/knotrel/knotrel/blob/main/docs/compatibility.md) allows,
+//!   after a deprecation. The `EulerTour` and `Hdt` engines with their types, and [`LifecycleStorage`], are
+//!   experimental; [`ReferenceGraph`] is an internal test oracle.
 
 use fixedbitset::FixedBitSet;
 use nohash_hasher::IntMap;
@@ -246,6 +250,7 @@ pub type NodeId = u64;
 
 /// An invalid graph operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GraphError {
     /// A mutation would exceed the registered vertex ceiling.
     NodeLimitExceeded {
@@ -295,6 +300,7 @@ impl Error for GraphError {}
 
 /// Why an incidence listing could not start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum IncidenceError {
     /// The node whose incident edges were requested is not registered.
     UnknownNode,

@@ -44,6 +44,20 @@ const READINESS_STATES: [&str; 9] = [
 ];
 
 const REJECTION_REASONS: [&str; 4] = ["busy", "import_capacity", "shutting_down", "unavailable"];
+/// `lane` values of the admission gauges, in exposition order.
+const LANES: [&str; 4] = ["shared", "feeder_data", "feeder_control", "import"];
+/// `lane` values of `requests_rejected_total`: the lanes plus `none`.
+const REJECTION_LANES: [&str; 5] = ["shared", "feeder_data", "feeder_control", "import", "none"];
+/// Every `(reason, lane)` series of `requests_rejected_total` in
+/// source-managed mode; standalone mode lacks the two feeder `busy` series.
+const REJECTION_SERIES: [(&str, &str); 6] = [
+    ("busy", "shared"),
+    ("busy", "feeder_data"),
+    ("busy", "feeder_control"),
+    ("import_capacity", "import"),
+    ("shutting_down", "none"),
+    ("unavailable", "none"),
+];
 const UNCERTAINTY_CAUSES: [&str; 3] = ["request_timeout", "cancelled", "worker_panic"];
 const JOB_KINDS: [&str; 9] = [
     "operation",
@@ -382,6 +396,8 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
                 ("http_requests_total", "status_class") => &STATUS_CLASSES,
                 ("readiness_state", "state") => &READINESS_STATES,
                 ("requests_rejected_total", "reason") => &REJECTION_REASONS,
+                ("requests_rejected_total", "lane") => &REJECTION_LANES,
+                ("graph_jobs_outstanding" | "graph_job_capacity", "lane") => &LANES,
                 ("requests_outcome_uncertain_total", "cause") => &UNCERTAINTY_CAUSES,
                 ("desynchronizations_total", "cause") => &DESYNC_CAUSES,
                 ("feeder_rejections_total", "code") => &FEEDER_REJECTION_CODES,
@@ -422,11 +438,19 @@ async fn exposition_is_valid_and_uses_only_bounded_labels() {
     }
 
     assert_eq!(
-        value(&samples, "knotrel_graph_jobs_outstanding", &[]),
+        value(
+            &samples,
+            "knotrel_graph_jobs_outstanding",
+            &[("lane", "shared")]
+        ),
         Some(0.0)
     );
     assert_eq!(
-        value(&samples, "knotrel_graph_job_capacity", &[]),
+        value(
+            &samples,
+            "knotrel_graph_job_capacity",
+            &[("lane", "shared")]
+        ),
         Some(4.0)
     );
     assert_eq!(
@@ -467,7 +491,7 @@ async fn capacity_help_describes_the_admission_permit_limit() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.lines().any(|line| line
-            == "# HELP knotrel_graph_job_capacity Graph-job admission permit limit (max_pending_jobs)."),
+            == "# HELP knotrel_graph_job_capacity Admission permit limit of the lane: shared max_pending_jobs, feeder_data KNOTREL_FEEDER_RESERVED_JOBS, feeder_control 2, import 1."),
         "capacity HELP line missing or changed"
     );
 }
@@ -572,7 +596,10 @@ async fn server_instances_have_isolated_registries() {
     let b = scrape(&second).await;
     assert_eq!(route_total(&a, "/v1/operations"), 2.0);
     assert_eq!(route_total(&b, "/v1/operations"), 0.0);
-    assert_eq!(value(&b, "knotrel_graph_job_capacity", &[]), Some(7.0));
+    assert_eq!(
+        value(&b, "knotrel_graph_job_capacity", &[("lane", "shared")]),
+        Some(7.0)
+    );
     let cloned = first.clone();
     assert_eq!(route_total(&scrape(&cloned).await, "/v1/operations"), 2.0);
 }
@@ -609,11 +636,19 @@ mod paused {
         assert!(body.contains("busy"));
         let samples = scrape(&app).await;
         assert_eq!(
-            value(&samples, "knotrel_graph_jobs_outstanding", &[]),
+            value(
+                &samples,
+                "knotrel_graph_jobs_outstanding",
+                &[("lane", "shared")]
+            ),
             Some(1.0)
         );
         assert_eq!(
-            value(&samples, "knotrel_graph_job_capacity", &[]),
+            value(
+                &samples,
+                "knotrel_graph_job_capacity",
+                &[("lane", "shared")]
+            ),
             Some(1.0)
         );
         assert_eq!(requests(&samples, "/v1/stats", "GET", "5xx"), 1.0);
@@ -624,7 +659,11 @@ mod paused {
         let samples = scrape(&app).await;
         assert_eq!(requests(&samples, "/v1/operations", "POST", "2xx"), 1.0);
         assert_eq!(
-            value(&samples, "knotrel_graph_jobs_outstanding", &[]),
+            value(
+                &samples,
+                "knotrel_graph_jobs_outstanding",
+                &[("lane", "shared")]
+            ),
             Some(0.0)
         );
     }
@@ -657,7 +696,7 @@ mod paused {
         value(
             samples,
             "knotrel_requests_rejected_total",
-            &[("reason", "unavailable")],
+            &[("reason", "unavailable"), ("lane", "none")],
         )
     }
 
@@ -761,7 +800,11 @@ mod paused {
         assert_eq!(route_total(&samples, "/v1/operations"), 1.0);
         assert_eq!(duration_count(&samples, "/v1/operations"), 1.0);
         assert_eq!(
-            value(&samples, "knotrel_graph_jobs_outstanding", &[]),
+            value(
+                &samples,
+                "knotrel_graph_jobs_outstanding",
+                &[("lane", "shared")]
+            ),
             Some(1.0)
         );
 
@@ -771,7 +814,11 @@ mod paused {
         assert_eq!(route_total(&samples, "/v1/operations"), 1.0);
         assert_eq!(duration_count(&samples, "/v1/operations"), 1.0);
         assert_eq!(
-            value(&samples, "knotrel_graph_jobs_outstanding", &[]),
+            value(
+                &samples,
+                "knotrel_graph_jobs_outstanding",
+                &[("lane", "shared")]
+            ),
             Some(0.0)
         );
     }
@@ -798,7 +845,11 @@ mod paused {
         assert_eq!(route_total(&samples, "/v1/operations"), 1.0);
         assert_eq!(duration_count(&samples, "/v1/operations"), 0.0);
         assert_eq!(
-            value(&samples, "knotrel_graph_jobs_outstanding", &[]),
+            value(
+                &samples,
+                "knotrel_graph_jobs_outstanding",
+                &[("lane", "shared")]
+            ),
             Some(1.0)
         );
 
@@ -811,7 +862,11 @@ mod paused {
             1.0
         );
         assert_eq!(
-            value(&samples, "knotrel_graph_jobs_outstanding", &[]),
+            value(
+                &samples,
+                "knotrel_graph_jobs_outstanding",
+                &[("lane", "shared")]
+            ),
             Some(0.0)
         );
     }
@@ -823,7 +878,9 @@ mod outcomes {
     const REJECTED: &str = "knotrel_requests_rejected_total";
     const UNCERTAIN: &str = "knotrel_requests_outcome_uncertain_total";
 
-    /// Asserts every rejection and uncertainty series, treating unlisted ones as zero.
+    /// Asserts every rejection and uncertainty series, treating unlisted ones
+    /// as zero. A rejection key is `reason:lane`, or a bare reason for its
+    /// only lane in standalone mode (`busy` is `busy:shared`).
     fn assert_outcomes(samples: &[Sample], nonzero: &[(&str, f64)]) {
         let expected = |key: &str| {
             nonzero
@@ -831,11 +888,33 @@ mod outcomes {
                 .find(|(k, _)| *k == key)
                 .map_or(0.0, |(_, v)| *v)
         };
-        for reason in REJECTION_REASONS {
-            let actual = value(samples, REJECTED, &[("reason", reason)])
-                .unwrap_or_else(|| panic!("missing {REJECTED}{{reason={reason}}}"));
-            assert_eq!(actual, expected(reason), "rejected reason={reason}");
+        let mut seen = 0;
+        for (reason, lane) in REJECTION_SERIES {
+            let Some(actual) = value(samples, REJECTED, &[("reason", reason), ("lane", lane)])
+            else {
+                assert!(
+                    reason == "busy" && lane.starts_with("feeder_"),
+                    "missing {REJECTED}{{reason={reason},lane={lane}}}"
+                );
+                continue;
+            };
+            seen += 1;
+            let key = format!("{reason}:{lane}");
+            let only_lane = REJECTION_SERIES
+                .iter()
+                .filter(|(r, _)| *r == reason)
+                .count()
+                == 1
+                || lane == "shared";
+            let wanted = if only_lane {
+                expected(&key) + expected(reason)
+            } else {
+                expected(&key)
+            };
+            assert_eq!(actual, wanted, "rejected {key}");
         }
+        let total = samples.iter().filter(|s| s.name == REJECTED).count();
+        assert_eq!(total, seen, "unexpected {REJECTED} series");
         for cause in UNCERTAINTY_CAUSES {
             let actual = value(samples, UNCERTAIN, &[("cause", cause)])
                 .unwrap_or_else(|| panic!("missing {UNCERTAIN}{{cause={cause}}}"));
@@ -1016,7 +1095,7 @@ mod outcomes {
             assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
             assert!(body.contains("\"busy\""), "{body}");
             assert!(!body.contains("import_in_progress"), "{body}");
-            assert_outcomes(&scrape(&app).await, &[("busy", 1.0)]);
+            assert_outcomes(&scrape(&app).await, &[("busy:feeder_data", 1.0)]);
 
             pause.release();
             // The held job ran to its own outcome; only the admission is tested.
@@ -2968,7 +3047,7 @@ mod feeder_rejections {
                 value(
                     &samples,
                     "knotrel_requests_rejected_total",
-                    &[("reason", "busy")]
+                    &[("reason", "busy"), ("lane", "feeder_data")]
                 ),
                 Some(1.0)
             );
@@ -3212,7 +3291,7 @@ mod imports {
             value(
                 &samples,
                 "knotrel_requests_rejected_total",
-                &[("reason", "import_capacity")]
+                &[("reason", "import_capacity"), ("lane", "import")]
             ),
             Some(0.0)
         );
@@ -3484,9 +3563,10 @@ async fn series_count_is_constant_under_sustained_churn() {
         (response.status(), etag)
     }
 
-    // Source-managed maximum without lifecycle support (observability
-    // contract section 4); 1835 since v0.5.0 added `topology_lifecycle_disabled`.
-    const CALCULATED_MAX: usize = 1835;
+    // Source-managed maximum without lifecycle support or inspection
+    // (observability contract section 21): 2187 after the inspection routes,
+    // plus 8 per-lane admission series.
+    const CALCULATED_MAX: usize = 2195;
     let app = router_with_config(graph_counts::source_managed());
     let instance = graph_counts::instance_id(&app).await;
     let mut epoch = 0_u64;
@@ -3666,4 +3746,514 @@ async fn series_count_is_constant_under_sustained_churn() {
     let settled = counts[3];
     assert!(counts[3..].iter().all(|c| *c == settled), "{counts:?}");
     assert!(settled <= CALCULATED_MAX, "{settled} > {CALCULATED_MAX}");
+}
+
+/// Per-lane admission metrics (observability contract section 21): every
+/// `knotrel_graph_jobs_outstanding` series has exactly one
+/// `knotrel_graph_job_capacity` series with the same labels, and the
+/// shipped saturation alert divides them lane by lane.
+mod lanes {
+    use super::*;
+
+    const OUTSTANDING: &str = "knotrel_graph_jobs_outstanding";
+    const CAPACITY: &str = "knotrel_graph_job_capacity";
+
+    /// `(held, capacity)` by lane, after checking that numerator and
+    /// capacity series pair one-to-one on identical label sets and that no
+    /// lane holds more permits than its capacity.
+    pub(super) fn occupancy(samples: &[Sample]) -> BTreeMap<String, (f64, f64)> {
+        let mut lanes = BTreeMap::new();
+        for held in samples.iter().filter(|s| s.name == OUTSTANDING) {
+            assert_eq!(held.labels.len(), 1, "{held:?}");
+            let lane = held.labels["lane"].clone();
+            let capacities: Vec<_> = samples
+                .iter()
+                .filter(|s| s.name == CAPACITY && s.labels == held.labels)
+                .collect();
+            assert_eq!(capacities.len(), 1, "capacity series for lane {lane}");
+            let capacity = capacities[0].value;
+            assert!(capacity >= 1.0, "lane {lane} capacity {capacity}");
+            assert!(
+                held.value <= capacity,
+                "lane {lane}: {} outstanding above capacity {capacity}",
+                held.value
+            );
+            assert!(lanes.insert(lane, (held.value, capacity)).is_none());
+        }
+        let capacities = samples.iter().filter(|s| s.name == CAPACITY).count();
+        assert_eq!(
+            capacities,
+            lanes.len(),
+            "capacity series without a numerator"
+        );
+        lanes
+    }
+
+    #[tokio::test]
+    async fn each_mode_exposes_its_lanes_with_their_capacities() {
+        let standalone = occupancy(&scrape(&router_with_config(config(4))).await);
+        assert_eq!(
+            standalone.into_iter().collect::<Vec<_>>(),
+            [("shared".to_owned(), (0.0, 4.0))]
+        );
+        let config = config(4)
+            .with_mode(knotrel_server::ServerMode::SourceManaged)
+            .with_feeder_reserved_jobs(3)
+            .unwrap();
+        let source = occupancy(&scrape(&router_with_config(config)).await);
+        let expected = [
+            ("feeder_control", (0.0, 2.0)),
+            ("feeder_data", (0.0, 3.0)),
+            ("import", (0.0, 1.0)),
+            ("shared", (0.0, 4.0)),
+        ];
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|(lane, pair)| ((*lane).to_owned(), *pair))
+            .collect();
+        assert_eq!(source.into_iter().collect::<Vec<_>>(), expected);
+    }
+
+    /// One `selector` of the saturation expression: a metric name with an
+    /// optional `{label op "value", ...}` matcher list.
+    struct Selector {
+        name: String,
+        matchers: Vec<(String, String, String)>,
+    }
+
+    impl Selector {
+        fn parse(text: &str) -> Self {
+            let text = text.trim();
+            let (name, matchers) = match text.split_once('{') {
+                None => (text, ""),
+                Some((name, rest)) => (name, rest.strip_suffix('}').expect("closing brace")),
+            };
+            assert!(
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':'),
+                "metric name {name:?}"
+            );
+            let matchers = matchers
+                .split(',')
+                .filter(|m| !m.trim().is_empty())
+                .map(|m| {
+                    let op_at = m.find(['=', '!']).expect("matcher operator");
+                    let label = m[..op_at].trim();
+                    let rest = &m[op_at..];
+                    let op = ["!=", "=~", "!~", "="]
+                        .into_iter()
+                        .find(|op| rest.starts_with(op))
+                        .expect("known matcher operator");
+                    let value = rest[op.len()..]
+                        .trim()
+                        .strip_prefix('"')
+                        .and_then(|v| v.strip_suffix('"'))
+                        .expect("quoted matcher value");
+                    assert!(op == "=" || op == "!=", "only exact matchers are evaluated");
+                    (label.to_owned(), op.to_owned(), value.to_owned())
+                })
+                .collect();
+            Self {
+                name: name.to_owned(),
+                matchers,
+            }
+        }
+
+        fn select<'a>(&self, samples: &'a [Sample]) -> Vec<&'a Sample> {
+            samples
+                .iter()
+                .filter(|s| s.name == self.name)
+                .filter(|s| {
+                    self.matchers.iter().all(|(label, op, value)| {
+                        let actual = s.labels.get(label).map_or("", String::as_str);
+                        (op == "=") == (actual == value)
+                    })
+                })
+                .collect()
+        }
+    }
+
+    /// The expression of `alert` in the shipped rules file, with block
+    /// continuation lines joined.
+    fn alert_expr(alert: &str) -> String {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/observability/prometheus-alerts.yml"
+        );
+        let rules = std::fs::read_to_string(path).unwrap();
+        let mut lines = rules
+            .lines()
+            .skip_while(|line| line.trim() != format!("- alert: {alert}"))
+            .skip(1);
+        let first = lines.next().expect("alert present").trim();
+        let first = first
+            .strip_prefix("expr:")
+            .expect("expr after alert")
+            .trim();
+        let mut expr = first.trim_start_matches('|').trim().to_owned();
+        for line in lines.take_while(|line| line.starts_with("          ")) {
+            expr.push(' ');
+            expr.push_str(line.trim());
+        }
+        expr
+    }
+
+    /// Whether `expr` uses one of the PromQL `keywords` as a clause, that is
+    /// as a whole word followed (after optional whitespace) by `(`, as in
+    /// `on (lane)`, `ignoring(x)` or `by(lane)`.
+    fn uses_clause(expr: &str, keywords: &[&str]) -> bool {
+        let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == ':';
+        keywords.iter().any(|keyword| {
+            expr.match_indices(keyword).any(|(start, _)| {
+                let before = expr[..start].chars().next_back();
+                let after = expr[start + keyword.len()..].trim_start();
+                !before.is_some_and(is_ident) && after.starts_with('(')
+            })
+        })
+    }
+
+    #[test]
+    fn clause_detection_ignores_label_names_and_metric_names() {
+        assert!(uses_clause("a / on (lane) b", &["on"]));
+        assert!(uses_clause("a / on(lane) b", &["on"]));
+        assert!(uses_clause("a /ignoring  (x) b", &["ignoring"]));
+        assert!(uses_clause("sum by(lane) (a)", &["by"]));
+        assert!(!uses_clause("knotrel_on{lane!=\"import\"} / b", &["on"]));
+        assert!(!uses_clause("a{region=\"on\"} / b", &["on"]));
+        assert!(!uses_clause("sum without (reason) (a)", &["on", "by"]));
+    }
+
+    /// Evaluates `KnotrelQueueSaturated` as Prometheus would: the two
+    /// selectors divide with one-to-one vector matching on identical label
+    /// sets, so each lane's numerator meets only that lane's capacity.
+    fn saturated_lanes(samples: &[Sample]) -> Vec<String> {
+        let expr = alert_expr("KnotrelQueueSaturated");
+        assert!(
+            !uses_clause(&expr, &["on", "ignoring", "by", "without"]),
+            "matching must keep every label, lane included: {expr}"
+        );
+        let (ratio, threshold) = expr.split_once(" > ").expect("comparison");
+        let threshold: f64 = threshold.trim().parse().expect("threshold");
+        let (numerator, denominator) = ratio.split_once(" / ").expect("division");
+        let numerator = Selector::parse(numerator);
+        let denominator = Selector::parse(denominator);
+        assert_eq!(numerator.name, OUTSTANDING);
+        assert_eq!(denominator.name, CAPACITY);
+        assert_eq!(
+            numerator.matchers, denominator.matchers,
+            "both sides must select the same lanes"
+        );
+        let right = denominator.select(samples);
+        let mut firing = Vec::new();
+        for left in numerator.select(samples) {
+            let matched: Vec<_> = right.iter().filter(|r| r.labels == left.labels).collect();
+            assert_eq!(matched.len(), 1, "one-to-one match for {:?}", left.labels);
+            if left.value / matched[0].value > threshold {
+                firing.push(left.labels["lane"].clone());
+            }
+        }
+        firing
+    }
+
+    #[tokio::test]
+    async fn alert_expressions_divide_and_count_by_lane() {
+        let expr = alert_expr("KnotrelQueueSaturated");
+        assert!(
+            expr.contains(OUTSTANDING) && expr.contains(CAPACITY),
+            "{expr}"
+        );
+        let busy = alert_expr("KnotrelRequestsRejectedBusy");
+        // Drops only `reason`, so `lane` and the scrape target's labels
+        // (`instance`, `job`) stay on the alert.
+        assert!(busy.starts_with("sum without (reason) ("), "{busy}");
+        assert!(!uses_clause(&busy, &["by", "on", "ignoring"]), "{busy}");
+        assert!(busy.contains(r#"knotrel_requests_rejected_total{reason="busy"}"#));
+
+        // A healthy source-managed server: every lane is paired and quiet.
+        let app = router_with_config(graph_counts::source_managed());
+        graph_counts::bootstrap(&app, &["1", "2"], &[("1", "2")]).await;
+        let samples = scrape(&app).await;
+        assert_eq!(occupancy(&samples).len(), 4);
+        assert!(saturated_lanes(&samples).is_empty());
+        let mut busy_series: Vec<_> = samples
+            .iter()
+            .filter(|s| {
+                s.name == "knotrel_requests_rejected_total"
+                    && s.labels.get("reason").map(String::as_str) == Some("busy")
+            })
+            .map(|s| s.labels["lane"].as_str())
+            .collect();
+        busy_series.sort_unstable();
+        assert_eq!(busy_series, ["feeder_control", "feeder_data", "shared"]);
+    }
+
+    #[cfg(feature = "test-support")]
+    mod paused {
+        use super::*;
+        use knotrel_server::ServerMode;
+        use std::time::Duration;
+
+        async fn wait_idle(lifecycle: &Lifecycle) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while lifecycle.outstanding_jobs() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        fn events_body(instance: &str, seq: u64) -> serde_json::Value {
+            let link = serde_json::json!({"op": "link", "source": "1", "target": "3"});
+            graph_counts::events(
+                instance,
+                1,
+                serde_json::json!([graph_counts::event(seq, link)]),
+            )
+        }
+
+        /// Starts a feeder request whose worker pauses before the graph
+        /// lock, holding its lane permit until released.
+        async fn hold(
+            app: &Router,
+            lifecycle: &Lifecycle,
+            instance: &str,
+            path: &'static str,
+            body: serde_json::Value,
+        ) -> (
+            knotrel_server::WorkerPauseHandle,
+            tokio::task::JoinHandle<(StatusCode, serde_json::Value)>,
+        ) {
+            let mut pause = lifecycle.pause_next_worker();
+            let task = tokio::spawn({
+                let app = app.clone();
+                let instance = instance.to_owned();
+                async move { graph_counts::feeder(&app, &instance, path, None, body).await }
+            });
+            pause.wait_started().await;
+            (pause, task)
+        }
+
+        /// Ratio per lane; asserts every ratio is at most 1 and that exactly
+        /// the lanes in `full` are at 1.
+        fn assert_ratios(samples: &[Sample], full: &[&str]) -> BTreeMap<String, (f64, f64)> {
+            let lanes = occupancy(samples);
+            for (lane, (held, capacity)) in &lanes {
+                let ratio = held / capacity;
+                assert!(ratio <= 1.0, "lane {lane} ratio {ratio}");
+                assert_eq!(
+                    ratio == 1.0,
+                    full.contains(&lane.as_str()),
+                    "lane {lane}: {held}/{capacity}"
+                );
+            }
+            lanes
+        }
+
+        fn busy(samples: &[Sample], lane: &str) -> f64 {
+            value(
+                samples,
+                "knotrel_requests_rejected_total",
+                &[("reason", "busy"), ("lane", lane)],
+            )
+            .unwrap()
+        }
+
+        /// Source-managed operation with the shared lane full and reserved
+        /// feeder permits in use: before per-lane metrics, outstanding (all
+        /// lanes) over capacity (shared only) read 2/1 here. Per lane, the
+        /// ratio stays at most 1 and reaches 1 only on a lane whose next
+        /// admission is refused.
+        #[tokio::test]
+        async fn saturation_ratio_per_lane_stays_within_one_and_reaches_one_only_when_full() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let config = config(1)
+                .with_mode(ServerMode::SourceManaged)
+                .with_feeder_reserved_jobs(2)
+                .unwrap();
+            let app = router_with_lifecycle(config, lifecycle.clone());
+            let instance = graph_counts::bootstrap(&app, &["1", "2", "3"], &[]).await;
+            wait_idle(&lifecycle).await;
+            assert_ratios(&scrape(&app).await, &[]);
+
+            // One reserved feeder permit in use: half of the data lane.
+            let (data_a, task_a) = hold(
+                &app,
+                &lifecycle,
+                &instance,
+                "/v1/feeder/events",
+                events_body(&instance, 1),
+            )
+            .await;
+            let lanes = assert_ratios(&scrape(&app).await, &[]);
+            assert_eq!(lanes["feeder_data"], (1.0, 2.0));
+            assert!(saturated_lanes(&scrape(&app).await).is_empty());
+
+            // A query fills the shared lane while the feeder job runs.
+            let mut pause = lifecycle.pause_next_worker();
+            let query = tokio::spawn({
+                let app = app.clone();
+                async move { send(&app, Method::GET, "/v1/stats", "").await }
+            });
+            pause.wait_started().await;
+            let samples = scrape(&app).await;
+            let lanes = assert_ratios(&samples, &["shared"]);
+            assert_eq!(lanes["shared"], (1.0, 1.0));
+            assert_eq!(lanes["feeder_data"], (1.0, 2.0));
+            assert_eq!(lifecycle.outstanding_jobs(), 2, "jobs across lanes");
+            assert_eq!(saturated_lanes(&samples), ["shared"]);
+            let (status, body) = send(&app, Method::GET, "/v1/stats", "").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+            let samples = scrape(&app).await;
+            assert_eq!(busy(&samples, "shared"), 1.0);
+            assert_eq!(busy(&samples, "feeder_data"), 0.0);
+
+            // The control lane still admits a heartbeat, which completes.
+            let heartbeat = serde_json::json!({
+                "instance_id": instance, "feeder_session_id": "s", "feeder_epoch": 1,
+            });
+            let (status, body) =
+                graph_counts::feeder(&app, &instance, "/v1/feeder/heartbeat", None, heartbeat)
+                    .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_ratios(&scrape(&app).await, &["shared"]);
+
+            // The second reserved permit fills the data lane; only then is a
+            // feeder request refused for its lane.
+            let (data_b, task_b) = hold(
+                &app,
+                &lifecycle,
+                &instance,
+                "/v1/feeder/events",
+                events_body(&instance, 1),
+            )
+            .await;
+            let samples = scrape(&app).await;
+            let lanes = assert_ratios(&samples, &["shared", "feeder_data"]);
+            assert_eq!(lanes["feeder_data"], (2.0, 2.0));
+            assert_eq!(lanes["feeder_control"], (0.0, 2.0));
+            assert_eq!(lanes["import"], (0.0, 1.0));
+            assert_eq!(saturated_lanes(&samples), ["shared", "feeder_data"]);
+            let (status, _) = graph_counts::feeder(
+                &app,
+                &instance,
+                "/v1/feeder/events",
+                None,
+                events_body(&instance, 1),
+            )
+            .await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            let samples = scrape(&app).await;
+            assert_eq!(busy(&samples, "feeder_data"), 1.0);
+            assert_eq!(busy(&samples, "shared"), 1.0);
+            assert_eq!(busy(&samples, "feeder_control"), 0.0);
+
+            pause.release();
+            data_a.release();
+            data_b.release();
+            assert_eq!(query.await.unwrap().0, StatusCode::OK);
+            // Both events requests ran to their own outcomes (one applies,
+            // the other is out of order); only admission is tested here.
+            let _ = task_a.await.unwrap();
+            let _ = task_b.await.unwrap();
+            wait_idle(&lifecycle).await;
+            let lanes = assert_ratios(&scrape(&app).await, &[]);
+            assert!(lanes.values().all(|(held, _)| *held == 0.0), "{lanes:?}");
+        }
+
+        /// The control lane (2 permits) is full only with two session or
+        /// heartbeat jobs in flight; the third is refused as `busy` on that
+        /// lane while the other lanes stay admissible.
+        #[tokio::test]
+        async fn feeder_control_lane_is_full_only_with_both_permits_held() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(graph_counts::source_managed(), lifecycle.clone());
+            let instance = graph_counts::bootstrap(&app, &["1"], &[]).await;
+            wait_idle(&lifecycle).await;
+            let heartbeat = || {
+                serde_json::json!({
+                    "instance_id": instance, "feeder_session_id": "s", "feeder_epoch": 1,
+                })
+            };
+            let (first, task_first) = hold(
+                &app,
+                &lifecycle,
+                &instance,
+                "/v1/feeder/heartbeat",
+                heartbeat(),
+            )
+            .await;
+            let lanes = assert_ratios(&scrape(&app).await, &[]);
+            assert_eq!(lanes["feeder_control"], (1.0, 2.0));
+            let (second, task_second) = hold(
+                &app,
+                &lifecycle,
+                &instance,
+                "/v1/feeder/heartbeat",
+                heartbeat(),
+            )
+            .await;
+            let samples = scrape(&app).await;
+            let lanes = assert_ratios(&samples, &["feeder_control"]);
+            assert_eq!(lanes["feeder_control"], (2.0, 2.0));
+            assert_eq!(saturated_lanes(&samples), ["feeder_control"]);
+
+            let (status, _) =
+                graph_counts::feeder(&app, &instance, "/v1/feeder/heartbeat", None, heartbeat())
+                    .await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            let (status, body) = send(&app, Method::GET, "/v1/stats", "").await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let samples = scrape(&app).await;
+            assert_eq!(busy(&samples, "feeder_control"), 1.0);
+            assert_eq!(busy(&samples, "shared"), 0.0);
+            assert_eq!(busy(&samples, "feeder_data"), 0.0);
+
+            first.release();
+            second.release();
+            assert_eq!(task_first.await.unwrap().0, StatusCode::OK);
+            assert_eq!(task_second.await.unwrap().0, StatusCode::OK);
+            wait_idle(&lifecycle).await;
+            assert_ratios(&scrape(&app).await, &[]);
+        }
+
+        /// The import lane is full exactly while an import holds the single
+        /// import permit, and its refusal is `import_capacity` on that lane.
+        #[tokio::test]
+        async fn import_lane_is_full_only_while_an_import_holds_its_permit() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(graph_counts::source_managed(), lifecycle.clone());
+            let instance = graph_counts::bootstrap(&app, &["1"], &[]).await;
+            wait_idle(&lifecycle).await;
+            let replace = graph_counts::import(&instance, "replace", "p-9", &["1", "2"], &[]);
+            let (import, task) =
+                hold(&app, &lifecycle, &instance, "/v1/feeder/import", replace).await;
+            let samples = scrape(&app).await;
+            let lanes = assert_ratios(&samples, &["import"]);
+            assert_eq!(lanes["import"], (1.0, 1.0));
+            assert_eq!(lanes["shared"], (0.0, 4.0));
+            assert!(saturated_lanes(&samples).is_empty(), "import is excluded");
+            let again = graph_counts::import(&instance, "replace", "p-9", &["1"], &[]);
+            let (status, _) =
+                graph_counts::feeder(&app, &instance, "/v1/feeder/import", None, again).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                value(
+                    &scrape(&app).await,
+                    "knotrel_requests_rejected_total",
+                    &[("reason", "import_capacity"), ("lane", "import")],
+                ),
+                Some(1.0)
+            );
+            import.release();
+            let _ = task.await.unwrap();
+            wait_idle(&lifecycle).await;
+            assert_ratios(&scrape(&app).await, &[]);
+        }
+    }
 }

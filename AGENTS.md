@@ -85,6 +85,8 @@ covers what is easy to miss. Check every item on the exact candidate commit.
   the statement in `docs/console.md` to the versions verified, never wider
   ([compatibility policy](docs/compatibility.md#5-console-and-server-compatibility)).
   Record the result in the release notes.
+- **Public API snapshot:** the `public API` CI job passes (snapshot equal to
+  the code, every public item classified, `docs/stability.md` consistent).
 - **API compatibility:** the `API compatibility` CI job passes against the
   previous release (public Rust API and OpenAPI); any approved breaking
   change follows the deprecation rule of `docs/compatibility.md` and is listed

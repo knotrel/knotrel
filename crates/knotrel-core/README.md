@@ -133,6 +133,16 @@ Knotrel provides three dynamic connectivity engines via `EngineConfig`:
 
 Start with **Compact BFS** (`EngineConfig::CompactBfs`); evaluate **ETT** (`EngineConfig::EulerTour`) for query-dominated workloads or **HDT** (`EngineConfig::Hdt`) for workloads with repeated bridge replacement searches, empirically measuring actual topology, scale, and mutation mix.
 
+## Stability
+
+Every public item is classified **stable**, **experimental** or **internal**
+in the [stability classification](https://github.com/knotrel/knotrel/blob/main/docs/stability.md).
+Stable items change only as the
+[compatibility policy](https://github.com/knotrel/knotrel/blob/main/docs/compatibility.md)
+allows, after a deprecation. The `EulerTour` and `Hdt` engines with their
+types, and `LifecycleStorage`, are experimental; `ReferenceGraph` is an
+internal test oracle.
+
 ## Examples
 
 Run the included Cargo examples:
