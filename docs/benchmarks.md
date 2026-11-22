@@ -8,11 +8,9 @@ Knotrel publishes reproducible workloads and release comparison evidence in the 
 
 ## Current release
 
-**v0.8.0 was not performance-qualified against v0.7.0.** Its opt-in inspection routes received a targeted cost check, not a release qualification. Read the [v0.8.0 performance statement](releases/v0.8.0-release-notes.md#performance-qualification) and [inspection cost report](console-inspection-costs.md) for the measurement conditions and limits.
+**v0.9.0** was measured against v0.7.0 on its release candidate: the campaign is valid and the release is accepted with explicit exceptions, for v0.9.0 only. The [performance-by-version report](performance-by-version.md) explains the results, methodology and limitations.
 
-The most recent qualified release is **v0.7.0 versus v0.6.0**, accepted with explicit exceptions; see the [performance history](performance-history.md#v070-compared-with-v060) and the [v0.7.0 release notes](releases/v0.7.0-release-notes.md).
-
-**v0.9.0 (not released yet)** has been measured against v0.7.0 on its release candidate: the campaign is valid and the release is accepted with explicit exceptions, for v0.9.0 only. The [performance-by-version report](performance-by-version.md) explains the results, methodology and limitations.
+v0.8.0 was not performance-qualified, by maintainer decision ([statement](releases/v0.8.0-release-notes.md#performance-qualification), [inspection cost report](console-inspection-costs.md)). The previous qualified release is **v0.7.0 versus v0.6.0**, accepted with explicit exceptions; see the [performance history](performance-history.md#v070-compared-with-v060) and the [v0.7.0 release notes](releases/v0.7.0-release-notes.md).
 
 ## Explore the evidence
 

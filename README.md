@@ -17,7 +17,7 @@ Add or remove connections, take nodes offline and restore them, then check
 whether two endpoints remain connected. Use it as a Rust library or an HTTP
 service alongside your existing database.
 
-**Latest release: [v0.8.0](https://github.com/knotrel/knotrel/releases/tag/v0.8.0)**
+**Latest release: [v0.9.0](https://github.com/knotrel/knotrel/releases/tag/v0.9.0)**
 (operational console and opt-in inspection routes). Node/edge lifecycle is opt-in and supported on
 `compact-bfs` only.
 
@@ -48,8 +48,8 @@ Take A offline: B keeps the endpoints connected. Take B offline too: the
 connection is lost. Restore A: the connection returns without recreating its
 configured edges.
 
-Download and extract the **v0.8.0** server for your platform from the
-[release assets](https://github.com/knotrel/knotrel/releases/tag/v0.8.0),
+Download and extract the **v0.9.0** server for your platform from the
+[release assets](https://github.com/knotrel/knotrel/releases/tag/v0.9.0),
 [verify its checksum](#installing-a-release), and clone this repository for the
 example. With Python 3.9 or newer, run from the repository root:
 
@@ -102,7 +102,7 @@ persistent graph storage, directed reachability or electrical simulation.
 
 ```toml
 [dependencies]
-knotrel-core = "0.8"
+knotrel-core = "0.9"
 ```
 
 ```rust
@@ -220,6 +220,13 @@ for v0.7.0 only
 v0.8.0 is not performance-qualified, by maintainer decision: no
 performance statement is made for it; its new server features are opt-in
 ([release notes](docs/releases/v0.8.0-release-notes.md#performance-qualification)).
+v0.9.0 was measured against v0.7.0 with the same method and thresholds: its
+qualification is **accepted with exceptions**, for v0.9.0 only. Five results
+are not PASS (one unresolved, four inconclusive), the two hub lifecycle
+requirements stay unqualified, and feeder catch-up under heavy query load
+(Q3) fails as a declared limitation; no speedup is claimed
+([release notes](docs/releases/v0.9.0-release-notes.md#performance-qualification),
+[performance by version](docs/performance-by-version.md)).
 
 ## Installing a release
 
@@ -234,28 +241,28 @@ the SHA-256 checksum before running.
 
 ```sh
 # Verify checksum on Linux:
-sha256sum -c knotrel-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c knotrel-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 # Or on macOS:
-# shasum -a 256 -c knotrel-server-v0.8.0-aarch64-apple-darwin.tar.gz.sha256
+# shasum -a 256 -c knotrel-server-v0.9.0-aarch64-apple-darwin.tar.gz.sha256
 
 # Extract and start on Linux (x86_64):
-tar -xzf knotrel-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz
-cd knotrel-server-v0.8.0-x86_64-unknown-linux-gnu
+tar -xzf knotrel-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz
+cd knotrel-server-v0.9.0-x86_64-unknown-linux-gnu
 ./knotrel-server
 
 # Or on macOS (Apple Silicon):
-# tar -xzf knotrel-server-v0.8.0-aarch64-apple-darwin.tar.gz
-# cd knotrel-server-v0.8.0-aarch64-apple-darwin
+# tar -xzf knotrel-server-v0.9.0-aarch64-apple-darwin.tar.gz
+# cd knotrel-server-v0.9.0-aarch64-apple-darwin
 # ./knotrel-server
 ```
 
 On Windows (PowerShell):
 ```powershell
 # Compare the displayed hash with the downloaded .sha256 file before extracting.
-Get-FileHash -Algorithm SHA256 knotrel-server-v0.8.0-x86_64-pc-windows-msvc.zip
-Get-Content knotrel-server-v0.8.0-x86_64-pc-windows-msvc.zip.sha256
-Expand-Archive knotrel-server-v0.8.0-x86_64-pc-windows-msvc.zip -DestinationPath .
-cd knotrel-server-v0.8.0-x86_64-pc-windows-msvc
+Get-FileHash -Algorithm SHA256 knotrel-server-v0.9.0-x86_64-pc-windows-msvc.zip
+Get-Content knotrel-server-v0.9.0-x86_64-pc-windows-msvc.zip.sha256
+Expand-Archive knotrel-server-v0.9.0-x86_64-pc-windows-msvc.zip -DestinationPath .
+cd knotrel-server-v0.9.0-x86_64-pc-windows-msvc
 .\knotrel-server.exe
 ```
 
@@ -272,7 +279,7 @@ startup.
 | `KNOTREL_MODE` | `standalone` | `standalone` or `source_managed`; the latter requires an external feeder |
 | `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
-| `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (unreleased, 0.9.0) |
+| `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (since v0.9.0) |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges (registered edges with lifecycle support); zero allowed; `unlimited` opts out |
 | `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
@@ -327,9 +334,9 @@ metrics. See [the console documentation](docs/console.md).
 - [Integration contract](docs/integration-contract.md): source-managed mode, feeder sessions, imports, events and readiness.
 - [Deployment runbook](docs/deployment.md): example container, reference feeder, restart and rebuild.
 - [Operational console](docs/console.md) (since v0.8.0; same version as the server): browser UI, container image and static archive for operating one server; [console release procedure](docs/releases/console-release.md).
-- [PostgreSQL reference feeder](docs/integrations/postgresql-feeder.md) (unreleased, roadmap 0.9.1): keeps Knotrel synchronized with two PostgreSQL tables through logical replication; [feeder and Compose example](integrations/postgres-feeder/README.md).
+- [PostgreSQL reference feeder](docs/integrations/postgresql-feeder.md) (since v0.9.0): keeps Knotrel synchronized with two PostgreSQL tables through logical replication; [feeder and Compose example](integrations/postgres-feeder/README.md).
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
-- [v0.8.0 release notes](docs/releases/v0.8.0-release-notes.md), [v0.7.0](docs/releases/v0.7.0-release-notes.md), [v0.6.0](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
+- [v0.9.0 release notes](docs/releases/v0.9.0-release-notes.md), [v0.8.0](docs/releases/v0.8.0-release-notes.md), [v0.7.0](docs/releases/v0.7.0-release-notes.md), [v0.6.0](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
 - [Release procedure](docs/releases/release-procedure.md): verification, packaging and authorized publication.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.
