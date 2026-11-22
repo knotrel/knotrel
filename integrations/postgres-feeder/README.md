@@ -78,6 +78,20 @@ Environment variables only (the password never goes on the command line):
 | `KNOTREL_FEEDER_REQUEST_TIMEOUT_MS`, `KNOTREL_FEEDER_IMPORT_TIMEOUT_MS` | `10000`, `300000` | Knotrel request timeouts |
 | `RUST_LOG` | `info` | log level |
 
+These variables belong to the feeder only. Keep them out of the Knotrel
+server's environment: the server rejects any `KNOTREL_*` variable it does not
+know and stops at startup, so a shared environment file with feeder variables
+prevents the server from starting.
+
+**Fault injection (tests only).** The binary also reads
+`KNOTREL_PG_FEEDER_FAULT=<point>[:<n>]`, which arms one named fault point for
+the recovery tests (`src/fault.rs`): the `n`-th time (default the first) the
+feeder reaches the point, it aborts as a crash would, discards a successful
+events response (`lose_events_response`) or delays the bootstrap
+(`slow_bootstrap`). An unknown point stops the feeder with exit code 2. Never
+set it in production. Like the rest of this example, it carries no stability
+promise.
+
 ## Commands and exit codes
 
 - `knotrel-pg-feeder [run]` synchronizes until stopped (SIGTERM or Ctrl-C).

@@ -31,7 +31,7 @@
   },
   "knotrel": {
     "supportedServer": ">=0.8.0 <0.10.0",
-    "openapiSha256": "bf9b9e1480916bdcfe8aa6cdb57d022e731a672b48b490150791dec3f1c40332"
+    "openapiSha256": "8faef65729c620144782b3bfdcbe6cce94baba0f8946ef4047075d99a789d18f"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

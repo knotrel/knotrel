@@ -10,6 +10,15 @@ info:
 
     For full operational semantics, trust model, and lifecycle details, see
     [http-api.md](http-api.md).
+
+    **Responses not tied to one operation.** Unregistered paths get 404 and registered paths
+    with another method get 405 with an `Allow` header; both have an empty body (while
+    draining, they get 503 `shutting_down` instead). Every route except `/health`, `/ready` and
+    `/metrics` answers 503 `shutting_down` while the server drains, and any request that exceeds
+    `KNOTREL_REQUEST_TIMEOUT_MS` gets 503 `request_timeout` (for a state-changing request the
+    outcome is then unknown). A connection beyond `KNOTREL_MAX_CONNECTIONS` gets a static 503
+    `too_many_connections` before any request is read. The `ErrorCode` schema maps every code
+    to its status and routes.
 servers:
   - url: http://127.0.0.1:8080
     description: Default local server address
@@ -17,6 +26,7 @@ servers:
 paths:
   /health:
     get:
+      operationId: get_health
       summary: Liveness probe
       description: |
         Process liveness probe. Returns HTTP 200 while the server process is functional.
@@ -32,9 +42,12 @@ paths:
                 $ref: '#/components/schemas/HealthResponse'
               example:
                 status: ok
+        '503':
+          $ref: '#/components/responses/RequestTimeout'
 
   /ready:
     get:
+      operationId: get_ready
       summary: Readiness probe
       description: |
         Reports whether the server is initialized and accepting graph operations.
@@ -60,7 +73,9 @@ paths:
           description: |
             Server is not ready: starting up, draining for shutdown or graph worker failed
             (both modes); in source-managed mode also uninitialized, loading, catching up,
-            stale (expired feeder lease) or desynchronized.
+            stale (expired feeder lease) or desynchronized. A probe that exceeded
+            `KNOTREL_REQUEST_TIMEOUT_MS` would instead get an `ErrorOutcome` with
+            `request_timeout`; the probe takes no lock, so this does not happen in practice.
           headers:
             Cache-Control:
               schema:
@@ -90,6 +105,7 @@ paths:
 
   /metrics:
     get:
+      operationId: get_metrics
       summary: Prometheus metrics (opt-in)
       description: |
         Present only when the server is started with `KNOTREL_METRICS_ENABLED=true`;
@@ -113,9 +129,14 @@ paths:
                 type: string
         '404':
           description: Metrics are disabled
+        '500':
+          description: The exposition could not be encoded; empty body.
+        '503':
+          $ref: '#/components/responses/RequestTimeout'
 
   /v1/info:
     get:
+      operationId: get_info
       summary: Server configuration and metadata
       description: |
         Returns effective immutable configuration settings and engine selection.
@@ -137,9 +158,12 @@ paths:
                 max_batch_operations: 1024
                 max_nodes: 100000
                 max_edges: 500000
+        '503':
+          $ref: '#/components/responses/DrainingOrTimeout'
 
   /v1/stats:
     get:
+      operationId: get_stats
       summary: Live graph state snapshot
       description: |
         Returns a coherent snapshot of the live graph's node and edge counts,
@@ -183,7 +207,9 @@ paths:
                 remaining_edges: 432000
                 state_version: "157"
         '503':
-          description: Request capacity exhausted (`busy`) or graph worker unavailable (`unavailable`)
+          description: |
+            Request capacity exhausted (`busy`), graph worker unavailable (`unavailable`), server
+            draining (`shutting_down`) or request timed out (`request_timeout`). No version headers.
           content:
             application/json:
               schema:
@@ -204,6 +230,7 @@ paths:
 
   /v1/operations:
     post:
+      operationId: execute_operation
       summary: Execute a single graph operation
       description: |
         Executes a single graph mutation (`add_node`, `link`, `cut`) or query (`connected`)
@@ -277,7 +304,10 @@ paths:
         '200':
           description: |
             Operation completed successfully. Version headers are captured under the same lock
-            acquisition as the outcome. Error responses carry no version headers.
+            acquisition as the outcome. Every response of an executed operation carries them,
+            also 404, 422 and the source-managed 503 (`uninitialized`, `loading`,
+            `desynchronized`); refusals before execution (400, 409, 413, 415 and 503 `busy`,
+            `unavailable`, `shutting_down`, `request_timeout`) carry none.
           headers:
             ETag:
               $ref: '#/components/headers/ETag'
@@ -348,7 +378,23 @@ paths:
         '404':
           description: |
             Unknown query vertex, or unknown node of `set_node_active` / `set_edge_enabled`
-            (`unknown_node`); unregistered edge of `set_edge_enabled` (`unknown_edge`).
+            (`unknown_node`); unregistered edge of `set_edge_enabled` (`unknown_edge`). Carries
+            the version headers.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
           content:
             application/json:
               schema:
@@ -408,7 +454,25 @@ paths:
                 code: invalid_request
                 message: "Expected request with `Content-Type: application/json`"
         '422':
-          description: Invalid request shape, self-loop, or capacity limit exceeded
+          description: |
+            Invalid request shape (`invalid_request`, no version headers), self-loop (`self_loop`)
+            or capacity limit exceeded (`node_limit_exceeded`, `edge_limit_exceeded`); the domain
+            errors carry the version headers.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
           content:
             application/json:
               schema:
@@ -439,7 +503,27 @@ paths:
                     code: edge_limit_exceeded
                     message: "edge capacity limit exceeded"
         '503':
-          description: Server busy, unavailable, shutting down, or request timeout
+          description: |
+            Server busy (`busy`), graph worker unavailable (`unavailable`), draining
+            (`shutting_down`) or request timed out (`request_timeout`; the effect of a mutation is
+            then unknown). In source-managed mode a query is also refused while the graph has no
+            usable generation: `uninitialized` (no baseline), `loading` (baseline import running) or
+            `desynchronized` (rebuild required); these three carry the version headers.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Knotrel-Instance-Id:
+              $ref: '#/components/headers/X-Knotrel-Instance-Id'
+            X-Knotrel-Graph-Id:
+              $ref: '#/components/headers/X-Knotrel-Graph-Id'
+            X-Knotrel-Generation:
+              $ref: '#/components/headers/X-Knotrel-Generation'
+            X-Knotrel-State-Version:
+              $ref: '#/components/headers/X-Knotrel-State-Version'
+            X-Knotrel-Source-Position:
+              $ref: '#/components/headers/X-Knotrel-Source-Position'
+            X-Knotrel-Sync-Status:
+              $ref: '#/components/headers/X-Knotrel-Sync-Status'
           content:
             application/json:
               schema:
@@ -462,10 +546,17 @@ paths:
                   value:
                     result: error
                     code: shutting_down
-                    message: "server is shutting down"
+                    message: "server is shutting down; retry against another instance"
+                uninitialized:
+                  summary: Source-managed mode, no baseline imported yet
+                  value:
+                    result: error
+                    code: uninitialized
+                    message: "graph is uninitialized; baseline import required"
 
   /v1/batch:
     post:
+      operationId: execute_batch
       summary: Execute an ordered batch of graph operations
       description: |
         Executes between 1 and 1024 operations under a single graph lock acquisition.
@@ -477,6 +568,9 @@ paths:
         the batch size is checked. Without lifecycle support, a batch containing any
         lifecycle operation is rejected with 409 `topology_lifecycle_disabled` before the
         mode and size checks.
+        In source-managed mode, while the graph is uninitialized, loading or desynchronized, an
+        all-query batch is answered 200 with one error outcome per operation (`uninitialized`,
+        `loading` or `desynchronized`) and the version headers; nothing was executed.
       tags:
         - Operations
       requestBody:
@@ -664,21 +758,22 @@ paths:
               schema:
                 $ref: '#/components/schemas/SessionResponse'
         '400':
-          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
-            invalid lease duration.
+          description: Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or
+            `lease_duration_ms` outside 1000–60000 (`invalid_lease_duration`; checked by the server, not as a 422).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '409':
-          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
-            See ErrorCode for identifiers.
+          description: >-
+            `mode_conflict` (standalone mode), `stale_instance_id`, `fenced_feeder_session` (an older epoch than the
+            registered one).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '413':
-          description: Request body exceeds its limit.
+          description: Request body exceeds 1 MiB (`invalid_request`).
           content:
             application/json:
               schema:
@@ -690,7 +785,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '422':
-          description: Invalid payload shape, operands or domain operation.
+          description: Invalid payload shape (`invalid_request`).
           content:
             application/json:
               schema:
@@ -736,21 +831,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/HeartbeatResponse'
         '400':
-          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
-            invalid lease duration.
+          description: Malformed JSON (`invalid_request`) or missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '409':
-          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
-            See ErrorCode for identifiers.
+          description: >-
+            `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '413':
-          description: Request body exceeds its limit.
+          description: Request body exceeds 1 MiB (`invalid_request`).
           content:
             application/json:
               schema:
@@ -762,7 +856,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '422':
-          description: Invalid payload shape, operands or domain operation.
+          description: Invalid payload shape (`invalid_request`).
           content:
             application/json:
               schema:
@@ -833,21 +927,24 @@ paths:
             X-Knotrel-Sync-Status:
               $ref: '#/components/headers/X-Knotrel-Sync-Status'
         '400':
-          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
-            invalid lease duration.
+          description: Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or
+            `graph_id` other than `default` (`invalid_graph_id`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '409':
-          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
-            See ErrorCode for identifiers.
+          description: >-
+            `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`,
+            `graph_already_initialized` (`create_only` on an initialized graph), `generation_exhausted`,
+            `topology_lifecycle_disabled` (lifecycle flags without lifecycle support).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '413':
-          description: Request body exceeds its limit.
+          description: Body exceeds `KNOTREL_MAX_IMPORT_BODY_BYTES` (`payload_too_large`, unlike the 1 MiB limit of
+            the other routes, which answers `invalid_request`).
           content:
             application/json:
               schema:
@@ -859,7 +956,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '422':
-          description: Invalid payload shape, operands or domain operation.
+          description: Invalid payload shape, IDs or bounds (`invalid_request`), or a topology the graph refuses
+            (`self_loop`, `node_limit_exceeded`, `edge_limit_exceeded`, `invalid_node`, `invalid_edge`).
           content:
             application/json:
               schema:
@@ -932,16 +1030,19 @@ paths:
             X-Knotrel-Sync-Status:
               $ref: '#/components/headers/X-Knotrel-Sync-Status'
         '400':
-          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
-            invalid lease duration.
+          description: Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or
+            `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '409':
-          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
-            See ErrorCode for identifiers. Partial failures include coherent version headers; pre-execution rejections
-            do not necessarily include them.
+          description: >-
+            `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`,
+            `stale_generation`, `graph_uninitialized`, `graph_desynchronized`, `source_mismatch`,
+            `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`,
+            `unverifiable_duplicate`, `sequence_exhausted`, `topology_lifecycle_disabled`. Partial failures include
+            coherent version headers; pre-execution rejections do not necessarily include them.
           content:
             application/json:
               schema:
@@ -964,7 +1065,7 @@ paths:
             X-Knotrel-Sync-Status:
               $ref: '#/components/headers/X-Knotrel-Sync-Status'
         '413':
-          description: Request body exceeds its limit.
+          description: Request body exceeds 1 MiB (`invalid_request`).
           content:
             application/json:
               schema:
@@ -976,7 +1077,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '422':
-          description: Invalid payload shape, operands or domain operation. Partial failures include coherent version
+          description: >-
+            Invalid payload shape, operands or bounds (`invalid_request`); a single-event domain error
+            carries its own code (`self_loop`, `node_limit_exceeded`, `edge_limit_exceeded`, `invalid_node`,
+            `invalid_edge`, and with lifecycle support `unknown_node`, `unknown_edge`); a multi-event partial failure
+            has `code: event_failed` and the domain code in `error.code`. Partial failures include coherent version
             headers; pre-execution rejections do not necessarily include them.
           content:
             application/json:
@@ -1056,21 +1161,22 @@ paths:
             X-Knotrel-Sync-Status:
               $ref: '#/components/headers/X-Knotrel-Sync-Status'
         '400':
-          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
-            invalid lease duration.
+          description: Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or
+            `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '409':
-          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
-            See ErrorCode for identifiers.
+          description: >-
+            `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`,
+            `stale_generation`, `graph_uninitialized`.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '413':
-          description: Request body exceeds its limit.
+          description: Request body exceeds 1 MiB (`invalid_request`).
           content:
             application/json:
               schema:
@@ -1082,7 +1188,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '422':
-          description: Invalid payload shape, operands or domain operation.
+          description: Invalid payload shape or bounds (`invalid_request`).
           content:
             application/json:
               schema:
@@ -1145,21 +1251,23 @@ paths:
             X-Knotrel-Sync-Status:
               $ref: '#/components/headers/X-Knotrel-Sync-Status'
         '400':
-          description: Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an
-            invalid lease duration.
+          description: Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or
+            `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '409':
-          description: Mode, instance, session, lease, generation or source conflict; graph state may require rebuild.
-            See ErrorCode for identifiers.
+          description: >-
+            `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`,
+            `stale_generation`, `graph_uninitialized`, `graph_desynchronized`, `barrier_not_reached`,
+            `superseded_barrier`, `barrier_position_mismatch`.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '413':
-          description: Request body exceeds its limit.
+          description: Request body exceeds 1 MiB (`invalid_request`).
           content:
             application/json:
               schema:
@@ -1171,7 +1279,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '422':
-          description: Invalid payload shape, operands or domain operation.
+          description: Invalid payload shape or bounds (`invalid_request`), including a `barrier_source_position`
+            outside 1 to 256 bytes.
           content:
             application/json:
               schema:
@@ -1457,6 +1566,21 @@ components:
         enum: [all, enabled, disabled, effective, ineffective]
         default: all
   responses:
+    RequestTimeout:
+      description: >-
+        The request exceeded `KNOTREL_REQUEST_TIMEOUT_MS` (`request_timeout`, with `Connection: close`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorOutcome'
+    DrainingOrTimeout:
+      description: >-
+        The server is draining (`shutting_down`, with `Connection: close`) or the request exceeded
+        `KNOTREL_REQUEST_TIMEOUT_MS` (`request_timeout`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorOutcome'
     InspectionConflict:
       description: |
         `inspection_disabled` (KNOTREL_INSPECTION is not enabled; rejected before admission)
@@ -1475,6 +1599,8 @@ components:
         `invalid_request`: unknown, repeated or malformed query parameter, invalid node ID,
         `limit` outside 1-1000, unknown `state`, `after_target` without `after_source`.
         `invalid_cursor`: a plain `compact-bfs` incidence cursor names an unregistered node.
+        The query-string errors (`invalid_request`) are returned before the inspection path and
+        carry no `Cache-Control` header; `invalid_cursor` carries `no-store`.
       content:
         application/json:
           schema:
@@ -1783,6 +1909,62 @@ components:
         request is read, and closes it (best effort; a client may instead see a reset).
         `busy` is the code of every exhausted admission lane (shared, feeder data, feeder control);
         `import_in_progress` only means that another import holds the import permit.
+
+        Every code, its status and where it is produced (inspection codes belong to the
+        experimental inspection routes). In a batch, per-operation errors appear in the results of
+        a 200, without a status of their own.
+
+        | Code | Status | Where |
+        | --- | --- | --- |
+        | `barrier_not_reached` | 409 | barrier: `barrier_delivery_sequence` ahead of the applied sequence |
+        | `barrier_position_mismatch` | 409 | barrier: equal sequence, different `barrier_source_position` |
+        | `busy` | 503 | the request's admission lane is exhausted: operations, batch, stats, inspection (shared lane); session, heartbeat (feeder control lane); events, barrier, gap (feeder data lane) |
+        | `conflicting_duplicate` | 409 | events: retained sequence with a different `event_id` or payload, or a retained `event_id` reused; desynchronizes |
+        | `desynchronized` | 503 | operations in source-managed mode while the graph is desynchronized; in a batch, every item of a 200 |
+        | `direct_mutation_disabled` | 409 | operations, batch: a mutation in source-managed mode |
+        | `edge_limit_exceeded` | 422 | operations, batch items, events, import |
+        | `event_failed` | 422 | events: top-level `code` of a multi-event partial failure caused by a graph-domain error; the domain code is in `error.code` |
+        | `fenced_feeder_session` | 409 | session (older epoch), heartbeat, import, events, gap, barrier |
+        | `generation_exhausted` | 409 | import: the generation counter cannot advance |
+        | `graph_already_initialized` | 409 | import: `create_only` on an initialized graph |
+        | `graph_desynchronized` | 409 | events, barrier: the graph is desynchronized |
+        | `graph_uninitialized` | 409 | events, gap, barrier: no baseline imported |
+        | `import_in_progress` | 503 | import: another import holds the import permit (before the body is read) |
+        | `inspection_disabled` | 409 | inspection routes, inspection off (experimental) |
+        | `inspection_unsupported` | 409 | `GET /v1/nodes/{node}/edges`, `GET /v1/edges` on an engine without adjacency (experimental) |
+        | `invalid_batch_size` | 422 | batch: not 1–1024 operations |
+        | `invalid_cursor` | 422 | inspection: the cursor names an unregistered node (experimental) |
+        | `invalid_edge` | 422 | events, import: an edge the graph refuses for a reason other than a self-loop or a limit; with lifecycle support, a conflicting duplicate edge in an import |
+        | `invalid_graph_id` | 400 | import, events, gap, barrier: `graph_id` other than `default` |
+        | `invalid_instance_id` | 400 | every feeder route: `X-Knotrel-Instance-Id` missing or not a valid header value |
+        | `invalid_lease_duration` | 400 | session: `lease_duration_ms` outside 1000–60000 |
+        | `invalid_node` | 422 | events, import: a node the graph refuses for a reason other than a limit; with lifecycle support, a conflicting duplicate node in an import |
+        | `invalid_request` | 400, 413, 415, 422 | every JSON route: malformed JSON (400), body over 1 MiB on routes other than import (413), wrong `Content-Type` (415), shape, ID or bound violations (422); inspection query errors (422) |
+        | `lease_expired` | 409 | import, events, gap, barrier: the feeder lease expired |
+        | `loading` | 503 | operations in source-managed mode while a baseline loads; in a batch, every item of a 200 |
+        | `mode_conflict` | 409 | every feeder route in standalone mode |
+        | `node_limit_exceeded` | 422 | operations, batch items, events, import |
+        | `out_of_order_sequence` | 409 | events: delivery sequence gap; carries `expected_sequence` |
+        | `payload_too_large` | 413 | import: body over `KNOTREL_MAX_IMPORT_BODY_BYTES` |
+        | `precondition_failed` | 412 | import `replace`: missing or mismatching `If-Match`, or no initialized graph |
+        | `request_timeout` | 503 | any route: `KNOTREL_REQUEST_TIMEOUT_MS` exceeded; a state-changing outcome is unknown |
+        | `self_loop` | 422 | operations, batch items, events, import |
+        | `sequence_exhausted` | 409 | events: the delivery sequence cannot advance |
+        | `session_required` | 409 | heartbeat, import, events, gap, barrier: no registered session |
+        | `shutting_down` | 503 | every route except `/health`, `/ready` and `/metrics`, while draining (also unknown routes) |
+        | `source_epoch_mismatch` | 409 | events: different `source_epoch`; desynchronizes |
+        | `source_mismatch` | 409 | events: different `source_id` |
+        | `source_predecessor_mismatch` | 409 | events: `prev_delivery_sequence` or `prev_source_position` does not match; desynchronizes |
+        | `stale_generation` | 409 | events, gap, barrier: `generation` is not the current one |
+        | `stale_instance_id` | 409 | every feeder route: header or body `instance_id` of another process instance |
+        | `superseded_barrier` | 409 | barrier: `barrier_delivery_sequence` behind the applied sequence |
+        | `too_many_connections` | 503 | no route: written by the accept loop to a connection beyond `KNOTREL_MAX_CONNECTIONS`, before any request is read |
+        | `topology_lifecycle_disabled` | 409 | operations, batch, events, import: a lifecycle operation, event or flag without lifecycle support |
+        | `unavailable` | 503 | every graph route: the graph worker failed (restart required) |
+        | `uninitialized` | 503 | operations in source-managed mode before a baseline; in a batch, every item of a 200 |
+        | `unknown_edge` | 404, 422 | operations: `set_edge_enabled` on an unregistered edge (404); the same as a batch item; lifecycle events (422) |
+        | `unknown_node` | 404, 422 | operations: unknown query vertex or lifecycle node (404); the same as a batch item; inspection `GET /v1/nodes/{node}` and `/edges` (404); lifecycle events (422) |
+        | `unverifiable_duplicate` | 409 | events: a retry of a sequence older than the deduplication window |
       enum:
         - barrier_not_reached
         - barrier_position_mismatch
@@ -1986,7 +2168,9 @@ components:
           description: |
             Present only in source-managed mode: the current process instance ID that feeder
             requests must carry. In both modes the same value is returned in the
-            `X-Knotrel-Instance-Id` header of `/v1/stats`, `/v1/operations` and `/v1/batch`.
+            `X-Knotrel-Instance-Id` header of every response that carries the version headers:
+            `/v1/stats`, `/v1/operations`, `/v1/batch`, the inspection routes and the feeder
+            import, events, gap and barrier responses.
 
     GraphSnapshot:
       type: object
@@ -2221,6 +2405,7 @@ components:
         graph_id:
           type: string
           const: default
+          description: Any other value is refused with 400 `invalid_graph_id`, not 422.
         source_id:
           type: string
         source_epoch:
@@ -2233,8 +2418,7 @@ components:
         feeder_session_id:
           type: string
         feeder_epoch:
-          type: integer
-          minimum: 0
+          $ref: '#/components/schemas/FeederU64'
         nodes:
           type: array
           items:
@@ -2267,8 +2451,9 @@ components:
           type: string
           const: default
         generation:
-          type: integer
-          minimum: 1
+          allOf:
+          - $ref: '#/components/schemas/FeederU64'
+          - minimum: 1
         state_version:
           type: string
           pattern: '^[0-9]+$'
@@ -2379,6 +2564,7 @@ components:
           type: integer
           minimum: 1000
           maximum: 60000
+          description: A value outside the range is refused with 400 `invalid_lease_duration`, not 422.
       additionalProperties: false
     HeartbeatRequest:
       type: object

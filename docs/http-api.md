@@ -162,7 +162,16 @@ Successful operations return 200. A graph error has this shape:
 | 413 | Body exceeds 1 MiB (`invalid_request`) |
 | 415 | Missing/unsupported JSON content type (`invalid_request`) |
 | 422 | Invalid fields/IDs (`invalid_request`), self-loop (`self_loop`, also for `set_edge_enabled` and `edge_state`), batch size (`invalid_batch_size`), or graph capacity (`node_limit_exceeded`, `edge_limit_exceeded`) |
-| 503 | Graph job capacity exhausted (`busy`) or worker unavailable (`unavailable`) |
+| 503 | Graph job capacity exhausted (`busy`), worker unavailable (`unavailable`), draining (`shutting_down`) or request timed out (`request_timeout`); in source-managed mode also `uninitialized` (no baseline yet), `loading` (baseline import running) or `desynchronized` (rebuild required), for queries |
+
+**Version headers.** Every response of an executed operation carries the
+version headers (`ETag`, `X-Knotrel-Instance-Id`, `-Graph-Id`, `-Generation`,
+`-State-Version`, `-Source-Position`, `-Sync-Status`), captured under the same
+lock acquisition: 200, the domain errors (404, 422 `self_loop`,
+`node_limit_exceeded`, `edge_limit_exceeded`) and the source-managed 503
+`uninitialized`, `loading` and `desynchronized`. Refusals before execution
+(400, 409, 413, 415, 422 shape errors and 503 `busy`, `unavailable`,
+`shutting_down`, `request_timeout`) carry none.
 
 Clients should branch on `code`, not human-readable message text. The message of
 a 400 response is fixed (`request body is not valid JSON`) and never contains
@@ -196,6 +205,11 @@ individual operation returns an error result. Processing continues after graph
 errors. Earlier successes remain applied: **batches do not provide rollback**.
 An invalid envelope, malformed operation or invalid batch size rejects the whole
 request before any graph operation executes.
+
+In source-managed mode, while the graph is uninitialized, loading or
+desynchronized, an all-query batch is answered 200 with one error result per
+operation (`uninitialized`, `loading` or `desynchronized`, the codes that
+`/v1/operations` answers with 503) and the version headers; nothing executed.
 
 One lock acquisition spans the entire batch, so other graph requests cannot
 interleave with it: a batch with a mutation holds the graph lock exclusively,
@@ -402,7 +416,7 @@ exactly-once delivery guarantee.
 
 #### Readiness evaluation precedence
 
-Readiness enforces a strict 7-level evaluation precedence:
+Readiness enforces a strict evaluation precedence (seven not-ready levels, then ready):
 1. **Permanent worker failure:** `503 unavailable` (worker panic or aborted task).
 2. **Draining:** `503 draining` (SIGINT/SIGTERM received, shutdown in progress).
 3. **Starting:** `503 starting` (router constructed, listener not yet serving).
@@ -646,6 +660,75 @@ immediate exit.
   memory limits, and a deadline on an admitted graph traversal. A drain whose
   graph job outlasts the shutdown timeout ends with exit status 2.
 
+## Error codes
+
+Every error body is `{"result":"error","code":...,"message":...}` (a feeder
+partial failure adds the frontier fields). Clients branch on `code`, never on
+`message`, and treat an unknown code as an error of its status class. Every
+code, its status and where it comes from (the same table is in the
+`ErrorCode` schema of [openapi.yaml](openapi.yaml)):
+
+| Code | Status | Where |
+| --- | --- | --- |
+| `barrier_not_reached` | 409 | barrier: `barrier_delivery_sequence` ahead of the applied sequence |
+| `barrier_position_mismatch` | 409 | barrier: equal sequence, different `barrier_source_position` |
+| `busy` | 503 | the request's admission lane is exhausted: operations, batch, stats, inspection (shared lane); session, heartbeat (feeder control lane); events, barrier, gap (feeder data lane) |
+| `conflicting_duplicate` | 409 | events: retained sequence with a different `event_id` or payload, or a retained `event_id` reused; desynchronizes |
+| `desynchronized` | 503 | operations in source-managed mode while the graph is desynchronized; in a batch, every item of a 200 |
+| `direct_mutation_disabled` | 409 | operations, batch: a mutation in source-managed mode |
+| `edge_limit_exceeded` | 422 | operations, batch items, events, import |
+| `event_failed` | 422 | events: top-level `code` of a multi-event partial failure caused by a graph-domain error; the domain code is in `error.code` |
+| `fenced_feeder_session` | 409 | session (older epoch), heartbeat, import, events, gap, barrier |
+| `generation_exhausted` | 409 | import: the generation counter cannot advance |
+| `graph_already_initialized` | 409 | import: `create_only` on an initialized graph |
+| `graph_desynchronized` | 409 | events, barrier: the graph is desynchronized |
+| `graph_uninitialized` | 409 | events, gap, barrier: no baseline imported |
+| `import_in_progress` | 503 | import: another import holds the import permit (before the body is read) |
+| `inspection_disabled` | 409 | inspection routes, inspection off (experimental) |
+| `inspection_unsupported` | 409 | `GET /v1/nodes/{node}/edges`, `GET /v1/edges` on an engine without adjacency (experimental) |
+| `invalid_batch_size` | 422 | batch: not 1–1024 operations |
+| `invalid_cursor` | 422 | inspection: the cursor names an unregistered node (experimental) |
+| `invalid_edge` | 422 | events, import: an edge the graph refuses for a reason other than a self-loop or a limit; with lifecycle support, a conflicting duplicate edge in an import |
+| `invalid_graph_id` | 400 | import, events, gap, barrier: `graph_id` other than `default` |
+| `invalid_instance_id` | 400 | every feeder route: `X-Knotrel-Instance-Id` missing or not a valid header value |
+| `invalid_lease_duration` | 400 | session: `lease_duration_ms` outside 1000–60000 |
+| `invalid_node` | 422 | events, import: a node the graph refuses for a reason other than a limit; with lifecycle support, a conflicting duplicate node in an import |
+| `invalid_request` | 400, 413, 415, 422 | every JSON route: malformed JSON (400), body over 1 MiB on routes other than import (413), wrong `Content-Type` (415), shape, ID or bound violations (422); inspection query errors (422) |
+| `lease_expired` | 409 | import, events, gap, barrier: the feeder lease expired |
+| `loading` | 503 | operations in source-managed mode while a baseline loads; in a batch, every item of a 200 |
+| `mode_conflict` | 409 | every feeder route in standalone mode |
+| `node_limit_exceeded` | 422 | operations, batch items, events, import |
+| `out_of_order_sequence` | 409 | events: delivery sequence gap; carries `expected_sequence` |
+| `payload_too_large` | 413 | import: body over `KNOTREL_MAX_IMPORT_BODY_BYTES` |
+| `precondition_failed` | 412 | import `replace`: missing or mismatching `If-Match`, or no initialized graph |
+| `request_timeout` | 503 | any route: `KNOTREL_REQUEST_TIMEOUT_MS` exceeded; a state-changing outcome is unknown |
+| `self_loop` | 422 | operations, batch items, events, import |
+| `sequence_exhausted` | 409 | events: the delivery sequence cannot advance |
+| `session_required` | 409 | heartbeat, import, events, gap, barrier: no registered session |
+| `shutting_down` | 503 | every route except `/health`, `/ready` and `/metrics`, while draining (also unknown routes) |
+| `source_epoch_mismatch` | 409 | events: different `source_epoch`; desynchronizes |
+| `source_mismatch` | 409 | events: different `source_id` |
+| `source_predecessor_mismatch` | 409 | events: `prev_delivery_sequence` or `prev_source_position` does not match; desynchronizes |
+| `stale_generation` | 409 | events, gap, barrier: `generation` is not the current one |
+| `stale_instance_id` | 409 | every feeder route: header or body `instance_id` of another process instance |
+| `superseded_barrier` | 409 | barrier: `barrier_delivery_sequence` behind the applied sequence |
+| `too_many_connections` | 503 | no route: written by the accept loop to a connection beyond `KNOTREL_MAX_CONNECTIONS`, before any request is read |
+| `topology_lifecycle_disabled` | 409 | operations, batch, events, import: a lifecycle operation, event or flag without lifecycle support |
+| `unavailable` | 503 | every graph route: the graph worker failed (restart required) |
+| `uninitialized` | 503 | operations in source-managed mode before a baseline; in a batch, every item of a 200 |
+| `unknown_edge` | 404, 422 | operations: `set_edge_enabled` on an unregistered edge (404); the same as a batch item; lifecycle events (422) |
+| `unknown_node` | 404, 422 | operations: unknown query vertex or lifecycle node (404); the same as a batch item; inspection `GET /v1/nodes/{node}` and `/edges` (404); lifecycle events (422) |
+| `unverifiable_duplicate` | 409 | events: a retry of a sequence older than the deduplication window |
+
+In a batch, per-operation errors appear in the `results` of a 200, without a
+status of their own. Besides the codes above, unregistered paths get 404 and
+wrong methods 405 with an `Allow` header, both with an empty body (503
+`shutting_down` instead while draining), and a `/metrics` encoding failure
+gets an empty 500. Request and response schemas of every route, including the
+feeder session, heartbeat and import, are in [openapi.yaml](openapi.yaml);
+their protocol semantics are in the
+[integration contract](integration-contract.md).
+
 ## Startup configuration and engine selection
 
 The standalone executable reads a single configuration snapshot before opening
@@ -852,8 +935,10 @@ Disconnecting an admitted stats caller does not release its permit before its wo
 Four read-only routes let a client discover nodes and edges without knowing
 their IDs, for example the operational console's data browser. They are
 enabled with `KNOTREL_INSPECTION=true`. When it is off (the default) every
-route answers 409 `inspection_disabled` before admission, and the server
-keeps no extra state. `GET /v1/info` adds `"inspection": true` when it is
+route answers 409 `inspection_disabled` before admission (a request whose
+query string is invalid gets its 422 `invalid_request` first, because the
+query is parsed before the switch is checked), and the server keeps no extra
+state. `GET /v1/info` adds `"inspection": true` when it is
 on.
 
 | Route | Result |
@@ -915,7 +1000,9 @@ budget, independent of graph size. Node detail is `O(1)` expected.
 - The routes use the same bounded admission, blocking worker and shared lock as
   `GET /v1/stats` (job kind `inspect` in the metrics), with no readiness gate.
 - They are available in both modes and never mutate. Responses carry
-  `Cache-Control: no-store`.
+  `Cache-Control: no-store`, except the 422 query errors, which are returned
+  before the request reaches the inspection path (these routes are
+  experimental; the header may be added to them in a minor release).
 
 **Costs.** Only with inspection enabled, the service keeps an ordered set of
 registered node IDs and, for plain `compact-bfs`, an index→ID vector used to
@@ -927,9 +1014,14 @@ disabled the server keeps neither. Measurements:
 
 ## Graph identity, versioning and coherent response headers
 
-Knotrel exposes explicit graph identity and version metadata across graph query
-responses (`POST /v1/operations`), batch responses (`POST /v1/batch`), live stats
-snapshots (`GET /v1/stats`), and atomic import responses (`POST /v1/feeder/import`).
+Knotrel exposes explicit graph identity and version metadata on single operations
+(`POST /v1/operations`, see "Single operations" for which outcomes), batch
+responses (`POST /v1/batch`), live stats snapshots (`GET /v1/stats`), the
+inspection reads (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`,
+`/v1/edges`), atomic import responses (`POST /v1/feeder/import`), and the feeder
+events, gap and barrier responses (including partial failures). Feeder session
+and heartbeat responses, `/v1/info`, the probes and `/metrics` carry none; the
+instance ID is also in `GET /v1/info` (`instance_id`, source-managed mode).
 All query results and their accompanying metadata headers are captured under the
 **same** graph lock acquisition boundary; the server never executes a query and
 subsequently reacquires the lock to read metadata.
@@ -987,10 +1079,9 @@ These concepts remain strictly distinct:
 6. **`sync_status` (`X-Knotrel-Sync-Status`):**
    Reports current feeder synchronization status: `uninitialized`, `loading`,
    `catching_up`, `ready`, `stale`, or `desynchronized`.
-   *(Note: Ordered update streaming and progress events belong to Feature 0.2.4;
-   synchronization barrier verification and automated readiness transitions belong
-   to Feature 0.2.5. After Feature 0.2.2/0.2.3 import, source-managed mode remains
-   in `catching_up`.)*
+   After an import the status is `catching_up` until a matching barrier
+   verifies the stream (`ready`); see "Ordered incremental event stream and gap
+   declaration".
 
 ### Replacement precondition exposure (`ETag` and `If-Match`)
 

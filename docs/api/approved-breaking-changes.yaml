@@ -44,3 +44,6 @@
 - change: "POST /v1/feeder/barrier request.barrier_source_position: request constraint tightened (maxLength None -> 256)"
   release: "v1.0.0"
   justification: "Stricter input validation, approved by the maintainer on 2026-11-22 as an exception without a deprecation window (v1.0 contract freeze review, docs/releases/v1.0-contract-freeze-review.md, decision 6, finding H5): the documented bound (1 to 256 bytes for source positions, at most 64 bytes for event_id, since v0.6.0 in docs/integration-contract.md and docs/http-api.md) is now enforced on every field it applies to. The server counts UTF-8 bytes; OpenAPI minLength/maxLength count characters. Declared in docs/compatibility.md, section 3."
+- change: "POST /v1/feeder/import request.feeder_epoch: request constraint tightened (maximum None -> 18446744073709551615)"
+  release: "v1.0.0"
+  justification: "Documentation correction, not a behavior change: the server has always parsed feeder_epoch as an unsigned 64-bit integer and refused larger values. The schema now uses FeederU64 like every other feeder counter (v1.0 contract freeze review, finding H10, approved by the maintainer on 2026-11-22 as decision 10)."

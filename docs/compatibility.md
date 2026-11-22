@@ -34,9 +34,11 @@ not listed is internal.
 narrowed, no trait bound added, no enum made exhaustive or variant removed,
 no change of documented behavior or error contract. Additions are allowed,
 including new methods, new variants of `#[non_exhaustive]` enums and new
-optional configuration. The MSRV of `knotrel-core` (1.98.1) is raised only in a
-minor release and announced in its notes; the workspace toolchain (1.100.0) is
-a development setting, not a promise.
+optional configuration. Each crate declares its MSRV in `rust-version`:
+`knotrel-core` 1.98.1 and `knotrel-server` 1.100.0 (inherited from the
+workspace). Either is raised only in a minor release and announced in its
+notes. The toolchain used to develop the workspace is a separate development
+setting, not a promise.
 
 **HTTP API `/v1` (stable routes).** Changes inside `/v1` are additive only:
 - allowed: new routes; new optional request fields and parameters; new
@@ -113,8 +115,10 @@ The console declares the servers it supports in `console/package.json`
 3. Record the result in the release notes.
 
 The release checklist ([AGENTS.md](../AGENTS.md#before-release) and the
-console release procedure) includes this step. As of 2026-11-21 the range is
-`>=0.7.0 <0.9.0`, which excludes 0.9.0 until this check has run.
+console release procedure) includes this step. The current range, and the
+servers it was verified against, are stated in [docs/console.md](console.md);
+for 1.0 it is set by this check against the release candidate and the 0.9.x
+server.
 
 ## 6. Enforcement
 
