@@ -31,6 +31,18 @@ console's supported server range) are in
 [docs/compatibility.md](docs/compatibility.md); the stability class of each
 public surface is in [docs/stability.md](docs/stability.md).
 
+A change to the public Rust API (a new, changed or removed public item of
+`knotrel-core` or `knotrel-server`) also updates, in the same change:
+- the snapshot: `python3 scripts/public-api.py generate` rewrites
+  `docs/api/public-api-knotrel-core.txt` and `docs/api/public-api-knotrel-server.txt`;
+- `docs/api/public-api-classification.txt`: one line `<stable|experimental|internal> <path>`
+  per new item;
+- `docs/stability.md`, if the item is at the crate root or its class differs
+  from its type's.
+
+`python3 scripts/public-api.py check` (CI job `public API`) fails otherwise.
+It needs the workspace toolchain (`rust-toolchain.toml`).
+
 `python3 scripts/check-crate-docs.py` flags stale version references in the
 crate documentation, and the console release workflow refuses a console
 version that differs from the workspace version.

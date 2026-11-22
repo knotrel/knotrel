@@ -904,6 +904,9 @@ pub(crate) fn graph_error_code(error: GraphError) -> ErrorCode {
         GraphError::EdgeLimitExceeded { .. } => ErrorCode::EdgeLimitExceeded,
         GraphError::SelfLoop { .. } => ErrorCode::SelfLoop,
         GraphError::UnknownNode { .. } => ErrorCode::UnknownNode,
+        // `GraphError` is non-exhaustive; a future variant is still an
+        // ordinary rejected request, never a silent success.
+        _ => ErrorCode::InvalidRequest,
     }
 }
 

@@ -24,6 +24,7 @@ use tokio::sync::{Notify, futures::Notified};
 /// Externally visible server phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum Phase {
     /// The server exists but is not yet accepting connections.
     Starting = 0,

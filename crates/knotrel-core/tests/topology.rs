@@ -145,10 +145,9 @@ impl Oracle {
         if a == b {
             return None;
         }
-        self.edges.get(&key(a, b)).map(|&enabled| EdgeState {
-            enabled,
-            effective: self.effective(key(a, b), enabled),
-        })
+        self.edges
+            .get(&key(a, b))
+            .map(|&enabled| EdgeState::new(enabled, self.effective(key(a, b), enabled)))
     }
 
     fn counts(&self) -> [usize; 5] {
@@ -332,13 +331,7 @@ fn deactivation_preserves_edge_flags_and_reactivation_respects_them() {
         // Change flags while the hub is inactive: preserved, not effective.
         assert!(graph.set_edge_enabled(0, 3, true).unwrap());
         assert!(graph.set_edge_enabled(0, 4, false).unwrap());
-        assert_eq!(
-            graph.edge_state(0, 3),
-            Some(EdgeState {
-                enabled: true,
-                effective: false
-            })
-        );
+        assert_eq!(graph.edge_state(0, 3), Some(EdgeState::new(true, false)));
         // Break the ring so only the hub can join 1..=3 and 4..=6.
         graph.set_edge_enabled(3, 4, false).unwrap();
         assert!(!graph.connected(1, 6).unwrap());
@@ -367,13 +360,7 @@ fn adjacent_inactive_nodes_and_links_to_inactive_endpoints() {
         assert!(!graph.connected(2, 4).unwrap());
         // Linking to an inactive endpoint registers an enabled, ineffective edge.
         assert_eq!(graph.link(3, 5), Ok(true));
-        assert_eq!(
-            graph.edge_state(5, 3),
-            Some(EdgeState {
-                enabled: true,
-                effective: false
-            })
-        );
+        assert_eq!(graph.edge_state(5, 3), Some(EdgeState::new(true, false)));
         // add_node never reactivates; link never re-enables.
         assert_eq!(graph.add_node(3), Ok(false));
         assert_eq!(graph.node_active(3), Some(false));

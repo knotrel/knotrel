@@ -339,6 +339,9 @@ impl ServiceGraph {
                             IncidenceError::UnknownCursor => InspectError::InvalidCursor,
                             // Unreachable: inspection enables listing on compact-bfs.
                             IncidenceError::NotEnabled => InspectError::Unsupported,
+                            // `IncidenceError` is non-exhaustive; treat a future
+                            // variant as an unsupported listing, never a success.
+                            _ => InspectError::Unsupported,
                         })?;
                 for neighbor in neighbors {
                     if !visit(EdgeRecord {

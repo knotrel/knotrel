@@ -225,6 +225,96 @@ async fn readiness_is_starting_before_serve_and_ready_after() {
     );
 }
 
+/// The stable readiness contract of `router_with_lifecycle` (docs/stability.md,
+/// maintainer decision 2 of 2026-11-22), checked on the router alone so that it
+/// holds for embedders who drive the `Lifecycle` themselves instead of `serve`:
+/// `/ready` follows the supplied lifecycle in every phase; draining wins over
+/// the source-managed synchronization status; while draining, probes and
+/// `/metrics` stay answerable, other routes answer 503 `shutting_down`, and
+/// every response asks the client to close the connection. `router_with_config`,
+/// by contrast, owns a lifecycle that is always ready.
+#[tokio::test]
+async fn router_with_lifecycle_readiness_follows_the_supplied_lifecycle() {
+    use axum::{body::Body, http::Request};
+    use knotrel_server::{ServerMode, router_with_config};
+    use tower::ServiceExt;
+
+    async fn get(app: &axum::Router, path: &str) -> (u16, Option<String>, String) {
+        let request = Request::builder().uri(path).body(Body::empty()).unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status().as_u16();
+        let connection = response
+            .headers()
+            .get("connection")
+            .map(|value| value.to_str().unwrap().to_owned());
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (
+            status,
+            connection,
+            String::from_utf8(body.to_vec()).unwrap(),
+        )
+    }
+    const SHUTTING_DOWN: &str = r#"{"result":"error","code":"shutting_down","message":"server is shutting down; retry against another instance"}"#;
+
+    for mode in [ServerMode::Standalone, ServerMode::SourceManaged] {
+        let lifecycle = Lifecycle::new();
+        let app = router_with_lifecycle(
+            config().with_mode(mode).with_metrics_enabled(true),
+            lifecycle.clone(),
+        );
+        // Starting: not ready, liveness unaffected, work is admitted.
+        assert_eq!(
+            get(&app, "/ready").await,
+            (503, None, r#"{"status":"starting"}"#.to_owned()),
+            "{mode:?}"
+        );
+        assert_eq!(get(&app, "/health").await.0, 200, "{mode:?}");
+        assert_eq!(get(&app, "/v1/info").await.0, 200, "{mode:?}");
+
+        // Ready: standalone is ready; source-managed also needs a bootstrap.
+        lifecycle.mark_ready();
+        let expected = match mode {
+            ServerMode::Standalone => (200, None, r#"{"status":"ready"}"#.to_owned()),
+            ServerMode::SourceManaged => (503, None, r#"{"status":"uninitialized"}"#.to_owned()),
+        };
+        assert_eq!(get(&app, "/ready").await, expected, "{mode:?}");
+
+        // Draining: wins over the synchronization status and is irreversible.
+        lifecycle.begin_draining();
+        lifecycle.mark_ready();
+        let close = Some("close".to_owned());
+        assert_eq!(
+            get(&app, "/ready").await,
+            (503, close.clone(), r#"{"status":"draining"}"#.to_owned()),
+            "{mode:?}"
+        );
+        let (status, connection, _) = get(&app, "/health").await;
+        assert_eq!((status, connection), (200, close.clone()), "{mode:?}");
+        let (status, connection, metrics) = get(&app, "/metrics").await;
+        assert_eq!((status, connection), (200, close.clone()), "{mode:?}");
+        assert!(
+            metrics.contains("knotrel_readiness_state"),
+            "{mode:?}: metrics stay scrapeable while draining"
+        );
+        for path in ["/v1/info", "/v1/stats"] {
+            assert_eq!(
+                get(&app, path).await,
+                (503, close.clone(), SHUTTING_DOWN.to_owned()),
+                "{mode:?} {path}"
+            );
+        }
+    }
+
+    // `router_with_config` does not follow any external lifecycle.
+    let app = router_with_config(config());
+    assert_eq!(
+        get(&app, "/ready").await,
+        (200, None, r#"{"status":"ready"}"#.to_owned())
+    );
+}
+
 #[tokio::test]
 async fn shutdown_without_connections_is_prompt() {
     let mut running = Running::start(config()).await;

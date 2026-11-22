@@ -28,13 +28,41 @@ New surfaces may start as experimental. Promotion to stable is recorded in
 the release notes and in [stability.md](stability.md). Every surface that is
 not listed is internal.
 
+### 2.1 Guarantees of experimental items
+
+An experimental item (Rust item, HTTP route, field, error code, variable value
+or metric label value) is:
+- documented, tested and supported in every release that contains it;
+- changed or removed only in a minor or major release, never in a patch
+  release, and each change is listed in the release notes;
+- independent of its parent: an experimental variant, method or field never
+  weakens the promise of the stable type, route or family that contains it.
+
+Because the tools do not know the classes, removing an experimental Rust item
+is declared as an approved exception in the crate's `cargo-semver-checks`
+configuration, and removing an experimental HTTP element that OpenAPI does not
+mark `x-knotrel-stability: experimental` is listed in
+`docs/api/approved-breaking-changes.yaml` (section 6). These declarations
+document the change; they need no deprecation window.
+
 ## 3. What "compatible" means
 
 **Rust crates (stable items).** No item removed or renamed, no signature
 narrowed, no trait bound added, no enum made exhaustive or variant removed,
 no change of documented behavior or error contract. Additions are allowed,
-including new methods, new variants of `#[non_exhaustive]` enums and new
-optional configuration. The MSRV of `knotrel-core` (1.98.1) is raised only in a
+including new methods, new variants of `#[non_exhaustive]` enums, new fields
+of `#[non_exhaustive]` structs and new optional configuration.
+`#[non_exhaustive]` only permits these additions: it does **not** authorize
+removing or renaming a public variant, field or engine, which stays a breaking
+change under section 4 (experimental ones follow section 2.1). The types that
+stay exhaustive are listed in [stability.md](stability.md#exhaustiveness-and-non_exhaustive).
+
+**Public dependencies.** `knotrel-server`'s stable API exposes `axum::Router`
+(axum 0.8) and `tokio::net::TcpListener` (tokio 1); these dependency versions
+are part of that API ([stability.md](stability.md#public-dependencies-of-knotrel-server)).
+An upgrade of either to an incompatible version requires a SemVer assessment
+of Knotrel, recorded in the release notes; from 1.0 it is released as a major
+version unless the assessment shows the public API unchanged. The MSRV of `knotrel-core` (1.98.1) is raised only in a
 minor release and announced in its notes; the workspace toolchain (1.100.0) is
 a development setting, not a promise.
 
@@ -102,7 +130,22 @@ console release procedure) includes this step. As of 2026-11-21 the range is
   change fails the job even when the version was bumped. An approved breaking
   change (after section 4) is declared in the crate's
   `[package.metadata.cargo-semver-checks]` lint configuration and reviewed
-  with the change.
+  with the change. The configuration works per lint, not per item, so the
+  comment next to each entry names the items and the decision, and the entry
+  is removed once the baseline release contains the change. Current entry:
+  `#[non_exhaustive]` on `EngineConfig`, `GraphError`, `IncidenceError`,
+  `EdgeState` (core) and `Phase` (server), approved for v1.0.0 on 2026-11-22.
+- **Public Rust API snapshot and classification:** CI (job `public API`)
+  regenerates the public API of both crates from rustdoc JSON, default
+  features and `test-support`, with `scripts/public-api.py check`, and fails
+  when it differs from `docs/api/public-api-knotrel-core.txt` or
+  `docs/api/public-api-knotrel-server.txt`, when a public item has no class
+  in `docs/api/public-api-classification.txt`, when a member is classified
+  above its parent or a `test-support` item is not internal, or when
+  [stability.md](stability.md#how-the-rust-tables-are-checked) disagrees with
+  the classification. Unlike `cargo-semver-checks`, this also catches
+  additions, so every new public item gets an explicit class in the change
+  that adds it.
 - **HTTP API:** CI compares `docs/openapi.yaml` with the previous release's
   (`scripts/check-openapi-compat.py`). Breaking changes to stable operations
   fail the job; changes to operations marked

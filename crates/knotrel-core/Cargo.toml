@@ -15,5 +15,20 @@ nohash-hasher.workspace = true
 fixedbitset.workspace = true
 tinyvec.workspace = true
 
+# docs/compatibility.md, section 6: maintainer-approved breaking changes.
+#
+# v1.0.0 contract freeze (docs/releases/v1.0-contract-freeze-review.md, R1-R3,
+# maintainer decision 1 of 2026-11-22): `EngineConfig`, `GraphError`,
+# `IncidenceError` (enums) and `EdgeState` (struct) become `#[non_exhaustive]`
+# against the v0.9.0 baseline. No deprecation path exists for this attribute.
+# cargo-semver-checks configures lints per crate, not per item, so the two
+# lints are allowed for this crate only while the baseline predates v1.0.0;
+# docs/api/public-api-knotrel-core.txt records `#[non_exhaustive]` on every
+# item, so any further change of the attribute still shows up in review.
+# Remove both entries in the first change after v1.0.0 is tagged.
+[package.metadata.cargo-semver-checks.lints]
+enum_marked_non_exhaustive = "allow"
+struct_marked_non_exhaustive = "allow"
+
 [lints]
 workspace = true
