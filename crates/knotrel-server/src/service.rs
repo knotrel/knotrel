@@ -487,8 +487,12 @@ pub(crate) struct DedupEntry {
 
 /// Result of looking up a sequence in the deduplication window.
 pub(crate) enum DedupLookup<'a> {
+    /// A committed sequence whose entry is still retained.
     InWindow(&'a DedupEntry),
+    /// A sequence at or below the applied sequence that is not retained:
+    /// evicted, or never committed (sequence 0).
     Evicted,
+    /// A sequence above the applied sequence, so not yet committed.
     Future,
 }
 
@@ -516,8 +520,11 @@ impl DedupWindow {
     }
 
     pub(crate) fn check_sequence(&self, seq: u64, applied_seq: u64) -> DedupLookup<'_> {
-        if applied_seq == 0 || seq > applied_seq {
+        if seq > applied_seq {
             return DedupLookup::Future;
+        }
+        if seq == 0 {
+            return DedupLookup::Evicted;
         }
         let min_seq = if applied_seq >= self.capacity as u64 {
             applied_seq - self.capacity as u64 + 1
@@ -1422,14 +1429,44 @@ impl GraphState {
             let canonical_op = CanonicalOp::from_feeder_event(&event, lifecycle)?;
             let seq = event.delivery_sequence;
 
-            if seq <= self.applied_delivery_sequence {
-                match self
-                    .dedup_window
-                    .check_sequence(seq, self.applied_delivery_sequence)
-                {
-                    DedupLookup::Evicted => {
+            // One total classification: retained or evicted history (including
+            // sequence 0, never committed, D1) returns or continues here; only a
+            // new sequence (`Future`) falls through. No feeder input reaches an
+            // impossible arm.
+            match self
+                .dedup_window
+                .check_sequence(seq, self.applied_delivery_sequence)
+            {
+                DedupLookup::Evicted => {
+                    let err_msg =
+                        format!("delivery sequence {seq} was evicted from deduplication window");
+                    return self.fail_batch_or_error(
+                        telemetry,
+                        is_batch,
+                        mode,
+                        instance_id,
+                        &req.instance_id,
+                        idx,
+                        seq,
+                        &event.event_id,
+                        ErrorCode::UnverifiableDuplicate,
+                        "evicted duplicate",
+                        ErrorCode::UnverifiableDuplicate,
+                        err_msg.clone(),
+                        axum::http::StatusCode::CONFLICT,
+                        FeederError::UnverifiableDuplicate(err_msg),
+                    );
+                }
+                DedupLookup::InWindow(retained) => {
+                    if retained.event_id != event.event_id {
+                        desynchronize(
+                            &mut self.sync_status,
+                            Desynchronization::ConflictingDuplicate,
+                            telemetry,
+                        );
                         let err_msg = format!(
-                            "delivery sequence {seq} was evicted from deduplication window"
+                            "retained sequence {seq} has event_id '{}', received '{}'",
+                            retained.event_id, event.event_id
                         );
                         return self.fail_batch_or_error(
                             telemetry,
@@ -1440,79 +1477,51 @@ impl GraphState {
                             idx,
                             seq,
                             &event.event_id,
-                            ErrorCode::UnverifiableDuplicate,
-                            "evicted duplicate",
-                            ErrorCode::UnverifiableDuplicate,
+                            ErrorCode::ConflictingDuplicate,
+                            "conflicting event ID",
+                            ErrorCode::ConflictingDuplicate,
                             err_msg.clone(),
                             axum::http::StatusCode::CONFLICT,
-                            FeederError::UnverifiableDuplicate(err_msg),
+                            FeederError::ConflictingDuplicate(err_msg),
                         );
                     }
-                    DedupLookup::InWindow(retained) => {
-                        if retained.event_id != event.event_id {
-                            desynchronize(
-                                &mut self.sync_status,
-                                Desynchronization::ConflictingDuplicate,
-                                telemetry,
-                            );
-                            let err_msg = format!(
-                                "retained sequence {seq} has event_id '{}', received '{}'",
-                                retained.event_id, event.event_id
-                            );
-                            return self.fail_batch_or_error(
-                                telemetry,
-                                is_batch,
-                                mode,
-                                instance_id,
-                                &req.instance_id,
-                                idx,
-                                seq,
-                                &event.event_id,
-                                ErrorCode::ConflictingDuplicate,
-                                "conflicting event ID",
-                                ErrorCode::ConflictingDuplicate,
-                                err_msg.clone(),
-                                axum::http::StatusCode::CONFLICT,
-                                FeederError::ConflictingDuplicate(err_msg),
-                            );
-                        }
 
-                        let is_canonical_match = retained.source_position == event.source_position
-                            && retained.canonical_op == canonical_op;
-                        if !is_canonical_match {
-                            desynchronize(
-                                &mut self.sync_status,
-                                Desynchronization::ConflictingDuplicate,
-                                telemetry,
-                            );
-                            let err_msg = format!(
-                                "conflicting duplicate at sequence {seq}: canonical content or source position altered"
-                            );
-                            return self.fail_batch_or_error(
-                                telemetry,
-                                is_batch,
-                                mode,
-                                instance_id,
-                                &req.instance_id,
-                                idx,
-                                seq,
-                                &event.event_id,
-                                ErrorCode::ConflictingDuplicate,
-                                "canonical conflict",
-                                ErrorCode::ConflictingDuplicate,
-                                err_msg.clone(),
-                                axum::http::StatusCode::CONFLICT,
-                                FeederError::ConflictingDuplicate(err_msg),
-                            );
-                        }
-
-                        last_duplicate_entry = Some(retained.clone());
-                        count_feeder_event(telemetry, FeederEventResult::Duplicate);
-                        continue;
+                    let is_canonical_match = retained.source_position == event.source_position
+                        && retained.canonical_op == canonical_op;
+                    if !is_canonical_match {
+                        desynchronize(
+                            &mut self.sync_status,
+                            Desynchronization::ConflictingDuplicate,
+                            telemetry,
+                        );
+                        let err_msg = format!(
+                            "conflicting duplicate at sequence {seq}: canonical content or source position altered"
+                        );
+                        return self.fail_batch_or_error(
+                            telemetry,
+                            is_batch,
+                            mode,
+                            instance_id,
+                            &req.instance_id,
+                            idx,
+                            seq,
+                            &event.event_id,
+                            ErrorCode::ConflictingDuplicate,
+                            "canonical conflict",
+                            ErrorCode::ConflictingDuplicate,
+                            err_msg.clone(),
+                            axum::http::StatusCode::CONFLICT,
+                            FeederError::ConflictingDuplicate(err_msg),
+                        );
                     }
-                    DedupLookup::Future => unreachable!(),
+
+                    last_duplicate_entry = Some(retained.clone());
+                    count_feeder_event(telemetry, FeederEventResult::Duplicate);
+                    continue;
                 }
-            } else if let Some(expected_seq) = self.applied_delivery_sequence.checked_add(1) {
+                DedupLookup::Future => {}
+            }
+            if let Some(expected_seq) = self.applied_delivery_sequence.checked_add(1) {
                 if seq != expected_seq {
                     let expected = expected_seq;
                     return self.fail_batch_or_error(
@@ -4938,6 +4947,14 @@ mod tests {
         // 2. DedupWindow check_sequence and ring replacement
         let mut window = DedupWindow::new(4);
         assert!(matches!(window.check_sequence(1, 0), DedupLookup::Future));
+        // Sequence 0 is never committed: outside every window, also before the
+        // first applied event of a generation (D1 regression).
+        assert!(matches!(window.check_sequence(0, 0), DedupLookup::Evicted));
+        assert!(matches!(window.check_sequence(0, 3), DedupLookup::Evicted));
+        assert!(matches!(
+            window.check_sequence(u64::MAX, 0),
+            DedupLookup::Future
+        ));
         assert!(matches!(window.check_sequence(5, 2), DedupLookup::Future));
 
         // Record entries and test eviction lookup
