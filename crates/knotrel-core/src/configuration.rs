@@ -20,6 +20,7 @@ pub struct GraphLimits {
 /// Selection is immutable for the lifetime of a [`ConnectivityGraph`].
 /// No automatic switching or answer cache is introduced by this configuration.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EngineConfig {
     /// Compact adjacency with a fresh BFS for each connectivity query.
     #[default]

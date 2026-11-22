@@ -109,12 +109,37 @@ pub struct EdgeSpec {
 
 /// Flags of one registered edge, returned by [`LifecycleGraph::edge_state`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EdgeState {
     /// The edge's own flag, independent of its endpoints.
     pub enabled: bool,
     /// Whether the edge participates in connectivity: enabled, with both
     /// endpoints active.
     pub effective: bool,
+}
+
+impl EdgeState {
+    /// Creates edge flags with the given values.
+    ///
+    /// [`LifecycleGraph::edge_state`] is the normal source of an `EdgeState`.
+    /// This constructor exists because the struct is `#[non_exhaustive]` (a
+    /// future release may add a flag), so code outside this crate cannot use a
+    /// struct literal; use it to build expected values in comparisons, for
+    /// example in a test or a reference model. The values are not validated:
+    /// `LifecycleGraph` never reports `effective` without `enabled`.
+    ///
+    /// ```
+    /// use knotrel_core::{EdgeState, EngineConfig, LifecycleGraph};
+    /// let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs)?;
+    /// graph.link(1, 2)?;
+    /// graph.set_node_active(2, false)?;
+    /// assert_eq!(graph.edge_state(1, 2), Some(EdgeState::new(true, false)));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub const fn new(enabled: bool, effective: bool) -> Self {
+        Self { enabled, effective }
+    }
 }
 
 /// Storage diagnostics of a [`LifecycleGraph`], from

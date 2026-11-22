@@ -250,6 +250,7 @@ pub type NodeId = u64;
 
 /// An invalid graph operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GraphError {
     /// A mutation would exceed the registered vertex ceiling.
     NodeLimitExceeded {
@@ -299,6 +300,7 @@ impl Error for GraphError {}
 
 /// Why an incidence listing could not start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum IncidenceError {
     /// The node whose incident edges were requested is not registered.
     UnknownNode,
