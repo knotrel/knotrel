@@ -119,7 +119,7 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [x] **0.9.3** Feeder progress under query load — Implemented and measured (reserved feeder admission); **Q3 FAIL, accepted as a declared limitation of v0.9.0** for the measured configuration; follow-up [#87](https://github.com/knotrel/knotrel/issues/87)
 - [x] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI) — Implemented and approved (2026-11-21): [policy](docs/compatibility.md), [classification](docs/stability.md), CI job `API compatibility`
 - [x] **0.9.5** Verified gateway deployment, upgrade and rebuild — Implemented: [gateway example](examples/gateway/compose.yaml) with smoke test in CI, [upgrade procedure](docs/deployment.md#upgrade-between-minor-versions) tested from the previous release
-- [ ] **0.9.6** Final performance campaign — [plan](docs/releases/v0.9.0-qualification-plan.md) approved 2026-11-22; campaign running
+- [x] **0.9.6** Final performance campaign — [plan](docs/releases/v0.9.0-qualification-plan.md) approved 2026-11-22; campaign valid (attempt 2); release accepted with exceptions for v0.9.0 only ([release notes](docs/releases/v0.9.0-release-notes.md#performance-qualification))
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
 
@@ -829,12 +829,18 @@ languages and a CLI are not added at the same time.
   validated by a smoke test (criterion 7, 1.0 gate); a documented upgrade and
   rebuild procedure between minor versions (drain, restart, rebuild from
   source; criterion 6).
-- [ ] **0.9.6 Final performance campaign.** v0.8.0 was released without a
+- [x] **0.9.6 Final performance campaign.** v0.8.0 was released without a
   qualification (decision D2), so v0.9.0 ends with one proportionate final
   campaign: published baseline (v0.8.0, the version users run, with v0.7.0
   as the last qualified reference), criteria and budget fixed before
   measuring, targeted measurements during development, and no open-ended
   reruns.
+  **Done 2026-11-22.** Attempt 2 conforming (attempt 1 exhausted its budget
+  and is kept). Release accepted with exceptions, for v0.9.0 only: five
+  deciding results not PASS keep their classification, the two `hub` 10k
+  lifecycle requirements stay unqualified by comparison, Q3 stays FAIL, six
+  RSS disclosures stay visible. Their v1.0 disposition is R1. Decision
+  record: knotrel-benchmarks `results/v0.9.0-qualification/DECISION.md`.
 
 **Out of scope:** local persistence and WAL (optional, not a 1.0
 prerequisite); multi-graph and new engines; large console features (only
