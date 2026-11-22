@@ -35,30 +35,54 @@ const DEFAULT_FEEDER_LEASE_DURATION: Duration = Duration::from_secs(10);
 /// session registration in flight.
 const FEEDER_CONTROL_PERMITS: usize = 2;
 
-/// Which admission semaphore a graph job uses.
+/// Which admission semaphore a graph job (or an import) uses.
 ///
 /// Feeder requests have their own lanes so that query load can never refuse
 /// them, and the control lane (session, heartbeat) is separate from the data
 /// lane (events, barrier, gap) so that lease renewal never waits for a burst
 /// of feeder data jobs. Every lane only gates admission: after it, jobs share
-/// the same worker path and graph lock.
+/// the same worker path and graph lock. The import lane is the single import
+/// permit: imports take it in [`Service::acquire_import_permit`], never
+/// through `admit_in`.
+///
+/// The labels are the `lane` label values of the admission metrics
+/// (`docs/observability-contract.md`, section 21); they are frozen.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Lane {
+pub(crate) enum Lane {
     /// Queries, stats, inspection and standalone mutations.
     Shared,
     /// Feeder events, barriers and gap declarations.
     FeederData,
     /// Feeder session registration and heartbeats.
     FeederControl,
+    /// The single import permit.
+    Import,
 }
 
 impl Lane {
-    fn label(self) -> &'static str {
+    /// Every lane, in exposition order.
+    pub(crate) const ALL: [Self; 4] = [
+        Self::Shared,
+        Self::FeederData,
+        Self::FeederControl,
+        Self::Import,
+    ];
+
+    /// The `lane` label value.
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Shared => "shared",
             Self::FeederData => "feeder_data",
             Self::FeederControl => "feeder_control",
+            Self::Import => "import",
         }
+    }
+
+    /// Whether HTTP can admit work on this lane in `mode`: only the shared
+    /// lane exists in standalone mode, whose router refuses feeder and
+    /// import requests before admission.
+    pub(crate) fn reachable_in(self, mode: ServerMode) -> bool {
+        self == Self::Shared || mode == ServerMode::SourceManaged
     }
 }
 
@@ -839,6 +863,8 @@ pub(crate) struct ServiceInner {
     /// lease renewal never waits for queries or for feeder data jobs.
     feeder_control_permits: Arc<Semaphore>,
     import_permits: Arc<Semaphore>,
+    /// Permit limit of `feeder_permits`, for the lane capacity gauge.
+    feeder_reserved_jobs: usize,
     // Lock-free mirror of GraphState::failed so readiness never waits for graph work.
     unavailable: Arc<AtomicBool>,
     published_readiness: Arc<AtomicU64>,
@@ -2114,6 +2140,7 @@ impl Service {
             feeder_permits: Arc::new(Semaphore::new(config.feeder_reserved_jobs())),
             feeder_control_permits: Arc::new(Semaphore::new(FEEDER_CONTROL_PERMITS)),
             import_permits: Arc::new(Semaphore::new(IMPORT_PERMIT_CAPACITY)),
+            feeder_reserved_jobs: config.feeder_reserved_jobs(),
             unavailable: Arc::new(AtomicBool::new(false)),
             published_readiness: Arc::new(AtomicU64::new(PublishedReadiness::pack(
                 SyncStatus::Uninitialized,
@@ -2898,6 +2925,38 @@ impl Service {
         marked
     }
 
+    /// The admission semaphore of `lane`.
+    fn semaphore(&self, lane: Lane) -> &Arc<Semaphore> {
+        match lane {
+            Lane::Shared => &self.permits,
+            Lane::FeederData => &self.feeder_permits,
+            Lane::FeederControl => &self.feeder_control_permits,
+            Lane::Import => &self.import_permits,
+        }
+    }
+
+    /// Permits of `lane` currently held and the lane's permit limit, as
+    /// `(held, capacity)`.
+    ///
+    /// One atomic load, no lock: callable from a scrape at any time. Held
+    /// permits are never more than the limit, because no permit is ever
+    /// added to or forgotten from a lane semaphore; `held == capacity`
+    /// exactly when the next admission on the lane would be refused (or an
+    /// import permit acquisition, for [`Lane::Import`]). A held permit
+    /// belongs to a job admitted on the lane and not yet finished by its
+    /// worker, or for the import lane to an import from permit acquisition
+    /// (before body receipt) to its end.
+    pub(crate) fn lane_occupancy(&self, lane: Lane) -> (usize, usize) {
+        let capacity = match lane {
+            Lane::Shared => self.info.max_pending_jobs,
+            Lane::FeederData => self.feeder_reserved_jobs,
+            Lane::FeederControl => FEEDER_CONTROL_PERMITS,
+            Lane::Import => IMPORT_PERMIT_CAPACITY,
+        };
+        let available = self.semaphore(lane).available_permits();
+        (capacity.saturating_sub(available), capacity)
+    }
+
     /// Admits one graph job: refuses it when the service is unavailable or
     /// every pending-job permit is taken, otherwise returns the owned permit
     /// and the shutdown job guard, both to be moved into the worker.
@@ -2933,19 +2992,18 @@ impl Service {
             self.count_rejection(Rejection::Unavailable);
             return Err(ServiceError::Unavailable);
         }
-        let semaphore = match lane {
-            Lane::Shared => &self.permits,
-            Lane::FeederData => &self.feeder_permits,
-            Lane::FeederControl => &self.feeder_control_permits,
-        };
-        let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
-            tracing::warn!(
-                lane = lane.label(),
-                "request capacity exhausted; rejecting with 503 busy"
-            );
-            self.count_rejection(Rejection::Busy);
-            ServiceError::Busy
-        })?;
+        let permit = self
+            .semaphore(lane)
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                tracing::warn!(
+                    lane = lane.label(),
+                    "request capacity exhausted; rejecting with 503 busy"
+                );
+                self.count_rejection(Rejection::busy(lane));
+                ServiceError::Busy
+            })?;
         Ok((permit, self.lifecycle.track_job()))
     }
 
@@ -3624,7 +3682,7 @@ mod tests {
         assert!(matches!(result, Err(ServiceError::Unavailable)));
         assert_eq!(telemetry.rejected_count(Rejection::Unavailable), 2);
         for reason in [
-            Rejection::Busy,
+            Rejection::BusyShared,
             Rejection::ImportCapacity,
             Rejection::ShuttingDown,
         ] {

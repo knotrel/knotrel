@@ -428,8 +428,10 @@ Like the probes, a scrape takes no graph lock and no admission or import
 permit; it does use synchronization internal to the metrics registry and the
 outstanding-job counter. It is answered during saturation, after a worker failure and while
 draining (with `Connection: close`). It exposes HTTP request counts and
-server-side durations by route template, outstanding graph jobs, the
-graph-job admission permit limit, the unavailable flag, the state `/ready` would report, and build
+server-side durations by route template, held admission permits and the
+permit limit per admission lane (`lane` label: `shared`, and in
+source-managed mode `feeder_data`, `feeder_control` and `import`), the
+unavailable flag, the state `/ready` would report, and build
 information. Names, labels, exact semantics and the series bound are
 specified in the [observability contract](observability-contract.md#7-first-m62-slice-released-in-v040).
 An HTTP `503 request_timeout` or a cancelled request in these metrics never
@@ -439,12 +441,14 @@ means the graph job finished or did not run; see
 Two further counters are recorded where the decision is made, not derived
 from response codes ([contract section 8](observability-contract.md#8-second-m62-increment-rejection-and-uncertain-outcomes-released-in-v040)):
 
-- `knotrel_requests_rejected_total{reason}`: requests refused before any
+- `knotrel_requests_rejected_total{reason,lane}`: requests refused before any
   graph job or import ran for them: `busy` (admission permits of the
   request's lane exhausted, including feeder session, heartbeat, events, gap
-  and barrier calls answered `503 import_in_progress`), `import_capacity`, `shutting_down` (every
+  and barrier calls answered `503 import_in_progress`; `lane` names the
+  lane), `import_capacity` (`lane="import"`), `shutting_down` (every
   non-probe request refused while draining, including `/v1/info` and
-  unmatched routes that would not create a graph job) or `unavailable`. Validation, domain, feeder-protocol and
+  unmatched routes that would not create a graph job) or `unavailable`
+  (both `lane="none"`). Validation, domain, feeder-protocol and
   partial batch or event failures are not counted.
 - `knotrel_requests_outcome_uncertain_total{cause}`: observations that
   an admitted state-changing job may have taken effect without its caller
