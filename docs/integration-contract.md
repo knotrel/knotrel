@@ -449,7 +449,7 @@ Knotrel guarantees deterministic deduplication within a bounded window without r
   - *Tier 1 (Indexing):* Fast sequence lookup in ring buffer and hash lookup in `event_id` index.
   - *Tier 2 (Canonical Equality):* Exact byte-for-byte comparison of:
     - `event_id` string (up to 64 bytes).
-    - `source_position` string (up to 256 bytes).
+    - `source_position` string (1 to 256 bytes).
     - Canonical operation descriptor: operation type (`link`, `cut`, `add_node`, `progress`, and with lifecycle support `set_node_active`, `set_edge_enabled`, `remove_node`), normalized endpoints (`min(u,v)`, `max(u,v)` for undirected edges) or node, and for lifecycle events the flag value (`active` or `enabled`). A retry at a retained sequence with the same `event_id` but a different operation type or flag is a conflicting duplicate (case 4 below).
 - **Mutually Exclusive Bounded Identity Decisions:**
   1. **Retained Committed Sequence with Different Event ID ($D \in [D_{window\_min}, D_{applied}]$, incoming `event_id != retained.event_id`):**
