@@ -2360,3 +2360,185 @@ async fn test_28_mutation_effects_and_revisions_match_across_operations_batch_an
     feeder.shutdown();
     feeder.finished().await;
 }
+
+// ---------------------------------------------------------------------------
+// 29. Sequence 0 and edge sequences at the start of a generation (D1)
+// ---------------------------------------------------------------------------
+
+async fn ready_status(running: &Running) -> (u16, String) {
+    let mut stream = running.connect().await;
+    let reply = get(&mut stream, "/ready").await;
+    let status = reply.json()["status"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    (reply.status, status)
+}
+
+async fn barrier(running: &Running, instance_id: &str, generation: u64, seq: u64, pos: &str) {
+    let body = format!(
+        r#"{{"instance_id":"{instance_id}","graph_id":"default","generation":{generation},"feeder_session_id":"f-1","feeder_epoch":1,"barrier_delivery_sequence":{seq},"barrier_source_position":"{pos}"}}"#
+    );
+    let mut stream = running.connect().await;
+    let reply = post(
+        &mut stream,
+        "/v1/feeder/barrier",
+        &[("x-knotrel-instance-id", instance_id)],
+        &body,
+    )
+    .await;
+    assert_eq!(reply.status, 200, "barrier: {}", reply.body);
+}
+
+/// The fields a rejected request must leave unchanged.
+fn frontier(stats: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!([
+        stats["generation"],
+        stats["state_version"],
+        stats["source_position"],
+        stats["sync_status"],
+        stats["node_count"],
+        stats["edge_count"],
+    ])
+}
+
+/// Sends `events_json` and checks the rejection, the unchanged frontier and
+/// that the server stays ready and serving.
+async fn expect_rejected_unchanged(
+    running: &Running,
+    instance_id: &str,
+    generation: u64,
+    events_json: &str,
+    status: u16,
+    code: &str,
+) -> Reply {
+    let before = stats_json(running).await;
+    let ready_before = ready_status(running).await;
+    let reply = post_events_envelope(
+        running,
+        instance_id,
+        generation,
+        1,
+        "pg-1",
+        "ep-1",
+        events_json,
+    )
+    .await;
+    assert_eq!(reply.status, status, "{events_json}: {}", reply.body);
+    assert_eq!(reply.json()["code"], code, "{events_json}: {}", reply.body);
+    assert_eq!(frontier(&stats_json(running).await), frontier(&before));
+    assert_eq!(ready_status(running).await, ready_before);
+    assert!(connected(running, "1", "1").await, "queries still served");
+    reply
+}
+
+#[tokio::test]
+async fn test_29_sequence_zero_and_edge_sequences_at_generation_start_are_rejected() {
+    let (running, instance_id) = start_with_baseline(config_source_managed()).await;
+    barrier(&running, &instance_id, 1, 0, "pos-0").await;
+    assert_eq!(ready_status(&running).await, (200, "ready".into()));
+
+    // Sequence 0 before the first applied event: outside every window.
+    let zero = r#"[{"event_id":"e0","delivery_sequence":0,"prev_delivery_sequence":0,"source_position":"pos-1","prev_source_position":"pos-0","op":"link","source":"1","target":"2"}]"#;
+    expect_rejected_unchanged(
+        &running,
+        &instance_id,
+        1,
+        zero,
+        409,
+        "unverifiable_duplicate",
+    )
+    .await;
+    // The same as the first event of a multi-event request: partial failure
+    // at index 0 with the previous frontier.
+    let zero_then_one = r#"[{"event_id":"e0","delivery_sequence":0,"prev_delivery_sequence":0,"source_position":"pos-1","prev_source_position":"pos-0","op":"progress"},{"event_id":"e1","delivery_sequence":1,"prev_delivery_sequence":0,"source_position":"pos-1","prev_source_position":"pos-0","op":"link","source":"1","target":"2"}]"#;
+    let reply = expect_rejected_unchanged(
+        &running,
+        &instance_id,
+        1,
+        zero_then_one,
+        409,
+        "unverifiable_duplicate",
+    )
+    .await;
+    let body = reply.json();
+    assert_eq!(body["result"], "partial_failure");
+    assert_eq!(body["failed_batch_index"], 0);
+    assert_eq!(body["failed_delivery_sequence"], 0);
+    assert_eq!(body["applied_delivery_sequence"], 0);
+    // u64::MAX and a gap right after the import are future sequences.
+    let max = format!(
+        r#"[{{"event_id":"emax","delivery_sequence":{},"prev_delivery_sequence":{},"source_position":"pos-x","prev_source_position":"pos-0","op":"progress"}}]"#,
+        u64::MAX,
+        u64::MAX - 1
+    );
+    expect_rejected_unchanged(
+        &running,
+        &instance_id,
+        1,
+        &max,
+        409,
+        "out_of_order_sequence",
+    )
+    .await;
+    let gap = r#"[{"event_id":"e2","delivery_sequence":2,"prev_delivery_sequence":1,"source_position":"pos-2","prev_source_position":"pos-1","op":"progress"}]"#;
+    expect_rejected_unchanged(&running, &instance_id, 1, gap, 409, "out_of_order_sequence").await;
+
+    // Later events are still accepted, and sequence 0 stays rejected after them.
+    let one = r#"[{"event_id":"e1","delivery_sequence":1,"prev_delivery_sequence":0,"source_position":"pos-1","prev_source_position":"pos-0","op":"link","source":"1","target":"2"}]"#;
+    let reply = post_events_envelope(&running, &instance_id, 1, 1, "pg-1", "ep-1", one).await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(reply.json()["applied_delivery_sequence"], 1);
+    expect_rejected_unchanged(
+        &running,
+        &instance_id,
+        1,
+        zero,
+        409,
+        "unverifiable_duplicate",
+    )
+    .await;
+
+    // Right after a replacement import (generation 2, nothing applied yet).
+    let mut stream = running.connect().await;
+    let etag = get(&mut stream, "/v1/stats")
+        .await
+        .header("etag")
+        .expect("ETag")
+        .to_string();
+    let body = format!(
+        r#"{{"mode":"replace","instance_id":"{instance_id}","graph_id":"default","source_id":"pg-1","source_epoch":"ep-1","source_position":"pos-0","feeder_session_id":"f-1","feeder_epoch":1,"nodes":["1","2","3","4"],"edges":[]}}"#
+    );
+    let mut stream = running.connect().await;
+    let reply = post(
+        &mut stream,
+        "/v1/feeder/import",
+        &[("x-knotrel-instance-id", &instance_id), ("if-match", &etag)],
+        &body,
+    )
+    .await;
+    assert_eq!(reply.status, 201, "replace: {}", reply.body);
+    barrier(&running, &instance_id, 2, 0, "pos-0").await;
+    assert_eq!(ready_status(&running).await, (200, "ready".into()));
+    expect_rejected_unchanged(
+        &running,
+        &instance_id,
+        2,
+        zero,
+        409,
+        "unverifiable_duplicate",
+    )
+    .await;
+    expect_rejected_unchanged(
+        &running,
+        &instance_id,
+        2,
+        &max,
+        409,
+        "out_of_order_sequence",
+    )
+    .await;
+    let reply = post_events_envelope(&running, &instance_id, 2, 1, "pg-1", "ep-1", one).await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(stats_json(&running).await["sync_status"], "ready");
+}
