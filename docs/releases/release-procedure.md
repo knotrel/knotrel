@@ -136,6 +136,63 @@ cargo build --release --locked -p knotrel-server
 # powershell -File ./scripts/smoke-test-release-binary.ps1 -BinaryPath target/release/knotrel-server.exe
 ```
 
+### 3.4 Reproducible-build check (rc gate)
+
+From v1.0.0, the Linux (`x86_64-unknown-linux-gnu`) and macOS
+(`aarch64-apple-darwin`) release binaries must be rebuildable from the
+candidate commit. The Windows binary is **not** covered (see the last bullet
+below). The release workflow builds them without a build cache and with
+`SOURCE_DATE_EPOCH` set to the commit time. After the release dry run on the
+exact candidate commit (section 4), run **Actions > reproducible-build** with
+these inputs:
+
+- `ref`: the full candidate SHA
+- `version`: for example `1.0.0`
+- `dry_run_run_id`: the dry run's run ID
+- `accept`: `byte`
+
+The workflow rebuilds `knotrel-server` from a clean export on `ubuntu-latest`
+(x86-64 Linux) and `macos-latest` (arm64 macOS), checks the bundle's checksums
+and metadata, and compares the binaries
+(`scripts/check-reproducible-build.sh`, which can also run locally).
+
+Each platform gets two separate verdicts, reported in this order:
+
+1. **Byte-identical**: yes or no.
+2. **Equivalent after excluding named metadata**. For Mach-O exactly two
+   ranges are excluded: the 16-byte `LC_UUID` and the ad-hoc
+   `LC_CODE_SIGNATURE`. The signature hashes the file's pages, including the
+   one holding the UUID, so it differs whenever the UUID differs. For ELF
+   nothing is excluded, and the verdict is "not applicable".
+
+A third, diagnostic line (`code`) compares only the code section
+(`__TEXT,__text` or `.text`). It ignores data, strings, symbols and all other
+sections.
+
+- **Linux** must be byte-identical.
+- **macOS** is expected to be byte-identical on the runner. If it is not, but
+  it is equivalent after excluding `LC_UUID` and `LC_CODE_SIGNATURE`, the gate
+  needs an explicit maintainer decision. Record both verdicts and the reason
+  in the release notes, then rerun with `accept: equivalent`. Never describe
+  such a result as "reproducible" without the qualifier.
+- **Windows** (`x86_64-pc-windows-msvc`) is not covered and must not be
+  described as reproducible. The workflow has no Windows job. MSVC's
+  `cl.exe` ignores `SOURCE_DATE_EPOCH`, so mimalloc embeds the real compile
+  time, and `link.exe` writes the link time into the PE header unless given
+  `/Brepro`. State this limitation in the release notes.
+
+A `code`-only result (code section identical, both verdicts "no") does
+**not** pass the gate. Accepting it needs an explicit maintainer decision,
+recorded in the release notes, that names the differing sections and explains
+why they do not matter. Any other result blocks the release until it is
+explained. Record the
+verdicts and the workflow run in the release notes. After publication, run the
+workflow again with `ref` set to the tag and no `dry_run_run_id`, which
+compares against the GitHub Release.
+
+The method, the excluded metadata, the macOS UUID cause and the v0.9.0 result are in
+[Reproducible release builds](reproducible-build.md).
+
 ---
 
 ## 4. GitHub Actions Release Workflow (Dry Run)
@@ -185,6 +242,7 @@ Before tagging and publishing:
 - [ ] The v0.5.0 performance qualification ran on the exact RC commit (or its executed code was shown identical), and the deployment and rebuild smoke test was repeated on it.
 - [ ] All CI and release dry-run quality gates passed on the exact candidate commit SHA.
 - [ ] All three platform binaries passed native CI smoke tests and provenance verification.
+- [ ] From v1.0.0: the `reproducible-build` workflow rebuilt the dry-run binaries from the candidate commit (Linux byte-identical; macOS byte-identical, or equivalent after excluding `LC_UUID` and `LC_CODE_SIGNATURE` with a recorded maintainer decision) and the result is in the release notes (section 3.4).
 - [ ] Source package verification passed.
 - [ ] Elastic License 2.0 is included in all archives.
 - [ ] `CRATES_IO_TOKEN` is configured in the `crates-io` environment with required reviewer protection.
