@@ -400,3 +400,380 @@ Reading, limited to what was measured:
   feeder catch-up under query load: test the CPU hypothesis with a protocol
   variant approved beforehand, then, depending on the result, B1 or B2 against
   the same criteria. Not assigned to a release.
+
+## R2 two-Mac variant (PROPOSED, not approved)
+
+**Status: PROPOSED, NOT APPROVED.** This section turns
+[rc-plan §3](../releases/v1.0.0-rc-plan.md#3-r2--87-diagnosis-two-mac-protocol-variant-proposed)
+into a protocol that can be run. Nothing in it may be run until the
+maintainer has (1) approved this section and rc-plan §3, and (2) confirmed
+that both Macs are available, with the measurement window agreed (pre-flight
+checklist below). No measurement has been taken with it. The tool support it
+needs (`examples/load.rs`, `LOAD_ARM`) is opt-in; with `LOAD_ARM` unset the
+tool runs the approved single-host protocol above, unchanged.
+
+**What it can and cannot change.**
+- **The outcome never changes Q3's classification.** Q3 stays **FAIL** as
+  recorded in "Maintainer decision on Q3", with unchanged thresholds,
+  whatever this variant shows. Arm S re-anchors the variant on the same day;
+  it is not a new Q3 evaluation, and the tool prints no Q1–Q4 verdict in this
+  mode.
+- **It is separate from the v1.0 qualification campaign** (rc-plan §2): its
+  numbers are a diagnosis of
+  [knotrel/knotrel#87](https://github.com/knotrel/knotrel/issues/87), not
+  release qualification evidence, and no performance claim follows from it.
+- **It is diagnostic and does not gate the release candidate:** not running
+  it does not by itself block the rc.
+
+### Question
+
+Does the CPU load that PostgreSQL, the feeder and the query clients put on
+Knotrel's host explain Q3's failure, or is the limit inside Knotrel's host
+itself? Arm T separates the load onto a second Mac; arm U gives the CPU
+demand back to Knotrel's host while the rest stays separated, so that a gain
+in T can be attributed (or not) to CPU (rc-plan §3, "What separating the
+loads can and cannot show").
+
+### Hosts, link and builds
+
+| | Host K (Knotrel) | Host L (load) |
+| --- | --- | --- |
+| Machine | Apple M3 (4P+4E), 16 GB, macOS 26.5.2: the host of every earlier feeder-under-load run | MacBook Pro M4, 16 GB |
+| Arm S | everything: PostgreSQL 18.7 container, feeder, load tool, `knotrel-server` | idle |
+| Arms T, U | only `knotrel-server` (and, in U, the busy loops), started by the tool over SSH | PostgreSQL 18.7 container, feeder, load tool (writer, query clients); runs the tool |
+
+- **Link:** direct and wired (Thunderbolt bridge or Ethernet cable between
+  the two Macs), **not Wi-Fi**, private point-to-point addresses (for example
+  the self-assigned `169.254.x.y` of a Thunderbolt bridge). Host K's address
+  on it is `KADDR` below. Knotrel binds `KADDR` with
+  `KNOTREL_ALLOW_NON_LOOPBACK=true`; the link is a trusted network between
+  the maintainer's own machines, within the trust model of
+  [`docs/http-api.md`](../http-api.md).
+- **Server under test:** `knotrel-server` at tag `v0.9.0`,
+  `cargo build -p knotrel-server --release --locked`, on host K. Record its
+  SHA-256.
+- **Feeder and load tool:** `cargo build --release --locked --bins --example
+  load` in `integrations/postgres-feeder` at the commit that adds this
+  section, on **both** hosts (host K needs the load tool for arm S and as the
+  busy loop of arm U). Record the commit and the binaries' SHA-256.
+- **PostgreSQL:** `scripts/start-test-postgres.sh 18` (18.7, the image digest
+  pinned in the script) on whichever host runs the load.
+- The tool reads `sql/` from its source tree, so it runs from the checkout it
+  was built in. `KNOTREL_BIN` and `LOAD_REMOTE_BURN_BIN` are absolute paths.
+
+The [R2 runbook](feeder-under-load-r2-runbook.md) lists the one-time setup of
+both hosts (SSH key, builds, PostgreSQL container, firewall).
+
+### Host preparation (before the session, checked again before each arm)
+
+1. Both Macs on **AC power**, lids open or on external display, sleep
+   prevented for the session (`caffeinate -dims` running on each).
+2. **Idle and no interactive use** on both hosts for the whole session:
+   quit every application except the terminal that runs the arm (on host L)
+   and Docker Desktop where PostgreSQL runs; no build, no benchmark, no
+   Spotlight indexing in progress, no backup (Time Machine paused). The
+   maintainer drives every arm from host L; arm S is started on host K over
+   SSH so that host K's keyboard is not used.
+3. `ps -A -o pid,pcpu,comm -r | head -15` on each host shows nothing else
+   using CPU; saved as `<arm>/ps-before-<host>.txt`.
+4. `pmset -g therm` and `pmset -g batt` on each host before and after each
+   arm, saved as `<arm>/power-<host>.txt`; any thermal or performance warning
+   invalidates the arm (see validity rules).
+5. **Arms T and U only:** Docker Desktop is **not running on host K** (its
+   virtual machine would load host K), and no PostgreSQL runs there.
+6. The link is the only route between the hosts for `KADDR`: `route get
+   KADDR` on host L names the Thunderbolt bridge or Ethernet interface; saved
+   as `link-route.txt`.
+
+### Commands
+
+On both hosts, `R2=$HOME/knotrel-r2` holds the checkout at the tool commit
+(`$R2/knotrel`) and the `v0.9.0` server worktree (`$R2/knotrel-v0.9.0`), at
+the same paths. On host L, `hostk` is the SSH alias of host K over the link
+(runbook), and `KADDR` is host K's link address.
+
+**Arm S** (host K, loopback; started from host L over SSH, Docker Desktop
+running on host K):
+
+```bash
+ssh hostk 'cd "$HOME/knotrel-r2/knotrel/integrations/postgres-feeder" &&
+  export KNOTREL_PG_ADMIN_URL="$(scripts/start-test-postgres.sh 18)" &&
+  LOAD_ARM=S \
+  KNOTREL_BIN="$HOME/knotrel-r2/knotrel-v0.9.0/target/release/knotrel-server" \
+  FEEDER_BIN="$PWD/target/release/knotrel-pg-feeder" \
+  LOAD_OUT="$HOME/knotrel-r2/out/S" \
+  ./target/release/examples/load; s=$?; scripts/stop-test-postgres.sh 18; exit $s'
+mkdir -p "$R2/out" && scp -r hostk:knotrel-r2/out/S "$R2/out/S"
+```
+
+Then quit Docker Desktop on host K and check that its virtual machine has
+exited (`ps -A -o comm | grep -c Virtualization` prints 0) before arm T.
+
+**Arm T** (host L runs the load; Knotrel on host K):
+
+```bash
+cd "$R2/knotrel/integrations/postgres-feeder"
+export KNOTREL_PG_ADMIN_URL="$(scripts/start-test-postgres.sh 18)"
+LOAD_ARM=T LOAD_REMOTE_SSH=hostk LOAD_REMOTE_ADDR="$KADDR" \
+KNOTREL_BIN="/Users/<user on K>/knotrel-r2/knotrel-v0.9.0/target/release/knotrel-server" \
+FEEDER_BIN="$PWD/target/release/knotrel-pg-feeder" \
+LOAD_OUT="$R2/out/T" \
+  ./target/release/examples/load
+```
+
+**Arm U** (as T, plus the calibrated load on host K; same PostgreSQL
+container, still on host L):
+
+```bash
+LOAD_ARM=U LOAD_REMOTE_SSH=hostk LOAD_REMOTE_ADDR="$KADDR" \
+KNOTREL_BIN="/Users/<user on K>/knotrel-r2/knotrel-v0.9.0/target/release/knotrel-server" \
+LOAD_REMOTE_BURN_BIN="/Users/<user on K>/knotrel-r2/knotrel/integrations/postgres-feeder/target/release/examples/load" \
+LOAD_CALIBRATION="$R2/out/S/results.jsonl" \
+FEEDER_BIN="$PWD/target/release/knotrel-pg-feeder" \
+LOAD_OUT="$R2/out/U" \
+  ./target/release/examples/load
+scripts/stop-test-postgres.sh 18
+```
+
+**Decision** (host L, after the three arms):
+
+```bash
+LOAD_R2_DECIDE="$R2/out" ./target/release/examples/load
+```
+
+No `LOAD_REPS`, `LOAD_WINDOW_SECS`, `LOAD_BACKLOG` or `LOAD_CELLS` is set in
+a protocol run. `LOAD_REMOTE_PORT` defaults to 18080 (set it only if that
+port is taken on host K, and record it). `LOAD_PG_PROCESS_PATTERNS` is set
+only if the pre-flight check below shows that PostgreSQL's container runs
+under an executable name the tool does not know.
+
+### What the tool does in each arm
+
+- **Cells:** scenario L2, graph G100k, backlog 100,000 changes, settings of
+  the approved protocol. Arms S and T: `C` = 0, 16, 64; arm U: `C` = 16, 64.
+  Three repetitions, all cells of one repetition before the next.
+- **Server per observation:** arm S as the approved protocol (fresh
+  `knotrel-server` on `127.0.0.1`). Arms T and U: a fresh `knotrel-server`
+  on host K for every observation, started over SSH with the protocol's
+  settings plus `KNOTREL_ADDR=KADDR:18080` and
+  `KNOTREL_ALLOW_NON_LOOPBACK=true`, and stopped (`SIGTERM`) at the end of
+  the observation, or when the SSH session ends for any reason. The tool
+  refuses to start if something already answers on that address. The
+  server's output is saved as `server-<tag>.stderr.log`. The feeder, the
+  query clients and the readiness checks use `http://KADDR:18080`.
+- **CPU samples:** `top` once per second on the tool's host (as before) and,
+  in T and U, on host K over SSH (`remote_host_cpu_busy_percent`, timed on
+  arrival at host L). Per-process CPU time (`ps`) on both hosts at the start
+  and end of each catch-up (`process_cpu`), grouped as Knotrel, feeder, load
+  tool (writer and clients), PostgreSQL (the container's virtual machine),
+  busy loops, and other.
+- **Host K's non-Knotrel CPU** (`host_k_non_knotrel_cores`): in arm S the
+  CPU time of PostgreSQL, the feeder and the load tool during catch-up
+  divided by its duration (the writer is idle during catch-up); in arm U the
+  busy loops' CPU on host K. Other processes are recorded but excluded.
+- **Arm U calibration:** for each `C`, the median of arm S's
+  `host_k_non_knotrel_cores` over its observations is the target `X`. The
+  load is ⌈X⌉ busy-loop processes at duty X / ⌈X⌉ of every 10 ms period
+  (capped at host K's CPU count, marked `capped`). They start before the
+  5 s warm-up and stop after the catch-up. `calibration.json` records the
+  source file, every arm S value, the median, the processes, the duty and
+  host K's CPU count; each observation records the achieved busy-loop CPU.
+  The load reproduces CPU demand only, not memory, cache or I/O behavior.
+- **Link check:** before the first and after the last observation of each
+  arm, against a fresh server at the measured address: 1,000 sequential TCP
+  connection set-ups (each one round trip), median, p99 and maximum, in
+  `link-check.json`. Arm S measures loopback.
+- **Budget:** 45 minutes per arm. The tool starts no observation after it
+  and records `budget_exceeded`; cells are not dropped silently.
+- **Summary:** per cell, median and range of the catch-up rate, ratio to
+  `C` = 0 of the same arm, time to `ready`, CPU busy on both hosts, the
+  feeder jobs' phase means (admission queue, lock wait, execution), feeder
+  `503` refusals and host K's non-Knotrel CPU. No Q verdict.
+
+### Validity rules (fixed before measuring)
+
+An arm is **valid** only if all of these hold:
+
+1. **Link:** the link check before **and** after the arm has a median round
+   trip ≤ 0.5 ms (p99 recorded, no threshold).
+2. **No interference:** the host preparation held for the whole arm: AC
+   power, no thermal or performance warning in `pmset -g therm`, no other
+   workload in the `ps` records, no interactive use, no sleep, and in T and U
+   no Docker on host K. Any departure observed or noticed is written down,
+   with its time, in `<arm>/invalid.txt`, which makes the arm invalid.
+3. **Completeness:** three observations per cell, each reaching `ready`
+   within 300 s, within the 45-minute budget.
+
+**Repetition rule.** The tool repeats nothing on its own, and no single
+observation is replaced. An invalid arm may be repeated **once**, in a new
+session, and only for a cause recorded in its `invalid.txt` (kept with the
+results). Because arm S calibrates arm U and anchors T, repeating S means
+repeating S, T and U in that new session. If the repeated arm is valid, it
+replaces the invalid one (both are reported). If the repeat is also invalid,
+or the cause was not recorded, or a second repeat would be needed, the
+outcome is **insufficient evidence**.
+
+### Decision rule (fixed before measuring)
+
+This is the single decision rule of R2; rc-plan §3 points here. It replaces
+the qualitative wording of the first proposal ("at least half of the gain",
+"most of the gain") with formulas, and keeps its thresholds.
+
+**Statistic.** For each arm X ∈ {S, T, U} and each `C` ∈ {16, 64}, an
+observation's catch-up rate is the absolute rate the tool records,
+`events_per_sec` = backlog events applied / seconds from feeder start to
+`ready`. Then:
+
+- a_X(C) = the **median** of arm X's three observation rates at `C`;
+- spread_X(C) = max / min of those three rates;
+- **gain** G(C) = a_T(C) − a_S(C);
+- **recovered share** r_U(C) = (a_T(C) − a_U(C)) / G(C), defined only when
+  G(C) > 0: the fraction of the separation's gain that disappears when the
+  CPU load is given back to host K (0 = none of it, 1 = all of it; values
+  above 1 mean U is slower than S, values below 0 that U is faster than T);
+- k_T(C) = host K's CPU busy in arm T: per observation, the median of host
+  K's per-second busy samples during catch-up
+  (`remote_host_cpu_busy_percent.median`), then the median over the three
+  observations.
+
+Absolute rates are used, not ratios to `C` = 0, because the link can lower
+the `C` = 0 rate and raise a ratio artificially.
+
+**Result for one `C`**, evaluated in this order:
+
+| Result for `C` | Condition |
+| --- | --- |
+| **Insufficient evidence** | Any of S, T, U has fewer than three completed observations at `C`, or spread_X(C) > 1.25 for any of them |
+| **Supported** | a_T ≥ 2 × a_S **and** r_U ≥ 0.5 **and** k_T ≤ 80 % |
+| **Not supported** | a_T < 1.2 × a_S, **or** r_U ≤ 0.25 |
+| **Insufficient evidence** | Anything else |
+
+"Supported" and "not supported" exclude each other (the first needs
+a_T ≥ 2 × a_S and r_U ≥ 0.5). When G ≤ 0, a_T ≤ a_S < 1.2 × a_S, so the
+result is "not supported" without r_U.
+
+**Overall outcome.**
+
+| Outcome | Condition |
+| --- | --- |
+| **Hypothesis supported** | Every arm valid (validity rules above), **and** the result is "supported" for both `C` = 16 and `C` = 64 |
+| **Hypothesis not supported** | Every arm valid, **and** the result is "not supported" for both `C` = 16 and `C` = 64 |
+| **Insufficient evidence** | Anything else: a validity condition fails, a `C` is "insufficient evidence", or `C` = 16 and `C` = 64 **disagree** |
+
+Discordant results are never resolved in favor of either `C`: the outcome
+is "insufficient evidence", and the report gives each `C`'s result with its
+numbers (a_S, a_T, a_U, G, r_U, k_T, spreads, the three observations of each
+arm). `LOAD_R2_DECIDE` computes exactly this and writes it to
+`decision.json`, with the rule's result before the validity checks recorded
+separately.
+
+**Why these numbers.**
+- **Median of three:** the protocol's per-cell statistic; one deviant
+  observation cannot move it.
+- **Spread ≤ 1.25 (variability):** on the v0.9.0 server code (candidate A
+  above), the three L2 G100k observations spread by 1.02 (`C` = 0), 1.13
+  (`C` = 16) and 1.12 (`C` = 64); 1.25 allows about twice that, for the new
+  layout and the link. It also makes "supported" hold in the worst case, not
+  only at the median: with both spreads ≤ 1.25 and a_T ≥ 2 × a_S, every T
+  observation is ≥ a_T / 1.25 ≥ 1.6 × a_S, above every S observation
+  (≤ 1.25 × a_S). A larger spread means the three observations do not
+  determine the arm's rate well enough for the comparisons below, so that
+  `C` is "insufficient evidence"; a spread is not a recorded cause for the
+  repetition rule.
+- **a_T ≥ 2 × a_S:** separating the load must at least double catch-up
+  under load for CPU contention to be a dominant factor, not a contributor
+  (the gap to Q3's threshold at 16 clients is about 3.4×: 14.7 % against
+  50 %). Unchanged from the first proposal.
+- **a_T < 1.2 × a_S:** a gain below 20 % is inside the run-to-run variation
+  the spread bound accepts, so the separation shows no gain that the rule
+  can distinguish. Unchanged.
+- **r_U ≥ 0.5 / r_U ≤ 0.25:** giving the CPU load back removes at least
+  half of the gain (supported), or at most a quarter of it, keeping at least
+  three quarters (not supported). These are the first proposal's
+  a_U ≤ a_S + ½ × G and a_U ≥ a_S + ¾ × G, written as a share; between 0.25
+  and 0.5 the rule draws no conclusion.
+- **k_T ≤ 80 %:** in arm T host K must have CPU headroom; otherwise T's own
+  rate may be limited by host K's CPU, and the comparison with U would be
+  made on a saturated host.
+
+**What each outcome means, and does not mean.**
+- **Supported:** CPU demand **of the kind arm U generates** (busy loops at a
+  calibrated duty cycle) suffices to explain most of the gap between arms S
+  and T at these rates. It does **not** show that the original contention in
+  arm S is the same: memory bandwidth, caches, scheduler interference and
+  PostgreSQL's I/O are not reproduced by arm U, so they remain possible
+  contributors.
+- **Not supported:** separating the load did not produce a gain the rule
+  can distinguish, or most of the gain survives arm U's CPU load; the gap is
+  not explained by CPU demand of arm U's kind. The limit may lie in lock
+  waits, query execution, or something the separation removed other than
+  CPU demand.
+- **Insufficient evidence:** no conclusion on the cause; the numbers are
+  reported as they are.
+
+The consequences for the follow-up work are those of rc-plan §3, read with
+these meanings. In every outcome Q3's thresholds and its FAIL stand. R2 is
+diagnostic: not running it, or an "insufficient evidence" outcome, does not
+by itself block the release candidate.
+
+### Outputs and checksums
+
+Per arm (`out/S`, `out/T`, `out/U`): `results.jsonl` (one line per
+observation, with `arm`, `layout` and `server_addr`), `summary.json`,
+`link-check.json`, `feeder-*.log`, and the host records (`ps-before-*.txt`,
+`power-*.txt`); in T and U also `server-*.stderr.log`; in U also
+`calibration.json` and `burn.stderr.log`; `invalid.txt` where it applies.
+Session level: `decision.json`, `link-route.txt` and `hosts.txt` (for each
+host: `sw_vers`, `sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize`,
+link interface and its media from `ifconfig`, the commit of the tool, the
+`v0.9.0` server's and the tool's SHA-256, PostgreSQL image digest, start and
+end time in UTC).
+
+After the decision, on host L:
+
+```bash
+cd "$R2/out" && find . -type f ! -name SHA256SUMS | sort | xargs shasum -a 256 > SHA256SUMS
+```
+
+The results section added to this document after a run lists the SHA-256 of
+every `results.jsonl`, `summary.json`, `link-check.json`, `calibration.json`
+and `decision.json` it cites, as for the baseline and candidate A, plus the
+SHA-256 of `SHA256SUMS` itself; the logs are archived with it.
+
+### Pre-flight checklist (maintainer)
+
+To be confirmed by the maintainer before any arm runs; the session does not
+start with an unchecked item.
+
+- [ ] This section and rc-plan §3 approved (decision rule, validity rules,
+      repetition rule, budget).
+- [ ] **Both Macs available** for one session of about 2.5 hours (three arms
+      of at most 45 minutes, plus preparation), and the window agreed.
+- [ ] Host K is the Apple M3 of the earlier runs (macOS version recorded);
+      host L is the MacBook Pro M4.
+- [ ] Wired link in place (Thunderbolt bridge or Ethernet), Wi-Fi not used
+      for it; `KADDR` noted; `ping -c 20 KADDR` from host L well below
+      0.5 ms.
+- [ ] Runbook done on both hosts: Remote Login on host K, SSH key of host L
+      accepted (`ssh -o BatchMode=yes hostk true` succeeds with no prompt),
+      builds at the recorded commits, PostgreSQL image pulled on both.
+- [ ] Host K accepts incoming connections to `knotrel-server` on port
+      18080 from host L (macOS firewall off or the binary allowed, with no
+      dialog waiting on host K's screen).
+- [ ] With Docker Desktop running on host K, `ps -A -o comm= | grep -E
+      'Virtualization|docker|qemu|vfkit|krunkit'` shows the executable that
+      runs the container, and it matches one of the tool's PostgreSQL
+      patterns (otherwise set `LOAD_PG_PROCESS_PATTERNS` for arm S and
+      record it).
+- [ ] Both hosts on AC power, sleep prevented, nothing else running, no
+      interactive use planned during the window.
+- [ ] Output directory empty; the person running it knows the repetition
+      rule and writes `invalid.txt` for any interference.
+
+### Limits, stated in advance
+
+Two Apple-silicon Macs, one link, macOS only, one PostgreSQL version, the
+protocol's rates. Host L's CPU differs from host K's; arm S on host K keeps
+the reference layout. Arm U reproduces CPU demand only. In T and U, host K's
+CPU samples are timed on arrival over SSH, and its per-process snapshots are
+taken over SSH (a few milliseconds of skew against a catch-up of seconds).

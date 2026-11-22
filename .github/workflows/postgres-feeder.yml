@@ -56,7 +56,7 @@ jobs:
       - name: Documentation
         run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
       - name: Unit tests
-        run: cargo test --locked --lib --bins
+        run: cargo test --locked --lib --bins --examples
       - name: Dependencies (licenses, advisories, sources)
         run: cargo deny --locked check --config ../../deny.toml licenses advisories bans sources
       - name: Shell scripts
