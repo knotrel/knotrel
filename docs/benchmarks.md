@@ -6,6 +6,12 @@ title: Benchmarks
 
 Knotrel publishes reproducible workloads and release comparison evidence in the [knotrel-benchmarks repository](https://github.com/knotrel/knotrel-benchmarks). Results depend on the graph, workload, engine, hardware and configuration; they are not a general performance guarantee.
 
+<div class="actions doc-actions">
+  <a class="button primary" href="https://knotrel.github.io/knotrel-benchmarks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Performance site</a>
+  <a class="button" href="https://github.com/knotrel/knotrel-benchmarks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>Benchmark repository</a>
+</div>
+<p class="actions-note">The performance site publishes its first release-to-release report with 1.0.0; until then it describes the plan.</p>
+
 ## Current release
 
 **v0.9.0** was measured against v0.7.0 on its release candidate: the campaign is valid and the release is accepted with explicit exceptions, for v0.9.0 only. The [performance-by-version report](performance-by-version.md) explains the results, methodology and limitations.
