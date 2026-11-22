@@ -364,13 +364,33 @@ def main(argv):
     except (OSError, yaml.YAMLError) as e:
         print(f"cannot read input: {e}", file=sys.stderr)
         return 2
-    approved_changes = {entry["change"] for entry in approved if isinstance(entry, dict) and "change" in entry}
+    # Every approval entry must name one exact message, a release and a
+    # justification. A malformed entry (for example `change:` left empty,
+    # which YAML reads as null) would otherwise match findings it does not
+    # name, so it is an input error, never an approval.
+    if not isinstance(approved, list):
+        print("cannot read input: the approved list must be a YAML list of entries", file=sys.stderr)
+        return 2
+    for index, entry in enumerate(approved):
+        problems = [
+            key
+            for key in ("change", "release", "justification")
+            if not isinstance(entry, dict) or not isinstance(entry.get(key), str) or not entry[key].strip()
+        ]
+        if problems:
+            print(
+                f"cannot read input: approved entry {index} needs a non-empty string for {', '.join(problems)}",
+                file=sys.stderr,
+            )
+            return 2
+    approved_changes = {entry["change"] for entry in approved}
     breaking, info = check(base_doc, head_doc)
     for line in info:
         print(f"note: {line}")
 
     def is_approved(line):
-        return line in approved_changes or getattr(line, "schema_change", None) in approved_changes
+        schema_change = getattr(line, "schema_change", None)
+        return line in approved_changes or (schema_change is not None and schema_change in approved_changes)
 
     unapproved = [b for b in breaking if not is_approved(b)]
     for line in breaking:

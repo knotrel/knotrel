@@ -373,6 +373,31 @@ class CommandLine(unittest.TestCase):
         self.assertIn("approved: GET /v1/info: operation removed", approved.stdout)
         self.assertEqual(self.run_cli(copy.deepcopy(BASE)).returncode, 0)
 
+    def test_malformed_approval_entries_are_rejected(self):
+        head = copy.deepcopy(BASE)
+        head["paths"].pop("/v1/info")
+        # A null `change` used to match every finding without a schema key.
+        for entry in (
+            {"change": None, "release": "v2.0.0", "justification": "t"},
+            {"change": "", "release": "v2.0.0", "justification": "t"},
+            {"change": "GET /v1/info: operation removed", "justification": "t"},
+            {"change": "GET /v1/info: operation removed", "release": "v2.0.0", "justification": "  "},
+            "GET /v1/info: operation removed",
+        ):
+            result = self.run_cli(head, [entry])
+            self.assertEqual(result.returncode, 2, (entry, result.stdout, result.stderr))
+            self.assertIn("approved entry 0", result.stderr)
+        not_a_list = self.run_cli(head, {"change": "GET /v1/info: operation removed"})
+        self.assertEqual(not_a_list.returncode, 2, not_a_list.stderr)
+
+    def test_unrelated_approval_does_not_cover_findings_without_schema_key(self):
+        head = copy.deepcopy(BASE)
+        head["paths"].pop("/v1/info")
+        result = self.run_cli(head, [{"change": "GET /v1/other: operation removed",
+                                      "release": "v2.0.0", "justification": "t"}])
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("BREAKING: GET /v1/info: operation removed", result.stdout)
+
     def test_approved_response_enum_removal_passes(self):
         head = copy.deepcopy(BASE)
         head["components"]["schemas"]["ErrorCode"]["enum"].remove("busy")
