@@ -79,6 +79,8 @@ supported deployment is a single trusted local client:
   gateway that provides TLS, authentication, authorization, rate limiting and
   write timeouts, and restrict the network path. A private network on its own is not
   sufficient: every host on it is then trusted with full read/write access.
+- The [threat model](threat-model.md) lists the threats per trust boundary
+  and the test that validates each mitigation.
 - Logs contain the method, path, status and latency of each request and the
   startup settings. They never contain request bodies, node IDs or parser
   messages. Client error messages never quote request input, parser positions or
