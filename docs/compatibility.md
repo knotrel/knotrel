@@ -269,7 +269,9 @@ server.
   public item gets an explicit class in the change that adds it.
 - **HTTP API:** CI compares `docs/openapi.yaml` with the previous release's
   (`scripts/check-openapi-compat.py`). Breaking changes to stable operations
-  fail the job; changes to operations marked
+  fail the job, including a value removed from an enum reachable from a
+  stable response (an error code, an `engine` value, a status or mode); new
+  response enum values pass. Changes to operations marked
   `x-knotrel-stability: experimental` in the previous release are reported,
   not failed. Marking a stable operation experimental is itself a breaking
   change. An approved breaking change is listed, with its

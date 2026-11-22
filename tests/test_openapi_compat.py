@@ -29,7 +29,15 @@ BASE = {
                 ],
                 "responses": {
                     "200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Info"}}}},
-                    "503": {"description": "busy"},
+                    "503": {"description": "busy", "content": {
+                        "application/problem+json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+                },
+            }
+        },
+        "/ready": {
+            "get": {
+                "responses": {
+                    "200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Readiness"}}}},
                 },
             }
         },
@@ -56,10 +64,34 @@ BASE = {
                 "type": "object",
                 "required": ["engine", "count"],
                 "properties": {
-                    "engine": {"type": "string"},
+                    "engine": {"type": "string", "enum": ["compact-bfs", "ett", "hdt"]},
                     "count": {"type": "integer"},
                     "tags": {"type": "array", "items": {"type": "string"}},
                 },
+            },
+            "ErrorCode": {"type": "string", "enum": ["busy", "invalid_request", "unknown_node"]},
+            "Error": {
+                "type": "object",
+                "required": ["code"],
+                "properties": {"code": {"$ref": "#/components/schemas/ErrorCode"}},
+            },
+            "Readiness": {
+                "oneOf": [
+                    {"$ref": "#/components/schemas/ReadinessReady"},
+                    {"$ref": "#/components/schemas/ReadinessNotReady"},
+                ],
+            },
+            "ReadinessReady": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {"status": {"type": "string", "enum": ["ready"]}},
+            },
+            "ReadinessNotReady": {
+                "allOf": [{
+                    "type": "object",
+                    "required": ["status"],
+                    "properties": {"status": {"type": "string", "enum": ["starting", "loading", "catching_up"]}},
+                }],
             },
             "Op": {
                 "type": "object",
@@ -95,6 +127,9 @@ class Rules(unittest.TestCase):
             h["components"]["schemas"]["Op"]["properties"]["op"]["enum"].append("cut")
             h["paths"]["/v1/stats"] = {"get": {"responses": {"200": {"description": "ok"}}}}
             h["paths"]["/v1/info"]["get"]["responses"]["429"] = {"description": "new"}
+            h["components"]["schemas"]["ErrorCode"]["enum"].append("request_timeout")
+            info["engine"]["enum"].append("other")
+            h["components"]["schemas"]["ReadinessNotReady"]["allOf"][0]["properties"]["status"]["enum"].append("stale")
 
         self.assertEqual(breaks(additive), ([], []))
 
@@ -152,6 +187,28 @@ class Rules(unittest.TestCase):
             h["components"]["schemas"]["Op"]["properties"]["source"]["type"] = "integer"
 
         self.assert_break(narrow, "request type narrowed")
+
+    def test_response_enum_values_removed(self):
+        self.assert_break(lambda h: h["components"]["schemas"]["ErrorCode"]["enum"].remove("busy"),
+                          "GET /v1/info 503.code: response values removed ['busy']")
+        self.assert_break(lambda h: h["components"]["schemas"]["Info"]["properties"]["engine"]["enum"].remove("hdt"),
+                          "GET /v1/info 200.engine: response values removed ['hdt']")
+
+        def readiness(h):
+            h["components"]["schemas"]["ReadinessNotReady"]["allOf"][0]["properties"]["status"]["enum"].remove(
+                "catching_up")
+
+        self.assert_break(readiness, "GET /ready 200<oneOf #/components/schemas/ReadinessNotReady>.status: "
+                                     "response values removed ['catching_up']")
+
+    def test_response_enum_removal_on_experimental_operation_only_notes(self):
+        base = copy.deepcopy(BASE)
+        base["paths"]["/v1/info"]["get"]["x-knotrel-stability"] = "experimental"
+        head = copy.deepcopy(base)
+        head["components"]["schemas"]["ErrorCode"]["enum"].remove("busy")
+        breaking, info = compat.check(base, head)
+        self.assertEqual(breaking, [])
+        self.assertIn("(experimental) GET /v1/info 503.code: response values removed ['busy']", info)
 
     def test_experimental_operations_only_note(self):
         def remove(h):
@@ -277,6 +334,17 @@ class CommandLine(unittest.TestCase):
         self.assertEqual(approved.returncode, 0, approved.stdout)
         self.assertIn("approved: GET /v1/info: operation removed", approved.stdout)
         self.assertEqual(self.run_cli(copy.deepcopy(BASE)).returncode, 0)
+
+    def test_approved_response_enum_removal_passes(self):
+        head = copy.deepcopy(BASE)
+        head["components"]["schemas"]["ErrorCode"]["enum"].remove("busy")
+        change = "GET /v1/info 503.code: response values removed ['busy']"
+        failed = self.run_cli(head)
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn(f"BREAKING: {change}", failed.stdout)
+        approved = self.run_cli(head, [{"change": change, "release": "v2.0.0", "justification": "test"}])
+        self.assertEqual(approved.returncode, 0, approved.stdout)
+        self.assertIn(f"approved: {change}", approved.stdout)
 
     def test_usage_error(self):
         out = subprocess.run([sys.executable, SCRIPT], capture_output=True, text=True)

@@ -22,8 +22,9 @@ Rules, for each operation present in BASE:
   alternative disappears, a request type narrows, or a request constraint
   tightens (`maxLength`, `minLength`, `maximum`, `minimum`, `maxItems`,
   `minItems`, `pattern`);
-- a response property disappears or stops being required, or a response type
-  widens (for example a field becomes nullable, also through a `null`
+- a response property disappears or stops being required, a documented
+  response enum value disappears (an error code, an `engine` value, a status
+  or mode), or a response type widens (for example a field becomes nullable, also through a `null`
   alternative of `oneOf`/`anyOf`).
 `oneOf`/`anyOf` alternatives present in both versions (matched by reference,
 otherwise by position) are compared recursively.
@@ -161,10 +162,12 @@ def compare(base_spec, head_spec, base, head, direction, where, out, seen):
         for change in tightened(b, h):
             out.append(f"{where}: request constraint tightened ({change})")
 
-    if "enum" in b and "enum" in h and direction == "request":
+    if "enum" in b and "enum" in h:
         removed = [v for v in b["enum"] if v not in h["enum"]]
-        if removed:
+        if removed and direction == "request":
             out.append(f"{where}: accepted values removed {removed}")
+        elif removed:
+            out.append(f"{where}: response values removed {removed}")
     if "const" in b and direction == "request" and h.get("const", b["const"]) != b["const"]:
         out.append(f"{where}: accepted constant changed")
 
