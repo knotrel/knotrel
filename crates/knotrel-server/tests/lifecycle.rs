@@ -352,6 +352,67 @@ async fn router_with_lifecycle_readiness_follows_the_supplied_lifecycle() {
     );
 }
 
+/// While draining, only `GET` and `HEAD` probes and scrapes pass the gate: any
+/// other method on `/ready`, `/health` or `/metrics` is new work and gets
+/// `503 shutting_down` (with `Connection: close`), not the router's `405`.
+#[tokio::test]
+async fn draining_rejects_non_read_methods_on_probe_and_metrics_paths() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    const SHUTTING_DOWN: &str = r#"{"result":"error","code":"shutting_down","message":"server is shutting down; retry against another instance"}"#;
+    let lifecycle = Lifecycle::new();
+    let app = router_with_lifecycle(config().with_metrics_enabled(true), lifecycle.clone());
+    lifecycle.mark_ready();
+
+    let send = |method: &'static str, path: &'static str| {
+        let app = app.clone();
+        async move {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status().as_u16();
+            let connection = response
+                .headers()
+                .get("connection")
+                .map(|value| value.to_str().unwrap().to_owned());
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (
+                status,
+                connection,
+                String::from_utf8(body.to_vec()).unwrap(),
+            )
+        }
+    };
+
+    // Before draining, a wrong method is an ordinary 405.
+    assert_eq!(send("POST", "/ready").await.0, 405);
+
+    lifecycle.begin_draining();
+    let close = Some("close".to_owned());
+    for path in ["/ready", "/health", "/metrics"] {
+        for method in ["POST", "PUT", "DELETE"] {
+            assert_eq!(
+                send(method, path).await,
+                (503, close.clone(), SHUTTING_DOWN.to_owned()),
+                "{method} {path}"
+            );
+        }
+        // GET and HEAD probes and scrapes still pass.
+        for method in ["GET", "HEAD"] {
+            let (status, connection, body) = send(method, path).await;
+            assert_ne!(body, SHUTTING_DOWN, "{method} {path}");
+            assert_ne!(status, 405, "{method} {path}");
+            assert_eq!(connection, close, "{method} {path}");
+        }
+    }
+}
+
 /// A failed graph worker makes `/ready` report `unavailable` through
 /// `router_with_lifecycle`, in the ready phase and while draining (a failed
 /// worker wins over every other state, as documented on the function).

@@ -320,3 +320,242 @@ fn non_loopback_listener_requires_a_separate_constructor() {
             .is_err()
     );
 }
+
+/// A source-managed router with a registered session (`f`, epoch 1) and a
+/// `create_only` baseline at source position `p0` (generation 1), plus the
+/// instance ID every feeder request must carry.
+async fn bootstrapped_feeder() -> (Router, String) {
+    let app = router_with_config(
+        config(EngineConfig::CompactBfs).with_mode(knotrel_server::ServerMode::SourceManaged),
+    );
+    let instance = get(&app, "/v1/info").await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let session = json!({
+        "instance_id": instance, "feeder_session_id": "f", "feeder_epoch": 1,
+        "lease_duration_ms": 30_000,
+    });
+    let (status, body) = feeder(&app, &instance, "session", &session, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = feeder(&app, &instance, "import", &import_body(&instance), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    (app, instance)
+}
+
+fn import_body(instance: &str) -> Value {
+    json!({
+        "instance_id": instance, "graph_id": "default", "mode": "create_only",
+        "feeder_session_id": "f", "feeder_epoch": 1, "source_id": "s",
+        "source_epoch": "e", "source_position": "p0", "nodes": ["1", "2"], "edges": [],
+    })
+}
+
+fn events_body(instance: &str, events: Value) -> Value {
+    json!({
+        "instance_id": instance, "graph_id": "default", "generation": 1,
+        "feeder_session_id": "f", "feeder_epoch": 1, "source_id": "s",
+        "source_epoch": "e", "events": events,
+    })
+}
+
+fn event(sequence: u64, event_id: &str, prev_position: &str) -> Value {
+    json!({
+        "event_id": event_id, "delivery_sequence": sequence,
+        "prev_delivery_sequence": sequence - 1,
+        "source_position": format!("p{sequence}"), "prev_source_position": prev_position,
+        "op": "progress",
+    })
+}
+
+/// POSTs `body` to `/v1/feeder/{route}` with the instance-ID header and an
+/// optional `If-Match`; returns the status and the raw body text.
+async fn feeder(
+    app: &Router,
+    instance: &str,
+    route: &str,
+    body: &Value,
+    if_match: Option<&str>,
+) -> (StatusCode, String) {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/feeder/{route}"))
+        .header("content-type", "application/json")
+        .header("x-knotrel-instance-id", instance);
+    if let Some(if_match) = if_match {
+        request = request.header("if-match", if_match);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+const MARKER: &str = "zq-echo-marker-7f3a";
+
+fn assert_not_echoed(case: &str, status: StatusCode, body: &str, code: &str) {
+    assert!(status.is_client_error(), "{case}: {status} {body}");
+    let value: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(value["code"], code, "{case}: {body}");
+    assert!(!body.contains(MARKER), "{case} echoed client input: {body}");
+}
+
+/// Feeder error messages may quote server state (the applied position, the
+/// server's identifiers) but never a client-supplied string (T1.9,
+/// `docs/http-api.md` "Client error messages never quote request input").
+#[tokio::test]
+async fn feeder_errors_never_echo_client_supplied_strings() {
+    // Paths that leave the session synchronizable share one router.
+    let (app, instance) = bootstrapped_feeder().await;
+
+    let mut wrong_import = import_body(&instance);
+    wrong_import["mode"] = json!("replace");
+    let (status, body) = feeder(
+        &app,
+        &instance,
+        "import",
+        &wrong_import,
+        Some(&format!("\"1.0.{MARKER}\"")),
+    )
+    .await;
+    assert_not_echoed("If-Match", status, &body, "precondition_failed");
+
+    let mut wrong_instance = import_body(&instance);
+    wrong_instance["instance_id"] = json!(MARKER);
+    let (status, body) = feeder(&app, &instance, "import", &wrong_instance, None).await;
+    assert_not_echoed("import instance_id", status, &body, "stale_instance_id");
+
+    let mut wrong_graph = import_body(&instance);
+    wrong_graph["mode"] = json!("replace");
+    wrong_graph["graph_id"] = json!(MARKER);
+    let (status, body) = feeder(&app, &instance, "import", &wrong_graph, None).await;
+    assert_not_echoed("import graph_id", status, &body, "invalid_graph_id");
+
+    let mut wrong_source = events_body(&instance, json!([event(1, "e1", "p0")]));
+    wrong_source["source_id"] = json!(MARKER);
+    let (status, body) = feeder(&app, &instance, "events", &wrong_source, None).await;
+    assert_not_echoed("source_id", status, &body, "source_mismatch");
+
+    let mut unknown_op = event(1, "e1", "p0");
+    unknown_op["op"] = json!(MARKER);
+    let (status, body) = feeder(
+        &app,
+        &instance,
+        "events",
+        &events_body(&instance, json!([unknown_op])),
+        None,
+    )
+    .await;
+    assert_not_echoed("unknown op", status, &body, "invalid_request");
+
+    let mut wrong_graph_events = events_body(&instance, json!([event(1, "e1", "p0")]));
+    wrong_graph_events["graph_id"] = json!(MARKER);
+    let (status, body) = feeder(&app, &instance, "events", &wrong_graph_events, None).await;
+    assert_not_echoed("events graph_id", status, &body, "invalid_graph_id");
+
+    let barrier = |position: Value| {
+        json!({
+            "instance_id": instance, "graph_id": "default", "generation": 1,
+            "feeder_session_id": "f", "feeder_epoch": 1,
+            "barrier_delivery_sequence": 0, "barrier_source_position": position,
+        })
+    };
+    let (status, body) = feeder(&app, &instance, "barrier", &barrier(json!(MARKER)), None).await;
+    assert_not_echoed(
+        "barrier position",
+        status,
+        &body,
+        "barrier_position_mismatch",
+    );
+    assert!(body.contains("'p0'"), "server state stays quoted: {body}");
+
+    // Each of the following desynchronizes the graph, so each gets a fresh one.
+    let (app, instance) = bootstrapped_feeder().await;
+    let mut wrong_epoch = events_body(&instance, json!([event(1, "e1", "p0")]));
+    wrong_epoch["source_epoch"] = json!(MARKER);
+    let (status, body) = feeder(&app, &instance, "events", &wrong_epoch, None).await;
+    assert_not_echoed("source_epoch", status, &body, "source_epoch_mismatch");
+    assert!(body.contains("'e'"), "server state stays quoted: {body}");
+
+    let (app, instance) = bootstrapped_feeder().await;
+    let (status, body) = feeder(
+        &app,
+        &instance,
+        "events",
+        &events_body(&instance, json!([event(1, MARKER, "p0")])),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = feeder(
+        &app,
+        &instance,
+        "events",
+        &events_body(&instance, json!([event(2, MARKER, "p1")])),
+        None,
+    )
+    .await;
+    assert_not_echoed("repeated event_id", status, &body, "conflicting_duplicate");
+
+    let (app, instance) = bootstrapped_feeder().await;
+    let (status, body) = feeder(
+        &app,
+        &instance,
+        "events",
+        &events_body(&instance, json!([event(1, "e1", "p0")])),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = feeder(
+        &app,
+        &instance,
+        "events",
+        &events_body(&instance, json!([event(1, MARKER, "p0")])),
+        None,
+    )
+    .await;
+    assert_not_echoed(
+        "conflicting event_id",
+        status,
+        &body,
+        "conflicting_duplicate",
+    );
+
+    let (app, instance) = bootstrapped_feeder().await;
+    let (status, body) = feeder(
+        &app,
+        &instance,
+        "events",
+        &events_body(&instance, json!([event(1, "e1", MARKER)])),
+        None,
+    )
+    .await;
+    assert_not_echoed(
+        "prev_source_position",
+        status,
+        &body,
+        "source_predecessor_mismatch",
+    );
+}
+
+/// Inspection query errors name the allowed parameters, never the rejected one.
+#[tokio::test]
+async fn inspection_errors_never_echo_client_supplied_names() {
+    let app = router_with_config(config(EngineConfig::CompactBfs).with_inspection(true));
+    for path in [
+        format!("/v1/nodes?{MARKER}=1"),
+        format!("/v1/nodes/1?{MARKER}=1"),
+        format!("/v1/nodes/1/edges?{MARKER}=1"),
+        format!("/v1/edges?{MARKER}=1"),
+    ] {
+        let (status, bytes) = send(&app, "GET", &path, Vec::new()).await;
+        let body = String::from_utf8(bytes).unwrap();
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}");
+        assert_not_echoed(&path, status, &body, "invalid_request");
+    }
+}

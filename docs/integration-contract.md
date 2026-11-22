@@ -293,7 +293,7 @@ Under the mutex, $(D_{barrier}, P_{barrier})$ is matched against $(D_{applied}, 
 | **B4: Exact Match While Initial Loading** | $D_B == D_{applied}$ | $P_B == P_{applied}$ | `Loading` (initial baseline, $g == 0$) | **`409 Conflict`** (`code: "graph_uninitialized"`) | Remains **`Loading`** (initial candidate unpublished) |
 | **B5: Exact Match While Desynchronized** | $D_B == D_{applied}$ | $P_B == P_{applied}$ | `Desynchronized` | **`409 Conflict`** (`code: "graph_desynchronized"`) | Remains **`Desynchronized`** (barrier cannot clear gap) |
 | **B6: Exact Match While Failed** | $D_B == D_{applied}$ | $P_B == P_{applied}$ | `Failed` | **`503 Service Unavailable`** (`code: "unavailable"`) | Remains **`Failed`** (worker failed permanently) |
-| **B7: Position Mismatch at Equal Sequence** | $D_B == D_{applied}$ | $P_B \ne P_{applied}$ | Any | **`409 Conflict`** (`code: "barrier_position_mismatch"`) | **Unchanged** (preserves existing state) |
+| **B7: Position Mismatch at Equal Sequence** | $D_B == D_{applied}$ | $P_B$ supplied and $P_B \ne P_{applied}$ (an omitted or null $P_B$ matches any position) | Any | **`409 Conflict`** (`code: "barrier_position_mismatch"`) | **Unchanged** (preserves existing state) |
 | **B8: Premature Sequence** | $D_B > D_{applied}$ | Any | Any | **`409 Conflict`** (`code: "barrier_not_reached"`) | **Unchanged** (preserves existing state) |
 | **B9: Older Sequence (Conservative Rejection)** | $D_B < D_{applied}$ | Any | Any | **`409 Conflict`** (`code: "superseded_barrier"`) | **Unchanged** (preserves existing state) |
 
@@ -318,7 +318,7 @@ A barrier request transitions the server from `CatchingUp` or `Stale` to `Ready`
 1. Valid feeder session ownership (`req.feeder_session_id == live.feeder_session_id` and `req.feeder_epoch == live.feeder_epoch`).
 2. An active, unexpired monotonic lease (`monotonic_now() <= live.lease_deadline`).
 3. Matching instance identity (`req.instance_id == live.instance_id`) and generation (`req.generation == live.generation`).
-4. Exact delivery sequence AND position equality ($D_B == D_{applied} \land P_B == P_{applied}$).
+4. Exact delivery sequence equality ($D_B == D_{applied}$) AND, when $P_B$ (`barrier_source_position`) is supplied, position equality ($P_B == P_{applied}$); an omitted or null $P_B$ is not compared.
 
 Case B2 affirms that an already `Ready` server remains `Ready` (`200 OK`, `result: "already_synchronized"`). If the server is in `Desynchronized` (Case B5) or `Failed` (Case B6), matching sequence and position cannot bypass the failure, and the barrier is rejected while preserving the failure state.
 

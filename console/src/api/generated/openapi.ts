@@ -560,7 +560,7 @@ export interface components {
      *     | Code | Status | Where |
      *     | --- | --- | --- |
      *     | `barrier_not_reached` | 409 | barrier: `barrier_delivery_sequence` ahead of the applied sequence |
-     *     | `barrier_position_mismatch` | 409 | barrier: equal sequence, different `barrier_source_position` |
+     *     | `barrier_position_mismatch` | 409 | barrier: equal sequence, different `barrier_source_position` (when supplied) |
      *     | `busy` | 503 | the request's admission lane is exhausted: operations, batch, stats, inspection (shared lane); session, heartbeat (feeder control lane); events, barrier, gap (feeder data lane) |
      *     | `conflicting_duplicate` | 409 | events: retained sequence with a different `event_id` or payload, or a retained `event_id` reused; desynchronizes |
      *     | `desynchronized` | 503 | operations in source-managed mode while the graph is desynchronized; in a batch, every item of a 200 |
@@ -594,7 +594,7 @@ export interface components {
      *     | `self_loop` | 422 | operations, batch items, events, import |
      *     | `sequence_exhausted` | 409 | events: the delivery sequence cannot advance |
      *     | `session_required` | 409 | heartbeat, import, events, gap, barrier: no registered session |
-     *     | `shutting_down` | 503 | every route except `/health`, `/ready` and `/metrics`, while draining (also unknown routes) |
+     *     | `shutting_down` | 503 | every request except `GET`/`HEAD` on `/health`, `/ready` and `/metrics`, while draining (also unknown routes and other methods on those paths) |
      *     | `source_epoch_mismatch` | 409 | events: different `source_epoch`; desynchronizes |
      *     | `source_mismatch` | 409 | events: different `source_id` |
      *     | `source_predecessor_mismatch` | 409 | events: `prev_delivery_sequence` or `prev_source_position` does not match; desynchronizes |
@@ -1059,7 +1059,7 @@ export interface components {
       graph_id: 'default';
       generation: components['schemas']['FeederU64'];
       barrier_delivery_sequence: components['schemas']['FeederU64'];
-      /** @description Optional; when present, 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit. */
+      /** @description Optional; when absent or null, only the delivery sequence is validated. When present, 1 to 256 bytes of UTF-8 and must equal the applied source position. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit. */
       barrier_source_position?: string | null;
     };
     BarrierResponse: {
@@ -1108,8 +1108,8 @@ export interface components {
       };
     };
     /**
-     * @description `invalid_request`: unknown, repeated or malformed query parameter, invalid node ID,
-     *     `limit` outside 1-1000, unknown `state`, `after_target` without `after_source`.
+     * @description `invalid_request`: unknown, repeated or malformed query parameter, invalid node ID
+     *     (including a path segment that is not UTF-8 after percent-decoding), `limit` outside 1-1000, unknown `state`, `after_target` without `after_source`.
      *     `invalid_cursor`: a plain `compact-bfs` incidence cursor names an unregistered node.
      *     The query-string errors (`invalid_request`) are returned before the inspection path and
      *     carry no `Cache-Control` header; `invalid_cursor` carries `no-store`.
@@ -1142,7 +1142,7 @@ export interface components {
     };
   };
   parameters: {
-    /** @description Node ID (ASCII decimal digits, u64; leading zeroes are normalized). */
+    /** @description Node ID (ASCII decimal digits, u64; leading zeroes are normalized). A segment that does not percent-decode to UTF-8 (for example `%FF`) is an invalid node ID (422 `invalid_request`), or 409 `inspection_disabled` when inspection is off. */
     InspectionNode: components['schemas']['NodeId'];
     /** @description Exclusive cursor, the last node (or neighbor) of the previous page. Never expires. */
     InspectionAfter: components['schemas']['NodeId'];
@@ -2286,7 +2286,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        /** @description Node ID (ASCII decimal digits, u64; leading zeroes are normalized). */
+        /** @description Node ID (ASCII decimal digits, u64; leading zeroes are normalized). A segment that does not percent-decode to UTF-8 (for example `%FF`) is an invalid node ID (422 `invalid_request`), or 409 `inspection_disabled` when inspection is off. */
         node: components['parameters']['InspectionNode'];
       };
       cookie?: never;
@@ -2328,7 +2328,7 @@ export interface operations {
       };
       header?: never;
       path: {
-        /** @description Node ID (ASCII decimal digits, u64; leading zeroes are normalized). */
+        /** @description Node ID (ASCII decimal digits, u64; leading zeroes are normalized). A segment that does not percent-decode to UTF-8 (for example `%FF`) is an invalid node ID (422 `invalid_request`), or 409 `inspection_disabled` when inspection is off. */
         node: components['parameters']['InspectionNode'];
       };
       cookie?: never;

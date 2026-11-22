@@ -85,8 +85,11 @@ supported deployment is a single trusted local client:
   and the test that validates each mitigation.
 - Logs contain the method, path, status and latency of each request and the
   startup settings. They never contain request bodies, node IDs or parser
-  messages. Client error messages never quote request input, parser positions or
-  internal paths.
+  messages. Client error messages never quote request input (identifiers,
+  positions, epochs, `If-Match` values, operation, field or parameter names),
+  parser positions or internal paths. They may quote the server's own state
+  (for example the applied source position or the server's `source_epoch`) and
+  state numbers such as a node ID, delivery sequence or byte length.
 
 ## Request validation order
 
@@ -436,8 +439,9 @@ rather than `starting` before readiness. Embedded routers created with `router(.
 `unavailable` if a graph worker fails or panics. `router_with_lifecycle(config, lifecycle)` exposes all
 lifecycle phases, and `serve(...)` drives them: `starting` before `serve` marks the lifecycle ready,
 then the states above, and `503 draining` from the moment the drain begins, whatever the
-synchronization status, while `/health` (and `/metrics` when enabled) stay answerable and every
-other request gets `503 shutting_down` with `Connection: close`. This behavior is stable
+synchronization status, while `GET`/`HEAD` on `/health` and `/ready` (and on `/metrics` when
+enabled) stay answerable and every other request, including another method on those paths, gets
+`503 shutting_down` with `Connection: close`. This behavior is stable
 ([stability.md](stability.md)).
 
 ### Metrics (opt-in)
@@ -620,7 +624,8 @@ On the first SIGINT or SIGTERM (Unix; Ctrl-C elsewhere) the server:
 
 1. switches `/ready` to 503 `draining`;
 2. keeps accepting connections only so it can answer them: any request other
-   than `/health`, `/ready` or (when enabled) `/metrics` is rejected with 503 and
+   than a `GET` or `HEAD` on `/health`, `/ready` or (when enabled) `/metrics`
+   is rejected with 503 and
    `{"result":"error","code":"shutting_down",...}`, and every response carries
    `Connection: close`;
 3. closes idle keep-alive connections and connections still reading request
@@ -678,7 +683,7 @@ code, its status and where it comes from (the same table is in the
 | Code | Status | Where |
 | --- | --- | --- |
 | `barrier_not_reached` | 409 | barrier: `barrier_delivery_sequence` ahead of the applied sequence |
-| `barrier_position_mismatch` | 409 | barrier: equal sequence, different `barrier_source_position` |
+| `barrier_position_mismatch` | 409 | barrier: equal sequence, different `barrier_source_position` (when supplied) |
 | `busy` | 503 | the request's admission lane is exhausted: operations, batch, stats, inspection (shared lane); session, heartbeat (feeder control lane); events, barrier, gap (feeder data lane) |
 | `conflicting_duplicate` | 409 | events: retained sequence with a different `event_id` or payload, or a retained `event_id` reused; desynchronizes |
 | `desynchronized` | 503 | operations in source-managed mode while the graph is desynchronized; in a batch, every item of a 200 |
@@ -712,7 +717,7 @@ code, its status and where it comes from (the same table is in the
 | `self_loop` | 422 | operations, batch items, events, import |
 | `sequence_exhausted` | 409 | events: the delivery sequence cannot advance |
 | `session_required` | 409 | heartbeat, import, events, gap, barrier: no registered session |
-| `shutting_down` | 503 | every route except `/health`, `/ready` and `/metrics`, while draining (also unknown routes) |
+| `shutting_down` | 503 | every request except `GET`/`HEAD` on `/health`, `/ready` and `/metrics`, while draining (also unknown routes and other methods on those paths) |
 | `source_epoch_mismatch` | 409 | events: different `source_epoch`; desynchronizes |
 | `source_mismatch` | 409 | events: different `source_id` |
 | `source_predecessor_mismatch` | 409 | events: `prev_delivery_sequence` or `prev_source_position` does not match; desynchronizes |
@@ -960,7 +965,10 @@ IDs are JSON strings, exact over the whole u64 range. `limit` is 1–1000
 `all`, `enabled`, `disabled`, `effective` or `ineffective`. Without lifecycle
 support every node is active and every edge enabled and effective. Unknown or
 repeated parameters, malformed IDs and out-of-range values get 422
-`invalid_request`. An unregistered `{node}` gets 404 `unknown_node`.
+`invalid_request`; a `{node}` path segment that does not percent-decode to
+UTF-8 (for example `%FF`) is a malformed ID too, except that it gets 409
+`inspection_disabled` when inspection is off. An unregistered `{node}` gets
+404 `unknown_node`.
 
 Example:
 

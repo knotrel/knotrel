@@ -173,8 +173,10 @@ pub fn router_with_config(config: ServerConfig) -> axum::Router {
 /// - [`Phase::Draining`]: `GET /ready` answers 503 `{"status":"draining"}`,
 ///   whatever the synchronization status. `GET /health`, and `GET /metrics`
 ///   when metrics are enabled, are still answered normally so orchestrators can
-///   observe the drain; every other request, including unknown routes, is
-///   rejected with 503 `shutting_down` before it reaches a handler. A request
+///   observe the drain (`HEAD` works like `GET` on these paths); every other
+///   request, including unknown routes and other methods on the probe and
+///   metrics paths, is rejected with 503 `shutting_down` before it reaches a
+///   handler. A request
 ///   admitted before draining began runs to completion. While draining, every
 ///   response carries `Connection: close`.
 /// - A failed graph worker makes `/ready` answer 503 `{"status":"unavailable"}`

@@ -280,16 +280,14 @@ impl CanonicalOp {
     ) -> Result<Self, FeederError> {
         let operation = match &event.op {
             WireOp::Known(operation) => *operation,
-            WireOp::Unknown(name) => {
+            // The unknown name is client input and is never quoted (T1.9).
+            WireOp::Unknown(_) => {
                 return Err(FeederError::InvalidRequest(if lifecycle {
-                    format!(
-                        "unsupported operation '{name}'; must be link, cut, add_node, progress, \
-                         set_node_active, set_edge_enabled, or remove_node"
-                    )
+                    "unsupported operation; must be link, cut, add_node, progress, \
+                     set_node_active, set_edge_enabled, or remove_node"
+                        .to_owned()
                 } else {
-                    format!(
-                        "unsupported operation '{name}'; must be link, cut, add_node, or progress"
-                    )
+                    "unsupported operation; must be link, cut, add_node, or progress".to_owned()
                 }));
             }
         };
@@ -726,7 +724,7 @@ fn validate_replacement_precondition(
         || expected_pos_encoded != live_pos_encoded
     {
         return Err(FeederError::PreconditionFailed(format!(
-            "If-Match '\"{inner}\"' does not match current state '\"{}.{}.{}\"'",
+            "If-Match does not match current state '\"{}.{}.{}\"'",
             state.generation, live_ver, live_pos_encoded
         )));
     }
@@ -808,7 +806,6 @@ pub(crate) enum FeederError {
     InvalidRequest(String),
     BarrierPositionMismatch {
         expected: String,
-        received: String,
     },
     BarrierNotReached {
         expected: u64,
@@ -1358,13 +1355,16 @@ impl GraphState {
             });
         }
 
-        // Decision table: B7 (Position mismatch at equal sequence)
+        // Decision table: B7 (Position mismatch at equal sequence). The
+        // field is optional: when it is absent or null only the delivery
+        // sequence is validated (B8, B9 above); when supplied it must equal
+        // the applied source position exactly.
         let current_pos = self.source_position.as_deref();
-        let req_pos = req.barrier_source_position.as_deref();
-        if req_pos != current_pos {
+        if let Some(req_pos) = req.barrier_source_position.as_deref()
+            && Some(req_pos) != current_pos
+        {
             return Err(FeederError::BarrierPositionMismatch {
                 expected: current_pos.unwrap_or_default().to_string(),
-                received: req_pos.unwrap_or_default().to_string(),
             });
         }
 
@@ -1450,8 +1450,7 @@ impl GraphState {
             && live_source_id != &req.source_id
         {
             return Err(FeederError::SourceMismatch(format!(
-                "request source_id '{}' does not match server source_id '{}'",
-                req.source_id, live_source_id
+                "request source_id does not match the server's source_id '{live_source_id}'"
             )));
         }
         if let Some(ref live_source_epoch) = self.source_epoch
@@ -1463,8 +1462,7 @@ impl GraphState {
                 telemetry,
             );
             return Err(FeederError::SourceEpochMismatch(format!(
-                "request source_epoch '{}' does not match server source_epoch '{}'",
-                req.source_epoch, live_source_epoch
+                "request source_epoch does not match the server's source_epoch '{live_source_epoch}'"
             )));
         }
 
@@ -1527,8 +1525,8 @@ impl GraphState {
                             telemetry,
                         );
                         let err_msg = format!(
-                            "retained sequence {seq} has event_id '{}', received '{}'",
-                            retained.event_id, event.event_id
+                            "retained sequence {seq} has event_id '{}', which differs from the request's event_id",
+                            retained.event_id
                         );
                         return self.fail_batch_or_error(
                             telemetry,
@@ -1643,8 +1641,7 @@ impl GraphState {
                         telemetry,
                     );
                     let err_msg = format!(
-                        "prev_source_position '{}' does not match applied source position '{}'",
-                        event.prev_source_position, live_pos
+                        "prev_source_position does not match applied source position '{live_pos}'"
                     );
                     return self.fail_batch_or_error(
                         telemetry,
@@ -1671,8 +1668,7 @@ impl GraphState {
                         telemetry,
                     );
                     let err_msg = format!(
-                        "event_id '{}' is already present in retained deduplication window",
-                        event.event_id
+                        "event_id of sequence {seq} is already present in the retained deduplication window"
                     );
                     return self.fail_batch_or_error(
                         telemetry,
@@ -2346,8 +2342,8 @@ impl Service {
         }
         if *req.instance_id != *self.instance_id {
             return Err(FeederError::StaleInstanceId(format!(
-                "request instance_id '{}' does not match server instance_id '{}'",
-                req.instance_id, self.instance_id
+                "request instance_id does not match the server's instance_id '{}'",
+                self.instance_id
             )));
         }
         if !(MIN_LEASE_DURATION_MS..=MAX_LEASE_DURATION_MS).contains(&req.lease_duration_ms) {
@@ -2385,8 +2381,8 @@ impl Service {
         }
         if *req.instance_id != *self.instance_id {
             return Err(FeederError::StaleInstanceId(format!(
-                "request instance_id '{}' does not match server instance_id '{}'",
-                req.instance_id, self.instance_id
+                "request instance_id does not match the server's instance_id '{}'",
+                self.instance_id
             )));
         }
         let published_atomic = self.published_readiness.clone();
@@ -2519,15 +2515,13 @@ impl Service {
 
             if *req.instance_id != *instance_id {
                 return Err(FeederError::StaleInstanceId(format!(
-                    "request instance_id '{}' does not match server instance_id '{}'",
-                    req.instance_id, instance_id
+                    "request instance_id does not match the server's instance_id '{instance_id}'"
                 )));
             }
 
             if req.graph_id != DEFAULT_GRAPH_ID {
                 return Err(FeederError::InvalidGraphId(format!(
-                    "unsupported graph_id '{}'; only '{DEFAULT_GRAPH_ID}' is supported",
-                    req.graph_id,
+                    "unsupported graph_id; only '{DEFAULT_GRAPH_ID}' is supported"
                 )));
             }
 
@@ -4370,7 +4364,6 @@ mod tests {
             b7_res.unwrap_err(),
             FeederError::BarrierPositionMismatch {
                 expected: "pos-5".into(),
-                received: "pos-wrong".into()
             }
         );
         assert_eq!(state.sync_status, SyncStatus::CatchingUp);
