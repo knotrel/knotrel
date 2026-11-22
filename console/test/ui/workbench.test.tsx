@@ -12,6 +12,7 @@ import {
   byLane,
   laneSaturation,
   PerformancePage,
+  rejectionSeries,
   windowScrapes,
 } from '../../src/ui/PerformancePage';
 import type { QueryPreset } from '../../src/ui/presets';
@@ -345,6 +346,55 @@ describe('performance view', () => {
     expect(
       ['zeta', 'import', 'alpha', 'shared', 'feeder_control', 'feeder_data'].sort(byLane),
     ).toEqual(['shared', 'feeder_data', 'feeder_control', 'import', 'alpha', 'zeta']);
+  });
+
+  it('lists rejection series by reason, then lane, with or without the lane label', () => {
+    const scrape = (lines: string[]) => ({
+      at: 0,
+      samples: parseExposition(lines.join('\n')).samples,
+    });
+    // A server before 1.0.0: reasons only, sorted; a sample without a reason is ignored.
+    expect(
+      rejectionSeries(
+        scrape([
+          'knotrel_requests_rejected_total{reason="unavailable"} 0',
+          'knotrel_requests_rejected_total{reason="busy"} 3',
+          'knotrel_requests_rejected_total 1',
+        ]),
+      ),
+    ).toEqual([
+      { reason: 'busy', lane: undefined },
+      { reason: 'unavailable', lane: undefined },
+    ]);
+    // An unlabelled series (or an empty lane) sorts after the known lanes of its reason.
+    expect(
+      rejectionSeries(
+        scrape([
+          'knotrel_requests_rejected_total{reason="busy",lane="shared"} 0',
+          'knotrel_requests_rejected_total{reason="busy",lane=""} 0',
+          'knotrel_requests_rejected_total{reason="busy",lane="feeder_data"} 0',
+        ]),
+      ),
+    ).toEqual([
+      { reason: 'busy', lane: 'shared' },
+      { reason: 'busy', lane: 'feeder_data' },
+      { reason: 'busy', lane: undefined },
+    ]);
+    // A 1.0.0 server: reason first, then lanes in server order; duplicates collapse.
+    expect(
+      rejectionSeries(
+        scrape([
+          'knotrel_requests_rejected_total{reason="busy",lane="feeder_control"} 0',
+          'knotrel_requests_rejected_total{reason="unavailable",lane="none"} 0',
+          'knotrel_requests_rejected_total{reason="busy",lane="shared"} 0',
+          'knotrel_requests_rejected_total{reason="busy",lane="shared"} 0',
+        ]),
+      ),
+    ).toEqual([
+      { reason: 'busy', lane: 'shared' },
+      { reason: 'busy', lane: 'feeder_control' },
+      { reason: 'unavailable', lane: 'none' },
+    ]);
   });
 
   it('picks the window boundaries', () => {

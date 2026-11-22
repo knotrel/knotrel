@@ -425,8 +425,8 @@ authentication**. It returns 200 with
 `Cache-Control: no-store`.
 
 Like the probes, a scrape takes no graph lock and no admission or import
-permit; it does use synchronization internal to the metrics registry and the
-outstanding-job counter. It is answered during saturation, after a worker failure and while
+permit; it does use synchronization internal to the metrics registry and
+reads each admission lane's available permits (one atomic load per lane). It is answered during saturation, after a worker failure and while
 draining (with `Connection: close`). It exposes HTTP request counts and
 server-side durations by route template, held admission permits and the
 permit limit per admission lane (`lane` label: `shared`, and in

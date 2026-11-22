@@ -97,7 +97,7 @@ export function laneSaturation(scrape: Scrape): LaneSaturation[] {
 }
 
 /** `(reason, lane)` pairs of the rejection counter; `lane` is absent before 1.0.0. */
-function rejectionSeries(scrape: Scrape): { reason: string; lane: string | undefined }[] {
+export function rejectionSeries(scrape: Scrape): { reason: string; lane: string | undefined }[] {
   const keys = new Map<string, { reason: string; lane: string | undefined }>();
   for (const s of select(scrape, 'knotrel_requests_rejected_total')) {
     const reason = s.labels['reason'];

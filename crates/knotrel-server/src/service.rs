@@ -2182,7 +2182,7 @@ impl Service {
             .try_acquire_owned()
             .map_err(|_| {
                 tracing::warn!("import capacity exhausted; rejecting with 503 import_in_progress");
-                self.count_rejection(Rejection::ImportCapacity);
+                self.count_rejection(Rejection::busy(Lane::Import));
                 FeederError::ImportInProgress
             })?;
         Ok(ImportPermit {
@@ -2992,18 +2992,15 @@ impl Service {
             self.count_rejection(Rejection::Unavailable);
             return Err(ServiceError::Unavailable);
         }
-        let permit = self
-            .semaphore(lane)
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                tracing::warn!(
-                    lane = lane.label(),
-                    "request capacity exhausted; rejecting with 503 busy"
-                );
-                self.count_rejection(Rejection::busy(lane));
-                ServiceError::Busy
-            })?;
+        let semaphore = self.semaphore(lane);
+        let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
+            tracing::warn!(
+                lane = lane.label(),
+                "request capacity exhausted; rejecting with 503 busy"
+            );
+            self.count_rejection(Rejection::busy(lane));
+            ServiceError::Busy
+        })?;
         Ok((permit, self.lifecycle.track_job()))
     }
 

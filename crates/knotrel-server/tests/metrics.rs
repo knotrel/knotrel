@@ -3899,13 +3899,38 @@ mod lanes {
         expr
     }
 
+    /// Whether `expr` uses one of the PromQL `keywords` as a clause, that is
+    /// as a whole word followed (after optional whitespace) by `(`, as in
+    /// `on (lane)`, `ignoring(x)` or `by(lane)`.
+    fn uses_clause(expr: &str, keywords: &[&str]) -> bool {
+        let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == ':';
+        keywords.iter().any(|keyword| {
+            expr.match_indices(keyword).any(|(start, _)| {
+                let before = expr[..start].chars().next_back();
+                let after = expr[start + keyword.len()..].trim_start();
+                !before.is_some_and(is_ident) && after.starts_with('(')
+            })
+        })
+    }
+
+    #[test]
+    fn clause_detection_ignores_label_names_and_metric_names() {
+        assert!(uses_clause("a / on (lane) b", &["on"]));
+        assert!(uses_clause("a / on(lane) b", &["on"]));
+        assert!(uses_clause("a /ignoring  (x) b", &["ignoring"]));
+        assert!(uses_clause("sum by(lane) (a)", &["by"]));
+        assert!(!uses_clause("knotrel_on{lane!=\"import\"} / b", &["on"]));
+        assert!(!uses_clause("a{region=\"on\"} / b", &["on"]));
+        assert!(!uses_clause("sum without (reason) (a)", &["on", "by"]));
+    }
+
     /// Evaluates `KnotrelQueueSaturated` as Prometheus would: the two
     /// selectors divide with one-to-one vector matching on identical label
     /// sets, so each lane's numerator meets only that lane's capacity.
     fn saturated_lanes(samples: &[Sample]) -> Vec<String> {
         let expr = alert_expr("KnotrelQueueSaturated");
         assert!(
-            !expr.contains(" on") && !expr.contains("ignoring") && !expr.contains("by ("),
+            !uses_clause(&expr, &["on", "ignoring", "by", "without"]),
             "matching must keep every label, lane included: {expr}"
         );
         let (ratio, threshold) = expr.split_once(" > ").expect("comparison");
@@ -3939,7 +3964,10 @@ mod lanes {
             "{expr}"
         );
         let busy = alert_expr("KnotrelRequestsRejectedBusy");
-        assert!(busy.starts_with("sum by (lane) ("), "{busy}");
+        // Drops only `reason`, so `lane` and the scrape target's labels
+        // (`instance`, `job`) stay on the alert.
+        assert!(busy.starts_with("sum without (reason) ("), "{busy}");
+        assert!(!uses_clause(&busy, &["by", "on", "ignoring"]), "{busy}");
         assert!(busy.contains(r#"knotrel_requests_rejected_total{reason="busy"}"#));
 
         // A healthy source-managed server: every lane is paired and quiet.
@@ -4133,6 +4161,63 @@ mod lanes {
             wait_idle(&lifecycle).await;
             let lanes = assert_ratios(&scrape(&app).await, &[]);
             assert!(lanes.values().all(|(held, _)| *held == 0.0), "{lanes:?}");
+        }
+
+        /// The control lane (2 permits) is full only with two session or
+        /// heartbeat jobs in flight; the third is refused as `busy` on that
+        /// lane while the other lanes stay admissible.
+        #[tokio::test]
+        async fn feeder_control_lane_is_full_only_with_both_permits_held() {
+            let lifecycle = Lifecycle::new();
+            lifecycle.mark_ready();
+            let app = router_with_lifecycle(graph_counts::source_managed(), lifecycle.clone());
+            let instance = graph_counts::bootstrap(&app, &["1"], &[]).await;
+            wait_idle(&lifecycle).await;
+            let heartbeat = || {
+                serde_json::json!({
+                    "instance_id": instance, "feeder_session_id": "s", "feeder_epoch": 1,
+                })
+            };
+            let (first, task_first) = hold(
+                &app,
+                &lifecycle,
+                &instance,
+                "/v1/feeder/heartbeat",
+                heartbeat(),
+            )
+            .await;
+            let lanes = assert_ratios(&scrape(&app).await, &[]);
+            assert_eq!(lanes["feeder_control"], (1.0, 2.0));
+            let (second, task_second) = hold(
+                &app,
+                &lifecycle,
+                &instance,
+                "/v1/feeder/heartbeat",
+                heartbeat(),
+            )
+            .await;
+            let samples = scrape(&app).await;
+            let lanes = assert_ratios(&samples, &["feeder_control"]);
+            assert_eq!(lanes["feeder_control"], (2.0, 2.0));
+            assert_eq!(saturated_lanes(&samples), ["feeder_control"]);
+
+            let (status, _) =
+                graph_counts::feeder(&app, &instance, "/v1/feeder/heartbeat", None, heartbeat())
+                    .await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            let (status, body) = send(&app, Method::GET, "/v1/stats", "").await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let samples = scrape(&app).await;
+            assert_eq!(busy(&samples, "feeder_control"), 1.0);
+            assert_eq!(busy(&samples, "shared"), 0.0);
+            assert_eq!(busy(&samples, "feeder_data"), 0.0);
+
+            first.release();
+            second.release();
+            assert_eq!(task_first.await.unwrap().0, StatusCode::OK);
+            assert_eq!(task_second.await.unwrap().0, StatusCode::OK);
+            wait_idle(&lifecycle).await;
+            assert_ratios(&scrape(&app).await, &[]);
         }
 
         /// The import lane is full exactly while an import holds the single

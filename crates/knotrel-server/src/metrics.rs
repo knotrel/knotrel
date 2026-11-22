@@ -738,9 +738,10 @@ struct PhaseHistograms {
 pub(crate) struct ServiceTelemetry {
     rejected_family: Family<RejectionLabels, Counter>,
     uncertain_family: Family<OutcomeLabels, Counter>,
-    // Indexed by `Rejection`; `None` for series that do not exist in this
-    // mode, whose refusals HTTP cannot produce.
-    rejected: [Option<Counter>; Rejection::ALL.len()],
+    // Indexed by `Rejection`. A series that does not exist in this mode
+    // (refusals HTTP cannot produce there) is an unregistered counter, so
+    // recording stays a single atomic increment and is never exposed.
+    rejected: [Counter; Rejection::ALL.len()],
     uncertain: [Counter; Uncertainty::ALL.len()],
     graph_nodes: Gauge,
     graph_edges: Gauge,
@@ -770,11 +771,13 @@ impl ServiceTelemetry {
         let rejected_family = Family::<RejectionLabels, Counter>::default();
         let uncertain_family = Family::<OutcomeLabels, Counter>::default();
         let rejected = Rejection::ALL.map(|reason| {
-            reason.exists_in(mode).then(|| {
+            if reason.exists_in(mode) {
                 rejected_family
                     .get_or_create(&[("reason", reason.label()), ("lane", reason.lane_label())])
                     .clone()
-            })
+            } else {
+                Counter::default()
+            }
         });
         let uncertain = Uncertainty::ALL.map(|cause| {
             uncertain_family
@@ -1062,9 +1065,7 @@ impl ServiceTelemetry {
     }
 
     pub(crate) fn reject(&self, reason: Rejection) {
-        if let Some(counter) = &self.rejected[reason as usize] {
-            counter.inc();
-        }
+        self.rejected[reason as usize].inc();
     }
 
     pub(crate) fn uncertain(&self, cause: Uncertainty) {
@@ -1073,9 +1074,7 @@ impl ServiceTelemetry {
 
     #[cfg(test)]
     pub(crate) fn rejected_count(&self, reason: Rejection) -> u64 {
-        self.rejected[reason as usize]
-            .as_ref()
-            .map_or(0, Counter::get)
+        self.rejected[reason as usize].get()
     }
 
     #[cfg(test)]
@@ -1765,6 +1764,29 @@ mod tests {
         assert_eq!(status_label(StatusCode::from_u16(999).unwrap()), "other");
         let request = Request::new(axum::body::Body::empty());
         assert_eq!(route_label(&request), "unmatched");
+    }
+
+    #[test]
+    fn rejection_series_pair_each_reason_with_its_lane() {
+        let series: Vec<_> = Rejection::ALL
+            .iter()
+            .map(|r| (r.label(), r.lane_label()))
+            .collect();
+        assert_eq!(
+            series,
+            [
+                ("busy", "shared"),
+                ("busy", "feeder_data"),
+                ("busy", "feeder_control"),
+                ("import_capacity", "import"),
+                ("shutting_down", "none"),
+                ("unavailable", "none"),
+            ]
+        );
+        for lane in Lane::ALL {
+            assert_eq!(Rejection::busy(lane).lane(), Some(lane));
+        }
+        assert_eq!(Rejection::busy(Lane::Import), Rejection::ImportCapacity);
     }
 
     #[test]

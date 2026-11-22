@@ -22,7 +22,7 @@ groups:
       # Per admission lane: both gauges carry the same labels (`lane` plus
       # your target labels), so the division pairs each lane's outstanding
       # permits with that lane's capacity only. Do not aggregate either side
-      # without `by (lane)`. The import lane (one permit) is full for the whole
+      # without keeping `lane` and your target labels. The import lane (one permit) is full for the whole
       # duration of every import, so it is excluded.
       - alert: KnotrelQueueSaturated
         expr: |
@@ -36,7 +36,7 @@ groups:
           runbook: "docs/alerting.md#knotrelqueuesaturated"
 
       - alert: KnotrelRequestsRejectedBusy
-        expr: sum by (lane) (rate(knotrel_requests_rejected_total{reason="busy"}[5m])) > 0
+        expr: sum without (reason) (rate(knotrel_requests_rejected_total{reason="busy"}[5m])) > 0
         for: 5m
         labels:
           severity: warning

@@ -28,7 +28,7 @@ To find the request behind an alert, search the structured logs
 | --- | --- | --- | --- |
 | `KnotrelServiceUnavailable` | critical | `knotrel_service_unavailable == 1` | both |
 | `KnotrelQueueSaturated` | warning | one admission lane (except `import`) above 80% of its permits for 5 min, per `lane` | both |
-| `KnotrelRequestsRejectedBusy` | warning | any `busy` rejection rate on a lane for 5 min, per `lane` | both |
+| `KnotrelRequestsRejectedBusy` | warning | any `busy` rejection rate on a lane for 5 min, per `lane` and scrape target | both |
 | `KnotrelHighServerErrorRatio` | warning | over 5% of completed requests are 5xx for 10 min | both |
 | `KnotrelFeederLost` | critical | lease remaining below zero for 30 s | source-managed |
 | `KnotrelDesynchronized` | critical | readiness state `desynchronized` | source-managed |
@@ -171,6 +171,6 @@ breaks the build. `lanes::alert_expressions_divide_and_count_by_lane` parses
 the `KnotrelQueueSaturated` expression, evaluates it against a real
 exposition with one-to-one matching on identical label sets (each lane's
 numerator paired with its own capacity) and checks that
-`KnotrelRequestsRejectedBusy` aggregates `by (lane)`; the per-lane tests
+`KnotrelRequestsRejectedBusy` keeps `lane` and the target labels (`sum without (reason)`); the per-lane tests
 evaluate it while lanes fill. The file is not validated with `promtool` in CI; validate
 it with `promtool check rules` before loading it.
