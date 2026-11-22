@@ -1481,11 +1481,11 @@ in `src/logging.rs` cover sanitization and transition detection.
 ## 18. M6.5 qualification: overhead and series count
 
 **Overhead.** Campaign
-[`metrics-overhead-20261115`](../../knotrel-benchmarks/results/metrics-overhead-20261115/README.md)
+[`metrics-overhead-20261115`](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/metrics-overhead-20261115/README.md)
 in `knotrel-benchmarks` (generated
-[`REPORT.md`](../../knotrel-benchmarks/results/metrics-overhead-20261115/REPORT.md),
+[`REPORT.md`](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/metrics-overhead-20261115/REPORT.md),
 sha256 `f946f97a2d9fb948be6a198da72389259e825d94c47212794b1029aa8b50689e`;
-[`analysis/summary.json`](../../knotrel-benchmarks/results/metrics-overhead-20261115/analysis/summary.json),
+[`analysis/summary.json`](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/metrics-overhead-20261115/analysis/summary.json),
 sha256 `0b760e055fb45ea08c092a76e7c73c4da4b687921b00b71a3ca78e22457e2dc8`).
 One release build of the in-process router probe on the v0.4.0 candidate tree
 (identity `6ec5f564…ae65c3c`), metrics on versus off on the same binary, with a
