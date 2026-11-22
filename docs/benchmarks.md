@@ -15,7 +15,8 @@ The most recent qualified comparison is **v0.7.0 versus v0.6.0**, accepted with 
 ## Explore the evidence
 
 - [Performance history](performance-history.md): earlier comparisons, each with its own conditions.
-- [Benchmark repository](https://github.com/knotrel/knotrel-benchmarks): workloads, tooling and published reports.
+- [Performance site](https://knotrel.github.io/knotrel-benchmarks/): release-to-release reports, starting with 1.0.0 against a frozen 0.9.x reference. No report is published yet; the 1.0.0 page describes the plan.
+- [Benchmark repository](https://github.com/knotrel/knotrel-benchmarks): workloads, tooling and campaign evidence.
 - [v0.8.0 release notes](releases/v0.8.0-release-notes.md#performance-qualification): what was and was not measured.
 
 Do not combine measurements from different campaigns into a trend without checking their protocols and baselines.
