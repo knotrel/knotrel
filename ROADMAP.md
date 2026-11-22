@@ -30,8 +30,10 @@ An external feeder reads the authoritative database or event stream and supplies
 | **v0.7.0 — Measured Concurrency** (published 2026-11-20; qualification accepted with exceptions) | Remove the measured graph-lock bottleneck for read-heavy work without weakening any service invariant | M5 implementation (M5.3–M5.5, Acceptance M5): evaluate the minimal synchronization design from the v0.6.0 contention evidence that preserves panic handling, lease/staleness transitions, coherent generation/revision/position tuples, legacy batch isolation, import publication and shutdown/drain; measured evaluation of the 0.7.4 performance candidates (libraries and layouts aimed at the v0.6.0 non-PASS results); before/after qualification against v0.6.0 | No mechanism is prescribed in advance (a read-write lock is one option, not a decision); no sharding/RCU/snapshots/lock-free/actors without evidence; the coarse mutex stays if no design meets the invariants |
 | **v0.8.0 — Operational Console** (published 2026-11-21; core, server and console in lockstep) | Operate one server from a browser, as a separate artifact, plus opt-in read-only inspection routes on the server for browsing a graph | Read-only diagnostics (connectivity, liveness versus readiness, configuration, counts, identity and version, synchronization); standalone operations with structured outcomes and no automatic retries; container image and reproducible static archive; CI, coverage, SonarCloud and dry-run release workflow | No engine change; the only server additions are the inspection routes (`KNOTREL_INSPECTION`, off by default, never mutating); no authentication, visualization, multi-server, bulk import or metrics history; npm `npx` launcher DEFERRED. Released without a performance qualification against v0.7.0 (maintainer decision D2) |
 | **v0.9.0 — Integration & Reliability** (planned) | Make Knotrel easy to integrate with a real authoritative store and show that it stays correct and current through failures and load | A reference PostgreSQL integration through an external feeder (one source), recovery and synchronization tests against it, feeder progress under query load, contract groundwork for 1.0 (stability classes, compatibility policy, API checks in CI), a verified gateway deployment with upgrade/rebuild procedure, and a proportionate final performance campaign; see [v0.9.0](#v090--integration--reliability) | No connector inside the server; no Kafka, extra SDKs or CLI; no local persistence/WAL, multi-graph or new engines; console limited to fixes from use; no log viewer or speculative optimizations |
-| **v1.0.0 — Production Readiness** (v0.8.0 → v0.9.0 → v1.0.0-rc → v1.0.0, each step subject to its stability gates) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. v0.9.0 addresses the integration and reliability gaps named by the assessment; the rest close in the rc cycle |
+| **v1.0.0 — Production Readiness** (v0.8.0 → v0.9.0 → v1.0.0-rc → v1.0.0, each step subject to its stability gates) | Supported operational, security and compatibility guarantees | The ten-point checklist of the [v1.0 readiness assessment](docs/releases/v1.0-readiness.md): stable Rust/HTTP contracts, compatibility and deprecation policy, lifecycle/synchronization/fencing/recovery correctness, resource limits and overload behavior, performance qualification with every failure resolved or disposed, reproducible deployment/upgrade/rebuild, validated security boundary, cross-platform packages/CI/docs/examples, independent acceptance review, end-to-end integration evidence (synthetic and real adoption kept distinct). In the rc cycle also: disposition of every non-PASS result of the 0.9.6 campaign, and the [#87](https://github.com/knotrel/knotrel/issues/87) diagnosis that grounds the declared supported envelope; see [rc cycle](#r--release-candidate-cycle-v100-rc--v100) | Multi-graph demand-gated; ETT/HDT lifecycle and local persistence are not prerequisites; general-purpose/distributed database features excluded. v0.9.0 addresses the integration and reliability gaps named by the assessment; the rest close in the rc cycle |
 | **v1.1.0 — Cluster Forest Backend** (planned) | A new dynamic connectivity backend based on the cluster forest, delivered implemented, verified and documented, opt-in and experimental | CF1–CF6: design from the paper, sequential implementation in `knotrel-core`, differential/property/adversarial tests, integration behind the existing engine abstractions with the public contract preserved, a performance qualification with criteria declared beforehand, and an adoption decision; see [v1.1.0](#v110--cluster-forest-backend) | Batch-parallel variant DEFERRED beyond v1.1 (CF7); no change of the default backend without an explicit decision; no change to the v0.9 scope or the v1.0 readiness criteria |
+| **v1.2.0 — Performance Hardening** (proposed) | Leave no known performance issue open before the external comparison | Profiling sessions on core, server and feeder (exploratory, separate from formal measurement); resolution of every open performance issue (the Q3 fix of [#87](https://github.com/knotrel/knotrel/issues/87), the two unqualified `hub` 10k lifecycle requirements, every non-PASS or exception still open from 0.9.6 and CF5); evidence-selected optimizations; a final qualification against v1.1.0 whose candidate is frozen for the comparison; see [v1.2.0](#v120--performance-hardening) | No new features, engines or contracts beyond what a fix needs; no threshold changes; an issue that cannot be resolved is disposed explicitly by the maintainer, never silently |
+| **After v1.2.0 — External comparison** (not a release) | Show where a dedicated connectivity service helps and where it does not | Reproducible comparison against PostgreSQL alone and Neo4j, protocol in [knotrel-benchmarks#15](https://github.com/knotrel/knotrel-benchmarks/issues/15), run on the frozen v1.2.0 candidate | Not a release gate; no advantage assumed; code changes after it starts need a new identified candidate |
 
 **Exposure rule:** Loopback or a trusted, access-controlled environment remains the boundary. Untrusted exposure makes authentication/authorization and abuse tests blocking for that release, regardless of their later roadmap placement. Import and feeder ownership are security-sensitive capabilities.
 
@@ -117,7 +119,7 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [x] **0.9.3** Feeder progress under query load — Implemented and measured (reserved feeder admission); **Q3 FAIL, accepted as a declared limitation of v0.9.0** for the measured configuration; follow-up [#87](https://github.com/knotrel/knotrel/issues/87)
 - [x] **0.9.4** Contracts toward 1.0 (stability classes, compatibility policy, API checks in CI) — Implemented and approved (2026-11-21): [policy](docs/compatibility.md), [classification](docs/stability.md), CI job `API compatibility`
 - [x] **0.9.5** Verified gateway deployment, upgrade and rebuild — Implemented: [gateway example](examples/gateway/compose.yaml) with smoke test in CI, [upgrade procedure](docs/deployment.md#upgrade-between-minor-versions) tested from the previous release
-- [ ] **0.9.6** Final performance campaign — [plan](docs/releases/v0.9.0-qualification-plan.md) proposed, awaiting approval
+- [ ] **0.9.6** Final performance campaign — [plan](docs/releases/v0.9.0-qualification-plan.md) approved 2026-11-22; campaign running
 
 ### Unassigned — Optional Local Persistence & Fast Recovery
 
@@ -132,6 +134,9 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [ ] **Feature M8:** Supported security and access control
 - [ ] **Feature M9:** Packaging, compatibility and operations
 - [ ] **Feature M7:** Multi-graph management (OPTIONAL, demand-gated)
+- [ ] **R1** Disposition of every non-PASS result and unqualified requirement of the 0.9.6 campaign
+- [ ] **R2** [#87](https://github.com/knotrel/knotrel/issues/87) diagnosis: CPU hypothesis tested under an approved protocol variant; declared supported envelope
+- [ ] **R3** rc gates of the [readiness assessment](docs/releases/v1.0-readiness.md) (contract freeze review, randomized soak, reproducible build, threat model, acceptance review)
 
 ### v1.1.0 — Cluster Forest Backend (planned)
 
@@ -144,6 +149,19 @@ Statuses: see [v1.1.0](#v110--cluster-forest-backend).
 - [ ] **CF5** Performance qualification against the existing backends
 - [ ] **CF6** Adoption decision and selection guidance
 - [ ] **CF7** Batch-parallel variant (DEFERRED beyond v1.1)
+
+### v1.2.0 — Performance Hardening (proposed)
+
+Statuses: see [v1.2.0](#v120--performance-hardening).
+
+- [ ] **H1** Profiling sessions (core, server, feeder), exploratory
+- [ ] **H2** Resolution of every open performance issue, including the Q3 fix of [#87](https://github.com/knotrel/knotrel/issues/87)
+- [ ] **H3** Evidence-selected optimizations
+- [ ] **H4** Final qualification against v1.1.0; candidate frozen for the external comparison
+
+### After v1.2.0 — External comparison (not a release)
+
+- [ ] Comparison against PostgreSQL and Neo4j, [knotrel-benchmarks#15](https://github.com/knotrel/knotrel-benchmarks/issues/15)
 
 ## Guiding principles
 
@@ -935,6 +953,35 @@ The recovery principle is mandatory for any selected local persistence strategy:
 - [ ] **M7.5** Test concurrent lifecycle, restart/rebuild, quotas and isolation.
 - [ ] **Acceptance M7:** Independent synchronization and resource isolation; single-graph mode remains supported. Distributed storage and general-purpose graph database features remain excluded.
 
+### R — Release-candidate cycle (v1.0.0-rc → v1.0.0)
+
+**Status: proposed (2026-11-22).** v1.0 needs a *declared* supported
+envelope, not the resolution of every performance limitation. The
+resolution belongs to v1.2.0, before the external comparison.
+
+- [ ] **R1 0.9.6 dispositions.** The maintainer disposes of every non-PASS
+  result of the v0.9.0 campaign and of the two `hub` 10k lifecycle
+  requirements that it cannot qualify by construction (no equivalent
+  reference). The disposition is accepted for v1.0, or assigned to v1.2.0
+  (H2) with its criterion. Nothing is carried silently.
+- [ ] **R2 [#87](https://github.com/knotrel/knotrel/issues/87) diagnosis.**
+  - Test the CPU-contention hypothesis behind Q3 with a protocol variant
+    approved before measuring (two machines, or one Linux host with Knotrel
+    pinned to separate cores).
+  - Use the result to write the declared supported envelope for feeder
+    catch-up under query load (readiness item 4).
+  - Thresholds unchanged. If the diagnosis shows a small, server-side fix,
+    it may be proposed for the rc; otherwise the fix is H2.
+- [ ] **R3 rc gates** of the [readiness
+  assessment](docs/releases/v1.0-readiness.md): contract freeze review,
+  independent review of the integration contract and randomized soak,
+  reproducible-build check, threat model and `SECURITY.md`, review of the
+  whole 1.0 contract set; then the 1.0 gates (platform smoke tests, rc→1.0
+  diff under the compatibility policy).
+
+**Acceptance v1.0.0:** the ten readiness criteria met or explicitly
+disposed; R1–R3 complete.
+
 ## v1.1.0 — Cluster Forest Backend
 
 **Status: planned (2026-11-21).** A planning entry only: nothing is
@@ -1071,6 +1118,58 @@ and its reason are recorded).
 experimental unless CF6 records otherwise; no public contract changed except
 the additive engine value; CF7 recorded as deferred.
 
+## v1.2.0 — Performance Hardening
+
+**Status: proposed (2026-11-22).** The release between Cluster Forest and
+the external comparison ([knotrel-benchmarks#15](https://github.com/knotrel/knotrel-benchmarks/issues/15)).
+That issue asks for a profiling pass and any selected optimizations in a
+release named explicitly, not v1.1.0. **Rule:** no known performance issue
+is open when the comparison candidate is frozen. Each is resolved, or
+disposed explicitly by the maintainer with its reason.
+
+- [ ] **H1 Profiling sessions** (exploratory, never qualification data):
+  - CPU profiles, allocation profiles, lock contention and serialization
+    costs;
+  - core, server and feeder measured separately;
+  - representative workloads: sparse, ring and hub; lifecycle churn; the
+    feeder-under-load scenarios; imports;
+  - `compact-bfs` and `cluster-forest`.
+  - **Output:** a ranked list of bottlenecks, each with its evidence. If a
+    session is not warranted for some area, the reason is written down.
+- [ ] **H2 Resolution of every open performance issue.** At least:
+  - **Q3 fix:** [#87](https://github.com/knotrel/knotrel/issues/87) (B1
+    queued feeder work passes waiting readers, or B2 bounded concurrent
+    query execution, chosen from the R2 diagnosis). Q3 must pass under the
+    unchanged thresholds, with Q1, Q2, Q4 and Q5 still passing.
+  - **Hub 10k requirements:** the two unqualified `hub` 10k lifecycle
+    requirements (B4 ops and events). This needs a reference design the
+    maintainer approves first, or a recorded disposition.
+  - **Carried results:** every non-PASS result or exception that R1 or CF5
+    assigned here.
+- [ ] **H3 Evidence-selected optimizations** from H1:
+  - at most three candidates;
+  - each with before/after evidence and correctness and regression checks;
+  - a "no change" decision is valid.
+- [ ] **H4 Final qualification** against v1.1.0, with criteria and budget
+  fixed beforehand and failures reported as failures. Its candidate commit,
+  binaries and settings are frozen and handed to the external comparison.
+
+**Out of scope:** new features, engines or public contracts beyond what a
+fix needs (additive and under the compatibility policy); threshold changes;
+CF7.
+
+**Acceptance v1.2.0:** H1–H4 complete; the list of open performance issues
+is empty, or each remaining entry carries a maintainer disposition; the
+comparison candidate is frozen.
+
+## After v1.2.0 — External comparison (not a release)
+
+The comparison against PostgreSQL alone and Neo4j, with Knotrel's existing
+backends as internal control, follows the protocol of
+[knotrel-benchmarks#15](https://github.com/knotrel/knotrel-benchmarks/issues/15).
+It runs on the frozen v1.2.0 candidate and is not a release gate. A code
+change after it starts needs a new identified candidate and campaign.
+
 ## Dependencies and sequencing
 
 1. Preserve the released v0.1.0 contract and historical evidence; reconcile old checklist bookkeeping separately rather than claiming new validation here.
@@ -1083,6 +1182,8 @@ the additive engine value; CF7 recorded as deferred.
 7. Move security forward whenever exposure requires it. Multi-graph and concurrency redesign remain demand/evidence-gated.
 8. After v0.8.0: v0.9.0 (integration and reliability against one real source), then v1.0.0-rc, then v1.0.0. Within v0.9.0, the PostgreSQL read method (0.9.1) comes first because 0.9.2 depends on it; 0.9.3 measures before it changes anything; 0.9.6 runs last, on the release candidate.
 9. **v1.1.0 (planned) starts after v1.0.0.** It builds on the existing engine abstractions and on the compatibility rules of 0.9.4 (the new engine value is additive and experimental). Within v1.1: CF1 → CF2 → CF3 → CF4 → CF5 → CF6, each completion criterion met before the next starts (CF3 test work may begin with CF2); CF7 is deferred and needs its own approval.
+10. **v1.0.0-rc cycle:** R1 (0.9.6 dispositions) and R2 (the #87 diagnosis) come before the declared supported envelope is written; R3 follows the readiness assessment.
+11. **v1.2.0 (proposed) starts after v1.1.0:** H1 → H2/H3 → H4. The R2 diagnosis decides the Q3 fix design in H2. H4 freezes the candidate for the external comparison ([knotrel-benchmarks#15](https://github.com/knotrel/knotrel-benchmarks/issues/15)), which runs after v1.2.0 and is not a release.
 
 **Planning migration:** The previous durability-first Feature 0.2.1 and M1.1–M1.6 are superseded as v0.2.0 requirements; their storage concerns are retained under P1–P5. Previous M2.1–M2.6 import concerns now map to 0.2.1–0.2.3, 0.2.5 and 0.2.6, with durability-before-ack replaced by coherent in-memory publication plus source synchronization. M3–M9 retain their purpose with integration-first dependencies. This remapping does not mark any former or future task complete.
 
