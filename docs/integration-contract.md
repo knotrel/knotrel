@@ -1285,18 +1285,18 @@ Feature 0.2.5 is implemented in `knotrel-server`:
 
 ### 13.5 Implementation Status: Feature 0.2.6 (External Feeder Example, Restart/Rebuild Tests, and Reproducible Measurements)
 Feature 0.2.6 is implemented, providing executable integration tools, comprehensive recovery tests, and reproducible benchmarks:
-1. **Runnable External Feeder Reference Example:** Implemented in [`crates/knotrel-server/examples/external_feeder.rs`](crates/knotrel-server/examples/external_feeder.rs) separate from server internals and graph core. Driven by a deterministic source fixture ([`crates/knotrel-server/tests/common/feeder.rs`](crates/knotrel-server/tests/common/feeder.rs)), it executes the full lifecycle over the wire:
+1. **Runnable External Feeder Reference Example:** Implemented in [`crates/knotrel-server/examples/external_feeder.rs`](../crates/knotrel-server/examples/external_feeder.rs) separate from server internals and graph core. Driven by a deterministic source fixture ([`crates/knotrel-server/tests/common/feeder.rs`](../crates/knotrel-server/tests/common/feeder.rs)), it executes the full lifecycle over the wire:
    - Server discovery (`GET /v1/info`) and operating mode verification (`source-managed`).
    - Session registration (`POST /v1/feeder/session`) with observable background heartbeat loop (`POST /v1/feeder/heartbeat`), validating responses with bounded timeouts and stopping stale ownership on fencing.
    - Atomic baseline snapshot import ($S$) with isolated vertices (`[99, 100]`), verifying published generation 1 and HTTP 201 Created.
    - Ordered catch-up stream ($D=1..7$) exercising vertex creation, links, cuts, no-op duplicate mutations, and non-mutating `progress` checkpoints.
    - Synchronization barrier $B$ (`POST /v1/feeder/barrier`) at high-water mark, restoring `Ready` (HTTP 200).
-   - Independent Oracle comparison: Queries against `/v1/operations` verified against pure standard library BFS/adjacency oracle ([`ExternalSourceOracle`](crates/knotrel-server/tests/common/feeder.rs)) with reported agreement percentage.
-   - Controlled fault injection: Deterministic response loss simulated via loopback TCP proxy ([`ControlledFaultProxy`](crates/knotrel-server/tests/common/feeder.rs)); feeder automatically reconciles via `/v1/stats` and recovers without data loss or false progress.
+   - Independent Oracle comparison: Queries against `/v1/operations` verified against pure standard library BFS/adjacency oracle ([`ExternalSourceOracle`](../crates/knotrel-server/tests/common/feeder.rs)) with reported agreement percentage.
+   - Controlled fault injection: Deterministic response loss simulated via loopback TCP proxy ([`ControlledFaultProxy`](../crates/knotrel-server/tests/common/feeder.rs)); feeder automatically reconciles via `/v1/stats` and recovers without data loss or false progress.
    - Volatile state demonstration: Simulates abrupt crash (`SIGKILL`), verifies newly spawned instance begins uninitialized (HTTP 503) with a fresh instance ID, and rebuilds authoritatively to `Ready`.
    - Clean shutdown: Heartbeat background task termination is cleanly awaited during shutdown.
    - Build command: `cargo build --bin knotrel-server --example external_feeder` builds both server and example.
-2. **Automated End-to-End Restart, Rebuild, and Recovery Tests:** Implemented in [`crates/knotrel-server/tests/e2e_rebuild.rs`](crates/knotrel-server/tests/e2e_rebuild.rs) executing 21 automated scenarios against real `knotrel-server` child processes:
+2. **Automated End-to-End Restart, Rebuild, and Recovery Tests:** Implemented in [`crates/knotrel-server/tests/e2e_rebuild.rs`](../crates/knotrel-server/tests/e2e_rebuild.rs) executing 21 automated scenarios against real `knotrel-server` child processes:
    - `test_01_initial_bootstrap_oracle_verification`: Initial build to `Ready` verified against independent oracle; uninitialized server rejects queries (503 `uninitialized`); stale instance header rejection (409 `stale_instance_id`).
    - `test_02_noop_and_progress_records_preserve_revision`: No-op links and progress records advance source frontier without incrementing `state_version`.
    - `test_03_committed_event_with_lost_acknowledgment_and_feeder_recovery`: Committed event with response dropped by `ControlledFaultProxy` is retried using exact immutable identity, letting server deduplication logic idempotently return HTTP 200 `already_applied` without synthesizing success from sequence frontiers.
@@ -1318,7 +1318,7 @@ Feature 0.2.6 is implemented, providing executable integration tools, comprehens
    - `test_19_import_reconciliation_restart_during_uncertain_outcome`: Restart during uncertain import outcome returns explicit `RecoveryRequired` / `StaleInstance`.
    - `test_20_heartbeat_failure_halts_feeder_control_flow`: Background heartbeat fencing halts all feeder operations (`import`, `apply_events`, `apply_events_with_recovery`, `declare_barrier`) immediately, ensuring retries and recovery do not continue under lost ownership.
    - `test_21_import_reconciliation_same_count_same_cursor_different_topology`: Deterministic regression reproducing same-count, same-cursor, different-topology competing publication; verifies that when original import was not forwarded and heartbeat detection cannot mask the reconciliation defect, the feeder returns explicit `UncertainOutcome` rather than synthesizing false publication success.
-3. **Reproducible Measurement Tooling:** Implemented in [`crates/knotrel-server/examples/measure_e2e.rs`](crates/knotrel-server/examples/measure_e2e.rs) and [`scripts/measure-e2e.sh`](scripts/measure-e2e.sh):
+3. **Reproducible Measurement Tooling:** Implemented in [`crates/knotrel-server/examples/measure_e2e.rs`](../crates/knotrel-server/examples/measure_e2e.rs) and [`scripts/measure-e2e.sh`](../scripts/measure-e2e.sh):
    - Supports deterministic synthetic workloads across tiers (`small`, `medium`, `large`).
    - Pure query latency and throughput timing strictly separated from out-of-band BFS oracle verification.
    - Non-zero process exit on unexpected HTTP response, malformed payload, or oracle disagreement.

@@ -19,22 +19,29 @@ groups:
           summary: "Knotrel worker failure: the service rejects all graph work until restart"
           runbook: "docs/alerting.md#knotrelserviceunavailable"
 
+      # Per admission lane: both gauges carry the same labels (`lane` plus
+      # your target labels), so the division pairs each lane's outstanding
+      # permits with that lane's capacity only. Do not aggregate either side
+      # without keeping `lane` and your target labels. The import lane (one permit) is full for the whole
+      # duration of every import, so it is excluded.
       - alert: KnotrelQueueSaturated
-        expr: knotrel_graph_jobs_outstanding / knotrel_graph_job_capacity > 0.8
+        expr: |
+          knotrel_graph_jobs_outstanding{lane!="import"}
+            / knotrel_graph_job_capacity{lane!="import"} > 0.8
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Graph job backlog above 80% of admission capacity for 5 minutes"
+          summary: "Admission lane {{ $labels.lane }} above 80% of its permits for 5 minutes"
           runbook: "docs/alerting.md#knotrelqueuesaturated"
 
       - alert: KnotrelRequestsRejectedBusy
-        expr: rate(knotrel_requests_rejected_total{reason="busy"}[5m]) > 0
+        expr: sum without (reason) (rate(knotrel_requests_rejected_total{reason="busy"}[5m])) > 0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Requests rejected with 503 busy for 5 minutes"
+          summary: "Requests on admission lane {{ $labels.lane }} refused for lack of permits (503) for 5 minutes"
           runbook: "docs/alerting.md#knotrelrequestsrejectedbusy"
 
       - alert: KnotrelHighServerErrorRatio
