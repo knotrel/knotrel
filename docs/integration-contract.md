@@ -1,10 +1,10 @@
 # Knotrel External Source-of-Truth Integration Contract
 
-**Document Status:** Candidate Design Specification for Review — PENDING MAINTAINER APPROVAL  
-**Milestone:** v0.2.0 — Integration & Graph Loading (Feature 0.2.1)  
+**Document Status:** Implemented contract. Written as the v0.2.0 design (Feature 0.2.1), approved and implemented in v0.2.x, extended through v0.9.x; normative for v1.0 together with [openapi.yaml](openapi.yaml), which is the wire contract  
+**Milestone:** v0.2.0 — Integration & Graph Loading (Feature 0.2.1); maintained since  
 **License:** Elastic License 2.0  
 **Target Platform:** Rust 1.100.0, Edition 2024 (core MSRV: Rust 1.98.1)<br>
-**Implementation Notice:** All endpoints, schemas, headers, and protocol messages specified herein that are not part of the v0.1.0 release contract are marked as **`[PROPOSED — NOT IMPLEMENTED]`**. They define the candidate contract to be implemented by Features 0.2.2–0.2.6 upon maintainer approval.
+**Implementation Notice:** Every route, schema, header and protocol message in sections 2–10 is implemented. Sections 11–14 keep the original design record (test traces, decisions D1–D6, handoff and approval checklist) for traceability; where their wording differs, sections 2–10, [openapi.yaml](openapi.yaml) and the code prevail.
 
 ---
 
@@ -41,7 +41,7 @@ Knotrel defines two mutually exclusive operating modes configured at startup:
 |                                    KNOTREL MODES                                        |
 +-----------------------------------------------------------------------------------------+
 |  Standalone Volatile Mode (Default)        |  Source-Managed Mode (Opt-In)              |
-|  - KNOTREL_MODE=standalone                 |  - KNOTREL_MODE=source-managed             |
+|  - KNOTREL_MODE=standalone                 |  - KNOTREL_MODE=source_managed             |
 |  - Self-contained, in-memory graph         |  - Graph derived from external source      |
 |  - Mutating /v1/operations & /v1/batch OK  |  - Direct mutating REST operations BLOCKED |
 |  - state_version increments on changes     |  - Graph advanced solely by Feeder protocol|
@@ -59,7 +59,7 @@ Knotrel defines two mutually exclusive operating modes configured at startup:
 - **State Version:** Tracks local mutations using the arbitrary-precision decimal counter (`"0"`, `"1"`, `"2"`, ...) established in v0.1.0.
 
 ### 2.2 Source-Managed Mode (Opt-In)
-- **Selection:** Explicitly selected at startup via `KNOTREL_MODE=source-managed` (or `ServerConfig::with_mode(Mode::SourceManaged)` for embedded callers).
+- **Selection:** Explicitly selected at startup via `KNOTREL_MODE=source_managed` (or `ServerConfig::with_mode(ServerMode::SourceManaged)` for embedded callers).
 - **Graph Authority:** Knotrel is a derived read accelerator. The external data store is the authoritative source of truth.
 - **Direct Mutation Prohibition:** Direct client mutations via `POST /v1/operations` (`add_node`, `link`, `cut`, and with lifecycle support `set_node_active`, `set_edge_enabled`, `remove_node`) and mutating operations in `POST /v1/batch` are **rejected** with HTTP 409 Conflict (code: `direct_mutation_disabled`). Clients must not bypass source ordering.
 - **Queries:** Connectivity queries (`POST /v1/operations` with `op: "connected"`, and with lifecycle support `node_state` and `edge_state`) and batch queries remain supported, subject to the readiness and freshness policy.
@@ -72,18 +72,21 @@ Knotrel defines two mutually exclusive operating modes configured at startup:
 |---|---|---|---|
 | `/health` | GET | 200 `{"status":"ok"}` | 200 `{"status":"ok"}` |
 | `/ready` | GET | 200 `ready` (503 if starting/draining/unavailable) | 200 `ready` ONLY when synchronized; 503 during bootstrap, lag, gap, or failure |
-| `/v1/info` | GET | 200 (settings snapshot, `mode: "standalone"`) | 200 (settings snapshot, `mode: "source-managed"`, `instance_id`) |
+| `/v1/info` | GET | 200 (settings snapshot, `mode: "standalone"`) | 200 (settings snapshot, `mode: "source_managed"`, `instance_id`, `feeder_reserved_jobs`) |
 | `/v1/stats` | GET | 200 (live node/edge counts, `state_version`) | 200 (counts, `instance_id`, `state_version`, `generation`, `source_position`, `sync_status`) |
-| `/v1/operations` (`connected`) | POST | 200 (connectivity outcome) | 200 (if ready/stale-serving allowed; 503 if uninitialized/loading) |
-| `/v1/operations` (`add_node`/`link`/`cut`) | POST | 200/422 (applied under graph lock) | **409 Conflict** (`code: "direct_mutation_disabled"`) |
-| `/v1/batch` (all queries) | POST | 200 (query outcomes) | 200 (if ready/stale-serving allowed; 503 if uninitialized/loading) |
+| `/metrics` | GET | 200 when `KNOTREL_METRICS_ENABLED=true`, otherwise 404 | Same; source-managed families included |
+| `/v1/operations` (`connected`; with lifecycle support `node_state`, `edge_state`) | POST | 200 (query outcome) | 200 while a generation is usable (also while `catching_up` or `stale`); 503 `uninitialized`, `loading` or `desynchronized` otherwise |
+| `/v1/operations` (`add_node`/`link`/`cut`; with lifecycle support `set_node_active`/`set_edge_enabled`/`remove_node`) | POST | 200/404/422 (applied under graph lock) | **409 Conflict** (`code: "direct_mutation_disabled"`) |
+| `/v1/batch` (all queries) | POST | 200 (query outcomes) | 200 with query outcomes while a generation is usable; otherwise 200 with one `uninitialized`, `loading` or `desynchronized` error result per operation |
 | `/v1/batch` (contains $\ge 1$ mutation) | POST | 200 (runs with continue-on-error) | **409 Conflict** (`code: "direct_mutation_disabled"`) |
-| `[PROPOSED]` `/v1/feeder/session` | POST | **404 Not Found** or **409 Mode Mismatch** | Admitted: acquires or fences feeder session lease |
-| `[PROPOSED]` `/v1/feeder/heartbeat` | POST | **404 Not Found** or **409 Mode Mismatch** | Admitted: extends feeder lease deadline |
-| `[PROPOSED]` `/v1/feeder/import` | POST | **404 Not Found** or **409 Mode Mismatch** | Admitted: candidate built, published, generation bumped |
-| `[PROPOSED]` `/v1/feeder/events` | POST | **404 Not Found** or **409 Mode Mismatch** | Admitted: ordered updates applied under graph lock |
-| `[PROPOSED]` `/v1/feeder/barrier` | POST | **404 Not Found** or **409 Mode Mismatch** | Admitted: barrier verified, transitions to `ready` |
-| `[PROPOSED]` `/v1/feeder/gap` | POST | **404 Not Found** or **409 Mode Mismatch** | Admitted: declares source history loss $\to$ `Desynchronized` |
+| Lifecycle operations without `KNOTREL_TOPOLOGY_LIFECYCLE=true` | POST | **409** `topology_lifecycle_disabled` | **409** `topology_lifecycle_disabled` (checked before the mode) |
+| `/v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges` (experimental) | GET | 200 with `KNOTREL_INSPECTION=true`, otherwise 409 `inspection_disabled` | Same, no readiness gate |
+| `/v1/feeder/session` | POST | **409** `mode_conflict` | Admitted: acquires or fences feeder session lease |
+| `/v1/feeder/heartbeat` | POST | **409** `mode_conflict` | Admitted: extends feeder lease deadline |
+| `/v1/feeder/import` | POST | **409** `mode_conflict` | Admitted: candidate built, published, generation bumped |
+| `/v1/feeder/events` | POST | **409** `mode_conflict` | Admitted: ordered updates applied under graph lock |
+| `/v1/feeder/barrier` | POST | **409** `mode_conflict` | Admitted: barrier verified, transitions to `ready` |
+| `/v1/feeder/gap` | POST | **409** `mode_conflict` | Admitted: declares source history loss $\to$ `Desynchronized` |
 
 ---
 
@@ -161,7 +164,7 @@ Ownership and readiness in source-managed mode are governed by an explicit **Lea
 ### 4.1 Session Acquisition and Transitions
 To become the active writer, a feeder registers a session:
 - **Endpoint:** `POST /v1/feeder/session`
-- **Payload:** `instance_id`, `feeder_session_id`, `feeder_epoch`, `lease_duration_ms` (proposed default: 10,000 ms; bounds: 1,000 ms to 60,000 ms).
+- **Payload:** `instance_id`, `feeder_session_id`, `feeder_epoch`, `lease_duration_ms` (required, no default; 1,000 ms to 60,000 ms, otherwise 400 `invalid_lease_duration`).
 - **Clock:** Lease duration is evaluated exclusively against the host's monotonic clock (`std::time::Instant`), never wall-clock time.
 
 #### Complete Feeder Session Transition Matrix
@@ -437,7 +440,7 @@ Knotrel guarantees deterministic deduplication within a bounded window without r
 
 ### 7.1 Deduplication Model, Dual-Index Structure, and Identity Semantics
 - **Generation Scoping:** Deduplication records belong strictly to the active `generation`. When an import publishes generation $g+1$, previous records are flushed.
-- **Retained Window Horizon:** The window stores up to $N$ entries (proposed default $N = 10{,}000$), spanning sequence numbers:
+- **Retained Window Horizon:** The window stores up to $N$ entries (default $N = 10{,}000$, `KNOTREL_DEDUP_WINDOW_SIZE`, at most 1,000,000), spanning sequence numbers:
   $$[D_{window\_min}, D_{applied}] \quad \text{where} \quad D_{window\_min} = \max(1, D_{applied} - N + 1)$$
 - **Dual-Index Data Structure:**
   1. *Sequence Ring Buffer:* Direct modulo indexing by `delivery_sequence % N` storing entries for the active contiguous sequence range $[D_{window\_min}, D_{applied}]$.
@@ -446,7 +449,7 @@ Knotrel guarantees deterministic deduplication within a bounded window without r
   - *Tier 1 (Indexing):* Fast sequence lookup in ring buffer and hash lookup in `event_id` index.
   - *Tier 2 (Canonical Equality):* Exact byte-for-byte comparison of:
     - `event_id` string (up to 64 bytes).
-    - `source_position` string (up to 256 bytes).
+    - `source_position` string (1 to 256 bytes).
     - Canonical operation descriptor: operation type (`link`, `cut`, `add_node`, `progress`, and with lifecycle support `set_node_active`, `set_edge_enabled`, `remove_node`), normalized endpoints (`min(u,v)`, `max(u,v)` for undirected edges) or node, and for lifecycle events the flag value (`active` or `enabled`). A retry at a retained sequence with the same `event_id` but a different operation type or flag is a conflicting duplicate (case 4 below).
 - **Mutually Exclusive Bounded Identity Decisions:**
   1. **Retained Committed Sequence with Different Event ID ($D \in [D_{window\_min}, D_{applied}]$, incoming `event_id != retained.event_id`):**
@@ -466,7 +469,7 @@ Knotrel guarantees deterministic deduplication within a bounded window without r
      - *Evicted Event ID at New Sequence:* If an incoming request at $D == D_{applied} + 1$ reuses an `event_id` that was committed more than $N$ events ago ($< D_{window\_min}$), that historical event was evicted from both the ring buffer and the hash index. Knotrel **cannot detect** this historical reuse and evaluates the request as fresh at $D_{applied} + 1$. Knotrel guarantees deduplication and conflict detection **strictly within the retained bounded window of $N$ entries**, and explicitly disclaims detection outside this horizon.
 
 ### 7.2 Memory Accounting Requirements
-- **Window Size ($N$):** Proposed default $N = 10{,}000$ entries (configurable at startup via `KNOTREL_DEDUP_WINDOW_SIZE`).
+- **Window Size ($N$):** Default $N = 10{,}000$ entries (configurable at startup via `KNOTREL_DEDUP_WINDOW_SIZE`, at most 1,000,000).
 - **Entry Bounds:**
   - Max `event_id`: 64 bytes UTF-8.
   - Max `source_position`: 256 bytes UTF-8.
@@ -847,10 +850,10 @@ every rebuild.
 
 ---
 
-## 10. Proposed HTTP Interface Specification
+## 10. HTTP Interface Specification
 
 > [!NOTE]
-> All endpoints in this section are **`[PROPOSED — NOT IMPLEMENTED]`** in v0.1.0. They define the candidate contract to be implemented in Features 0.2.2–0.2.5.
+> Every endpoint in this section is implemented (since v0.2.x). The request and response schemas, statuses and error codes of record are in [openapi.yaml](openapi.yaml); this section explains them with examples.
 
 ### 10.1 Feeder Session Registration
 - **Endpoint:** `POST /v1/feeder/session`
@@ -1107,7 +1110,7 @@ This test matrix defines reproducible, deterministic test traces for the future 
 | **TR-10** | Source Epoch Reset / Failover | `Ready` (epoch `"ep-1"`) | 1. Feeder sends `POST /v1/feeder/events` (epoch `"ep-2"`, $D=2$) | Request rejected: `409 Conflict` (`code: "source_epoch_mismatch"`).<br>State transitions to `Desynchronized`. Requires full rebuild. |
 | **TR-11** | Feeder Lease Expiration and Stale Readiness | `Ready` (lease 10s) | 1. Stop feeder heartbeats.<br>2. Advance virtual clock by 10,001 ms.<br>3. Probe `GET /ready`.<br>4. Send heartbeat.<br>5. Probe `GET /ready`. | Step 3 returns `503 Service Unavailable` (`status: "stale"`).<br>Step 4 heartbeat returns `200 heartbeat_acknowledged`.<br>Step 5 probe **remains 503 `status: "stale"`** until synchronization barrier is verified (§4.3). |
 | **TR-12** | Process Restart and Full Rebuild | `Ready` (gen 1, 1000 nodes) | 1. Send SIGTERM; server exits clean.<br>2. Start new Knotrel process.<br>3. Old feeder sends gen 1 event with old `instance_id`. | Step 2 new process starts with new `instance_id`, `gen=0`, state `Uninitialized`.<br>Step 3 rejected: `409 Conflict` (`stale_instance_id`).<br>Feeder discovers new `instance_id` and performs full import. |
-| **TR-13** | Direct Mutation Rejection in Source-Managed Mode | Mode: `source-managed`, `Ready` | 1. `POST /v1/operations` (`link 1-2`)<br>2. `POST /v1/batch` (contains 1 link, 1 query) | 1. Rejected: `409 Conflict` (`direct_mutation_disabled`).<br>2. Rejected: `409 Conflict` (`direct_mutation_disabled`).<br>Graph topology unmodified. |
+| **TR-13** | Direct Mutation Rejection in Source-Managed Mode | Mode: `source_managed`, `Ready` | 1. `POST /v1/operations` (`link 1-2`)<br>2. `POST /v1/batch` (contains 1 link, 1 query) | 1. Rejected: `409 Conflict` (`direct_mutation_disabled`).<br>2. Rejected: `409 Conflict` (`direct_mutation_disabled`).<br>Graph topology unmodified. |
 | **TR-14** | Standalone Mode Backward Compatibility | Mode: `standalone` (default) | 1. `POST /v1/operations` (`link 1-2`)<br>2. `POST /v1/batch` (mixed ops with domain error) | 1. Succeeds: `200 OK`, `changed: true`.<br>2. Succeeds: `200 OK`, continue-on-error behavior verified.<br>`state_version` increments identically to v0.1.0. |
 | **TR-15** | Equal Barrier Sequence with Mismatching Position | `CatchingUp` ($D_{applied}=10, P_{applied}=\text{"0/16B3800"}$) | 1. Feeder sends `POST /v1/feeder/barrier` ($D=10, P=\text{"0/16B9999"}$). | Rejected under decision table case B7: `409 Conflict` (`code: "barrier_position_mismatch"`).<br>State remains `CatchingUp`; cursor untouched. |
 | **TR-16** | Progress Event Retry and Conflicting Retry | `CatchingUp` ($D_{applied}=5, P=\text{"pos-10"}$) | 1. Send `progress` event ($D=6, P=\text{"pos-11"}$).<br>2. Resend exact `progress` event.<br>3. Send same ID with conflicting position. | Step 1 applies: $D_{applied}=6, P=\text{"pos-11"}$, version unchanged.<br>Step 2 returns `200 already_applied`.<br>Step 3 returns `409 conflicting_duplicate` $\to$ `Desynchronized`. |
@@ -1122,7 +1125,7 @@ This test matrix defines reproducible, deterministic test traces for the future 
 | **TR-25** | Rejected Barriers Preserving Ready, Stale, and Desynchronized | Test across 3 distinct server states | 1. State `Ready`: send premature barrier ($D=50$).<br>2. State `Stale`: send mismatched position barrier ($P=\text{"bad"}$).<br>3. State `Desynchronized`: send exact matching barrier. | 1. Returns `409 barrier_not_reached`; state stays `Ready`.<br>2. Returns `409 barrier_position_mismatch`; state stays `Stale`.<br>3. Returns `409 graph_desynchronized`; state stays `Desynchronized`. |
 | **TR-26** | Rejected Event Retry vs. Committed-Event Conflict | Initial: $D_{applied}=100$ | 1. Event $D=101$ (`evt-1`, self-loop) fails with 422.<br>2. Resend sequence 101 with corrected link.<br>3. Event 101 commits ($D_{applied}=101$).<br>4. Resend committed `evt-1` with altered cut. | Step 1 uncommitted $\to$ not in dedup window.<br>Step 2 succeeds: `200 applied` ($D_{applied}=101$).<br>Step 4 resends committed ID with altered content $\to$ `409 conflicting_duplicate` $\to$ `Desynchronized`. |
 | **TR-27** | Required Mutation Failure Cannot Be Bypassed with Progress | Graph at edge capacity ceiling (`remaining_edges: 0`) | 1. Event $D=50$ (`link 1-2`) fails with `422 edge_limit_exceeded`.<br>2. Feeder attempts to bypass by emitting event $D=50$ as `op: "progress"`. | Stream progress is halted at 49. Feeder is strictly forbidden from substituting `progress` for failed required mutations. Feeder must either halt and declare gap via `/v1/feeder/gap` or operator increases limits. |
-| **TR-28** | Import Precondition Failure (412) vs. Ownership Fencing (409) | Mode: `source-managed`, `Ready` (gen 1, epoch 1) | 1. Call import with stale feeder epoch 0.<br>2. Call import with valid epoch 1 but mismatched `If-Match: "1.99.pos"`. | Step 1 fails fencing: `409 Conflict` (`fenced_feeder_session`).<br>Step 2 passes fencing but fails precondition: `412 Precondition Failed` (`precondition_failed`). Live graph untouched. |
+| **TR-28** | Import Precondition Failure (412) vs. Ownership Fencing (409) | Mode: `source_managed`, `Ready` (gen 1, epoch 1) | 1. Call import with stale feeder epoch 0.<br>2. Call import with valid epoch 1 but mismatched `If-Match: "1.99.pos"`. | Step 1 fails fencing: `409 Conflict` (`fenced_feeder_session`).<br>Step 2 passes fencing but fails precondition: `412 Precondition Failed` (`precondition_failed`). Live graph untouched. |
 | **TR-29** | Exact Barrier Match While Uninitialized | `Uninitialized` ($g=0, D_{app}=0, P_{app}=\text{null}$) | 1. Feeder sends `POST /v1/feeder/barrier` ($D=0, P=\text{null}$). | Rejected under Case B3: `409 Conflict` (`code: "graph_uninitialized"`).<br>State remains `Uninitialized`. No barrier may make an unpublished initial graph `Ready`. |
 | **TR-30** | Barrier During Initial Baseline Loading | `Loading` ($g=0$, candidate parsing off-lock) | 1. Feeder sends `POST /v1/feeder/barrier` ($D=0$ or matching candidate snapshot $S$). | Rejected under Case B4: `409 Conflict` (`code: "graph_uninitialized"`).<br>State remains `Loading`; candidate remains unpublished. |
 | **TR-31** | Barrier During Replacement Loading | `Ready` (live $g=1, D_{app}=10$), candidate $g=2$ parsing off-lock | 1. Feeder sends barrier for candidate `gen=2` ($D=0$).<br>2. Feeder sends barrier for live `gen=1` ($D=10, P=P_{live}$). | Step 1 rejected: `409 Conflict` (`stale_generation`); live $g=1$ untouched.<br>Step 2 accepted under Case B2: `200 already_synchronized`; live $g=1$ remains `Ready`. |
@@ -1284,13 +1287,13 @@ Feature 0.2.5 is implemented in `knotrel-server`:
 3. **Lock-Free Monotonic Lease Expiry & Coherent Atomic Publication:** `GET /ready` evaluates lease expiry against host monotonic time without acquiring the graph mutex, reading a single atomic 64-bit word (`PublishedReadiness`) encoding status (4 bits), publication sequence (16 bits), and lease deadline (44 bits). On observing lease expiry in `Ready`, `/ready` attempts a lock-free CAS to transition the word to `Stale`. If a concurrent publication (such as a fresh barrier or new epoch) modified the publication sequence or deadline, the CAS safely fails without overwriting newer state.
 4. **Heartbeat Non-Regression:** Heartbeats (`POST /v1/feeder/heartbeat`) extend lease deadline and renew ownership, but if the graph was stale, `GET /ready` remains HTTP 503 `stale` until a barrier verification proves synchronization. Heartbeats never clear `desynchronized`, `uninitialized`, `loading`, `catching_up`, or worker panic.
 5. **Explicit Recovery-Fencing Across Lease Expiry:** To prevent delayed pre-expiry barriers from executing after a heartbeat renewal on the same session/epoch and restoring readiness without fresh proof, Knotrel implements explicit recovery fencing: when lease expiry occurs, `last_expired_epoch` records the expired epoch. Any barrier request submitted under `feeder_epoch <= last_expired_epoch` is rejected with HTTP 409 `fenced_feeder_session`. Restoration of `Ready` from `Stale` strictly requires the feeder to register a newly incremented `feeder_epoch > last_expired_epoch` and supply fresh barrier proof.
-6. **Drain Gate and Shutdown Integration:** The existing shutdown gate in `serve()` admits requests once and answers with 503 `draining`. In-flight barrier and event workers complete cleanly within the drain timeout.
+6. **Drain Gate and Shutdown Integration:** The existing shutdown gate in `serve()` admits requests once and answers with 503 `shutting_down` (`/ready` reports `draining`). In-flight barrier and event workers complete cleanly within the drain timeout.
 7. **Verification Evidence:** 21 deterministic integration tests in `crates/knotrel-server/tests/bootstrap.rs` (including `test_20_delayed_barrier_fenced_across_lease_expiry` and `test_21_probe_paused_at_expiry_does_not_overwrite_newer_publication`) and unit tests in `crates/knotrel-server/src/service.rs` verify all contract scenarios TR-01 through TR-31 and concurrency interleavings with zero failures.
 
 ### 13.5 Implementation Status: Feature 0.2.6 (External Feeder Example, Restart/Rebuild Tests, and Reproducible Measurements)
 Feature 0.2.6 is implemented, providing executable integration tools, comprehensive recovery tests, and reproducible benchmarks:
 1. **Runnable External Feeder Reference Example:** Implemented in [`crates/knotrel-server/examples/external_feeder.rs`](../crates/knotrel-server/examples/external_feeder.rs) separate from server internals and graph core. Driven by a deterministic source fixture ([`crates/knotrel-server/tests/common/feeder.rs`](../crates/knotrel-server/tests/common/feeder.rs)), it executes the full lifecycle over the wire:
-   - Server discovery (`GET /v1/info`) and operating mode verification (`source-managed`).
+   - Server discovery (`GET /v1/info`) and operating mode verification (`source_managed`).
    - Session registration (`POST /v1/feeder/session`) with observable background heartbeat loop (`POST /v1/feeder/heartbeat`), validating responses with bounded timeouts and stopping stale ownership on fencing.
    - Atomic baseline snapshot import ($S$) with isolated vertices (`[99, 100]`), verifying published generation 1 and HTTP 201 Created.
    - Ordered catch-up stream ($D=1..7$) exercising vertex creation, links, cuts, no-op duplicate mutations, and non-mutating `progress` checkpoints.

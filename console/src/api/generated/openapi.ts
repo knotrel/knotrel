@@ -16,31 +16,7 @@ export interface paths {
      * @description Process liveness probe. Returns HTTP 200 while the server process is functional.
      *     Never acquires the graph lock and stays 200 during graceful shutdown draining.
      */
-    get: {
-      parameters: {
-        query?: never;
-        header?: never;
-        path?: never;
-        cookie?: never;
-      };
-      requestBody?: never;
-      responses: {
-        /** @description Process is alive */
-        200: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "status": "ok"
-             *     }
-             */
-            'application/json': components['schemas']['HealthResponse'];
-          };
-        };
-      };
-    };
+    get: operations['get_health'];
     put?: never;
     post?: never;
     delete?: never;
@@ -62,46 +38,7 @@ export interface paths {
      *     Does not acquire the graph lock or an admission permit. Always returns
      *     `Cache-Control: no-store`.
      */
-    get: {
-      parameters: {
-        query?: never;
-        header?: never;
-        path?: never;
-        cookie?: never;
-      };
-      requestBody?: never;
-      responses: {
-        /** @description Server is initialized and accepting graph work */
-        200: {
-          headers: {
-            'Cache-Control'?: string;
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "status": "ready"
-             *     }
-             */
-            'application/json': components['schemas']['ReadinessReadyResponse'];
-          };
-        };
-        /**
-         * @description Server is not ready: starting up, draining for shutdown or graph worker failed
-         *     (both modes); in source-managed mode also uninitialized, loading, catching up,
-         *     stale (expired feeder lease) or desynchronized.
-         */
-        503: {
-          headers: {
-            'Cache-Control'?: string;
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json': components['schemas']['ReadinessNotReadyResponse'];
-          };
-        };
-      };
-    };
+    get: operations['get_ready'];
     put?: never;
     post?: never;
     delete?: never;
@@ -125,34 +62,7 @@ export interface paths {
      *     admission or import permit. While draining it is still served, with
      *     `Connection: close`. See observability-contract.md for metric semantics.
      */
-    get: {
-      parameters: {
-        query?: never;
-        header?: never;
-        path?: never;
-        cookie?: never;
-      };
-      requestBody?: never;
-      responses: {
-        /** @description Current metrics */
-        200: {
-          headers: {
-            'Cache-Control'?: 'no-store';
-            [name: string]: unknown;
-          };
-          content: {
-            'text/plain; version=0.0.4; charset=utf-8': string;
-          };
-        };
-        /** @description Metrics are disabled */
-        404: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content?: never;
-        };
-      };
-    };
+    get: operations['get_metrics'];
     put?: never;
     post?: never;
     delete?: never;
@@ -173,37 +83,7 @@ export interface paths {
      * @description Returns effective immutable configuration settings and engine selection.
      *     Does not acquire the graph lock or an admission permit.
      */
-    get: {
-      parameters: {
-        query?: never;
-        header?: never;
-        path?: never;
-        cookie?: never;
-      };
-      requestBody?: never;
-      responses: {
-        /** @description Effective server configuration */
-        200: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "engine": "compact-bfs",
-             *       "experimental": false,
-             *       "max_pending_jobs": 32,
-             *       "max_body_bytes": 1048576,
-             *       "max_batch_operations": 1024,
-             *       "max_nodes": 100000,
-             *       "max_edges": 500000
-             *     }
-             */
-            'application/json': components['schemas']['ServerInfo'];
-          };
-        };
-      };
-    };
+    get: operations['get_info'];
     put?: never;
     post?: never;
     delete?: never;
@@ -226,54 +106,7 @@ export interface paths {
      *     Acquires the graph lock on a blocking worker and shares the bounded admission queue.
      *     Always returns `Cache-Control: no-store`.
      */
-    get: {
-      parameters: {
-        query?: never;
-        header?: never;
-        path?: never;
-        cookie?: never;
-      };
-      requestBody?: never;
-      responses: {
-        /** @description Coherent graph snapshot; version headers are captured under the same lock */
-        200: {
-          headers: {
-            'Cache-Control'?: string;
-            ETag: components['headers']['ETag'];
-            'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
-            'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
-            'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
-            'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
-            'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
-            'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "node_count": 42000,
-             *       "edge_count": 68000,
-             *       "max_nodes": 100000,
-             *       "max_edges": 500000,
-             *       "remaining_nodes": 58000,
-             *       "remaining_edges": 432000,
-             *       "state_version": "157"
-             *     }
-             */
-            'application/json': components['schemas']['GraphSnapshot'];
-          };
-        };
-        /** @description Request capacity exhausted (`busy`) or graph worker unavailable (`unavailable`) */
-        503: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-      };
-    };
+    get: operations['get_stats'];
     put?: never;
     post?: never;
     delete?: never;
@@ -300,134 +133,7 @@ export interface paths {
      *     are also executed; without it they always parse but are rejected with 409
      *     `topology_lifecycle_disabled` before execution.
      */
-    post: {
-      parameters: {
-        query?: never;
-        header?: never;
-        path?: never;
-        cookie?: never;
-      };
-      requestBody: {
-        content: {
-          'application/json': components['schemas']['Operation'];
-        };
-      };
-      responses: {
-        /**
-         * @description Operation completed successfully. Version headers are captured under the same lock
-         *     acquisition as the outcome. Error responses carry no version headers.
-         */
-        200: {
-          headers: {
-            ETag: components['headers']['ETag'];
-            'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
-            'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
-            'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
-            'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
-            'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
-            'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json':
-              | components['schemas']['ChangedOutcome']
-              | components['schemas']['ConnectedOutcome']
-              | components['schemas']['NodeStateOutcome']
-              | components['schemas']['EdgeStateOutcome'];
-          };
-        };
-        /** @description Malformed JSON syntax */
-        400: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "result": "error",
-             *       "code": "invalid_request",
-             *       "message": "request body is not valid JSON"
-             *     }
-             */
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /**
-         * @description Unknown query vertex, or unknown node of `set_node_active` / `set_edge_enabled`
-         *     (`unknown_node`); unregistered edge of `set_edge_enabled` (`unknown_edge`).
-         */
-        404: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /**
-         * @description Mutation sent in source-managed mode (`direct_mutation_disabled`), or lifecycle
-         *     operation while lifecycle support is off (`topology_lifecycle_disabled`).
-         */
-        409: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /** @description Request body exceeds 1 MiB limit */
-        413: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "result": "error",
-             *       "code": "invalid_request",
-             *       "message": "request body exceeded 1048576 bytes"
-             *     }
-             */
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /** @description Missing or unsupported JSON Content-Type */
-        415: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "result": "error",
-             *       "code": "invalid_request",
-             *       "message": "Expected request with `Content-Type: application/json`"
-             *     }
-             */
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /** @description Invalid request shape, self-loop, or capacity limit exceeded */
-        422: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /** @description Server busy, unavailable, shutting down, or request timeout */
-        503: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-      };
-    };
+    post: operations['execute_operation'];
     delete?: never;
     options?: never;
     head?: never;
@@ -454,160 +160,11 @@ export interface paths {
      *     the batch size is checked. Without lifecycle support, a batch containing any
      *     lifecycle operation is rejected with 409 `topology_lifecycle_disabled` before the
      *     mode and size checks.
+     *     In source-managed mode, while the graph is uninitialized, loading or desynchronized, an
+     *     all-query batch is answered 200 with one error outcome per operation (`uninitialized`,
+     *     `loading` or `desynchronized`) and the version headers; nothing was executed.
      */
-    post: {
-      parameters: {
-        query?: never;
-        header?: never;
-        path?: never;
-        cookie?: never;
-      };
-      requestBody: {
-        content: {
-          /**
-           * @example {
-           *       "operations": [
-           *         {
-           *           "op": "link",
-           *           "source": "1",
-           *           "target": "2"
-           *         },
-           *         {
-           *           "op": "connected",
-           *           "source": "1",
-           *           "target": "2"
-           *         },
-           *         {
-           *           "op": "cut",
-           *           "source": "1",
-           *           "target": "2"
-           *         }
-           *       ]
-           *     }
-           */
-          'application/json': components['schemas']['BatchRequest'];
-        };
-      };
-      responses: {
-        /** @description Batch executed; per-operation outcomes returned in order */
-        200: {
-          headers: {
-            ETag: components['headers']['ETag'];
-            'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
-            'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
-            'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
-            'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
-            'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
-            'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "results": [
-             *         {
-             *           "result": "changed",
-             *           "changed": true
-             *         },
-             *         {
-             *           "result": "connected",
-             *           "connected": true
-             *         },
-             *         {
-             *           "result": "changed",
-             *           "changed": true
-             *         }
-             *       ]
-             *     }
-             */
-            'application/json': components['schemas']['BatchResponse'];
-          };
-        };
-        /** @description Malformed JSON syntax */
-        400: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "result": "error",
-             *       "code": "invalid_request",
-             *       "message": "request body is not valid JSON"
-             *     }
-             */
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /**
-         * @description Source-managed mode and the batch contains a mutation (`direct_mutation_disabled`),
-         *     or lifecycle support is off and the batch contains a lifecycle operation
-         *     (`topology_lifecycle_disabled`).
-         */
-        409: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /** @description Request body exceeds 1 MiB limit */
-        413: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "result": "error",
-             *       "code": "invalid_request",
-             *       "message": "request body exceeded 1048576 bytes"
-             *     }
-             */
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /** @description Missing or unsupported JSON Content-Type */
-        415: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            /**
-             * @example {
-             *       "result": "error",
-             *       "code": "invalid_request",
-             *       "message": "Expected request with `Content-Type: application/json`"
-             *     }
-             */
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /** @description Invalid batch size (not 1–1024) or invalid operation shape in batch */
-        422: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-        /**
-         * @description Server busy, unavailable, shutting down, or request timed out. After
-         *     `request_timeout`, the effect of the batch is unknown: an admitted worker
-         *     may still apply it later.
-         */
-        503: {
-          headers: {
-            [name: string]: unknown;
-          };
-          content: {
-            'application/json': components['schemas']['ErrorOutcome'];
-          };
-        };
-      };
-    };
+    post: operations['execute_batch'];
     delete?: never;
     options?: never;
     head?: never;
@@ -995,6 +552,62 @@ export interface components {
      *     request is read, and closes it (best effort; a client may instead see a reset).
      *     `busy` is the code of every exhausted admission lane (shared, feeder data, feeder control);
      *     `import_in_progress` only means that another import holds the import permit.
+     *
+     *     Every code, its status and where it is produced (inspection codes belong to the
+     *     experimental inspection routes). In a batch, per-operation errors appear in the results of
+     *     a 200, without a status of their own.
+     *
+     *     | Code | Status | Where |
+     *     | --- | --- | --- |
+     *     | `barrier_not_reached` | 409 | barrier: `barrier_delivery_sequence` ahead of the applied sequence |
+     *     | `barrier_position_mismatch` | 409 | barrier: equal sequence, different `barrier_source_position` |
+     *     | `busy` | 503 | the request's admission lane is exhausted: operations, batch, stats, inspection (shared lane); session, heartbeat (feeder control lane); events, barrier, gap (feeder data lane) |
+     *     | `conflicting_duplicate` | 409 | events: retained sequence with a different `event_id` or payload, or a retained `event_id` reused; desynchronizes |
+     *     | `desynchronized` | 503 | operations in source-managed mode while the graph is desynchronized; in a batch, every item of a 200 |
+     *     | `direct_mutation_disabled` | 409 | operations, batch: a mutation in source-managed mode |
+     *     | `edge_limit_exceeded` | 422 | operations, batch items, events, import |
+     *     | `event_failed` | 422 | events: top-level `code` of a multi-event partial failure caused by a graph-domain error; the domain code is in `error.code` |
+     *     | `fenced_feeder_session` | 409 | session (older epoch), heartbeat, import, events, gap, barrier |
+     *     | `generation_exhausted` | 409 | import: the generation counter cannot advance |
+     *     | `graph_already_initialized` | 409 | import: `create_only` on an initialized graph |
+     *     | `graph_desynchronized` | 409 | events, barrier: the graph is desynchronized |
+     *     | `graph_uninitialized` | 409 | events, gap, barrier: no baseline imported |
+     *     | `import_in_progress` | 503 | import: another import holds the import permit (before the body is read) |
+     *     | `inspection_disabled` | 409 | inspection routes, inspection off (experimental) |
+     *     | `inspection_unsupported` | 409 | `GET /v1/nodes/{node}/edges`, `GET /v1/edges` on an engine without adjacency (experimental) |
+     *     | `invalid_batch_size` | 422 | batch: not 1–1024 operations |
+     *     | `invalid_cursor` | 422 | inspection: the cursor names an unregistered node (experimental) |
+     *     | `invalid_edge` | 422 | events, import: an edge the graph refuses for a reason other than a self-loop or a limit; with lifecycle support, a conflicting duplicate edge in an import |
+     *     | `invalid_graph_id` | 400 | import, events, gap, barrier: `graph_id` other than `default` |
+     *     | `invalid_instance_id` | 400 | every feeder route: `X-Knotrel-Instance-Id` missing or not a valid header value |
+     *     | `invalid_lease_duration` | 400 | session: `lease_duration_ms` outside 1000–60000 |
+     *     | `invalid_node` | 422 | events, import: a node the graph refuses for a reason other than a limit; with lifecycle support, a conflicting duplicate node in an import |
+     *     | `invalid_request` | 400, 413, 415, 422 | every JSON route: malformed JSON (400), body over 1 MiB on routes other than import (413), wrong `Content-Type` (415), shape, ID or bound violations (422); inspection query errors (422) |
+     *     | `lease_expired` | 409 | import, events, gap, barrier: the feeder lease expired |
+     *     | `loading` | 503 | operations in source-managed mode while a baseline loads; in a batch, every item of a 200 |
+     *     | `mode_conflict` | 409 | every feeder route in standalone mode |
+     *     | `node_limit_exceeded` | 422 | operations, batch items, events, import |
+     *     | `out_of_order_sequence` | 409 | events: delivery sequence gap; carries `expected_sequence` |
+     *     | `payload_too_large` | 413 | import: body over `KNOTREL_MAX_IMPORT_BODY_BYTES` |
+     *     | `precondition_failed` | 412 | import `replace`: missing or mismatching `If-Match`, or no initialized graph |
+     *     | `request_timeout` | 503 | any route: `KNOTREL_REQUEST_TIMEOUT_MS` exceeded; a state-changing outcome is unknown |
+     *     | `self_loop` | 422 | operations, batch items, events, import |
+     *     | `sequence_exhausted` | 409 | events: the delivery sequence cannot advance |
+     *     | `session_required` | 409 | heartbeat, import, events, gap, barrier: no registered session |
+     *     | `shutting_down` | 503 | every route except `/health`, `/ready` and `/metrics`, while draining (also unknown routes) |
+     *     | `source_epoch_mismatch` | 409 | events: different `source_epoch`; desynchronizes |
+     *     | `source_mismatch` | 409 | events: different `source_id` |
+     *     | `source_predecessor_mismatch` | 409 | events: `prev_delivery_sequence` or `prev_source_position` does not match; desynchronizes |
+     *     | `stale_generation` | 409 | events, gap, barrier: `generation` is not the current one |
+     *     | `stale_instance_id` | 409 | every feeder route: header or body `instance_id` of another process instance |
+     *     | `superseded_barrier` | 409 | barrier: `barrier_delivery_sequence` behind the applied sequence |
+     *     | `too_many_connections` | 503 | no route: written by the accept loop to a connection beyond `KNOTREL_MAX_CONNECTIONS`, before any request is read |
+     *     | `topology_lifecycle_disabled` | 409 | operations, batch, events, import: a lifecycle operation, event or flag without lifecycle support |
+     *     | `unavailable` | 503 | every graph route: the graph worker failed (restart required) |
+     *     | `uninitialized` | 503 | operations in source-managed mode before a baseline; in a batch, every item of a 200 |
+     *     | `unknown_edge` | 404, 422 | operations: `set_edge_enabled` on an unregistered edge (404); the same as a batch item; lifecycle events (422) |
+     *     | `unknown_node` | 404, 422 | operations: unknown query vertex or lifecycle node (404); the same as a batch item; inspection `GET /v1/nodes/{node}` and `/edges` (404); lifecycle events (422) |
+     *     | `unverifiable_duplicate` | 409 | events: a retry of a sequence older than the deduplication window |
      * @enum {string}
      */
     ErrorCode:
@@ -1142,7 +755,9 @@ export interface components {
       /**
        * @description Present only in source-managed mode: the current process instance ID that feeder
        *     requests must carry. In both modes the same value is returned in the
-       *     `X-Knotrel-Instance-Id` header of `/v1/stats`, `/v1/operations` and `/v1/batch`.
+       *     `X-Knotrel-Instance-Id` header of every response that carries the version headers:
+       *     `/v1/stats`, `/v1/operations`, `/v1/batch`, the inspection routes and the feeder
+       *     import, events, gap and barrier responses.
        */
       instance_id?: string;
     };
@@ -1254,14 +869,17 @@ export interface components {
       /** @enum {string} */
       mode: 'create_only' | 'replace';
       instance_id: string;
-      /** @constant */
+      /**
+       * @description Any other value is refused with 400 `invalid_graph_id`, not 422.
+       * @constant
+       */
       graph_id: 'default';
       source_id: string;
       source_epoch: string;
       /** @description Opaque source cursor of the imported snapshot, 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit. */
       source_position: string;
       feeder_session_id: string;
-      feeder_epoch: number;
+      feeder_epoch: components['schemas']['FeederU64'];
       nodes: components['schemas']['ImportNode'][];
       edges: components['schemas']['ImportEdge'][];
     };
@@ -1272,7 +890,7 @@ export interface components {
       instance_id: string;
       /** @constant */
       graph_id: 'default';
-      generation: number;
+      generation: components['schemas']['FeederU64'] & unknown;
       state_version: string;
       /** @description Registered nodes. */
       node_count: number;
@@ -1329,6 +947,7 @@ export interface components {
       instance_id: string;
       feeder_session_id: string;
       feeder_epoch: components['schemas']['FeederU64'];
+      /** @description A value outside the range is refused with 400 `invalid_lease_duration`, not 422. */
       lease_duration_ms: number;
     };
     HeartbeatRequest: {
@@ -1457,6 +1076,24 @@ export interface components {
     };
   };
   responses: {
+    /** @description The request exceeded `KNOTREL_REQUEST_TIMEOUT_MS` (`request_timeout`, with `Connection: close`). */
+    RequestTimeout: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/json': components['schemas']['ErrorOutcome'];
+      };
+    };
+    /** @description The server is draining (`shutting_down`, with `Connection: close`) or the request exceeded `KNOTREL_REQUEST_TIMEOUT_MS` (`request_timeout`). */
+    DrainingOrTimeout: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/json': components['schemas']['ErrorOutcome'];
+      };
+    };
     /**
      * @description `inspection_disabled` (KNOTREL_INSPECTION is not enabled; rejected before admission)
      *     or `inspection_unsupported` (incident and edge listing on `ett` or `hdt`).
@@ -1474,6 +1111,8 @@ export interface components {
      * @description `invalid_request`: unknown, repeated or malformed query parameter, invalid node ID,
      *     `limit` outside 1-1000, unknown `state`, `after_target` without `after_source`.
      *     `invalid_cursor`: a plain `compact-bfs` incidence cursor names an unregistered node.
+     *     The query-string errors (`invalid_request`) are returned before the inspection path and
+     *     carry no `Cache-Control` header; `invalid_cursor` carries `no-store`.
      */
     InspectionInvalid: {
       headers: {
@@ -1541,6 +1180,509 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+  get_health: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Process is alive */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "status": "ok"
+           *     }
+           */
+          'application/json': components['schemas']['HealthResponse'];
+        };
+      };
+      503: components['responses']['RequestTimeout'];
+    };
+  };
+  get_ready: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Server is initialized and accepting graph work */
+      200: {
+        headers: {
+          'Cache-Control'?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "status": "ready"
+           *     }
+           */
+          'application/json': components['schemas']['ReadinessReadyResponse'];
+        };
+      };
+      /**
+       * @description Server is not ready: starting up, draining for shutdown or graph worker failed
+       *     (both modes); in source-managed mode also uninitialized, loading, catching up,
+       *     stale (expired feeder lease) or desynchronized. A probe that exceeded
+       *     `KNOTREL_REQUEST_TIMEOUT_MS` would instead get an `ErrorOutcome` with
+       *     `request_timeout`; the probe takes no lock, so this does not happen in practice.
+       */
+      503: {
+        headers: {
+          'Cache-Control'?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ReadinessNotReadyResponse'];
+        };
+      };
+    };
+  };
+  get_metrics: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current metrics */
+      200: {
+        headers: {
+          'Cache-Control'?: 'no-store';
+          [name: string]: unknown;
+        };
+        content: {
+          'text/plain; version=0.0.4; charset=utf-8': string;
+        };
+      };
+      /** @description Metrics are disabled */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The exposition could not be encoded; empty body. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      503: components['responses']['RequestTimeout'];
+    };
+  };
+  get_info: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Effective server configuration */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "engine": "compact-bfs",
+           *       "experimental": false,
+           *       "max_pending_jobs": 32,
+           *       "max_body_bytes": 1048576,
+           *       "max_batch_operations": 1024,
+           *       "max_nodes": 100000,
+           *       "max_edges": 500000
+           *     }
+           */
+          'application/json': components['schemas']['ServerInfo'];
+        };
+      };
+      503: components['responses']['DrainingOrTimeout'];
+    };
+  };
+  get_stats: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Coherent graph snapshot; version headers are captured under the same lock */
+      200: {
+        headers: {
+          'Cache-Control'?: string;
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "node_count": 42000,
+           *       "edge_count": 68000,
+           *       "max_nodes": 100000,
+           *       "max_edges": 500000,
+           *       "remaining_nodes": 58000,
+           *       "remaining_edges": 432000,
+           *       "state_version": "157"
+           *     }
+           */
+          'application/json': components['schemas']['GraphSnapshot'];
+        };
+      };
+      /**
+       * @description Request capacity exhausted (`busy`), graph worker unavailable (`unavailable`), server
+       *     draining (`shutting_down`) or request timed out (`request_timeout`). No version headers.
+       */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+    };
+  };
+  execute_operation: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['Operation'];
+      };
+    };
+    responses: {
+      /**
+       * @description Operation completed successfully. Version headers are captured under the same lock
+       *     acquisition as the outcome. Every response of an executed operation carries them,
+       *     also 404, 422 and the source-managed 503 (`uninitialized`, `loading`,
+       *     `desynchronized`); refusals before execution (400, 409, 413, 415 and 503 `busy`,
+       *     `unavailable`, `shutting_down`, `request_timeout`) carry none.
+       */
+      200: {
+        headers: {
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json':
+            | components['schemas']['ChangedOutcome']
+            | components['schemas']['ConnectedOutcome']
+            | components['schemas']['NodeStateOutcome']
+            | components['schemas']['EdgeStateOutcome'];
+        };
+      };
+      /** @description Malformed JSON syntax */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "result": "error",
+           *       "code": "invalid_request",
+           *       "message": "request body is not valid JSON"
+           *     }
+           */
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /**
+       * @description Unknown query vertex, or unknown node of `set_node_active` / `set_edge_enabled`
+       *     (`unknown_node`); unregistered edge of `set_edge_enabled` (`unknown_edge`). Carries
+       *     the version headers.
+       */
+      404: {
+        headers: {
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /**
+       * @description Mutation sent in source-managed mode (`direct_mutation_disabled`), or lifecycle
+       *     operation while lifecycle support is off (`topology_lifecycle_disabled`).
+       */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /** @description Request body exceeds 1 MiB limit */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "result": "error",
+           *       "code": "invalid_request",
+           *       "message": "request body exceeded 1048576 bytes"
+           *     }
+           */
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /** @description Missing or unsupported JSON Content-Type */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "result": "error",
+           *       "code": "invalid_request",
+           *       "message": "Expected request with `Content-Type: application/json`"
+           *     }
+           */
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /**
+       * @description Invalid request shape (`invalid_request`, no version headers), self-loop (`self_loop`)
+       *     or capacity limit exceeded (`node_limit_exceeded`, `edge_limit_exceeded`); the domain
+       *     errors carry the version headers.
+       */
+      422: {
+        headers: {
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /**
+       * @description Server busy (`busy`), graph worker unavailable (`unavailable`), draining
+       *     (`shutting_down`) or request timed out (`request_timeout`; the effect of a mutation is
+       *     then unknown). In source-managed mode a query is also refused while the graph has no
+       *     usable generation: `uninitialized` (no baseline), `loading` (baseline import running) or
+       *     `desynchronized` (rebuild required); these three carry the version headers.
+       */
+      503: {
+        headers: {
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+    };
+  };
+  execute_batch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        /**
+         * @example {
+         *       "operations": [
+         *         {
+         *           "op": "link",
+         *           "source": "1",
+         *           "target": "2"
+         *         },
+         *         {
+         *           "op": "connected",
+         *           "source": "1",
+         *           "target": "2"
+         *         },
+         *         {
+         *           "op": "cut",
+         *           "source": "1",
+         *           "target": "2"
+         *         }
+         *       ]
+         *     }
+         */
+        'application/json': components['schemas']['BatchRequest'];
+      };
+    };
+    responses: {
+      /** @description Batch executed; per-operation outcomes returned in order */
+      200: {
+        headers: {
+          ETag: components['headers']['ETag'];
+          'X-Knotrel-Instance-Id': components['headers']['X-Knotrel-Instance-Id'];
+          'X-Knotrel-Graph-Id': components['headers']['X-Knotrel-Graph-Id'];
+          'X-Knotrel-Generation': components['headers']['X-Knotrel-Generation'];
+          'X-Knotrel-State-Version': components['headers']['X-Knotrel-State-Version'];
+          'X-Knotrel-Source-Position': components['headers']['X-Knotrel-Source-Position'];
+          'X-Knotrel-Sync-Status': components['headers']['X-Knotrel-Sync-Status'];
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "results": [
+           *         {
+           *           "result": "changed",
+           *           "changed": true
+           *         },
+           *         {
+           *           "result": "connected",
+           *           "connected": true
+           *         },
+           *         {
+           *           "result": "changed",
+           *           "changed": true
+           *         }
+           *       ]
+           *     }
+           */
+          'application/json': components['schemas']['BatchResponse'];
+        };
+      };
+      /** @description Malformed JSON syntax */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "result": "error",
+           *       "code": "invalid_request",
+           *       "message": "request body is not valid JSON"
+           *     }
+           */
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /**
+       * @description Source-managed mode and the batch contains a mutation (`direct_mutation_disabled`),
+       *     or lifecycle support is off and the batch contains a lifecycle operation
+       *     (`topology_lifecycle_disabled`).
+       */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /** @description Request body exceeds 1 MiB limit */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "result": "error",
+           *       "code": "invalid_request",
+           *       "message": "request body exceeded 1048576 bytes"
+           *     }
+           */
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /** @description Missing or unsupported JSON Content-Type */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example {
+           *       "result": "error",
+           *       "code": "invalid_request",
+           *       "message": "Expected request with `Content-Type: application/json`"
+           *     }
+           */
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /** @description Invalid batch size (not 1–1024) or invalid operation shape in batch */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+      /**
+       * @description Server busy, unavailable, shutting down, or request timed out. After
+       *     `request_timeout`, the effect of the batch is unknown: an admitted worker
+       *     may still apply it later.
+       */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorOutcome'];
+        };
+      };
+    };
+  };
   feeder_session: {
     parameters: {
       query?: never;
@@ -1566,7 +1708,7 @@ export interface operations {
           'application/json': components['schemas']['SessionResponse'];
         };
       };
-      /** @description Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an invalid lease duration. */
+      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `lease_duration_ms` outside 1000–60000 (`invalid_lease_duration`; checked by the server, not as a 422). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1575,7 +1717,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Mode, instance, session, lease, generation or source conflict; graph state may require rebuild. See ErrorCode for identifiers. */
+      /** @description `mode_conflict` (standalone mode), `stale_instance_id`, `fenced_feeder_session` (an older epoch than the registered one). */
       409: {
         headers: {
           [name: string]: unknown;
@@ -1584,7 +1726,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds its limit. */
+      /** @description Request body exceeds 1 MiB (`invalid_request`). */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1602,7 +1744,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Invalid payload shape, operands or domain operation. */
+      /** @description Invalid payload shape (`invalid_request`). */
       422: {
         headers: {
           [name: string]: unknown;
@@ -1647,7 +1789,7 @@ export interface operations {
           'application/json': components['schemas']['HeartbeatResponse'];
         };
       };
-      /** @description Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an invalid lease duration. */
+      /** @description Malformed JSON (`invalid_request`) or missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1656,7 +1798,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Mode, instance, session, lease, generation or source conflict; graph state may require rebuild. See ErrorCode for identifiers. */
+      /** @description `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`. */
       409: {
         headers: {
           [name: string]: unknown;
@@ -1665,7 +1807,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds its limit. */
+      /** @description Request body exceeds 1 MiB (`invalid_request`). */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1683,7 +1825,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Invalid payload shape, operands or domain operation. */
+      /** @description Invalid payload shape (`invalid_request`). */
       422: {
         headers: {
           [name: string]: unknown;
@@ -1737,7 +1879,7 @@ export interface operations {
           'application/json': components['schemas']['ImportResponse'];
         };
       };
-      /** @description Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an invalid lease duration. */
+      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1746,7 +1888,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Mode, instance, session, lease, generation or source conflict; graph state may require rebuild. See ErrorCode for identifiers. */
+      /** @description `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`, `graph_already_initialized` (`create_only` on an initialized graph), `generation_exhausted`, `topology_lifecycle_disabled` (lifecycle flags without lifecycle support). */
       409: {
         headers: {
           [name: string]: unknown;
@@ -1764,7 +1906,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds its limit. */
+      /** @description Body exceeds `KNOTREL_MAX_IMPORT_BODY_BYTES` (`payload_too_large`, unlike the 1 MiB limit of the other routes, which answers `invalid_request`). */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1782,7 +1924,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Invalid payload shape, operands or domain operation. */
+      /** @description Invalid payload shape, IDs or bounds (`invalid_request`), or a topology the graph refuses (`self_loop`, `node_limit_exceeded`, `edge_limit_exceeded`, `invalid_node`, `invalid_edge`). */
       422: {
         headers: {
           [name: string]: unknown;
@@ -1836,7 +1978,7 @@ export interface operations {
             | components['schemas']['FeederDuplicateResponse'];
         };
       };
-      /** @description Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an invalid lease duration. */
+      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1845,7 +1987,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Mode, instance, session, lease, generation or source conflict; graph state may require rebuild. See ErrorCode for identifiers. Partial failures include coherent version headers; pre-execution rejections do not necessarily include them. */
+      /** @description `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`, `stale_generation`, `graph_uninitialized`, `graph_desynchronized`, `source_mismatch`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `sequence_exhausted`, `topology_lifecycle_disabled`. Partial failures include coherent version headers; pre-execution rejections do not necessarily include them. */
       409: {
         headers: {
           ETag: components['headers']['ETag'];
@@ -1862,7 +2004,7 @@ export interface operations {
             components['schemas']['ErrorOutcome'] | components['schemas']['PartialBatchFailure'];
         };
       };
-      /** @description Request body exceeds its limit. */
+      /** @description Request body exceeds 1 MiB (`invalid_request`). */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1880,7 +2022,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Invalid payload shape, operands or domain operation. Partial failures include coherent version headers; pre-execution rejections do not necessarily include them. */
+      /** @description Invalid payload shape, operands or bounds (`invalid_request`); a single-event domain error carries its own code (`self_loop`, `node_limit_exceeded`, `edge_limit_exceeded`, `invalid_node`, `invalid_edge`, and with lifecycle support `unknown_node`, `unknown_edge`); a multi-event partial failure has `code: event_failed` and the domain code in `error.code`. Partial failures include coherent version headers; pre-execution rejections do not necessarily include them. */
       422: {
         headers: {
           ETag: components['headers']['ETag'];
@@ -1940,7 +2082,7 @@ export interface operations {
           'application/json': components['schemas']['GapResponse'];
         };
       };
-      /** @description Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an invalid lease duration. */
+      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1949,7 +2091,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Mode, instance, session, lease, generation or source conflict; graph state may require rebuild. See ErrorCode for identifiers. */
+      /** @description `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`, `stale_generation`, `graph_uninitialized`. */
       409: {
         headers: {
           [name: string]: unknown;
@@ -1958,7 +2100,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds its limit. */
+      /** @description Request body exceeds 1 MiB (`invalid_request`). */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1976,7 +2118,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Invalid payload shape, operands or domain operation. */
+      /** @description Invalid payload shape or bounds (`invalid_request`). */
       422: {
         headers: {
           [name: string]: unknown;
@@ -2028,7 +2170,7 @@ export interface operations {
           'application/json': components['schemas']['BarrierResponse'];
         };
       };
-      /** @description Malformed JSON, missing/invalid instance header or invalid graph ID; session also rejects an invalid lease duration. */
+      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -2037,7 +2179,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Mode, instance, session, lease, generation or source conflict; graph state may require rebuild. See ErrorCode for identifiers. */
+      /** @description `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`, `stale_generation`, `graph_uninitialized`, `graph_desynchronized`, `barrier_not_reached`, `superseded_barrier`, `barrier_position_mismatch`. */
       409: {
         headers: {
           [name: string]: unknown;
@@ -2046,7 +2188,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds its limit. */
+      /** @description Request body exceeds 1 MiB (`invalid_request`). */
       413: {
         headers: {
           [name: string]: unknown;
@@ -2064,7 +2206,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Invalid payload shape, operands or domain operation. */
+      /** @description Invalid payload shape or bounds (`invalid_request`), including a `barrier_source_position` outside 1 to 256 bytes. */
       422: {
         headers: {
           [name: string]: unknown;

@@ -13,8 +13,10 @@ status code or body of the [HTTP API](http-api.md), the
 [integration contract](integration-contract.md) or the
 [deployment runbook](deployment.md). Section 19 adds the metrics of the M10
 node and edge lifecycle support (v0.5.0), which exist only when
-`KNOTREL_TOPOLOGY_LIFECYCLE=true`. Section 20 covers the inspection routes
-(v0.8.0) and section 21 the per-lane admission metrics (v1.0.0, unreleased).
+`KNOTREL_TOPOLOGY_LIFECYCLE=true`. Section 20 adds the label values of the
+inspection routes (v0.8.0) and section 21 the per-lane admission metrics
+(v1.0.0, unreleased). Apart from section 21, the document describes the
+metrics served by v0.9.0.
 
 Scope: service health, workload pressure and feeder synchronization of one
 `knotrel-server` process, including structured logs (section 17) and the
@@ -207,6 +209,7 @@ durable state. "Replacement" means publication of a new generation by import.
 | `graph_active_nodes`, `graph_enabled_edges`, `graph_effective_edges` | gauges | How much of the registered topology takes part in connectivity? | Registered nodes whose flag is active; registered edges whose flag is enabled; edges in the effective graph (enabled, both endpoints active). Published together with `graph_nodes` and `graph_edges` at the same boundaries; same failure and coherence rules. Lifecycle support only (section 19). | none | jump to published import counts | **implemented** | E |
 | `service_unavailable` | gauge 0/1 | Has a worker failure disabled the service? | The `unavailable` flag. Becomes 1 after a worker panic and stays 1 until process restart. | none | unaffected | **implemented** | E |
 | `readiness_state` | gauge, one-hot | What would `/ready` say? | `lifecycle::readiness_state`: same precedence as `lifecycle::readiness`, computed read-only at scrape. Stale is derived from the published deadline, without the compare-and-swap. | `state` ∈ {`unavailable`, `draining`, `starting`, `ready`, and in source-managed mode `uninitialized`, `loading`, `catching_up`, `stale`, `desynchronized`} | follows state | **implemented** | E |
+| `build_info` | gauge = 1 | Which version, engine and mode is this process? | Set once at startup (section 7); constant for the process. | `version` (crate version, an open set), `engine` ∈ {`compact-bfs`, `ett`, `hdt`}, `mode` ∈ {`standalone`, `source_managed`} | unchanged | **implemented** | E |
 | `feeder_lease_remaining_seconds` | gauge, s | Is the feeder alive? | Lease deadline from the published readiness word minus the monotonic clock, derived at scrape (section 14). Positive while no check reports the lease expired; zero throughout the deadline millisecond, when feeder calls may already fail with `lease_expired`; negative once every check, including `/ready`, reports it expired. Scraping never renews the lease or publishes staleness. Absent before the first session and in standalone mode. | none | session kept | **implemented** | E |
 | `feeder_events_total` | counter | Is the source making progress, and how much is redundant? | Per evaluated event (section 3) in `GraphState::apply_events`, under the graph lock (section 12). `unchanged` covers no-op mutations and `progress`. | `result` ∈ {`changed`, `unchanged`, `duplicate`, `rejected`} | continues | **implemented** | E |
 | `feeder_rejections_total` | counter | Why did a feeder call fail? | One per session, heartbeat, events, gap or barrier request the service rejected, where the `FeederError` is produced (section 13). Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Excluded: admission `busy` (HTTP `503 busy`) and `unavailable` (counted in `requests_rejected_total`), timeouts, cancellations and panics (`requests_outcome_uncertain_total`), HTTP-adapter checks and malformed bodies, and imports (`imports_total`). Source-managed mode only. | `code` ∈ {`session_required`, `fenced_feeder_session`, `lease_expired`, `invalid_lease_duration`, `graph_uninitialized`, `graph_desynchronized`, `stale_generation`, `source_mismatch`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `sequence_exhausted`, `invalid_request`, `topology_lifecycle_disabled`, `event_failed`, `barrier_position_mismatch`, `barrier_not_reached`, `superseded_barrier`} | continues | **implemented** | E |
@@ -398,6 +401,10 @@ only on process restart; graph replacement does not affect them.
 | `readiness_state` | 4 standalone, 9 source-managed |
 | `build_info` | 1 |
 | **Total** | **1240 standalone, 1245 source-managed** |
+
+This bound is the v0.4.0 one, with 14 route values. Since v0.8.0 the `route`
+label has 18 values (the inspection routes), which raises both HTTP bounds;
+section 20 gives the current figures.
 
 The library adds no other series (no `_created`, process or runtime
 metrics). Most route/method combinations can only yield `405`, so real

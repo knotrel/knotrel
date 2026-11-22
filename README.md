@@ -291,6 +291,11 @@ startup.
 | `KNOTREL_INSPECTION` | `false` | `true` enables the read-only inspection routes (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges`) used by the console's data browser; since v0.8.0; see [Inspection](docs/http-api.md#inspection-opt-in) |
 | `RUST_LOG` | `info` | Logging filter |
 
+The table lists the common variables. The server reads 17 `KNOTREL_*`
+variables; the complete list, with limits such as timeouts, connection and
+body bounds and the deduplication window, is in
+[Startup configuration](docs/http-api.md#startup-configuration-and-engine-selection).
+
 For example, to opt into the experimental forest:
 
 ```sh

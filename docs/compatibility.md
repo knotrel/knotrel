@@ -74,9 +74,12 @@ stay exhaustive are listed in [stability.md](stability.md#exhaustiveness-and-non
 are part of that API ([stability.md](stability.md#public-dependencies-of-knotrel-server)).
 An upgrade of either to an incompatible version requires a SemVer assessment
 of Knotrel, recorded in the release notes; from 1.0 it is released as a major
-version unless the assessment shows the public API unchanged. The MSRV of `knotrel-core` (1.98.1) is raised only in a
-minor release and announced in its notes; the workspace toolchain (1.100.0) is
-a development setting, not a promise.
+version unless the assessment shows the public API unchanged.
+Each crate declares its MSRV in `rust-version`:
+`knotrel-core` 1.98.1 and `knotrel-server` 1.100.0 (inherited from the
+workspace). Either is raised only in a minor release and announced in its
+notes. The toolchain used to develop the workspace is a separate development
+setting, not a promise.
 
 **HTTP API `/v1` (stable routes).** Changes inside `/v1` are additive only:
 - allowed: new routes; new optional request fields and parameters; new
@@ -160,8 +163,10 @@ The console declares the servers it supports in `console/package.json`
 3. Record the result in the release notes.
 
 The release checklist ([AGENTS.md](../AGENTS.md#before-release) and the
-console release procedure) includes this step. As of 2026-11-21 the range is
-`>=0.7.0 <0.9.0`, which excludes 0.9.0 until this check has run.
+console release procedure) includes this step. The current range, and the
+servers it was verified against, are stated in [docs/console.md](console.md);
+for 1.0 it is set by this check against the release candidate and the 0.9.x
+server.
 
 ## 6. Enforcement
 

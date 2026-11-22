@@ -9,6 +9,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque, btree_map::Entry};
 /// self-loops and duplicate edges; every endpoint has a vertex entry. Deleting
 /// an edge preserves its vertices. Storage is O(V + E), where V and E are the
 /// current vertex and undirected edge counts.
+///
+/// **Internal test oracle; no stability promise.** It exists for differential
+/// tests and benchmarks and may change or disappear in any release; see
+/// `docs/stability.md`. Use [`Graph`](crate::Graph) or
+/// [`ConnectivityGraph`](crate::ConnectivityGraph) instead.
 #[derive(Debug, Default)]
 pub struct ReferenceGraph {
     adjacency: BTreeMap<NodeId, BTreeSet<NodeId>>,
