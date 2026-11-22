@@ -140,7 +140,7 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [ ] **R3** rc gates of the [readiness assessment](docs/releases/v1.0-readiness.md) (contract freeze review, randomized soak, reproducible build, threat model, acceptance review)
   - [x] Threat model and `SECURITY.md` merged (#106); Private Vulnerability Reporting still to enable and verify
   - [x] Randomized soak and §9 traceability merged (#105); found defect D1, fixed (#104)
-  - [ ] Reproducible-build check merged (#107); Linux and workflow runs pending
+  - [ ] Reproducible-build check merged (#107); v0.9.0 on the runners: Linux byte-identical, macOS equivalent after excluding `LC_UUID`/`LC_CODE_SIGNATURE` (#109); run on the rc still to do
   - [ ] Contract freeze review; independent AI review of the 1.0 contract set
 
 ### v1.1.0 — Cluster Forest Backend (planned)
