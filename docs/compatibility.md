@@ -79,9 +79,16 @@ section 7); the release notes list them:
   enforced on every field they apply to. Source positions (event
   `source_position` and `prev_source_position`, import `source_position`,
   `barrier_source_position` when present) are 1 to 256 bytes of UTF-8;
-  `event_id` is at most 64 bytes. The limits count bytes, not characters; a
-  value outside them is refused with `422 invalid_request` and changes
-  nothing. Before, empty positions and over-long import and barrier
+  `event_id` is at most 64 bytes. The limits count bytes, not characters. A
+  request whose only fault is a value outside them is refused with `422
+  invalid_request` and changes nothing. The bound is checked at the existing
+  validation step, not first: on events after the session, lease, generation,
+  initialization, desynchronization, `source_id` and `source_epoch` checks
+  (so a request that also carries a different `source_epoch` still
+  desynchronizes with `409 source_epoch_mismatch`); on a barrier after the
+  session, lease, generation, initialization and desynchronization checks;
+  on an import after the instance and `graph_id` checks and before the
+  session checks. Before, empty positions and over-long import and barrier
   positions were accepted. The OpenAPI entries are in
   `docs/api/approved-breaking-changes.yaml`.
 

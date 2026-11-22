@@ -51,7 +51,7 @@ The server does not provide any of the following:
 | Header read and keep-alive idle time | `KNOTREL_HEADER_READ_TIMEOUT_MS`, default 5000 ms |
 | Request time (body receipt plus handling) | `KNOTREL_REQUEST_TIMEOUT_MS`, default 30000 ms |
 | Concurrent connections | `KNOTREL_MAX_CONNECTIONS`, default 1024; excess gets 503 `too_many_connections` |
-| Feeder source positions | event `source_position` and `prev_source_position`, import `source_position`, `barrier_source_position` (when present): 1 to 256 **bytes** of UTF-8; otherwise 422 `invalid_request` |
+| Feeder source positions | event `source_position` and `prev_source_position`, import `source_position`, `barrier_source_position` (when present): 1 to 256 **bytes** of UTF-8; otherwise 422 `invalid_request`, after the earlier checks of the request (see `applied_source_position` under "Graph identity") |
 | Feeder `event_id` | at most 64 **bytes** of UTF-8; otherwise 422 `invalid_request` |
 | Shutdown drain | `KNOTREL_SHUTDOWN_TIMEOUT_MS`, default 10000 ms |
 | Write timeouts, per-request memory and CPU | not bounded beyond the limits above |
@@ -975,7 +975,15 @@ These concepts remain strictly distinct:
    in bytes on every source position it accepts (event `source_position` and
    `prev_source_position`, import `source_position`, `barrier_source_position`)
    and refuses other values with 422 `invalid_request`; a multibyte string can
-   exceed 256 bytes with fewer than 256 characters. OpenAPI's
+   exceed 256 bytes with fewer than 256 characters. The bound is checked at the
+   request's existing validation step, so an earlier failure takes precedence:
+   on events, after the session, lease, generation, initialization,
+   desynchronization, `source_id` and `source_epoch` checks (a request with a
+   different `source_epoch` and a bad position desynchronizes with 409
+   `source_epoch_mismatch`); on a barrier, after the session, lease,
+   generation, initialization and desynchronization checks and before the
+   sequence and position comparisons; on an import, after the instance and
+   `graph_id` checks and before the session checks. OpenAPI's
    `minLength`/`maxLength` count characters and are a looser approximation. Knotrel never interprets this string
    as an integer, never parses its internal structure, and never compares cursors
    lexicographically.
