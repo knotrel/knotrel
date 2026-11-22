@@ -487,8 +487,12 @@ pub(crate) struct DedupEntry {
 
 /// Result of looking up a sequence in the deduplication window.
 pub(crate) enum DedupLookup<'a> {
+    /// A committed sequence whose entry is still retained.
     InWindow(&'a DedupEntry),
+    /// A sequence at or below the applied sequence that is not retained:
+    /// evicted, or never committed (sequence 0).
     Evicted,
+    /// A sequence above the applied sequence, so not yet committed.
     Future,
 }
 
@@ -515,9 +519,19 @@ impl DedupWindow {
         self.event_ids.clear();
     }
 
+    /// Classifies `seq` against the applied sequence `applied_seq`.
+    ///
+    /// Total over all inputs: `Future` exactly when `seq > applied_seq`;
+    /// otherwise `InWindow` or `Evicted`. Committed sequences of a generation
+    /// are `1..=applied_seq`, so sequence 0 is never committed and is
+    /// `Evicted` (outside every window, `docs/http-api.md` invariant 7), also
+    /// while nothing is applied yet (`applied_seq == 0`). `O(1)`.
     pub(crate) fn check_sequence(&self, seq: u64, applied_seq: u64) -> DedupLookup<'_> {
-        if applied_seq == 0 || seq > applied_seq {
+        if seq > applied_seq {
             return DedupLookup::Future;
+        }
+        if seq == 0 {
+            return DedupLookup::Evicted;
         }
         let min_seq = if applied_seq >= self.capacity as u64 {
             applied_seq - self.capacity as u64 + 1
@@ -1422,14 +1436,43 @@ impl GraphState {
             let canonical_op = CanonicalOp::from_feeder_event(&event, lifecycle)?;
             let seq = event.delivery_sequence;
 
-            if seq <= self.applied_delivery_sequence {
-                match self
-                    .dedup_window
-                    .check_sequence(seq, self.applied_delivery_sequence)
-                {
-                    DedupLookup::Evicted => {
+            // One total classification decides the path: retained or evicted
+            // history (including sequence 0, never committed), or a new
+            // sequence. No feeder input reaches an impossible arm.
+            match self
+                .dedup_window
+                .check_sequence(seq, self.applied_delivery_sequence)
+            {
+                DedupLookup::Evicted => {
+                    let err_msg =
+                        format!("delivery sequence {seq} was evicted from deduplication window");
+                    return self.fail_batch_or_error(
+                        telemetry,
+                        is_batch,
+                        mode,
+                        instance_id,
+                        &req.instance_id,
+                        idx,
+                        seq,
+                        &event.event_id,
+                        ErrorCode::UnverifiableDuplicate,
+                        "evicted duplicate",
+                        ErrorCode::UnverifiableDuplicate,
+                        err_msg.clone(),
+                        axum::http::StatusCode::CONFLICT,
+                        FeederError::UnverifiableDuplicate(err_msg),
+                    );
+                }
+                DedupLookup::InWindow(retained) => {
+                    if retained.event_id != event.event_id {
+                        desynchronize(
+                            &mut self.sync_status,
+                            Desynchronization::ConflictingDuplicate,
+                            telemetry,
+                        );
                         let err_msg = format!(
-                            "delivery sequence {seq} was evicted from deduplication window"
+                            "retained sequence {seq} has event_id '{}', received '{}'",
+                            retained.event_id, event.event_id
                         );
                         return self.fail_batch_or_error(
                             telemetry,
@@ -1440,252 +1483,26 @@ impl GraphState {
                             idx,
                             seq,
                             &event.event_id,
-                            ErrorCode::UnverifiableDuplicate,
-                            "evicted duplicate",
-                            ErrorCode::UnverifiableDuplicate,
+                            ErrorCode::ConflictingDuplicate,
+                            "conflicting event ID",
+                            ErrorCode::ConflictingDuplicate,
                             err_msg.clone(),
                             axum::http::StatusCode::CONFLICT,
-                            FeederError::UnverifiableDuplicate(err_msg),
+                            FeederError::ConflictingDuplicate(err_msg),
                         );
                     }
-                    DedupLookup::InWindow(retained) => {
-                        if retained.event_id != event.event_id {
-                            desynchronize(
-                                &mut self.sync_status,
-                                Desynchronization::ConflictingDuplicate,
-                                telemetry,
-                            );
-                            let err_msg = format!(
-                                "retained sequence {seq} has event_id '{}', received '{}'",
-                                retained.event_id, event.event_id
-                            );
-                            return self.fail_batch_or_error(
-                                telemetry,
-                                is_batch,
-                                mode,
-                                instance_id,
-                                &req.instance_id,
-                                idx,
-                                seq,
-                                &event.event_id,
-                                ErrorCode::ConflictingDuplicate,
-                                "conflicting event ID",
-                                ErrorCode::ConflictingDuplicate,
-                                err_msg.clone(),
-                                axum::http::StatusCode::CONFLICT,
-                                FeederError::ConflictingDuplicate(err_msg),
-                            );
-                        }
 
-                        let is_canonical_match = retained.source_position == event.source_position
-                            && retained.canonical_op == canonical_op;
-                        if !is_canonical_match {
-                            desynchronize(
-                                &mut self.sync_status,
-                                Desynchronization::ConflictingDuplicate,
-                                telemetry,
-                            );
-                            let err_msg = format!(
-                                "conflicting duplicate at sequence {seq}: canonical content or source position altered"
-                            );
-                            return self.fail_batch_or_error(
-                                telemetry,
-                                is_batch,
-                                mode,
-                                instance_id,
-                                &req.instance_id,
-                                idx,
-                                seq,
-                                &event.event_id,
-                                ErrorCode::ConflictingDuplicate,
-                                "canonical conflict",
-                                ErrorCode::ConflictingDuplicate,
-                                err_msg.clone(),
-                                axum::http::StatusCode::CONFLICT,
-                                FeederError::ConflictingDuplicate(err_msg),
-                            );
-                        }
-
-                        last_duplicate_entry = Some(retained.clone());
-                        count_feeder_event(telemetry, FeederEventResult::Duplicate);
-                        continue;
-                    }
-                    DedupLookup::Future => unreachable!(),
-                }
-            } else if let Some(expected_seq) = self.applied_delivery_sequence.checked_add(1) {
-                if seq != expected_seq {
-                    let expected = expected_seq;
-                    return self.fail_batch_or_error(
-                        telemetry,
-                        is_batch,
-                        mode,
-                        instance_id,
-                        &req.instance_id,
-                        idx,
-                        seq,
-                        &event.event_id,
-                        ErrorCode::OutOfOrderSequence,
-                        "out-of-order sequence",
-                        ErrorCode::OutOfOrderSequence,
-                        format!("expected delivery sequence {expected}, received {seq}"),
-                        axum::http::StatusCode::CONFLICT,
-                        FeederError::OutOfOrderSequence {
-                            expected,
-                            received: seq,
-                        },
-                    );
-                }
-
-                if event.prev_delivery_sequence != self.applied_delivery_sequence {
-                    desynchronize(
-                        &mut self.sync_status,
-                        Desynchronization::SourcePredecessorMismatch,
-                        telemetry,
-                    );
-                    let err_msg = format!(
-                        "prev_delivery_sequence {} does not match applied sequence {}",
-                        event.prev_delivery_sequence, self.applied_delivery_sequence
-                    );
-                    return self.fail_batch_or_error(
-                        telemetry,
-                        is_batch,
-                        mode,
-                        instance_id,
-                        &req.instance_id,
-                        idx,
-                        seq,
-                        &event.event_id,
-                        ErrorCode::SourcePredecessorMismatch,
-                        "predecessor sequence mismatch",
-                        ErrorCode::SourcePredecessorMismatch,
-                        err_msg.clone(),
-                        axum::http::StatusCode::CONFLICT,
-                        FeederError::SourcePredecessorMismatch(err_msg),
-                    );
-                }
-
-                let live_pos = self.source_position.as_deref().unwrap_or("");
-                if event.prev_source_position != live_pos {
-                    desynchronize(
-                        &mut self.sync_status,
-                        Desynchronization::SourcePredecessorMismatch,
-                        telemetry,
-                    );
-                    let err_msg = format!(
-                        "prev_source_position '{}' does not match applied source position '{}'",
-                        event.prev_source_position, live_pos
-                    );
-                    return self.fail_batch_or_error(
-                        telemetry,
-                        is_batch,
-                        mode,
-                        instance_id,
-                        &req.instance_id,
-                        idx,
-                        seq,
-                        &event.event_id,
-                        ErrorCode::SourcePredecessorMismatch,
-                        "source predecessor mismatch",
-                        ErrorCode::SourcePredecessorMismatch,
-                        err_msg.clone(),
-                        axum::http::StatusCode::CONFLICT,
-                        FeederError::SourcePredecessorMismatch(err_msg),
-                    );
-                }
-
-                if self.dedup_window.contains_event_id(&event.event_id) {
-                    desynchronize(
-                        &mut self.sync_status,
-                        Desynchronization::ConflictingDuplicate,
-                        telemetry,
-                    );
-                    let err_msg = format!(
-                        "event_id '{}' is already present in retained deduplication window",
-                        event.event_id
-                    );
-                    return self.fail_batch_or_error(
-                        telemetry,
-                        is_batch,
-                        mode,
-                        instance_id,
-                        &req.instance_id,
-                        idx,
-                        seq,
-                        &event.event_id,
-                        ErrorCode::ConflictingDuplicate,
-                        "duplicate event ID",
-                        ErrorCode::ConflictingDuplicate,
-                        err_msg.clone(),
-                        axum::http::StatusCode::CONFLICT,
-                        FeederError::ConflictingDuplicate(err_msg),
-                    );
-                }
-
-                let next_seq = expected_seq;
-
-                let changed_result = match &canonical_op {
-                    CanonicalOp::AddNode { node } => {
-                        self.graph.add_node(*node).map_err(|err| match err {
-                            GraphError::NodeLimitExceeded { limit } => (
-                                ErrorCode::NodeLimitExceeded,
-                                format!("node limit {limit} exceeded"),
-                            ),
-                            _ => (ErrorCode::InvalidNode, err.to_string()),
-                        })
-                    }
-                    CanonicalOp::Link { source, target } => {
-                        if source == target {
-                            Err((
-                                ErrorCode::SelfLoop,
-                                "self-loops are forbidden in simple undirected graphs".to_string(),
-                            ))
-                        } else {
-                            self.graph.link(*source, *target).map_err(|err| match err {
-                                GraphError::EdgeLimitExceeded { limit } => (
-                                    ErrorCode::EdgeLimitExceeded,
-                                    format!("edge limit {limit} exceeded"),
-                                ),
-                                GraphError::NodeLimitExceeded { limit } => (
-                                    ErrorCode::NodeLimitExceeded,
-                                    format!("node limit {limit} exceeded"),
-                                ),
-                                _ => (ErrorCode::InvalidEdge, err.to_string()),
-                            })
-                        }
-                    }
-                    CanonicalOp::Cut { source, target } => {
-                        if source == target {
-                            Err((
-                                ErrorCode::SelfLoop,
-                                "self-loops are forbidden in simple undirected graphs".to_string(),
-                            ))
-                        } else {
-                            self.graph
-                                .cut(*source, *target)
-                                .map_err(|err| (ErrorCode::InvalidEdge, err.to_string()))
-                        }
-                    }
-                    CanonicalOp::Progress => Ok(false),
-                    CanonicalOp::SetNodeActive { node, active } => {
-                        lifecycle_event(self.graph.set_node_active(*node, *active))
-                    }
-                    // The fingerprint is normalized (min, max); the facade
-                    // gets the supplied order so that error precedence and
-                    // messages match direct operations (`u` before `v`).
-                    CanonicalOp::SetEdgeEnabled { enabled, .. } => {
-                        let (Some(source), Some(target)) = (event.source, event.target) else {
-                            unreachable!("prevalidated set_edge_enabled has both endpoints")
-                        };
-                        lifecycle_event(self.graph.set_edge_enabled(source.0, target.0, *enabled))
-                    }
-                    CanonicalOp::RemoveNode { node } => {
-                        lifecycle_event(self.graph.remove_node(*node))
-                    }
-                };
-
-                let changed = match changed_result {
-                    Ok(ch) => ch,
-                    Err((err_code, err_msg)) => {
+                    let is_canonical_match = retained.source_position == event.source_position
+                        && retained.canonical_op == canonical_op;
+                    if !is_canonical_match {
+                        desynchronize(
+                            &mut self.sync_status,
+                            Desynchronization::ConflictingDuplicate,
+                            telemetry,
+                        );
+                        let err_msg = format!(
+                            "conflicting duplicate at sequence {seq}: canonical content or source position altered"
+                        );
                         return self.fail_batch_or_error(
                             telemetry,
                             is_batch,
@@ -1695,46 +1512,250 @@ impl GraphState {
                             idx,
                             seq,
                             &event.event_id,
-                            ErrorCode::EventFailed,
-                            "domain error",
-                            err_code,
+                            ErrorCode::ConflictingDuplicate,
+                            "canonical conflict",
+                            ErrorCode::ConflictingDuplicate,
                             err_msg.clone(),
-                            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-                            FeederError::Domain(err_code, err_msg),
+                            axum::http::StatusCode::CONFLICT,
+                            FeederError::ConflictingDuplicate(err_msg),
                         );
                     }
-                };
 
-                let result = if changed && !matches!(canonical_op, CanonicalOp::Progress) {
-                    FeederEventResult::Changed
-                } else {
-                    FeederEventResult::Unchanged
-                };
-                if changed && !matches!(canonical_op, CanonicalOp::Progress) {
-                    self.increment_version();
+                    last_duplicate_entry = Some(retained.clone());
+                    count_feeder_event(telemetry, FeederEventResult::Duplicate);
+                    continue;
                 }
-                self.applied_delivery_sequence = next_seq;
-                // `clone_from` reuses the retained position's capacity; the
-                // owned event's strings then move into the window entry.
-                self.source_position
-                    .get_or_insert_default()
-                    .clone_from(&event.source_position);
-                self.dedup_window.record(DedupEntry {
-                    delivery_sequence: next_seq,
-                    event_id: event.event_id,
-                    source_position: event.source_position,
-                    canonical_op,
-                    changed,
-                });
-                newly_applied_count += 1;
-                count_feeder_event(telemetry, result);
-                applied_stamp.pending = true;
-            } else {
-                // Applied sequence counter is u64::MAX and cannot be incremented.
-                // Note: since seq is u64, any seq > u64::MAX is impossible on the wire.
-                // This branch serves as an internal defensive guard against sequence overflow.
-                count_feeder_event(telemetry, FeederEventResult::Rejected);
-                return Err(FeederError::SequenceExhausted);
+                DedupLookup::Future => {
+                    if let Some(expected_seq) = self.applied_delivery_sequence.checked_add(1) {
+                        if seq != expected_seq {
+                            let expected = expected_seq;
+                            return self.fail_batch_or_error(
+                                telemetry,
+                                is_batch,
+                                mode,
+                                instance_id,
+                                &req.instance_id,
+                                idx,
+                                seq,
+                                &event.event_id,
+                                ErrorCode::OutOfOrderSequence,
+                                "out-of-order sequence",
+                                ErrorCode::OutOfOrderSequence,
+                                format!("expected delivery sequence {expected}, received {seq}"),
+                                axum::http::StatusCode::CONFLICT,
+                                FeederError::OutOfOrderSequence {
+                                    expected,
+                                    received: seq,
+                                },
+                            );
+                        }
+
+                        if event.prev_delivery_sequence != self.applied_delivery_sequence {
+                            desynchronize(
+                                &mut self.sync_status,
+                                Desynchronization::SourcePredecessorMismatch,
+                                telemetry,
+                            );
+                            let err_msg = format!(
+                                "prev_delivery_sequence {} does not match applied sequence {}",
+                                event.prev_delivery_sequence, self.applied_delivery_sequence
+                            );
+                            return self.fail_batch_or_error(
+                                telemetry,
+                                is_batch,
+                                mode,
+                                instance_id,
+                                &req.instance_id,
+                                idx,
+                                seq,
+                                &event.event_id,
+                                ErrorCode::SourcePredecessorMismatch,
+                                "predecessor sequence mismatch",
+                                ErrorCode::SourcePredecessorMismatch,
+                                err_msg.clone(),
+                                axum::http::StatusCode::CONFLICT,
+                                FeederError::SourcePredecessorMismatch(err_msg),
+                            );
+                        }
+
+                        let live_pos = self.source_position.as_deref().unwrap_or("");
+                        if event.prev_source_position != live_pos {
+                            desynchronize(
+                                &mut self.sync_status,
+                                Desynchronization::SourcePredecessorMismatch,
+                                telemetry,
+                            );
+                            let err_msg = format!(
+                                "prev_source_position '{}' does not match applied source position '{}'",
+                                event.prev_source_position, live_pos
+                            );
+                            return self.fail_batch_or_error(
+                                telemetry,
+                                is_batch,
+                                mode,
+                                instance_id,
+                                &req.instance_id,
+                                idx,
+                                seq,
+                                &event.event_id,
+                                ErrorCode::SourcePredecessorMismatch,
+                                "source predecessor mismatch",
+                                ErrorCode::SourcePredecessorMismatch,
+                                err_msg.clone(),
+                                axum::http::StatusCode::CONFLICT,
+                                FeederError::SourcePredecessorMismatch(err_msg),
+                            );
+                        }
+
+                        if self.dedup_window.contains_event_id(&event.event_id) {
+                            desynchronize(
+                                &mut self.sync_status,
+                                Desynchronization::ConflictingDuplicate,
+                                telemetry,
+                            );
+                            let err_msg = format!(
+                                "event_id '{}' is already present in retained deduplication window",
+                                event.event_id
+                            );
+                            return self.fail_batch_or_error(
+                                telemetry,
+                                is_batch,
+                                mode,
+                                instance_id,
+                                &req.instance_id,
+                                idx,
+                                seq,
+                                &event.event_id,
+                                ErrorCode::ConflictingDuplicate,
+                                "duplicate event ID",
+                                ErrorCode::ConflictingDuplicate,
+                                err_msg.clone(),
+                                axum::http::StatusCode::CONFLICT,
+                                FeederError::ConflictingDuplicate(err_msg),
+                            );
+                        }
+
+                        let next_seq = expected_seq;
+
+                        let changed_result = match &canonical_op {
+                            CanonicalOp::AddNode { node } => {
+                                self.graph.add_node(*node).map_err(|err| match err {
+                                    GraphError::NodeLimitExceeded { limit } => (
+                                        ErrorCode::NodeLimitExceeded,
+                                        format!("node limit {limit} exceeded"),
+                                    ),
+                                    _ => (ErrorCode::InvalidNode, err.to_string()),
+                                })
+                            }
+                            CanonicalOp::Link { source, target } => {
+                                if source == target {
+                                    Err((
+                                        ErrorCode::SelfLoop,
+                                        "self-loops are forbidden in simple undirected graphs"
+                                            .to_string(),
+                                    ))
+                                } else {
+                                    self.graph.link(*source, *target).map_err(|err| match err {
+                                        GraphError::EdgeLimitExceeded { limit } => (
+                                            ErrorCode::EdgeLimitExceeded,
+                                            format!("edge limit {limit} exceeded"),
+                                        ),
+                                        GraphError::NodeLimitExceeded { limit } => (
+                                            ErrorCode::NodeLimitExceeded,
+                                            format!("node limit {limit} exceeded"),
+                                        ),
+                                        _ => (ErrorCode::InvalidEdge, err.to_string()),
+                                    })
+                                }
+                            }
+                            CanonicalOp::Cut { source, target } => {
+                                if source == target {
+                                    Err((
+                                        ErrorCode::SelfLoop,
+                                        "self-loops are forbidden in simple undirected graphs"
+                                            .to_string(),
+                                    ))
+                                } else {
+                                    self.graph
+                                        .cut(*source, *target)
+                                        .map_err(|err| (ErrorCode::InvalidEdge, err.to_string()))
+                                }
+                            }
+                            CanonicalOp::Progress => Ok(false),
+                            CanonicalOp::SetNodeActive { node, active } => {
+                                lifecycle_event(self.graph.set_node_active(*node, *active))
+                            }
+                            // The fingerprint is normalized (min, max); the facade
+                            // gets the supplied order so that error precedence and
+                            // messages match direct operations (`u` before `v`).
+                            CanonicalOp::SetEdgeEnabled { enabled, .. } => {
+                                let (Some(source), Some(target)) = (event.source, event.target)
+                                else {
+                                    unreachable!("prevalidated set_edge_enabled has both endpoints")
+                                };
+                                lifecycle_event(
+                                    self.graph.set_edge_enabled(source.0, target.0, *enabled),
+                                )
+                            }
+                            CanonicalOp::RemoveNode { node } => {
+                                lifecycle_event(self.graph.remove_node(*node))
+                            }
+                        };
+
+                        let changed = match changed_result {
+                            Ok(ch) => ch,
+                            Err((err_code, err_msg)) => {
+                                return self.fail_batch_or_error(
+                                    telemetry,
+                                    is_batch,
+                                    mode,
+                                    instance_id,
+                                    &req.instance_id,
+                                    idx,
+                                    seq,
+                                    &event.event_id,
+                                    ErrorCode::EventFailed,
+                                    "domain error",
+                                    err_code,
+                                    err_msg.clone(),
+                                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                                    FeederError::Domain(err_code, err_msg),
+                                );
+                            }
+                        };
+
+                        let result = if changed && !matches!(canonical_op, CanonicalOp::Progress) {
+                            FeederEventResult::Changed
+                        } else {
+                            FeederEventResult::Unchanged
+                        };
+                        if changed && !matches!(canonical_op, CanonicalOp::Progress) {
+                            self.increment_version();
+                        }
+                        self.applied_delivery_sequence = next_seq;
+                        // `clone_from` reuses the retained position's capacity; the
+                        // owned event's strings then move into the window entry.
+                        self.source_position
+                            .get_or_insert_default()
+                            .clone_from(&event.source_position);
+                        self.dedup_window.record(DedupEntry {
+                            delivery_sequence: next_seq,
+                            event_id: event.event_id,
+                            source_position: event.source_position,
+                            canonical_op,
+                            changed,
+                        });
+                        newly_applied_count += 1;
+                        count_feeder_event(telemetry, result);
+                        applied_stamp.pending = true;
+                    } else {
+                        // Applied sequence counter is u64::MAX and cannot be incremented.
+                        // Note: since seq is u64, any seq > u64::MAX is impossible on the wire.
+                        // This branch serves as an internal defensive guard against sequence overflow.
+                        count_feeder_event(telemetry, FeederEventResult::Rejected);
+                        return Err(FeederError::SequenceExhausted);
+                    }
+                }
             }
         }
 
@@ -4938,6 +4959,14 @@ mod tests {
         // 2. DedupWindow check_sequence and ring replacement
         let mut window = DedupWindow::new(4);
         assert!(matches!(window.check_sequence(1, 0), DedupLookup::Future));
+        // Sequence 0 is never committed: outside every window, also before the
+        // first applied event of a generation (D1 regression).
+        assert!(matches!(window.check_sequence(0, 0), DedupLookup::Evicted));
+        assert!(matches!(window.check_sequence(0, 3), DedupLookup::Evicted));
+        assert!(matches!(
+            window.check_sequence(u64::MAX, 0),
+            DedupLookup::Future
+        ));
         assert!(matches!(window.check_sequence(5, 2), DedupLookup::Future));
 
         // Record entries and test eviction lookup
