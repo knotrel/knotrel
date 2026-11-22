@@ -37,15 +37,12 @@ tokio = { workspace = true, features = ["io-util"] }
 tower.workspace = true
 
 # docs/compatibility.md, section 6: maintainer-approved breaking changes.
-#
-# v1.0.0 contract freeze (docs/releases/v1.0-contract-freeze-review.md, R2,
-# maintainer decision 1 of 2026-11-22): `Phase` becomes `#[non_exhaustive]`
-# against the v0.9.0 baseline. No deprecation path exists for this attribute.
-# cargo-semver-checks configures lints per crate, not per item, so the lint is
-# allowed for this crate only while the baseline predates v1.0.0;
-# docs/api/public-api-knotrel-server.txt records `#[non_exhaustive]` on every
-# item, so any further change of the attribute still shows up in review.
-# Remove this entry in the first change after v1.0.0 is tagged.
+# Each lint below has a [[semver_exception]] entry in
+# docs/api/public-api-policy.toml naming its items, decision and release
+# ("until"); scripts/public-api.py fails once the workspace version is past
+# that release, so the entry and the lint must then be removed. The lint is
+# crate-wide: the public API snapshot, the approved #[non_exhaustive] list and
+# the narrowing check of the same script remain the per-item guard.
 [package.metadata.cargo-semver-checks.lints]
 enum_marked_non_exhaustive = "allow"
 

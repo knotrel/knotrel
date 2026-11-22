@@ -225,6 +225,39 @@ async fn readiness_is_starting_before_serve_and_ready_after() {
     );
 }
 
+/// One in-process response: status, `Connection` and `Cache-Control`, body.
+struct OneShot {
+    status: u16,
+    connection: Option<String>,
+    cache_control: Option<String>,
+    body: String,
+}
+
+/// Sends `GET path` to the router without a socket.
+async fn oneshot_get(app: &axum::Router, path: &str) -> OneShot {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let request = Request::builder().uri(path).body(Body::empty()).unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .map(|value| value.to_str().unwrap().to_owned())
+    };
+    let (connection, cache_control) = (header("connection"), header("cache-control"));
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    OneShot {
+        status,
+        connection,
+        cache_control,
+        body: String::from_utf8(body.to_vec()).unwrap(),
+    }
+}
+
 /// The stable readiness contract of `router_with_lifecycle` (docs/stability.md,
 /// maintainer decision 2 of 2026-11-22), checked on the router alone so that it
 /// holds for embedders who drive the `Lifecycle` themselves instead of `serve`:
@@ -235,26 +268,11 @@ async fn readiness_is_starting_before_serve_and_ready_after() {
 /// by contrast, owns a lifecycle that is always ready.
 #[tokio::test]
 async fn router_with_lifecycle_readiness_follows_the_supplied_lifecycle() {
-    use axum::{body::Body, http::Request};
     use knotrel_server::{ServerMode, router_with_config};
-    use tower::ServiceExt;
 
     async fn get(app: &axum::Router, path: &str) -> (u16, Option<String>, String) {
-        let request = Request::builder().uri(path).body(Body::empty()).unwrap();
-        let response = app.clone().oneshot(request).await.unwrap();
-        let status = response.status().as_u16();
-        let connection = response
-            .headers()
-            .get("connection")
-            .map(|value| value.to_str().unwrap().to_owned());
-        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        (
-            status,
-            connection,
-            String::from_utf8(body.to_vec()).unwrap(),
-        )
+        let reply = oneshot_get(app, path).await;
+        (reply.status, reply.connection, reply.body)
     }
     const SHUTTING_DOWN: &str = r#"{"result":"error","code":"shutting_down","message":"server is shutting down; retry against another instance"}"#;
 
@@ -272,9 +290,21 @@ async fn router_with_lifecycle_readiness_follows_the_supplied_lifecycle() {
         );
         assert_eq!(get(&app, "/health").await.0, 200, "{mode:?}");
         assert_eq!(get(&app, "/v1/info").await.0, 200, "{mode:?}");
+        // Unknown routes are ordinary 404s until the drain begins.
+        assert_eq!(get(&app, "/v1/unknown").await.0, 404, "{mode:?}");
 
         // Ready: standalone is ready; source-managed also needs a bootstrap.
+        assert_eq!(
+            oneshot_get(&app, "/ready").await.cache_control.as_deref(),
+            Some("no-store"),
+            "{mode:?}"
+        );
         lifecycle.mark_ready();
+        assert_eq!(
+            oneshot_get(&app, "/ready").await.cache_control.as_deref(),
+            Some("no-store"),
+            "{mode:?}"
+        );
         let expected = match mode {
             ServerMode::Standalone => (200, None, r#"{"status":"ready"}"#.to_owned()),
             ServerMode::SourceManaged => (503, None, r#"{"status":"uninitialized"}"#.to_owned()),
@@ -290,6 +320,12 @@ async fn router_with_lifecycle_readiness_follows_the_supplied_lifecycle() {
             (503, close.clone(), r#"{"status":"draining"}"#.to_owned()),
             "{mode:?}"
         );
+        // Every `/ready` answer, in every phase, is uncacheable.
+        assert_eq!(
+            oneshot_get(&app, "/ready").await.cache_control.as_deref(),
+            Some("no-store"),
+            "{mode:?}"
+        );
         let (status, connection, _) = get(&app, "/health").await;
         assert_eq!((status, connection), (200, close.clone()), "{mode:?}");
         let (status, connection, metrics) = get(&app, "/metrics").await;
@@ -298,7 +334,8 @@ async fn router_with_lifecycle_readiness_follows_the_supplied_lifecycle() {
             metrics.contains("knotrel_readiness_state"),
             "{mode:?}: metrics stay scrapeable while draining"
         );
-        for path in ["/v1/info", "/v1/stats"] {
+        // Unknown routes are rejected by the drain like every other request.
+        for path in ["/v1/info", "/v1/stats", "/v1/unknown"] {
             assert_eq!(
                 get(&app, path).await,
                 (503, close.clone(), SHUTTING_DOWN.to_owned()),
@@ -313,6 +350,49 @@ async fn router_with_lifecycle_readiness_follows_the_supplied_lifecycle() {
         get(&app, "/ready").await,
         (200, None, r#"{"status":"ready"}"#.to_owned())
     );
+}
+
+/// A failed graph worker makes `/ready` report `unavailable` through
+/// `router_with_lifecycle`, in the ready phase and while draining (a failed
+/// worker wins over every other state, as documented on the function).
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn router_with_lifecycle_reports_a_failed_worker_as_unavailable() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    let lifecycle = Lifecycle::new();
+    let app = router_with_lifecycle(config(), lifecycle.clone());
+    lifecycle.mark_ready();
+    let mut pause = lifecycle.pause_next_worker();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/operations")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"op":"link","source":"1","target":"2"}"#))
+        .unwrap();
+    let pending = tokio::spawn(app.clone().oneshot(request));
+    pause.wait_started().await;
+    pause.panic_on_release();
+    let failed = pending.await.unwrap().unwrap();
+    assert!(failed.status().is_server_error(), "{}", failed.status());
+
+    for phase in [Phase::Ready, Phase::Draining] {
+        if phase == Phase::Draining {
+            lifecycle.begin_draining();
+        }
+        let ready = oneshot_get(&app, "/ready").await;
+        assert_eq!(
+            (ready.status, ready.body.as_str()),
+            (503, r#"{"status":"unavailable"}"#),
+            "{phase:?}"
+        );
+        assert_eq!(
+            ready.cache_control.as_deref(),
+            Some("no-store"),
+            "{phase:?}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -35,13 +35,17 @@ A change to the public Rust API (a new, changed or removed public item of
 `knotrel-core` or `knotrel-server`) also updates, in the same change:
 - the snapshot: `python3 scripts/public-api.py generate` rewrites
   `docs/api/public-api-knotrel-core.txt` and `docs/api/public-api-knotrel-server.txt`;
-- `docs/api/public-api-classification.txt`: one line `<stable|experimental|internal> <path>`
-  per new item;
+- `docs/api/public-api-classification.txt`: one line `<stable|experimental|internal> <key>`
+  per new item and per new trait implementation (`impl <Trait> for <Type>`);
+- `docs/api/public-api-policy.toml`, only with a maintainer decision: a new
+  `#[non_exhaustive]` item, a narrowing (a stable item made experimental,
+  internal or removed) or a cargo-semver-checks lint exception;
 - `docs/stability.md`, if the item is at the crate root or its class differs
   from its type's.
 
 `python3 scripts/public-api.py check` (CI job `public API`) fails otherwise.
-It needs the workspace toolchain (`rust-toolchain.toml`).
+It needs the workspace toolchain (`rust-toolchain.toml`) and compares the
+classification with `origin/main` (or `--base <rev>`) to detect narrowings.
 
 `python3 scripts/check-crate-docs.py` flags stale version references in the
 crate documentation, and the console release workflow refuses a console

@@ -39,9 +39,21 @@ or metric label value) is:
   weakens the promise of the stable type, route or family that contains it.
 
 Because the tools do not know the classes, removing an experimental Rust item
-is declared as an approved exception in the crate's `cargo-semver-checks`
-configuration, and removing an experimental HTTP element that OpenAPI does not
-mark `x-knotrel-stability: experimental` is listed in
+still fails `cargo-semver-checks`. Such a removal is declared for one release
+only:
+1. the crate's `[package.metadata.cargo-semver-checks.lints]` allows the
+   failing lint, and a matching `[[semver_exception]]` entry in
+   `docs/api/public-api-policy.toml` names the crate, the lint, the removed
+   items, the decision and the release that ships the removal (`until`);
+2. the public API check (section 6) is the per-item guard while the lint
+   exception exists: the snapshot diff shows exactly what was removed, and any
+   stable item or implementation that is removed or narrowed without its own
+   approved `[[narrowing]]` entry fails, whatever the crate-wide lint allows;
+3. once the workspace version is past `until`, the check fails until the lint
+   and the entry are removed, so no exception outlives its release.
+
+Removing an experimental HTTP element that OpenAPI does not mark
+`x-knotrel-stability: experimental` is listed in
 `docs/api/approved-breaking-changes.yaml` (section 6). These declarations
 document the change; they need no deprecation window.
 
@@ -130,22 +142,37 @@ console release procedure) includes this step. As of 2026-11-21 the range is
   change fails the job even when the version was bumped. An approved breaking
   change (after section 4) is declared in the crate's
   `[package.metadata.cargo-semver-checks]` lint configuration and reviewed
-  with the change. The configuration works per lint, not per item, so the
-  comment next to each entry names the items and the decision, and the entry
-  is removed once the baseline release contains the change. Current entry:
-  `#[non_exhaustive]` on `EngineConfig`, `GraphError`, `IncidenceError`,
-  `EdgeState` (core) and `Phase` (server), approved for v1.0.0 on 2026-11-22.
+  with the change. The configuration works per lint and per crate, not per
+  item, so every configured lint has a `[[semver_exception]]` entry in
+  `docs/api/public-api-policy.toml` (crate, lints, items, decision and the
+  release `until` for which it is valid); the public API check below fails for a
+  lint without an entry, for a stale entry, and for an entry whose release is
+  older than the workspace version. Current entries: `#[non_exhaustive]` on
+  `EngineConfig`, `GraphError`, `IncidenceError`, `EdgeState` (core) and
+  `Phase` (server), approved for v1.0.0 on 2026-11-22.
 - **Public Rust API snapshot and classification:** CI (job `public API`)
-  regenerates the public API of both crates from rustdoc JSON, default
-  features and `test-support`, with `scripts/public-api.py check`, and fails
-  when it differs from `docs/api/public-api-knotrel-core.txt` or
-  `docs/api/public-api-knotrel-server.txt`, when a public item has no class
-  in `docs/api/public-api-classification.txt`, when a member is classified
-  above its parent or a `test-support` item is not internal, or when
-  [stability.md](stability.md#how-the-rust-tables-are-checked) disagrees with
-  the classification. Unlike `cargo-semver-checks`, this also catches
-  additions, so every new public item gets an explicit class in the change
-  that adds it.
+  regenerates the public API of both crates from rustdoc JSON (default
+  features and `test-support`, `#[doc(hidden)]` items included) with
+  `scripts/public-api.py check`, and fails when:
+  - it differs from `docs/api/public-api-knotrel-core.txt` or
+    `docs/api/public-api-knotrel-server.txt`;
+  - a public item or trait implementation has no class in
+    `docs/api/public-api-classification.txt`, a member or implementation is
+    classified above its type, a `test-support` item or an implementation of
+    an unstable trait is not internal;
+  - `#[non_exhaustive]` appears on an item not approved in
+    `docs/api/public-api-policy.toml`, or is missing from an approved one
+    (this keeps the types frozen exhaustive frozen, which the crate-wide
+    semver-checks exception would not);
+  - compared with the pull request's base, a stable key became experimental,
+    internal or disappeared without an approved `[[narrowing]]` entry (the
+    machine-readable form of the separately marked list in
+    [stability.md](stability.md#reclassified-from-stable-to-experimental));
+  - a cargo-semver-checks exception lacks its entry or has expired;
+  - [stability.md](stability.md#how-the-rust-tables-are-checked) disagrees with
+    the classification.
+  Unlike `cargo-semver-checks`, this also catches additions, so every new
+  public item gets an explicit class in the change that adds it.
 - **HTTP API:** CI compares `docs/openapi.yaml` with the previous release's
   (`scripts/check-openapi-compat.py`). Breaking changes to stable operations
   fail the job; changes to operations marked

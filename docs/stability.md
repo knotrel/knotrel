@@ -31,6 +31,14 @@ source of truth:
   constants) unless a member has its own row; every crate-root item, and every
   member whose class differs from its type's, must have a row, with the same
   class as in the classification file.
+- trait implementations are classified in the classification file, not in
+  these tables: each has the class of its type, except that implementations of
+  unstable traits (`Freeze`, `UnsafeUnpin`, `StructuralPartialEq`,
+  `TrivialClone`) and of `test-support` items are internal;
+- `#[non_exhaustive]` may appear only on the items approved in
+  `docs/api/public-api-policy.toml`, and a stable item may become
+  experimental, internal or be removed only with an approved narrowing entry
+  there (see [Reclassified from Stable to Experimental](#reclassified-from-stable-to-experimental)).
 
 Editing this document alone cannot satisfy the check: it can only make it
 fail when it disagrees with the classification file.
@@ -117,10 +125,14 @@ guarantees ([compatibility.md](compatibility.md#21-guarantees-of-experimental-it
 - it is documented, tested and supported in the release that contains it;
 - it may change or be removed only in a minor (or major) release, never in a
   patch release, and every such change is listed in the release notes;
-- removing an experimental Rust item still fails `cargo-semver-checks`, so the
-  removal is declared as an approved exception with the change; removing an
-  experimental HTTP field or error code that OpenAPI does not mark (see
-  [HTTP API](#http-api)) is listed in `docs/api/approved-breaking-changes.yaml`;
+- removing an experimental Rust item still fails `cargo-semver-checks`; the
+  removal is declared for that one release as a `[[semver_exception]]` in
+  `docs/api/public-api-policy.toml` with the matching crate lint, and the
+  public API check guards every stable item meanwhile and fails once the
+  exception has outlived its release
+  ([compatibility.md](compatibility.md#21-guarantees-of-experimental-items));
+  removing an experimental HTTP field or error code that OpenAPI does not mark
+  (see [HTTP API](#http-api)) is listed in `docs/api/approved-breaking-changes.yaml`;
 - an experimental member never makes its stable parent experimental: for
   example, removing `EngineConfig::Hdt` would not change `EngineConfig` or
   `EngineConfig::CompactBfs`;
@@ -132,7 +144,9 @@ guarantees ([compatibility.md](compatibility.md#21-guarantees-of-experimental-it
 by a Stable rule of the 2026-11-21 classification (a blanket row or sentence)
 and are Experimental from the 2026-11-22 corrections. The maintainer approved
 each correction on the condition that it is called out here. Nothing else
-moved from Stable to Experimental.
+moved from Stable to Experimental. The Rust items of this list are also
+`[[narrowing]]` entries in `docs/api/public-api-policy.toml`, which CI
+requires for any stable Rust item that is narrowed.
 
 | Item | Previously Stable through | Finding |
 | --- | --- | --- |

@@ -96,6 +96,8 @@ def doc(extra_root_items=(), extra_index=(), widget_impls=(10, 11, 12, 13)):
 
 ITEMS = {
     "demo::Widget": (None, None),
+    "impl core::clone::Clone for demo::Widget": ("demo::Widget", None),
+    "impl core::marker::Send for demo::Widget": ("demo::Widget", None),
     "demo::Widget::size": ("demo::Widget", None),
     "demo::Widget::new": ("demo::Widget", None),
     "demo::Mode": (None, None),
@@ -104,6 +106,10 @@ ITEMS = {
     "demo::Mode::Slow::level": ("demo::Mode::Slow", None),
 }
 CLASSES = {path: "stable" for path in ITEMS}
+POLICY = """
+[non_exhaustive]
+items = ["demo::Widget"]
+"""
 STABILITY = """# Stability
 
 ## Rust: `demo`
@@ -138,8 +144,10 @@ class RenderTests(unittest.TestCase):
             ],
         )
         # Re-exported under its public path, not the private module path;
-        # the blanket impl and the private method are omitted.
+        # the blanket impl and the private method are omitted; trait
+        # implementations are keyed for classification.
         self.assertEqual(snapshot.items, ITEMS)
+        self.assertEqual(snapshot.non_exhaustive, {"demo::Widget"})
 
     def test_feature_only_items_and_lost_auto_traits_are_marked(self):
         extra = item(40, "helper", fn([]))
@@ -185,18 +193,23 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.snapshot = api.build_snapshot("demo", [(None, doc())])
         self.committed = {"demo": api.render_file(self.snapshot)}
 
+    def inputs(self, **changes):
+        values = dict(committed=self.committed, classification=self._classes(), stability=STABILITY, policy=POLICY)
+        values.update(changes)
+        return api.Inputs(**values)
+
     def test_identical_snapshot_passes(self):
-        self.assertEqual(api.run_checks([self.snapshot], self.committed, self._classes(), STABILITY), [])
+        self.assertEqual(api.run_checks([self.snapshot], self.inputs()), [])
 
     def test_changed_code_fails_with_a_diff(self):
         committed = {"demo": self.committed["demo"].replace("size: u8", "size: u16")}
-        errors = api.run_checks([self.snapshot], committed, self._classes(), STABILITY)
+        errors = api.run_checks([self.snapshot], self.inputs(committed=committed))
         self.assertEqual(len(errors), 1)
         self.assertIn("differs from the code", errors[0])
         self.assertIn("+pub demo::Widget::size: u8", errors[0])
 
     def test_missing_snapshot_fails(self):
-        errors = api.run_checks([self.snapshot], {}, self._classes(), STABILITY)
+        errors = api.run_checks([self.snapshot], self.inputs(committed={}))
         self.assertTrue(any("is missing" in e for e in errors))
 
     def test_cosmetic_stability_edit_does_not_satisfy_a_new_item(self):
@@ -206,11 +219,34 @@ class SnapshotComparisonTests(unittest.TestCase):
         snapshot = api.build_snapshot("demo", [(None, doc(extra_root_items=[40], extra_index=[extra]))])
         committed = {"demo": api.render_file(snapshot)}
         stability = STABILITY.replace("| `Widget`, `Mode` | Stable | |", "| `Widget`, `Mode`, `helper` | Stable | |")
-        errors = api.run_checks([snapshot], committed, self._classes(), stability)
+        errors = api.run_checks([snapshot], self.inputs(committed=committed, stability=stability))
         self.assertIn(
             "unclassified public item: demo::helper (add it to docs/api/public-api-classification.txt)",
             errors,
         )
+
+    def test_new_trait_implementation_needs_a_class(self):
+        # A derive added to a public type is a new public promise too.
+        classes = self._classes().replace("stable impl core::clone::Clone for demo::Widget\n", "")
+        errors = api.run_checks([self.snapshot], self.inputs(classification=classes))
+        self.assertEqual(
+            errors,
+            ["unclassified trait implementation: impl core::clone::Clone for demo::Widget "
+             "(add it to docs/api/public-api-classification.txt)"],
+        )
+
+    def test_base_narrowing_is_checked(self):
+        base = self._classes()
+        narrowed = base.replace("stable demo::Widget::new", "experimental demo::Widget::new")
+        errors = api.run_checks([self.snapshot], self.inputs(classification=narrowed, base_classification=base))
+        self.assertTrue(any(e.startswith("demo::Widget::new was stable at the base") for e in errors), errors)
+
+    def test_semver_exceptions_are_checked(self):
+        errors = api.run_checks(
+            [self.snapshot], self.inputs(crate_lints={"demo": {"enum_marked_non_exhaustive": "allow"}})
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("has no [[semver_exception]]", errors[0])
 
     @staticmethod
     def _classes():
@@ -219,8 +255,25 @@ class SnapshotComparisonTests(unittest.TestCase):
 
 class ClassificationTests(unittest.TestCase):
     def test_parse(self):
-        classes, errors = api.parse_classification("# comment\n\nstable demo::Widget  # trailing\ninternal demo::Mode\n")
-        self.assertEqual((classes, errors), ({"demo::Widget": "stable", "demo::Mode": "internal"}, []))
+        classes, errors = api.parse_classification(
+            "# comment\n\nstable demo::Widget  # trailing\ninternal demo::Mode\n"
+            "stable       impl core::convert::From<demo::Mode> for demo::Widget\n"
+        )
+        self.assertEqual(
+            (classes, errors),
+            (
+                {
+                    "demo::Widget": "stable",
+                    "demo::Mode": "internal",
+                    "impl core::convert::From<demo::Mode> for demo::Widget": "stable",
+                },
+                [],
+            ),
+        )
+
+    def test_parse_rejects_malformed_keys(self):
+        _, errors = api.parse_classification("stable demo::Widget extra\nstable impl Clone\n")
+        self.assertEqual(len(errors), 2)
 
     def test_parse_rejects_unknown_classes_and_duplicates(self):
         _, errors = api.parse_classification("frozen demo::Widget\nstable demo::Mode\nstable demo::Mode\n")
@@ -251,6 +304,26 @@ class ClassificationTests(unittest.TestCase):
     def test_member_below_parent_passes(self):
         classes = dict(CLASSES, **{"demo::Mode::Slow": "experimental", "demo::Mode::Slow::level": "internal"})
         self.assertEqual(api.check_classification(ITEMS, classes), [])
+
+    def test_implementation_above_its_type_fails(self):
+        classes = dict(CLASSES, **{"demo::Widget": "experimental", "demo::Widget::size": "experimental",
+                                   "demo::Widget::new": "experimental"})
+        self.assertEqual(
+            api.check_classification(ITEMS, classes),
+            [
+                "impl core::clone::Clone for demo::Widget is stable but its parent demo::Widget is experimental",
+                "impl core::marker::Send for demo::Widget is stable but its parent demo::Widget is experimental",
+            ],
+        )
+
+    def test_unstable_trait_implementations_must_be_internal(self):
+        key = "impl core::marker::Freeze for demo::Widget"
+        items = dict(ITEMS, **{key: ("demo::Widget", None)})
+        self.assertEqual(
+            api.check_classification(items, dict(CLASSES, **{key: "stable"})),
+            [f"{key} implements an unstable trait and must be internal, not stable"],
+        )
+        self.assertEqual(api.check_classification(items, dict(CLASSES, **{key: "internal"})), [])
 
     def test_test_support_items_must_be_internal(self):
         items = dict(ITEMS, **{"demo::helper": (None, "test-support")})
@@ -318,6 +391,133 @@ class StabilityTests(unittest.TestCase):
         self.assertIn("stability.md: no Rust classification rows found", self.check("# Nothing\n"))
 
 
+class PolicyTests(unittest.TestCase):
+    NARROWING = """
+[[narrowing]]
+item = "demo::Widget::new"
+from = "stable"
+to = "experimental"
+release = "1.0.0"
+reason = "test"
+"""
+
+    def policy(self, text):
+        policy, errors = api.parse_policy(text)
+        self.assertEqual(errors, [])
+        return policy
+
+    def test_invalid_entries_are_rejected(self):
+        _, errors = api.parse_policy(self.NARROWING.replace('to = "experimental"', 'to = "stable"'))
+        self.assertIn("is not a narrowing", errors[0])
+        _, errors = api.parse_policy('[[narrowing]]\nitem = "demo::Widget"\n')
+        self.assertIn("lacks from, to, release, reason", errors[0])
+        _, errors = api.parse_policy('[[semver_exception]]\ncrate = "demo"\nlints = ["x"]\nuntil = "next"\nitems = ["a"]\ndecision = "d"\n')
+        self.assertIn("invalid version", errors[0])
+        _, errors = api.parse_policy("not toml [")
+        self.assertEqual(len(errors), 1)
+
+    # -- non_exhaustive (A3) --
+
+    def test_non_exhaustive_must_be_approved(self):
+        # E.g. #[non_exhaustive] added to a type frozen exhaustive.
+        policy = self.policy(POLICY)
+        self.assertEqual(
+            api.check_non_exhaustive({"demo::Widget", "demo::Mode"}, policy),
+            ["demo::Mode is #[non_exhaustive] without approval in docs/api/public-api-policy.toml"],
+        )
+
+    def test_approved_non_exhaustive_must_stay(self):
+        self.assertEqual(
+            api.check_non_exhaustive(set(), self.policy(POLICY)),
+            ["demo::Widget is approved as #[non_exhaustive] in docs/api/public-api-policy.toml but is not"],
+        )
+
+    # -- narrowing (A2) --
+
+    def test_unapproved_narrowing_fails(self):
+        current = dict(CLASSES, **{"demo::Widget::new": "experimental"})
+        errors = api.check_narrowing(CLASSES, current, api.Policy())
+        self.assertEqual(len(errors), 1)
+        self.assertIn("demo::Widget::new was stable at the base and is now experimental", errors[0])
+
+    def test_approved_narrowing_passes(self):
+        current = dict(CLASSES, **{"demo::Widget::new": "experimental"})
+        self.assertEqual(api.check_narrowing(CLASSES, current, self.policy(self.NARROWING)), [])
+
+    def test_removing_a_stable_item_or_implementation_is_a_narrowing(self):
+        current = dict(CLASSES)
+        del current["demo::Widget::new"]
+        del current["impl core::marker::Send for demo::Widget"]
+        errors = api.check_narrowing(CLASSES, current, api.Policy())
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all("is now removed" in e for e in errors), errors)
+        policy = self.policy(self.NARROWING.replace('to = "experimental"', 'to = "removed"'))
+        self.assertEqual(len(api.check_narrowing(CLASSES, current, policy)), 1)
+
+    def test_experimental_changes_are_not_narrowings(self):
+        base = dict(CLASSES, **{"demo::Mode::Slow": "experimental", "demo::Mode::Slow::level": "experimental"})
+        current = dict(base, **{"demo::Mode::Slow::level": "internal"})
+        del current["demo::Mode::Slow"]
+        self.assertEqual(api.check_narrowing(base, current, api.Policy()), [])
+
+    def test_stale_narrowing_entry_fails_without_a_base(self):
+        errors = api.check_narrowing(None, CLASSES, self.policy(self.NARROWING))
+        self.assertEqual(
+            errors, ["narrowing entry demo::Widget::new (stable -> experimental) does not match its current class stable"]
+        )
+
+    def test_no_base_means_no_comparison(self):
+        current = dict(CLASSES, **{"demo::Widget::new": "internal"})
+        self.assertEqual(api.check_narrowing(None, current, api.Policy()), [])
+
+    # -- semver-checks exceptions (B) --
+
+    EXCEPTION = """
+[[semver_exception]]
+crate = "demo"
+lints = ["enum_marked_non_exhaustive"]
+until = "1.0.0"
+items = ["demo::Mode"]
+decision = "test"
+"""
+    LINTS = {"demo": {"enum_marked_non_exhaustive": "allow"}}
+
+    def test_approved_exception_passes_until_its_release(self):
+        policy = self.policy(self.EXCEPTION)
+        for version in ("0.9.0", "1.0.0-rc.1", "1.0.0"):
+            self.assertEqual(api.check_semver_exceptions(policy, self.LINTS, version), [], version)
+
+    def test_exception_expires_after_its_release(self):
+        policy = self.policy(self.EXCEPTION)
+        for version in ("1.0.1", "1.1.0", "2.0.0"):
+            errors = api.check_semver_exceptions(policy, self.LINTS, version)
+            self.assertEqual(len(errors), 1, version)
+            self.assertIn("remove it from crates/demo/Cargo.toml", errors[0])
+
+    def test_lint_without_entry_and_stale_entry_fail(self):
+        errors = api.check_semver_exceptions(api.Policy(), self.LINTS, "0.9.0")
+        self.assertIn("has no [[semver_exception]]", errors[0])
+        errors = api.check_semver_exceptions(self.policy(self.EXCEPTION), {}, "0.9.0")
+        self.assertIn("is stale", errors[0])
+
+
+class RustdocInvocationTests(unittest.TestCase):
+    def test_hidden_items_are_documented(self):
+        # A4: `#[doc(hidden)] pub` items must reach the snapshot.
+        calls = []
+        original_run = api.subprocess.run
+        api.subprocess.run = lambda cmd, **kwargs: calls.append((cmd, kwargs))
+        try:
+            with self.assertRaises(FileNotFoundError):
+                api.rustdoc_json("demo", "demo", ["test-support"], "/nonexistent-target-dir")
+        finally:
+            api.subprocess.run = original_run
+        cmd, kwargs = calls[0]
+        self.assertIn("--document-hidden-items", cmd)
+        self.assertEqual(cmd[cmd.index("--features") + 1], "test-support")
+        self.assertEqual(kwargs["env"]["RUSTC_BOOTSTRAP"], "1")
+
+
 class CommittedFilesTests(unittest.TestCase):
     """The committed files parse; the full check runs in CI with cargo."""
 
@@ -340,8 +540,17 @@ class CommittedFilesTests(unittest.TestCase):
         for _, crate_name, _ in api.CRATES:
             with open(api.snapshot_file(crate_name), encoding="utf-8") as handle:
                 text += handle.read()
-        missing = [p for p in classes if not re.search(rf"(?m)(^|[ (]){re.escape(p)}([ :(<{{;=]|$)", text)]
+        missing = [
+            p for p in classes
+            if not (p in text if api.is_impl(p) else re.search(rf"(?m)(^|[ (]){re.escape(p)}([ :(<{{;=]|$)", text))
+        ]
         self.assertEqual(missing, [])
+
+    def test_committed_policy_matches_the_manifests(self):
+        with open(api.POLICY, encoding="utf-8") as handle:
+            policy, errors = api.parse_policy(handle.read())
+        self.assertEqual(errors, [])
+        self.assertEqual(api.check_semver_exceptions(policy, api.crate_semver_lints(), api.workspace_version()), [])
 
 
 if __name__ == "__main__":
