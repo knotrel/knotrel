@@ -724,6 +724,12 @@ fn check_source_position(field: &str, value: &str) -> Result<(), FeederError> {
     Ok(())
 }
 
+/// [`check_source_position`] for an optional field: an absent value is
+/// accepted, a present one must be 1 to 256 bytes.
+fn check_optional_source_position(field: &str, value: Option<&str>) -> Result<(), FeederError> {
+    value.map_or(Ok(()), |value| check_source_position(field, value))
+}
+
 /// Checks an `event_id` against the documented bound: at most
 /// [`MAX_EVENT_ID_BYTES`] bytes of UTF-8 (bytes, not characters).
 fn check_event_id(value: &str) -> Result<(), FeederError> {
@@ -1305,9 +1311,10 @@ impl GraphState {
             return Err(FeederError::GraphDesynchronized);
         }
 
-        if let Some(position) = req.barrier_source_position.as_deref() {
-            check_source_position("barrier_source_position", position)?;
-        }
+        check_optional_source_position(
+            "barrier_source_position",
+            req.barrier_source_position.as_deref(),
+        )?;
 
         // Decision table: B8 (Premature sequence)
         if req.barrier_delivery_sequence > self.applied_delivery_sequence {

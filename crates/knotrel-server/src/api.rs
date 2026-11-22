@@ -94,8 +94,9 @@ pub(crate) const MAX_EVENT_ID_BYTES: usize = 64;
 pub(crate) const MAX_SOURCE_POSITION_BYTES: usize = 256;
 
 /// Stable error identifiers serialized by the HTTP API.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// Serialized as [`ErrorCode::as_str`], the single spelling of every code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ErrorCode {
     BarrierNotReached,
     BarrierPositionMismatch,
@@ -254,6 +255,12 @@ impl ErrorCode {
             Self::UnknownNode => "unknown_node",
             Self::UnverifiableDuplicate => "unverifiable_duplicate",
         }
+    }
+}
+
+impl Serialize for ErrorCode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
     }
 }
 
