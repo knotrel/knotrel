@@ -46,11 +46,13 @@ The server does not provide any of the following:
 | --- | --- |
 | Request body | 1 MiB, fixed; larger bodies get 413. `POST /v1/feeder/import` is bounded instead by `KNOTREL_MAX_IMPORT_BODY_BYTES` (default 64 MiB) |
 | Batch length | 1–1024 operations, fixed |
-| Queued plus running graph jobs | `KNOTREL_MAX_PENDING_JOBS`, default 32; excess gets 503 `busy`. In source-managed mode, plus `KNOTREL_FEEDER_RESERVED_JOBS` (default 4) for feeder events, barriers and gaps and 2 for feeder sessions and heartbeats (excess gets 503 `import_in_progress`) |
+| Queued plus running graph jobs | `KNOTREL_MAX_PENDING_JOBS`, default 32; excess gets 503 `busy`. In source-managed mode, plus `KNOTREL_FEEDER_RESERVED_JOBS` (default 4) for feeder events, barriers and gaps and 2 for feeder sessions and heartbeats; excess on either feeder lane also gets 503 `busy`. `503 import_in_progress` means only that another import holds the single import permit |
 | Graph nodes / edges | `KNOTREL_MAX_NODES` / `KNOTREL_MAX_EDGES`; default 100 000 nodes and 500 000 edges, `unlimited` is an explicit opt-out |
 | Header read and keep-alive idle time | `KNOTREL_HEADER_READ_TIMEOUT_MS`, default 5000 ms |
 | Request time (body receipt plus handling) | `KNOTREL_REQUEST_TIMEOUT_MS`, default 30000 ms |
 | Concurrent connections | `KNOTREL_MAX_CONNECTIONS`, default 1024; excess gets 503 `too_many_connections` |
+| Feeder source positions | event `source_position` and `prev_source_position`, import `source_position`, `barrier_source_position` (when present): 1 to 256 **bytes** of UTF-8; otherwise 422 `invalid_request` |
+| Feeder `event_id` | at most 64 **bytes** of UTF-8; otherwise 422 `invalid_request` |
 | Shutdown drain | `KNOTREL_SHUTDOWN_TIMEOUT_MS`, default 10000 ms |
 | Write timeouts, per-request memory and CPU | not bounded beyond the limits above |
 
@@ -360,8 +362,14 @@ query load can never refuse them:
 | Feeder control | `/v1/feeder/session`, `/v1/feeder/heartbeat` | 2 |
 | Import | `/v1/feeder/import` | 1 |
 
-A full lane refuses only its own requests: a full shared lane answers `503
-busy` to queries while heartbeats and events are still admitted. The total
+A full lane refuses only its own requests, always with `503 busy`: a full
+shared lane answers `busy` to queries while heartbeats and events are still
+admitted, a full feeder data lane answers `busy` to events, barriers and gaps,
+and a full feeder control lane answers `busy` to sessions and heartbeats. Only
+the import lane differs: a second import while one holds the permit gets `503
+import_in_progress`, before its body is read. (Before v1.0.0 the two feeder
+lanes also answered `import_in_progress`; see
+[compatibility](compatibility.md#3-what-compatible-means).) The total
 bound on queued plus running graph jobs is the sum of the lanes. Lanes only
 gate admission; admitted jobs share the same workers and graph lock. Design
 and measurement: [feeder admission](integrations/feeder-admission-design.md).
@@ -441,8 +449,9 @@ from response codes ([contract section 8](observability-contract.md#8-second-m62
 
 - `knotrel_requests_rejected_total{reason}`: requests refused before any
   graph job or import ran for them: `busy` (admission permits of the
-  request's lane exhausted, including feeder session, heartbeat, events, gap
-  and barrier calls answered `503 import_in_progress`), `import_capacity`, `shutting_down` (every
+  request's lane exhausted, all answered `503 busy`, including feeder session,
+  heartbeat, events, gap and barrier calls), `import_capacity` (`503
+  import_in_progress`), `shutting_down` (every
   non-probe request refused while draining, including `/v1/info` and
   unmatched routes that would not create a graph job) or `unavailable`. Validation, domain, feeder-protocol and
   partial batch or event failures are not counted.
@@ -525,8 +534,8 @@ counts as `event_failed`. A lifecycle event refused because lifecycle
 support is off counts as `topology_lifecycle_disabled`. The counter unit is a
 request, unlike
 `knotrel_feeder_events_total{result="rejected"}`, which counts events. It
-does not count admission refusals (including the `503 import_in_progress`
-returned when feeder capacity is exhausted), timeouts, cancellations,
+does not count admission refusals (including the `503 busy` returned when a
+feeder lane is exhausted), timeouts, cancellations,
 panics, refusals by the HTTP layer before the service is called (mode,
 instance ID, graph ID, malformed JSON) or imports.
 
@@ -962,7 +971,12 @@ These concepts remain strictly distinct:
 
 5. **`applied_source_position` (`X-Knotrel-Source-Position`):**
    An opaque UTF-8 cursor string (1 to 256 bytes) identifying the applied prefix
-   of the authoritative external source stream. Knotrel never interprets this string
+   of the authoritative external source stream. The server enforces the bound
+   in bytes on every source position it accepts (event `source_position` and
+   `prev_source_position`, import `source_position`, `barrier_source_position`)
+   and refuses other values with 422 `invalid_request`; a multibyte string can
+   exceed 256 bytes with fewer than 256 characters. OpenAPI's
+   `minLength`/`maxLength` count characters and are a looser approximation. Knotrel never interprets this string
    as an integer, never parses its internal structure, and never compares cursors
    lexicographically.
    **HTTP safety:** In HTTP headers (`X-Knotrel-Source-Position` and `ETag`),
@@ -1133,7 +1147,7 @@ In source-managed mode, the feeder declares synchronization completion at barrie
 
 - **Headers:** `Content-Type: application/json` and mandatory `X-Knotrel-Instance-Id: <instance_id>`.
 - `barrier_delivery_sequence`: required unsigned 64-bit integer ($D_B$).
-- `barrier_source_position`: optional string cursor ($P_B$). If omitted, only delivery sequence $D_B$ is validated.
+- `barrier_source_position`: optional string cursor ($P_B$), 1 to 256 bytes of UTF-8 when present (otherwise 422 `invalid_request`). If omitted, only delivery sequence $D_B$ is validated.
 
 #### Precondition checks (Evaluated under graph lock)
 

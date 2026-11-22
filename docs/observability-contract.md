@@ -58,7 +58,7 @@ the v0.3.0 release.
 4. No breakdown of where time goes: caller latency cannot be split into queueing, lock wait and execution. (The opt-in `/metrics` now records worker queue, lock-wait and execution time per job kind; these intervals do not add up to HTTP latency; section 11.)
 5. There is no record of how long bootstrap or replacement catch-up took. (The opt-in `/metrics` now records import phases and catch-up duration; sections 15 and 16.)
 6. A dropped request future leaves no request log line. (The opt-in `/metrics` endpoint counts it as `cancelled`, and the request log now writes `request cancelled before response`; section 17.)
-7. The status code alone cannot distinguish the `503` causes: `busy`, `request_timeout`, `shutting_down`, `unavailable`, and `import_in_progress` from saturated feeder calls. (The opt-in rejection and uncertain-outcome counters now record the internal cause; section 8.)
+7. The status code alone cannot distinguish the `503` causes: `busy`, `request_timeout`, `shutting_down`, `unavailable`, and `import_in_progress` (from saturated feeder calls until v0.9.x; since v1.0.0 those answer `busy`). (The opt-in rejection and uncertain-outcome counters now record the internal cause; section 8.)
 
 ## 2. Semantic rules
 
@@ -161,11 +161,13 @@ must therefore derive `stale` at observation time from the lease deadline.
 It must not count recorded transitions, which would depend on who happened to
 look.
 
-**`import_in_progress` from feeder saturation.** Feeder session, heartbeat,
-events, gap and barrier calls that fail admission return `503 import_in_progress`
-(`FeederError::from(ServiceError::Busy)`), although the log says
-`busy`. This is accepted compatibility debt (closure plan D7). Telemetry
-classifies by the internal cause (`busy`) and leaves the HTTP code unchanged.
+**Feeder saturation answers `busy` (since v1.0.0).** Feeder session,
+heartbeat, events, gap and barrier calls that fail admission return `503 busy`,
+like the shared lane, and telemetry counts them as `busy`. Until v0.9.x they
+returned `503 import_in_progress` (closure plan D7); the code change was an
+approved exception ([compatibility](compatibility.md#3-what-compatible-means)).
+`503 import_in_progress` now comes only from a second concurrent import, counted
+as `import_capacity`.
 
 ## 3. Counting units
 
@@ -206,7 +208,7 @@ durable state. "Replacement" means publication of a new generation by import.
 | `readiness_state` | gauge, one-hot | What would `/ready` say? | `lifecycle::readiness_state`: same precedence as `lifecycle::readiness`, computed read-only at scrape. Stale is derived from the published deadline, without the compare-and-swap. | `state` ∈ {`unavailable`, `draining`, `starting`, `ready`, and in source-managed mode `uninitialized`, `loading`, `catching_up`, `stale`, `desynchronized`} | follows state | **implemented** | E |
 | `feeder_lease_remaining_seconds` | gauge, s | Is the feeder alive? | Lease deadline from the published readiness word minus the monotonic clock, derived at scrape (section 14). Positive while no check reports the lease expired; zero throughout the deadline millisecond, when feeder calls may already fail with `lease_expired`; negative once every check, including `/ready`, reports it expired. Scraping never renews the lease or publishes staleness. Absent before the first session and in standalone mode. | none | session kept | **implemented** | E |
 | `feeder_events_total` | counter | Is the source making progress, and how much is redundant? | Per evaluated event (section 3) in `GraphState::apply_events`, under the graph lock (section 12). `unchanged` covers no-op mutations and `progress`. | `result` ∈ {`changed`, `unchanged`, `duplicate`, `rejected`} | continues | **implemented** | E |
-| `feeder_rejections_total` | counter | Why did a feeder call fail? | One per session, heartbeat, events, gap or barrier request the service rejected, where the `FeederError` is produced (section 13). Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Excluded: admission `busy` (HTTP `import_in_progress`) and `unavailable` (counted in `requests_rejected_total`), timeouts, cancellations and panics (`requests_outcome_uncertain_total`), HTTP-adapter checks and malformed bodies, and imports (`imports_total`). Source-managed mode only. | `code` ∈ {`session_required`, `fenced_feeder_session`, `lease_expired`, `invalid_lease_duration`, `graph_uninitialized`, `graph_desynchronized`, `stale_generation`, `source_mismatch`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `sequence_exhausted`, `invalid_request`, `topology_lifecycle_disabled`, `event_failed`, `barrier_position_mismatch`, `barrier_not_reached`, `superseded_barrier`} | continues | **implemented** | E |
+| `feeder_rejections_total` | counter | Why did a feeder call fail? | One per session, heartbeat, events, gap or barrier request the service rejected, where the `FeederError` is produced (section 13). Labelled with the underlying error code, not `partial_failure`. An event domain error (any core code) collapses to `event_failed`. Excluded: admission `busy` (HTTP `503 busy`) and `unavailable` (counted in `requests_rejected_total`), timeouts, cancellations and panics (`requests_outcome_uncertain_total`), HTTP-adapter checks and malformed bodies, and imports (`imports_total`). Source-managed mode only. | `code` ∈ {`session_required`, `fenced_feeder_session`, `lease_expired`, `invalid_lease_duration`, `graph_uninitialized`, `graph_desynchronized`, `stale_generation`, `source_mismatch`, `source_epoch_mismatch`, `out_of_order_sequence`, `source_predecessor_mismatch`, `conflicting_duplicate`, `unverifiable_duplicate`, `sequence_exhausted`, `invalid_request`, `topology_lifecycle_disabled`, `event_failed`, `barrier_position_mismatch`, `barrier_not_reached`, `superseded_barrier`} | continues | **implemented** | E |
 | `desynchronizations_total` | counter | Why did the graph require a rebuild? | One per transition into `desynchronized`, at the sites in `GraphState::apply_events` and `declare_gap` that set it. A predecessor mismatch covers both `prev_delivery_sequence` and `prev_source_position`, which share one wire code. Out-of-order sequences and evicted duplicates do not desynchronize. | `cause` ∈ {`gap_declared`, `source_epoch_mismatch`, `source_predecessor_mismatch`, `conflicting_duplicate`}. Source-managed mode only (section 13). | continues | **implemented** | E |
 | `feeder_last_applied_age_seconds` | gauge, s | When did the graph last move forward? | Monotonic time since a worker, under the graph lock, last applied a non-duplicate event (including no-op mutations and `progress`) or published an import (section 14). Not reset by duplicates, rejected events or imports, gaps, barriers, sessions, heartbeats or queries. Absent before the first application and in standalone mode. **Not lag** (section 2). | none | reset by publication | **implemented** | E |
 | `import_in_progress` | gauge 0/1 | Is an import running? | Import permit held: from acquisition, through body receipt, worker queue, preparation and publication, until the import is recorded, also after its caller has gone. Source-managed mode only (section 15). | none | — | **implemented** | E |
@@ -459,7 +461,7 @@ jobs are state-changing.
 
 | Case | Observation boundary | Series | Unit | Recorded by |
 | --- | --- | --- | --- | --- |
-| Admission capacity exhausted | `try_acquire_owned` failure of the request's lane in `Service::admit_in` (shared, feeder data or feeder control) | `requests_rejected_total{reason="busy"}`. HTTP stays `503 busy`, or `503 import_in_progress` for feeder session, heartbeat, events, gap and barrier calls (section 2); telemetry still records the internal cause `busy`. | request | caller |
+| Admission capacity exhausted | `try_acquire_owned` failure of the request's lane in `Service::admit_in` (shared, feeder data or feeder control) | `requests_rejected_total{reason="busy"}`. HTTP `503 busy` on every lane, including feeder session, heartbeat, events, gap and barrier calls (section 2; `503 import_in_progress` until v0.9.x). | request | caller |
 | Import permit exhausted | `Service::acquire_import_permit` | `requests_rejected_total{reason="import_capacity"}` | request | caller |
 | Shutdown | `lifecycle::shutdown_gate` refusing a non-probe request while draining. This includes requests that would never create a graph job, such as `/v1/info` and unmatched routes. | `requests_rejected_total{reason="shutting_down"}` | request | caller |
 | Service already unavailable | The first check that refuses: `api::check_service_available`; the entry checks of `Service::run` and `execute_feeder_worker`; or the in-worker check under the graph lock (`graph.failed` or the unavailable flag) in `run`, `execute_feeder_worker` and `Service::import`. That check refuses before any change is applied to the live graph or a candidate is published; for import, JSON parsing and candidate construction may already have happened off-lock. | `requests_rejected_total{reason="unavailable"}` | request | caller, or worker for the in-worker check |
@@ -533,7 +535,7 @@ source-managed**.
 `outcomes`), plus a unit test in `service.rs` for the in-worker unavailable
 check. They cover:
 - every rejection reason, each counted exactly once;
-- the feeder `import_in_progress` mapping counted as `busy`;
+- a feeder lane refusal (`503 busy`) counted as `busy`;
 - a timeout with the worker outstanding, followed by success;
 - a worker panic after caller cancellation;
 - a timeout followed by a worker panic;
@@ -901,7 +903,7 @@ Not counted:
 
 | Refusal | Where | Counted instead |
 | --- | --- | --- |
-| Admission `busy` (HTTP `503 import_in_progress`) and `unavailable`, including the worker's own pre-job check and the barrier's `failed` check | admission or worker | `requests_rejected_total` |
+| Admission `busy` (HTTP `503 busy`) and `unavailable`, including the worker's own pre-job check and the barrier's `failed` check | admission or worker | `requests_rejected_total` |
 | Request timeout, cancellation, worker panic | lifecycle, worker join | `requests_outcome_uncertain_total` |
 | `mode_conflict`, missing or invalid instance header (`invalid_instance_id`), header or body `stale_instance_id`, `invalid_graph_id`, malformed or unprocessable JSON | HTTP adapter, before the service is called; malformed bodies never become a typed `FeederError`. `Service::register_session` and `Service::heartbeat` also return `ModeMismatch` and `StaleInstanceId` from their entry checks (as `Service::import` does with `StaleInstanceId` and `InvalidGraphId`); these are not counted either | `http_requests_total` only |
 | Import, including its fencing and precondition failures | import path | `imports_total` (section 15) |
@@ -985,7 +987,7 @@ these sets against actual exposition.
 - independent instances.
 
 With `test-support`, further tests cover:
-- admission saturation that keeps `503 import_in_progress` and counts only
+- admission saturation that answers `503 busy` and counts only
   `requests_rejected_total{reason="busy"}`;
 - a rejection and transition counted after caller cancellation;
 - a gap transition counted after caller timeout.

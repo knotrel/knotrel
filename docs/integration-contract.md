@@ -144,7 +144,7 @@ To ensure deterministic synchronization and prevent split-brain anomalies or cro
    - Invariant: If the external database undergoes failover, timeline reset, or schema change, it increments its epoch. An event carrying a different `source_epoch` is rejected with HTTP 409 (`source_epoch_mismatch`) and forces a full graph rebuild.
 
 7. **Applied Source Position (`applied_source_position`):**
-   - Type: Opaque UTF-8 string (1 to 256 bytes) representing the external cursor (e.g. Postgres LSN `"0/16B3740"`, Kafka offset `"104928"`, or hybrid token `"epoch=3,pos=9912"`).
+   - Type: Opaque UTF-8 string (1 to 256 **bytes**, not characters; enforced on every source position the server accepts, otherwise 422 `invalid_request`) representing the external cursor (e.g. Postgres LSN `"0/16B3740"`, Kafka offset `"104928"`, or hybrid token `"epoch=3,pos=9912"`).
    - Invariant: Knotrel **never** interprets this string as an integer, never parses its structure, and never compares cursors lexicographically. It treats the cursor as an opaque token received from the feeder.
 
 8. **Feeder Session Identity & Lease Fencing (`feeder_session_id`, `feeder_epoch`):**
@@ -245,9 +245,9 @@ Because opaque external cursors cannot be verified as contiguous by Knotrel, the
 
 - `delivery_sequence` ($D$): A strictly increasing 64-bit integer, starting at `1` for the first update following import $S$, incrementing by exactly `1` for each subsequent update ($1, 2, 3, \dots$).
 - `prev_delivery_sequence` ($D_{prev}$): The delivery sequence of the immediate predecessor ($0$ for the first event).
-- `source_position` ($P$): The opaque source cursor for this event (up to 256 bytes UTF-8).
-- `prev_source_position` ($P_{prev}$): The opaque source cursor of the predecessor (for $D=1$, matches snapshot position $S$).
-- `event_id`: A unique string identifier (up to 64 bytes) for idempotent retry tracking.
+- `source_position` ($P$): The opaque source cursor for this event (1 to 256 bytes of UTF-8).
+- `prev_source_position` ($P_{prev}$): The opaque source cursor of the predecessor (for $D=1$, matches snapshot position $S$; 1 to 256 bytes of UTF-8).
+- `event_id`: A unique string identifier (up to 64 bytes of UTF-8) for idempotent retry tracking. All these limits count bytes, not characters; a value outside them refuses the whole request with 422 `invalid_request`.
 
 ### 5.2 Ordered Progress Events (Sole Mechanism for Non-Mutating Progress)
 To advance `applied_source_position` through source transactions that affect tables unrelated to the graph (or produce zero graph mutations), the feeder **must** emit explicit `progress` events:
@@ -403,9 +403,9 @@ reject the whole request with no graph or frontier change, except that a
 (see §9.3). When the feeder's admission lane is exhausted (since 0.9.0 feeder
 requests have reserved permits that queries never use; see `docs/http-api.md`,
 "Admission and cancellation"), `/v1/feeder/events` returns
-`503 import_in_progress`, not `busy`: no event of that request was admitted, and
-the code does not necessarily mean that an import is running. This naming is
-retained for compatibility; see §9.3.
+`503 busy`: no event of that request was admitted. (Before v1.0.0 it returned
+`503 import_in_progress`; that code now means only that another import is
+running. See §9.3.)
 
 ### 6.2 Source Predecessor Validation and Feeder Obligations
 - **Validation:** For every new event ($D == D_{applied} + 1$), Knotrel verifies under the mutex that `event.prev_source_position == live.applied_source_position`.
@@ -612,7 +612,7 @@ therefore never runs ahead of the applied events.
 | Case | HTTP / body | State change | Progress metadata | What the caller can safely infer | Tests |
 |---|---|---|---|---|---|
 | Rejected before execution: standalone, instance, `graph_id`, JSON shape/size, unavailable | 409/400/413/415/422/503 plain error | None | None | Nothing was applied; fix the request | `events.rs` `test_15`, `test_16`, `test_18` |
-| Worker capacity exhausted (all graph-job slots in use by any request type) | 503 `import_in_progress` plain error | None | None | This request was not admitted and applied nothing; it may be resubmitted unchanged. The code does not by itself mean an import is running | `events.rs` `test_26` |
+| Feeder data lane exhausted (all `KNOTREL_FEEDER_RESERVED_JOBS` permits in use by events, barrier and gap calls) | 503 `busy` plain error | None | None | This request was not admitted and applied nothing; it may be resubmitted unchanged | `events.rs` `test_26`; `feeder_admission.rs` |
 | Whole-request check under lock: empty or > 1024 events, any event with an invalid op, field or bound (even the last one), including `active` or `enabled` on `add_node`, `link`, `cut` or `progress` | 422 `invalid_request` plain error | None | None | No event of the request was applied | `events.rs` `test_18`, `test_21`; `topology.rs` |
 | Lifecycle support off and any event is `set_node_active`, `set_edge_enabled` or `remove_node` (same per-event prevalidation slot; the first failing event in order decides between this and `invalid_request`) | 409 `topology_lifecycle_disabled` plain error | None | None | No event of the request was applied; enable lifecycle support or stop sending lifecycle events | `topology.rs` |
 | Session/epoch fencing, stale generation, `source_id` mismatch, uninitialized graph | 409 plain error | None | None | No event applied; re-register, re-read generation, or rebuild | `events.rs` `test_13`, `test_24`; `e2e_rebuild.rs` |
@@ -659,10 +659,14 @@ are evaluated at execution time, not at submission time. Consequently:
 
 Retry and reconciliation decisions are specified in §9.4.
 
-**Compatibility debt.** Feeder endpoints report worker-capacity exhaustion as
-`503 import_in_progress` (via `FeederError::from(ServiceError::Busy)`), whereas
-`/v1/operations` and `/v1/batch` report `503 busy`. M3.2 retains the existing
-code and message; any rename is a separate, unapproved wire change.
+**Admission codes (v1.0.0).** An exhausted feeder admission lane answers
+`503 busy` on every route of that lane (data lane: events, barrier, gap;
+control lane: session, heartbeat), as `/v1/operations` and `/v1/batch` do for
+the shared lane. `503 import_in_progress` is returned only by
+`/v1/feeder/import` while another import holds the import permit. Until
+v0.9.x the two feeder lanes also answered `import_in_progress`; the change is
+an approved exception ([compatibility](compatibility.md#3-what-compatible-means)).
+Tests: `feeder_admission.rs`.
 
 ### 9.4 Retry and Reconciliation Decision Table (v0.3.0 M3.3)
 
@@ -691,7 +695,7 @@ read is only a point-in-time snapshot (§9.3, *Uncertain outcomes*).
 
 | Case | Caller knows | Still uncertain | Exact retry? | Must stay unchanged | Next step |
 |---|---|---|---|---|---|
-| Rejection before admission (validation, instance, mode, 503 `import_in_progress` capacity, 503 `unavailable`) | Nothing from this request was applied | Nothing about this request | Yes, after fixing the request if it was malformed | Everything, unless correcting the rejected request itself | Resubmit |
+| Rejection before admission (validation, instance, mode, 503 `busy` lane capacity, 503 `unavailable`) | Nothing from this request was applied | Nothing about this request | Yes, after fixing the request if it was malformed | Everything, unless correcting the rejected request itself | Resubmit |
 | 200 `applied` | Every event of the request is applied in memory, frontier = response frontier | External durability (none locally) | Not needed; harmless while retained | — | Continue at `applied_delivery_sequence + 1` |
 | Partial failure, domain error (422 `event_failed`) or sequence gap (409 `out_of_order_sequence`) | Prefix ≤ `applied_delivery_sequence` applied; failed and later events not applied | Nothing for this request | Yes for the whole request: the prefix deduplicates. A domain error recurs unless the state or event changes | Prefix events; instance, generation, source, session | Correct or resend from `failed_delivery_sequence` |
 | Timeout (503 `request_timeout`) or lost response after admission | Request was admitted | Whether and when the worker runs, and how far it gets; whether it applied anything | Yes, only if identities, ownership and window retention still hold | All events and identities | Exact retry; a newer-state retry and the late worker both deduplicate. Never correct or skip |

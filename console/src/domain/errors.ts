@@ -56,6 +56,8 @@ const EXPLANATIONS: Record<ErrorCode, string> = {
   stale_generation: 'The request referred to an older generation.',
   stale_instance_id: 'The request referred to a previous server instance.',
   superseded_barrier: 'A newer barrier superseded this one.',
+  too_many_connections:
+    'The server connection limit (KNOTREL_MAX_CONNECTIONS) was reached and the connection was closed before the request was read; retry later.',
   topology_lifecycle_disabled:
     'Node and edge lifecycle support is disabled on this server (KNOTREL_TOPOLOGY_LIFECYCLE).',
   unavailable: 'The graph worker is unavailable; the server must be restarted.',

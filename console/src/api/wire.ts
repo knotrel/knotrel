@@ -72,6 +72,7 @@ export const ERROR_CODES = [
   'stale_generation',
   'stale_instance_id',
   'superseded_barrier',
+  'too_many_connections',
   'topology_lifecycle_disabled',
   'unavailable',
   'uninitialized',

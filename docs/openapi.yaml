@@ -696,8 +696,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '503':
-          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
-            (a dispatched worker may still complete; outcome is uncertain).
+          description: The feeder control lane (session and heartbeat, 2 permits) is exhausted (`busy`), the graph
+            worker is unavailable (`unavailable`), the server is draining (`shutting_down`) or the request timed out
+            (`request_timeout`; a dispatched worker may still complete, so the outcome is uncertain). `busy` means
+            nothing of the request was applied; retry later. This route never answers `import_in_progress`.
           content:
             application/json:
               schema:
@@ -766,8 +768,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '503':
-          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
-            (a dispatched worker may still complete; outcome is uncertain).
+          description: The feeder control lane (session and heartbeat, 2 permits) is exhausted (`busy`), the graph
+            worker is unavailable (`unavailable`), the server is draining (`shutting_down`) or the request timed out
+            (`request_timeout`; a dispatched worker may still complete, so the outcome is uncertain). `busy` means
+            nothing of the request was applied; retry later. This route never answers `import_in_progress`.
           content:
             application/json:
               schema:
@@ -861,8 +865,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '503':
-          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
-            (a dispatched worker may still complete; outcome is uncertain).
+          description: Another import holds the single import permit (`import_in_progress`, answered before the
+            body is read), the graph worker is unavailable (`unavailable`), the server is draining (`shutting_down`)
+            or the request timed out (`request_timeout`; a dispatched worker may still complete, so the outcome is
+            uncertain). Imports use no feeder admission lane and never answer `busy`.
           content:
             application/json:
               schema:
@@ -994,8 +1000,11 @@ paths:
             X-Knotrel-Sync-Status:
               $ref: '#/components/headers/X-Knotrel-Sync-Status'
         '503':
-          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
-            (a dispatched worker may still complete; outcome is uncertain).
+          description: The feeder data lane (events, barrier and gap, `KNOTREL_FEEDER_RESERVED_JOBS` permits) is
+            exhausted (`busy`), the graph worker is unavailable (`unavailable`), the server is draining
+            (`shutting_down`) or the request timed out (`request_timeout`; a dispatched worker may still complete, so
+            the outcome is uncertain). `busy` means nothing of the request was applied; it may be resubmitted
+            unchanged. This route never answers `import_in_progress`.
           content:
             application/json:
               schema:
@@ -1079,8 +1088,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '503':
-          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
-            (a dispatched worker may still complete; outcome is uncertain).
+          description: The feeder data lane (events, barrier and gap, `KNOTREL_FEEDER_RESERVED_JOBS` permits) is
+            exhausted (`busy`), the graph worker is unavailable (`unavailable`), the server is draining
+            (`shutting_down`) or the request timed out (`request_timeout`; a dispatched worker may still complete, so
+            the outcome is uncertain). `busy` means nothing of the request was applied; it may be resubmitted
+            unchanged. This route never answers `import_in_progress`.
           content:
             application/json:
               schema:
@@ -1165,8 +1177,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOutcome'
         '503':
-          description: Admission exhausted, import in progress, worker unavailable, server draining or request_timeout
-            (a dispatched worker may still complete; outcome is uncertain).
+          description: The feeder data lane (events, barrier and gap, `KNOTREL_FEEDER_RESERVED_JOBS` permits) is
+            exhausted (`busy`), the graph worker is unavailable (`unavailable`), the server is draining
+            (`shutting_down`) or the request timed out (`request_timeout`; a dispatched worker may still complete, so
+            the outcome is uncertain). `busy` means nothing of the request was applied; it may be resubmitted
+            unchanged. This route never answers `import_in_progress`.
           content:
             application/json:
               schema:
@@ -1759,7 +1774,15 @@ components:
 
     ErrorCode:
       type: string
-      description: Machine-readable error code. Clients should branch on it, not on the message.
+      description: |
+        Machine-readable error code. Clients should branch on it, not on the message, and handle an
+        unknown code as an error of its status class.
+
+        `too_many_connections` is not produced by any operation: the accept loop writes a static
+        `503` with this code to a connection opened beyond `KNOTREL_MAX_CONNECTIONS`, before any
+        request is read, and closes it (best effort; a client may instead see a reset).
+        `busy` is the code of every exhausted admission lane (shared, feeder data, feeder control);
+        `import_in_progress` only means that another import holds the import permit.
       enum:
         - barrier_not_reached
         - barrier_position_mismatch
@@ -1803,6 +1826,7 @@ components:
         - stale_generation
         - stale_instance_id
         - superseded_barrier
+        - too_many_connections
         - topology_lifecycle_disabled
         - unavailable
         - uninitialized
@@ -2203,6 +2227,9 @@ components:
           type: string
         source_position:
           type: string
+          minLength: 1
+          maxLength: 256
+          description: Opaque source cursor of the imported snapshot, 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit.
         feeder_session_id:
           type: string
         feeder_epoch:
@@ -2287,7 +2314,8 @@ components:
       properties:
         event_id:
           type: string
-          description: At most 64 bytes of UTF-8.
+          maxLength: 64
+          description: At most 64 bytes of UTF-8 (no minimum). The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit.
         delivery_sequence:
           type: integer
           minimum: 0
@@ -2296,10 +2324,14 @@ components:
           minimum: 0
         source_position:
           type: string
-          description: At most 256 bytes of UTF-8.
+          minLength: 1
+          maxLength: 256
+          description: 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit.
         prev_source_position:
           type: string
-          description: At most 256 bytes of UTF-8.
+          minLength: 1
+          maxLength: 256
+          description: 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit.
         op:
           type: string
           enum: [add_node, link, cut, progress, set_node_active, set_edge_enabled, remove_node]
@@ -2660,6 +2692,9 @@ components:
           type:
           - string
           - 'null'
+          minLength: 1
+          maxLength: 256
+          description: Optional; when present, 1 to 256 bytes of UTF-8. The limit counts UTF-8 bytes, which the server enforces; `minLength`/`maxLength` count characters, so a multibyte string can be refused (422 `invalid_request`) below the character limit.
       additionalProperties: false
     BarrierResponse:
       type: object

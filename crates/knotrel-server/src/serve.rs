@@ -42,6 +42,41 @@ content-length: 85\r\n\
 \r\n\
 {\"result\":\"error\",\"code\":\"too_many_connections\",\"message\":\"connection limit reached\"}";
 
+// Compile-time ties of the static rejection to the error-code enum and to
+// its own framing: the body carries `ErrorCode::TooManyConnections` and is
+// exactly `content-length: 85` bytes long.
+const _: () = {
+    const fn find(haystack: &[u8], needle: &[u8]) -> bool {
+        let mut start = 0;
+        while start + needle.len() <= haystack.len() {
+            let mut i = 0;
+            while i < needle.len() && haystack[start + i] == needle[i] {
+                i += 1;
+            }
+            if i == needle.len() {
+                return true;
+            }
+            start += 1;
+        }
+        false
+    }
+    let code = crate::api::ErrorCode::TooManyConnections
+        .as_str()
+        .as_bytes();
+    assert!(find(REJECT_CONNECTION, code));
+    assert!(find(REJECT_CONNECTION, b"content-length: 85\r\n"));
+    // Body = everything after the blank line ending the header block.
+    let mut body_start = 0;
+    while !(REJECT_CONNECTION[body_start] == b'\r'
+        && REJECT_CONNECTION[body_start + 1] == b'\n'
+        && REJECT_CONNECTION[body_start + 2] == b'\r'
+        && REJECT_CONNECTION[body_start + 3] == b'\n')
+    {
+        body_start += 1;
+    }
+    assert!(REJECT_CONNECTION.len() - (body_start + 4) == 85);
+};
+
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
 /// Serves `app` on `listener` until `shutdown` completes, then drains.

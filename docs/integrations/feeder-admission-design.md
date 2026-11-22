@@ -4,6 +4,12 @@
 and B2 out of scope), with the control lane of section 3.1 added before
 implementation as requested.**
 
+> **v1.0.0 note.** Since v1.0.0 an exhausted feeder lane answers `503 busy`,
+> not `503 import_in_progress` (an approved exception of the
+> [v1.0 contract freeze](../releases/v1.0-contract-freeze-review.md),
+> decision 4; see [compatibility](../compatibility.md#3-what-compatible-means)).
+> The text below records the 0.9.x design, where the code was kept.
+
 The v0.8.0 baseline of the [feeder-under-load check](feeder-under-load.md)
 failed Q2 and Q3. By its decision rule, 0.9.3 continues with the smallest
 server change that addresses the failing mechanisms. This document states

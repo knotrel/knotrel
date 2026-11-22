@@ -64,6 +64,27 @@ the feeder routes follow the HTTP rules above.
 
 **Server and console.** See section 5.
 
+**HTTP exceptions approved for v1.0.0.** The maintainer approved these
+breaking HTTP changes on 2026-11-22 without the deprecation window of
+section 4 ([contract freeze review](releases/v1.0-contract-freeze-review.md),
+section 7); the release notes list them:
+- *A different `code` for an existing condition (decision 4):* an exhausted
+  feeder admission lane (data lane: `POST /v1/feeder/events`, `/barrier`,
+  `/gap`; control lane: `/session`, `/heartbeat`) answers `503 busy`, as the
+  shared lane does, instead of `503 import_in_progress`, which is now
+  returned only by `POST /v1/feeder/import` while another import runs.
+  Clients that retried on `import_in_progress` from those five routes retry
+  on `busy`.
+- *Stricter input validation (decision 6):* the documented limits are
+  enforced on every field they apply to. Source positions (event
+  `source_position` and `prev_source_position`, import `source_position`,
+  `barrier_source_position` when present) are 1 to 256 bytes of UTF-8;
+  `event_id` is at most 64 bytes. The limits count bytes, not characters; a
+  value outside them is refused with `422 invalid_request` and changes
+  nothing. Before, empty positions and over-long import and barrier
+  positions were accepted. The OpenAPI entries are in
+  `docs/api/approved-breaking-changes.yaml`.
+
 ## 4. Deprecation
 
 1. A stable surface is deprecated in a release: the documentation marks it

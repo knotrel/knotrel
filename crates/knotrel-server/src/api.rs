@@ -139,6 +139,7 @@ pub(crate) enum ErrorCode {
     StaleGeneration,
     StaleInstanceId,
     SupersededBarrier,
+    TooManyConnections,
     TopologyLifecycleDisabled,
     Unavailable,
     Uninitialized,
@@ -149,7 +150,7 @@ pub(crate) enum ErrorCode {
 
 impl ErrorCode {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 48] = [
+    pub(crate) const ALL: [Self; 49] = [
         Self::BarrierNotReached,
         Self::BarrierPositionMismatch,
         Self::Busy,
@@ -192,6 +193,7 @@ impl ErrorCode {
         Self::StaleGeneration,
         Self::StaleInstanceId,
         Self::SupersededBarrier,
+        Self::TooManyConnections,
         Self::TopologyLifecycleDisabled,
         Self::Unavailable,
         Self::Uninitialized,
@@ -244,6 +246,7 @@ impl ErrorCode {
             Self::StaleGeneration => "stale_generation",
             Self::StaleInstanceId => "stale_instance_id",
             Self::SupersededBarrier => "superseded_barrier",
+            Self::TooManyConnections => "too_many_connections",
             Self::TopologyLifecycleDisabled => "topology_lifecycle_disabled",
             Self::Unavailable => "unavailable",
             Self::Uninitialized => "uninitialized",
@@ -1595,12 +1598,25 @@ pub(crate) async fn feeder_barrier(
 }
 
 fn feeder_error(err: crate::service::FeederError) -> Response {
-    use crate::service::FeederError;
+    use crate::service::{FeederError, Lane};
     match err {
         FeederError::ImportInProgress => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::ImportInProgress,
             "import capacity exhausted; another import is in progress".into(),
+        ),
+        FeederError::LaneBusy(lane) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::Busy,
+            match lane {
+                Lane::FeederControl => {
+                    "feeder control capacity (session, heartbeat) exhausted; retry later"
+                }
+                Lane::FeederData | Lane::Shared => {
+                    "feeder data capacity (events, barrier, gap) exhausted; retry later"
+                }
+            }
+            .into(),
         ),
         FeederError::Unavailable => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2562,6 +2578,7 @@ mod tests {
                 "stale_generation",
                 "stale_instance_id",
                 "superseded_barrier",
+                "too_many_connections",
                 "topology_lifecycle_disabled",
                 "unavailable",
                 "uninitialized",
@@ -2570,6 +2587,40 @@ mod tests {
                 "unverifiable_duplicate",
             ]
         );
+    }
+
+    /// Ties the Rust error-code enum to the `ErrorCode` schema of
+    /// `docs/openapi.yaml`: the same codes, in the same (sorted) order, so a
+    /// code cannot be added on one side only (decision 5 of the v1.0
+    /// contract freeze review).
+    #[test]
+    fn error_codes_match_the_openapi_enum() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/openapi.yaml");
+        let spec = std::fs::read_to_string(path).unwrap();
+        let mut lines = spec
+            .lines()
+            .skip_while(|line| *line != "    ErrorCode:")
+            .skip(1);
+        assert!(
+            lines.any(|line| line == "      enum:"),
+            "ErrorCode schema without an enum in {path}"
+        );
+        let documented: Vec<&str> = lines
+            .map_while(|line| line.strip_prefix("        - "))
+            .collect();
+        let implemented: Vec<&str> = ErrorCode::ALL.iter().map(|c| c.as_str()).collect();
+        assert_eq!(implemented, documented);
+        let mut sorted = documented.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, documented, "OpenAPI ErrorCode enum must be sorted");
+        // Every code serializes to its documented string.
+        for code in ErrorCode::ALL {
+            assert_eq!(
+                serde_json::to_value(code).unwrap(),
+                serde_json::Value::from(code.as_str())
+            );
+        }
     }
 
     fn make_service(mode: ServerMode) -> Service {
@@ -2986,6 +3037,14 @@ mod tests {
                 FeederError::ImportInProgress,
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
+            (
+                FeederError::LaneBusy(crate::service::Lane::FeederData),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                FeederError::LaneBusy(crate::service::Lane::FeederControl),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
             (FeederError::SessionRequired, StatusCode::CONFLICT),
             (FeederError::ModeMismatch, StatusCode::CONFLICT),
             (FeederError::InvalidLeaseDuration, StatusCode::BAD_REQUEST),
@@ -3028,6 +3087,14 @@ mod tests {
         let s = || "x".to_owned();
         let cases = [
             (FeederError::ImportInProgress, None),
+            (
+                FeederError::LaneBusy(crate::service::Lane::FeederData),
+                None,
+            ),
+            (
+                FeederError::LaneBusy(crate::service::Lane::FeederControl),
+                None,
+            ),
             (FeederError::Unavailable, None),
             (FeederError::ModeMismatch, None),
             (FeederError::StaleInstanceId(s()), None),
