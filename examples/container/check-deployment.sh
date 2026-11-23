@@ -54,7 +54,7 @@ echo "== image and feeder"
 echo "image=$(docker image inspect -f '{{.Id}}' "$IMAGE") feeder=$FEEDER out=$OUT"
 
 echo "== 1. start container (source-managed, published on 127.0.0.1 only)"
-docker run -d --name "$NAME" -p "127.0.0.1:$PORT:8080" --memory 512m --stop-timeout 15 "$IMAGE" >/dev/null
+docker run -d --name "$NAME" -p "127.0.0.1:$PORT:8080" -e KNOTREL_MAX_CONNECTIONS=128 --memory 512m --stop-timeout 15 "$IMAGE" >/dev/null
 expect "docker run" "$?" 0
 expect "container user" "$(docker inspect -f '{{.Config.User}}' "$NAME")" "10001:10001"
 expect "uid inside container" "$(docker exec "$NAME" id -u)" 10001

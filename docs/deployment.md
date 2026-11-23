@@ -35,10 +35,32 @@ own. Configuration is read once at startup; changing it requires a restart.
     `48bc82f` with 100,000 nodes, compaction peaked at 40.7 MiB of net live
     heap against a 33.5 MiB steady maximum. A 100,000-node HTTP import peaked
     at 31–33 MiB (create) and 50 MiB (replace, old graph still live) for a
-    final graph of about 23 MiB; v0.5.0 peaked at 111–130 MiB. Size memory
-    for `old graph + import body + new graph`. Process RSS has no hard bound
-    (allocator retention). Size `--memory` accordingly. With `false`
-    no catalog is allocated.
+    final graph of about 23 MiB; v0.5.0 peaked at 111–130 MiB. With `false`
+    no catalog is allocated. Size `--memory` with the sizing below.
+  - **Memory sizing.** Set the container limit to at least the sum of these
+    terms, plus headroom, because process RSS has no hard bound (allocator
+    retention):
+
+    | Term | Bound | At 100,000 nodes, defaults |
+    | --- | --- | --- |
+    | Steady graph (engine, plus the catalog with lifecycle on) | grows with the graph; capped by `KNOTREL_MAX_NODES` and `KNOTREL_MAX_EDGES` | about 23 MiB final graph; 33.5 MiB steady maximum in the compaction test |
+    | Compaction | transient, under the graph lock | peak 40.7 MiB net live heap |
+    | Replace import | old graph (live until just after publication) + import body + decoded request + new graph; one import at a time | peak 50 MiB measured for a 100,000-node replace |
+    | Import body | up to `KNOTREL_MAX_IMPORT_BODY_BYTES` (default 64 MiB, at most 512 MiB); a declared `Content-Length` is reserved in full before the body arrives | up to 64 MiB |
+    | Malformed import | a body that fails the streaming parse is parsed again by the former parser, with the v0.5.0 working set ([resource model](topology-lifecycle.md)), once per failed import | up to 111–130 MiB (the v0.5.0 peak of a 100,000-node import) |
+    | Buffered bodies on the other routes | read before admission, 1 MiB each: up to `KNOTREL_MAX_CONNECTIONS × 1 MiB` | up to **1 GiB** with the default 1024 connections |
+
+    The last term dominates small limits: with the defaults it alone exceeds
+    a 512 MiB limit. For a small container lower `KNOTREL_MAX_CONNECTIONS`
+    (128 connections bound it to 128 MiB) and, if imports are smaller,
+    `KNOTREL_MAX_IMPORT_BODY_BYTES`. Worked example for the `--memory 512m`
+    container below, 100,000 nodes, lifecycle on, `KNOTREL_MAX_CONNECTIONS=128`:
+    old and new graph about 70 MiB, import body 64 MiB, malformed-import
+    working set up to 130 MiB, buffered bodies up to 128 MiB, about 390 MiB
+    in all, leaving about 120 MiB of headroom for allocator retention. These
+    figures are measurements of one graph shape and an upper-bound sum, not a
+    guarantee: check RSS with the container runtime's memory statistics
+    under your own graph and load.
   - There is **no durable graph persistence**. The graph, generation,
     revision, source frontier and deduplication history exist only in process
     memory and are lost on any restart. No volume is needed for graph state.
@@ -88,6 +110,7 @@ Files:
 
 ```sh
 docker run -d --name knotrel -p 127.0.0.1:8080:8080 \
+  -e KNOTREL_MAX_CONNECTIONS=128 \
   --memory 512m --stop-timeout 15 knotrel-server:example
 curl -s -w ' %{http_code}\n' http://127.0.0.1:8080/health   # {"status":"ok"} 200
 curl -s -w ' %{http_code}\n' http://127.0.0.1:8080/ready    # {"status":"uninitialized"} 503

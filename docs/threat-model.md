@@ -1,14 +1,18 @@
 # Threat model
 
-**Status:** proposed; awaiting the maintainer's acceptance, for the v1.0.0-rc security
+**Status:** accepted by the maintainer on 2026-11-23 with the conditions of
+[section 10](#10-maintainer-acceptance-2026-11-23), for the v1.0.0-rc security
 gate (readiness criterion 7, [v1.0 readiness](releases/v1.0-readiness.md)).
+Open within that acceptance: the revised O1/N5 wording awaits the maintainer's
+review, and the reporting channel (G4, O7) is an rc gate verified after it is
+enabled.
 Written 2026-11-22 against `main` at `580af3f` (v0.9.0 plus documentation);
 refreshed 2026-11-23 against `main` at `e13b3cc` for the frozen 1.0 contract
 ([v1.0 backlog](releases/v1.0-backlog.md) item N16): input byte limits and
 body-read classification (T1.3), feeder admission lanes, `busy`,
 `too_many_connections` and per-lane metrics (T1.5, T1.6, T1.10), the drain gate
 (T1.16), non-UTF-8 inspection paths (T1.17) and the console variable namespace
-(T3.10). The maintainer has not accepted it yet. It describes the supported
+(T3.10). It describes the supported
 exposure only and promises nothing beyond the evidence cited; every cited test
 exists at the refresh commit.
 
@@ -108,7 +112,7 @@ to section 6 (`G#`) and section 7 (`N#`).
 | T1.9 | Information disclosure through errors and logs (I) | Error messages never quote a string taken from the current request (identifiers, positions, epochs, `If-Match` values, operation, field or parameter names), parser positions or internal paths. They are not free of client data: they may contain numbers from the request (node IDs, sequences, generations, byte lengths) and server state, including values a feeder supplied earlier (applied position, `source_id`, `source_epoch`, retained `event_id`); logs never contain bodies, node IDs or parser messages | `security.rs::client_errors_are_stable_and_do_not_leak_internals_or_payloads`, `schema_violations_never_echo_client_supplied_names_or_values`, `feeder_errors_never_echo_client_supplied_strings`, `inspection_errors_never_echo_client_supplied_names`; `logs.rs::logs_correlate_requests_and_never_expose_payloads` |
 | T1.10 | Metric label cardinality explosion (D), or admission pressure on one lane hidden in an aggregate (D, detection) | Only bounded labels; route templates, not raw paths; metrics off by default. Admission metrics are labelled by lane from 1.0.0: `knotrel_requests_rejected_total{reason,lane}` (`lane` one of the four lanes or `none`), `knotrel_graph_jobs_outstanding{lane}` and `knotrel_graph_job_capacity{lane}`, a fixed series set, so an operator sees feeder-lane exhaustion separately from query load | `metrics.rs::exposition_is_valid_and_uses_only_bounded_labels` (every `lane` value enumerated), `capacity_help_describes_the_admission_permit_limit`, `feeder_admission_rejection_answers_busy_and_counts_busy`, `import_permit_rejection_is_counted_as_import_capacity`, `every_registered_route_is_labelled_with_its_template`, `series_count_is_constant_under_sustained_churn`, `metrics_route_is_absent_when_disabled` |
 | T1.11 | Cross-site request forgery from a web page against a loopback server (T) | Mutating routes require a JSON media type (a cross-site form cannot send one without a CORS preflight, which Knotrel never grants); feeder routes also require the `X-Knotrel-Instance-Id` header | `http.rs::content_type_requires_a_json_media_type_before_mutation`; the absence of CORS headers is not asserted by a test → N1 |
-| T1.12 | DNS rebinding: a web page rebinds its name to `127.0.0.1` and becomes same-origin with the server (S, T, I) | **None in the server**: Knotrel does not check `Host`. The console container does (B3) | Open → N1 |
+| T1.12 | DNS rebinding: a web page rebinds its name to `127.0.0.1` and becomes same-origin with the server (S, T, I) | **None in the server**: Knotrel does not check `Host`. The console container and the gateway check `Host` only for requests that pass through them, so they protect nothing while the browser can reach the listener directly. The protection is deployment: the listener must not be reachable from any context where untrusted web content runs ([trust model](http-api.md#trust-model)) | Gateway example: "Knotrel not reachable from the host" and "from another container" (T2.1); otherwise doc only → N1 |
 | T1.13 | Memory-unsafe code (T, E) | `unsafe_code = "forbid"` in the workspace lints | Workspace lints (Clippy in CI) |
 | T1.14 | Uncertain outcome after a timeout is mistaken for "not applied" (T) | Documented: a timed-out mutation's outcome is unknown; mutations are idempotent; the console never retries mutations | `lifecycle.rs::http_request_timeout_leaves_worker_active_and_shutdown_waits_for_it`; console `test/ui/workbench.test.tsx` ("marks a timed-out mutating batch as uncertain and never retries") |
 | T1.15 | **Any reachable worker panic becomes permanent unavailability** (D). The graph worker sets `graph.failed` before running a job and clears it only when the job returns; after a panic every later request gets 503 `unavailable` and `/ready` reports `unavailable` until the process is restarted and rebuilt from the source ([probes](http-api.md#probes)). This fail-stop is deliberate (integrity over availability: a graph left half-mutated by a panic is never served), but it turns any panic reachable from request input into a denial of service that outlasts the request, for queries, mutations and feeder events alike | Fail-stop is tested; the absence of input-reachable panics is **not**: no audit of `unwrap`/`expect`/`unreachable!` sites on request paths and no fuzz or property test of arbitrary feeder envelopes against each synchronization state. Defect D1 (T4.6) is a concrete instance | Fail-stop: `lifecycle.rs::worker_panic_after_caller_cancellation_marks_ready_unavailable`, `bootstrap.rs::test_17_caller_cancellation_and_worker_panic_preserve_lifecycle`, `service.rs` unit test `panicked_writer_rejects_queued_and_future_work`; absence of reachable panics: open → N7 |
@@ -191,7 +195,7 @@ The four gaps listed in [v1.0 readiness](releases/v1.0-readiness.md#concrete-sec
 
 ### G1 — Import memory amplification
 
-**Status: mitigated and documented; one sizing term missing.**
+**Status: mitigated and documented; sizing guide completed 2026-11-23 (O4).**
 
 - Evidence: v0.6.0 replaced the import parse with a streaming parse; a
   100,000-node import peaked at 31–33 MiB (create) and 50 MiB (replace, old
@@ -208,11 +212,14 @@ The four gaps listed in [v1.0 readiness](releases/v1.0-readiness.md#concrete-sec
   `KNOTREL_MAX_CONNECTIONS × 1 MiB` (up to 1 GiB by default;
   [admission](http-api.md#admission-and-cancellation)); the deployment
   guide's memory sizing does not mention this term.
-- **Proposed fix (documentation):** add `KNOTREL_MAX_CONNECTIONS × 1 MiB` of
-  buffered bodies and the malformed-import fallback to the memory sizing in
-  `docs/deployment.md`, and advise lowering `KNOTREL_MAX_CONNECTIONS` or
-  `KNOTREL_MAX_IMPORT_BODY_BYTES` for small memory limits. Optional code
-  proposal: drop the second parse for bodies above a size threshold.
+- **Done (documentation):** the memory sizing in
+  [`docs/deployment.md`](deployment.md) now lists every term — steady graph,
+  compaction, replace import, the import body reserved in full when declared
+  (backlog DV4), the malformed-import second parse, and
+  `KNOTREL_MAX_CONNECTIONS × 1 MiB` of buffered bodies (1 GiB by default) —
+  with a worked example for a 512 MiB container that lowers
+  `KNOTREL_MAX_CONNECTIONS` to 128. Optional code proposal, 1.x: drop the
+  second parse for bodies above a size threshold.
 
 ### G2 — Lock-holding work per request
 
@@ -279,11 +286,11 @@ here; each is a proposal.
 
 | ID | Finding | Severity within the trust model | Proposed fix |
 | --- | --- | --- | --- |
-| N1 | **DNS rebinding against a loopback server (E1).** Knotrel accepts any `Host`, so a web page visited by a browser on the same host can rebind its name to `127.0.0.1` and read and mutate the graph, including taking over the feeder session after reading the instance ID from `/v1/info`. The console container defends against this (T3.3); a server reached directly does not. CSRF without rebinding is blocked by the JSON content-type check (T1.11) | Medium: E1 is the default exposure and trusts processes, not web pages | Code proposal: an optional `Host` allowlist (for example `KNOTREL_ALLOWED_HOSTS`, default loopback names and the bind address; 421 otherwise), additive, with a security test; until then, document in the trust model that browsing on a host with a loopback Knotrel is a risk |
+| N1 | **DNS rebinding against a directly reachable listener (E1, E2).** Knotrel accepts any `Host`, so a web page in a browser that can reach the listener (on the same host as a loopback listener, or on the trusted network) can rebind its name to the listener's address and read and mutate the graph, including taking over the feeder session after reading the instance ID from `/v1/info`. The console container (T3.3) and the gateway check `Host` only for requests that pass through them; they do not protect a listener the browser can still reach directly. CSRF without rebinding is blocked by the JSON content-type check (T1.11) | Medium: E1 is the default exposure and trusts processes, not web pages | 1.0 (documented in the [trust model](http-api.md#trust-model), wording pending the maintainer's review): the protection requires that the listener is not reachable from any context where untrusted web content runs; using the console or a gateway is not by itself a mitigation. 1.x code proposal: an optional `Host` allowlist in the server (for example `KNOTREL_ALLOWED_HOSTS`, default loopback names and the bind address; 421 otherwise), additive, with a security test |
 | N2 | **Reference feeder has no TLS** to PostgreSQL (`NoTls`, `TlsConfig::disabled()`) or to Knotrel (`reqwest` without a TLS feature), so it cannot be used through the gateway example and sends the PostgreSQL password and graph data in clear text | Low for the documented local reference setup; blocks E3 for the reference feeder | Code proposal for the feeder: `sslmode` (`require`/`verify-full`) with a CA file for PostgreSQL; a rustls feature and a credential file for the Knotrel URL; extend the gateway smoke test with the reference feeder |
 | N3 | **Gateway example has no rate or connection limiting**, although the trust model lists rate limiting among the gateway's duties | Low (authenticated clients only) | Add `limit_req`/`limit_conn` per credential to `examples/gateway/nginx.conf` with a smoke-test check, or state the omission in the deployment guide |
 | N4 | **Unvalidated security configuration:** `console/deploy/nginx-gateway.conf` (static archive) is packaged but never run or syntax-checked; the console container's CSP and `nosniff` headers are not asserted by `smoke-container.sh`; the absence of CORS headers on Knotrel is not asserted | Low | Add `nginx -t` and an allowlist check for the archive config in the `console` workflow; header assertions in `smoke-container.sh`; a CORS-preflight assertion in `security.rs` |
-| N5 | **Trust-model wording is narrower than the 1.0 exposure:** `docs/http-api.md` says "a single trusted local client" while E2 and E3 are supported | Documentation | Align the trust-model paragraph with section 1 of this document |
+| N5 | **Trust-model wording is narrower than the 1.0 exposure:** `docs/http-api.md` said "a single trusted local client" while E2 and E3 are supported | Documentation | **Done:** the trust model lists E1–E3, states that every client that can reach the listener is trusted and that web pages are not, and gives the DNS-rebinding condition (N1) |
 | N6 | **Defect D1 (T4.6), found by the R3 soak:** a feeder event with `delivery_sequence: 0` before the first event of a generation panics the graph worker and leaves the server permanently unavailable | High for availability: one request from a registered feeder; in E3 limited to feeder-credential holders | **Closed:** fixed in knotrel/knotrel#104 with regression tests that pass in CI. To list in the rc release notes |
 | N7 | **Fail-stop amplifies every reachable panic (T1.15).** Fail-stop itself is intended, but nothing shows that request input cannot reach a panic; D1 shows it can | Medium: depends on finding such inputs; D1 is one | Audit of panic sites on request and worker paths (replace input-reachable ones with request errors); a property or fuzz test sending arbitrary feeder envelopes and operations in every synchronization state and asserting no `unavailable`; keep the soak's reference-model check. Optional maintainer decision: let a successful replace import clear the failed state instead of requiring a restart (behavior change, needs its own review) |
 
@@ -300,6 +307,8 @@ here; each is a proposal.
   limit is the operator's control.
 - The graph and its synchronization state are lost on restart; integrity after
   a restart depends on a rebuild from the authoritative source.
+- Feeder session takeover is not authenticated (G3, T4.2); it is mitigated
+  only by the boundary (a separate feeder credential at the gateway in E3).
 
 ## 9. Maintenance
 
@@ -307,3 +316,24 @@ Update this document with any change to: routes, modes or the trust model;
 the console's forwarding rules; the gateway example; resource bounds; the
 reference feeder's connections; the release pipeline. Each new mitigation names
 its validation; a mitigation without one is listed as "doc only" or as a gap.
+
+## 10. Maintainer acceptance (2026-11-23)
+
+Recorded from the maintainer's decision; it changes no code.
+
+**R1–R6 accepted** as the architectural limits of 1.0, **within the declared
+deployment perimeter** (E1–E3, section 1). R1–R5 are the five limits of
+section 8; R6 is the unauthenticated feeder takeover (G3). This acceptance
+**does not cover concrete vulnerabilities reachable from input**: a panic, a
+bypass of a documented bound or any other input-reachable defect is a defect
+to fix, not an accepted risk (as D1 was, T4.6).
+
+| ID | Item | Disposition | Explicit limitation | Tracked activity |
+| --- | --- | --- | --- | --- |
+| O1 | DNS rebinding (N1, T1.12) | **Not accepted in the earlier wording.** Revised in the [trust model](http-api.md#trust-model) and in N1: the protection requires that the listener is not reachable from any context where untrusted web content runs, or that the backend validates `Host` itself, which Knotrel 1.0 does not; the console or a gateway alone is not a mitigation. **Awaiting the maintainer's review** | Until accepted, a browser that can reach the listener is an open exposure | Backlog TM-O1: review of the wording; 1.x optional `Host` allowlist |
+| O2 | No audit of input-reachable panics (N7, T1.15) | Deferred to 1.x with a tracked activity | **The soak does not replace an audit**: it shows the absence of panics only for the inputs it generates | Backlog TM-O2: panic-site audit of request and worker paths, property or fuzz test of feeder envelopes in every synchronization state |
+| O3 | Lock-holding work per request not measured (G2) | Deferred to 1.x with a tracked activity | **The request timeout does not bound the work that continues in the worker**: a timed-out request keeps its worker and the graph lock until the job ends | Backlog TM-O3: measure the worst-case lock time in the supported envelope; decide on a configurable batch ceiling |
+| O4 | Memory sizing term missing (G1) | **Done** (section 6, G1): sizing guide completed in `docs/deployment.md` | Figures are one graph shape and an upper-bound sum, not a guarantee | — |
+| O5 | Reference feeder without TLS (N2) | Deferred to 1.x with a tracked activity | The reference feeder is supported only on a trusted network and cannot be used through the gateway (E3) | Backlog TM-O5: `sslmode` and CA file for PostgreSQL, rustls and a credential file for Knotrel, gateway smoke test with the feeder |
+| O6 | Gateway example without rate or connection limits; unvalidated security configuration (N3, N4) | Deferred to 1.x with a tracked activity | The example is not a production gateway; the static-archive nginx configuration, the console's CSP and `nosniff` headers and the absence of CORS headers on Knotrel are not asserted by tests | Backlog TM-O6: `limit_req`/`limit_conn` in the example with a smoke check; `nginx -t` of the archive configuration; header and CORS-preflight assertions |
+| O7 | Private Vulnerability Reporting disabled (G4) | **Remains an rc gate**, not an accepted risk | Until enabled and verified, the channel in `SECURITY.md` does not work | Backlog TM-O7: verify after activation (`"enabled": true` from the API and **Report a vulnerability** on the Security tab) |

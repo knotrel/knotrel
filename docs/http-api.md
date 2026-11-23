@@ -68,8 +68,38 @@ defaults above.
 ## Trust model
 
 Knotrel has **no authentication, authorization or TLS**. Anyone who can
-open a TCP connection to the listener can read and mutate the graph. The
-supported deployment is a single trusted local client:
+open a TCP connection to the listener can read and mutate the graph and, in
+source-managed mode, take over the feeder session. Every client that can reach
+the listener is therefore trusted. The supported exposures for 1.0 are
+([threat model §1](threat-model.md#1-scope-and-supported-exposure)):
+
+- **Loopback** (the default): every process and user on the host that can
+  open a loopback connection is trusted.
+- **Trusted network**: a non-loopback bind with
+  `KNOTREL_ALLOW_NON_LOOPBACK=true`, reachable only from a network whose every
+  host is trusted with full read/write access.
+- **Behind a gateway**: Knotrel reachable only by the gateway (on loopback in
+  the gateway's network namespace, or on a network only the gateway reaches);
+  the gateway terminates TLS and authenticates and authorizes every request,
+  with feeder routes on a separate credential
+  ([deployment guide](deployment.md#gateway-with-tls-and-authentication)).
+
+Exposure to any client that is not trusted, including the public internet or a
+shared network, is unsupported. A private network is sufficient only when every
+host on it is trusted.
+
+**Web pages are not trusted clients, and Knotrel does not check `Host`.** A
+page opened in a browser that can reach the listener (for example a browser on
+the same host as a loopback listener) can use DNS rebinding to read and mutate
+the graph and take over the feeder session. The console container and the
+gateway example check `Host` only for requests that pass through them: using
+them does not protect a listener the browser can still reach directly. The
+protection is that the listener is **not reachable from any context where
+untrusted web content runs**: no browser on the listener's host (loopback) or
+network (trusted network), or a listener reachable only through the gateway or
+the console, as in the gateway example, where Knotrel is reachable from neither
+the host nor other containers. Knotrel 1.0 has no `Host` validation of its own
+(an optional allowlist is a 1.x proposal, [threat model](threat-model.md) N1).
 
 - The listener defaults to `127.0.0.1:8080`. A non-loopback `KNOTREL_ADDR`
   (including `0.0.0.0` and `[::]`) fails startup unless
@@ -77,10 +107,10 @@ supported deployment is a single trusted local client:
   logs a warning at startup.
 - Opting in is an operator acknowledgement, not a hardening step. Exposure to
   untrusted clients, including the public internet, stays unsupported.
-- If you must expose it to other hosts, put it behind a reverse proxy or
-  gateway that provides TLS, authentication, authorization, rate limiting and
-  write timeouts, and restrict the network path. A private network on its own is not
-  sufficient: every host on it is then trusted with full read/write access.
+- If clients on other hosts are not all trusted, use the gateway exposure:
+  a reverse proxy or gateway that provides TLS, authentication, authorization,
+  rate limiting and write timeouts, with the network path restricted so that
+  only the gateway reaches Knotrel.
 - The [threat model](threat-model.md) lists the threats per trust boundary
   and the test that validates each mitigation.
 - Logs contain the method, path, status and latency of each request and the
