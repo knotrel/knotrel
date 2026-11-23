@@ -338,6 +338,7 @@ To eliminate race conditions between deduplication, predecessor checks, and sequ
   1. Route & Method Validation (404/405)
   2. Content-Type is JSON (415 invalid_request)
   3. Body size within bound (413 invalid_request)
+  3a. Body read to its end: no client abort, malformed chunked encoding or receive error (400 invalid_request)
   4. JSON syntax valid (400 invalid_request)
   5. Schema shape, field constraints, node ID strings (422 invalid_request)
   6. Lifecycle check: not draining (503 shutting_down)

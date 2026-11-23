@@ -1432,3 +1432,286 @@ async fn test_16_replaced_graph_released_after_lock_inside_worker() {
     assert_eq!(reply.json()["generation"], 2);
     running.wait_for_jobs(0).await;
 }
+
+// ---------------------------------------------------------------------------
+// 17-19. Body read failures: only the size limit answers 413
+// ---------------------------------------------------------------------------
+//
+// Maintainer decision of 2026-11-23 (backlog N6): 413 must mean that the
+// limit was exceeded, not any body read error. A declared or streamed excess
+// answers 413; a client abort, malformed chunked encoding or receive error
+// answers 400 `invalid_request` and releases the import permit.
+
+const IMPORT_LIMIT: usize = 4096;
+const UNREADABLE: &str = "request body could not be read";
+
+fn config_small_import_limit() -> ServerConfig {
+    config_source_managed()
+        .with_max_import_body_bytes(IMPORT_LIMIT)
+        .unwrap()
+        .with_metrics_enabled(true)
+}
+
+/// Request head of a chunked import without `Content-Length`.
+fn chunked_import_head(instance_id: &str) -> String {
+    format!(
+        "POST /v1/feeder/import HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\nx-knotrel-instance-id: {instance_id}\r\ntransfer-encoding: chunked\r\n\r\n"
+    )
+}
+
+/// One chunk of chunked transfer coding.
+fn chunk(data: &[u8]) -> Vec<u8> {
+    let mut out = format!("{:x}\r\n", data.len()).into_bytes();
+    out.extend_from_slice(data);
+    out.extend_from_slice(b"\r\n");
+    out
+}
+
+/// Writes everything, ignoring a reset: the server may answer and close
+/// before it has read the whole request.
+async fn write_lossy(stream: &mut TcpStream, bytes: &[u8]) {
+    let _ = stream.write_all(bytes).await;
+    let _ = stream.flush().await;
+}
+
+/// Reads one sample of the Prometheus text exposition.
+async fn metric(running: &Running, series: &str) -> f64 {
+    let mut stream = running.connect().await;
+    let reply = get(&mut stream, "/metrics").await;
+    assert_eq!(reply.status, 200);
+    reply
+        .body
+        .lines()
+        .find_map(|line| line.strip_prefix(series)?.strip_prefix(' '))
+        .unwrap_or_else(|| panic!("missing {series}"))
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+const IN_PROGRESS: &str = "knotrel_import_in_progress";
+const PAYLOAD_REJECTED: &str = r#"knotrel_imports_total{result="payload_rejected"}"#;
+const ABANDONED: &str = r#"knotrel_imports_total{result="abandoned"}"#;
+
+fn create_only_body(instance_id: &str) -> String {
+    format!(
+        r#"{{"mode":"create_only","instance_id":"{instance_id}","graph_id":"default","source_id":"pg-1","source_epoch":"ep-1","source_position":"pos-10","feeder_session_id":"feeder-1","feeder_epoch":1,"nodes":["1","2"],"edges":[{{"source":"1","target":"2"}}]}}"#
+    )
+}
+
+/// The import permit is free again and an import publishes.
+async fn assert_import_succeeds(running: &Running, instance_id: &str) {
+    running.wait_for_jobs(0).await;
+    let mut stream = running.connect().await;
+    let reply = post(
+        &mut stream,
+        "/v1/feeder/import",
+        &[("x-knotrel-instance-id", instance_id)],
+        &create_only_body(instance_id),
+    )
+    .await;
+    assert_eq!(reply.status, 201, "{}", reply.body);
+    assert_eq!(reply.json()["generation"], 1);
+}
+
+#[tokio::test]
+async fn test_17_import_over_limit_is_413_declared_or_streamed() {
+    let running = Running::start(config_small_import_limit()).await;
+    let instance_id = running.instance_id().await;
+    assert_eq!(
+        register_session(&running, "feeder-1", 1, 10000)
+            .await
+            .status,
+        200
+    );
+
+    // Declared: a Content-Length over the limit is refused from the headers
+    // alone, without waiting for a body that is never sent.
+    let mut declared = running.connect().await;
+    let head = format!(
+        "POST /v1/feeder/import HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\nx-knotrel-instance-id: {instance_id}\r\ncontent-length: {}\r\n\r\n",
+        IMPORT_LIMIT + 1
+    );
+    declared.write_all(head.as_bytes()).await.unwrap();
+    let reply = read_reply(&mut declared).await.expect("a response");
+    assert_eq!(reply.status, 413, "{}", reply.body);
+    assert_eq!(reply.json()["code"], "payload_too_large");
+
+    // Streamed: a chunked body without Content-Length that grows past the limit.
+    let mut streamed = running.connect().await;
+    let mut request = chunked_import_head(&instance_id).into_bytes();
+    request.extend(chunk(&vec![b' '; IMPORT_LIMIT]));
+    request.extend(chunk(b" "));
+    request.extend_from_slice(b"0\r\n\r\n");
+    write_lossy(&mut streamed, &request).await;
+    let reply = read_reply(&mut streamed).await.expect("a response");
+    assert_eq!(reply.status, 413, "{}", reply.body);
+    assert_eq!(reply.json()["code"], "payload_too_large");
+
+    // Exactly the limit, streamed, is read and parsed (here: not JSON).
+    let mut at_limit = running.connect().await;
+    let mut request = chunked_import_head(&instance_id).into_bytes();
+    request.extend(chunk(&vec![b'x'; IMPORT_LIMIT]));
+    request.extend_from_slice(b"0\r\n\r\n");
+    write_lossy(&mut at_limit, &request).await;
+    let reply = read_reply(&mut at_limit).await.expect("a response");
+    assert_eq!(reply.status, 400, "{}", reply.body);
+    assert_eq!(reply.json()["message"], "request body is not valid JSON");
+
+    // Each refusal held the permit and counts as a payload rejection.
+    running.wait_for_jobs(0).await;
+    assert_eq!(metric(&running, PAYLOAD_REJECTED).await, 3.0);
+    assert_eq!(metric(&running, IN_PROGRESS).await, 0.0);
+    assert_import_succeeds(&running, &instance_id).await;
+}
+
+#[tokio::test]
+async fn test_18_malformed_chunked_import_is_400_not_413() {
+    let running = Running::start(config_small_import_limit()).await;
+    let instance_id = running.instance_id().await;
+    assert_eq!(
+        register_session(&running, "feeder-1", 1, 10000)
+            .await
+            .status,
+        200
+    );
+
+    // A valid first chunk, then a chunk size that is not hexadecimal.
+    let mut stream = running.connect().await;
+    let mut request = chunked_import_head(&instance_id).into_bytes();
+    request.extend(chunk(b"{\"mode\":"));
+    request.extend_from_slice(b"zz\r\nnot a chunk\r\n0\r\n\r\n");
+    write_lossy(&mut stream, &request).await;
+    let reply = read_reply(&mut stream).await.expect("a response");
+    assert_eq!(reply.status, 400, "{}", reply.body);
+    assert_eq!(reply.json()["code"], "invalid_request");
+    assert_eq!(reply.json()["message"], UNREADABLE);
+
+    running.wait_for_jobs(0).await;
+    assert_eq!(metric(&running, PAYLOAD_REJECTED).await, 1.0);
+    assert_eq!(metric(&running, IN_PROGRESS).await, 0.0);
+    assert_import_succeeds(&running, &instance_id).await;
+}
+
+#[tokio::test]
+async fn test_19_client_abort_mid_body_is_not_413_and_releases_the_permit() {
+    let running = Running::start(config_small_import_limit()).await;
+    let instance_id = running.instance_id().await;
+    assert_eq!(
+        register_session(&running, "feeder-1", 1, 10000)
+            .await
+            .status,
+        200
+    );
+    let mut probe = running.connect().await;
+    let ready_before = get(&mut probe, "/ready").await;
+
+    // Half-close after part of a chunked body: the server sees the end of
+    // the stream inside a chunk, and its answer still reaches the client.
+    let mut half_closed = running.connect().await;
+    let mut request = chunked_import_head(&instance_id).into_bytes();
+    request.extend_from_slice(b"40\r\n{\"mode\":\"create_only\"");
+    half_closed.write_all(&request).await.unwrap();
+    half_closed.shutdown().await.unwrap();
+    let reply = read_reply(&mut half_closed).await.expect("a response");
+    assert_eq!(reply.status, 400, "{}", reply.body);
+    assert_eq!(reply.json()["code"], "invalid_request");
+    assert_eq!(reply.json()["message"], UNREADABLE);
+
+    // Drop after part of a Content-Length body.
+    let mut dropped = running.connect().await;
+    let head = format!(
+        "POST /v1/feeder/import HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\nx-knotrel-instance-id: {instance_id}\r\ncontent-length: {}\r\n\r\n{{\"mode\":",
+        IMPORT_LIMIT
+    );
+    dropped.write_all(head.as_bytes()).await.unwrap();
+    dropped.flush().await.unwrap();
+    drop(dropped);
+
+    // Both aborted imports end (as a payload rejection, or as abandoned when
+    // the connection task drops the handler first) and free the permit.
+    timeout(STEP, async {
+        loop {
+            let ended =
+                metric(&running, PAYLOAD_REJECTED).await + metric(&running, ABANDONED).await;
+            if ended == 2.0 && metric(&running, IN_PROGRESS).await == 0.0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("aborted imports released the permit");
+
+    // The server keeps serving: readiness unchanged, next import publishes.
+    let mut probe = running.connect().await;
+    let ready_after = get(&mut probe, "/ready").await;
+    assert_eq!(ready_after.status, ready_before.status);
+    assert_eq!(ready_after.body, ready_before.body);
+    assert_import_succeeds(&running, &instance_id).await;
+}
+
+#[tokio::test]
+async fn test_20_json_routes_classify_body_read_failures_the_same_way() {
+    let running = Running::start(config_small_import_limit()).await;
+    let instance_id = running.instance_id().await;
+    for path in ["/v1/batch", "/v1/feeder/events"] {
+        // Streamed past the fixed 1 MiB limit: 413 `invalid_request`.
+        let mut stream = running.connect().await;
+        let mut request = format!(
+            "POST {path} HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\nx-knotrel-instance-id: {instance_id}\r\ntransfer-encoding: chunked\r\n\r\n"
+        )
+        .into_bytes();
+        request.extend(chunk(&vec![b' '; 1024 * 1024]));
+        request.extend(chunk(b" "));
+        request.extend_from_slice(b"0\r\n\r\n");
+        write_lossy(&mut stream, &request).await;
+        let reply = read_reply(&mut stream).await.expect("a response");
+        assert_eq!(reply.status, 413, "{path}: {}", reply.body);
+        assert_eq!(reply.json()["code"], "invalid_request", "{path}");
+
+        // Malformed chunked encoding: 400 `invalid_request`, fixed message.
+        let mut stream = running.connect().await;
+        let mut request = format!(
+            "POST {path} HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\nx-knotrel-instance-id: {instance_id}\r\ntransfer-encoding: chunked\r\n\r\n"
+        )
+        .into_bytes();
+        request.extend(chunk(b"{"));
+        request.extend_from_slice(b"zz\r\nnot a chunk\r\n0\r\n\r\n");
+        write_lossy(&mut stream, &request).await;
+        let reply = read_reply(&mut stream).await.expect("a response");
+        assert_eq!(reply.status, 400, "{path}: {}", reply.body);
+        assert_eq!(reply.json()["code"], "invalid_request", "{path}");
+        assert_eq!(reply.json()["message"], UNREADABLE, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn test_21_chunked_import_with_trailers_is_read_to_its_end() {
+    let running = Running::start(config_small_import_limit()).await;
+    let instance_id = running.instance_id().await;
+    assert_eq!(
+        register_session(&running, "feeder-1", 1, 10000)
+            .await
+            .status,
+        200
+    );
+
+    // A valid body split over two chunks, ended by a trailer section: the
+    // trailers are not body bytes, count toward no limit and are ignored.
+    let body = create_only_body(&instance_id).into_bytes();
+    let (first, second) = body.split_at(body.len() / 2);
+    let mut stream = running.connect().await;
+    let mut request = format!(
+        "POST /v1/feeder/import HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\nx-knotrel-instance-id: {instance_id}\r\ntransfer-encoding: chunked\r\ntrailer: x-checksum\r\n\r\n"
+    )
+    .into_bytes();
+    request.extend(chunk(first));
+    request.extend(chunk(second));
+    request.extend_from_slice(b"0\r\nx-checksum: 0123456789abcdef\r\n\r\n");
+    stream.write_all(&request).await.unwrap();
+    let reply = read_reply(&mut stream).await.expect("a response");
+    assert_eq!(reply.status, 201, "{}", reply.body);
+    assert_eq!(reply.json()["generation"], 1);
+    assert_eq!(metric(&running, PAYLOAD_REJECTED).await, 0.0);
+}

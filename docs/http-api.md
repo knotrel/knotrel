@@ -44,7 +44,7 @@ The server does not provide any of the following:
 
 | Resource | Bound |
 | --- | --- |
-| Request body | 1 MiB, fixed; larger bodies get 413. `POST /v1/feeder/import` is bounded instead by `KNOTREL_MAX_IMPORT_BODY_BYTES` (default 64 MiB) |
+| Request body | 1 MiB, fixed; larger bodies get 413. `POST /v1/feeder/import` is bounded instead by `KNOTREL_MAX_IMPORT_BODY_BYTES` (default 64 MiB): a declared `Content-Length` above it gets 413 before any body byte is read, and a body (chunked included) that grows past it while received gets 413 too. Only the limit answers 413: a body that cannot be read to its end for another reason (client abort, malformed chunked encoding, receive error) gets 400 `invalid_request` (`request body could not be read`), on every route |
 | Batch length | 1–1024 operations, fixed |
 | Queued plus running graph jobs | `KNOTREL_MAX_PENDING_JOBS`, default 32; excess gets 503 `busy`. In source-managed mode, plus `KNOTREL_FEEDER_RESERVED_JOBS` (default 4) for feeder events, barriers and gaps and 2 for feeder sessions and heartbeats; excess on either feeder lane also gets 503 `busy`. `503 import_in_progress` means only that another import holds the single import permit |
 | Graph nodes / edges | `KNOTREL_MAX_NODES` / `KNOTREL_MAX_EDGES`; default 100 000 nodes and 500 000 edges, `unlimited` is an explicit opt-out |
@@ -106,6 +106,7 @@ the response, and nothing is executed unless every step passes:
 | 1 | Route and method | 404 / 405 (Axum default, empty body) |
 | 2 | `Content-Type` is a JSON media type | 415 `invalid_request` |
 | 3 | Body is at most 1 MiB | 413 `invalid_request` |
+| 3a | Body is read to its end (no client abort, malformed chunked encoding or receive error) | 400 `invalid_request` |
 | 4 | Body is syntactically valid JSON | 400 `invalid_request` |
 | 5 | Shape: known `op`, required fields, no unknown or duplicate fields, valid node IDs (the whole batch). The five [lifecycle operations](#node-and-edge-lifecycle-opt-in) always parse, whatever the setting; `active` or `enabled` on a legacy operation is an unknown field | 422 `invalid_request` |
 | 5a | Lifecycle support off (`KNOTREL_TOPOLOGY_LIFECYCLE=false`): no operation is `set_node_active`, `set_edge_enabled`, `remove_node`, `node_state` or `edge_state` | 409 `topology_lifecycle_disabled` |
@@ -164,7 +165,7 @@ Successful operations return 200. A graph error has this shape:
 
 | Status | Meaning / error code |
 | --- | --- |
-| 400 | Malformed JSON (`invalid_request`) |
+| 400 | Malformed JSON, or a body that could not be read before its end (`invalid_request`) |
 | 404 | Unknown query vertex, or unknown node of `set_node_active` / `set_edge_enabled` (`unknown_node`); unregistered edge of `set_edge_enabled` (`unknown_edge`) |
 | 409 | Mutation sent in source-managed mode (`direct_mutation_disabled`); lifecycle operation while lifecycle support is off (`topology_lifecycle_disabled`) |
 | 413 | Body exceeds 1 MiB (`invalid_request`) |
@@ -710,13 +711,13 @@ code, its status and where it comes from (the same table is in the
 | `invalid_instance_id` | 400 | every feeder route: `X-Knotrel-Instance-Id` missing or not a valid header value |
 | `invalid_lease_duration` | 400 | session: `lease_duration_ms` outside 1000–60000 |
 | `invalid_node` | 422 | events, import: a node the graph refuses for a reason other than a limit; with lifecycle support, a conflicting duplicate node in an import |
-| `invalid_request` | 400, 413, 415, 422 | every JSON route: malformed JSON (400), body over 1 MiB on routes other than import (413), wrong `Content-Type` (415), shape, ID or bound violations (422); inspection query errors (422) |
+| `invalid_request` | 400, 413, 415, 422 | every JSON route: malformed JSON or a body that could not be read before its end, such as a client abort or malformed chunked encoding (400), body over 1 MiB on routes other than import (413), wrong `Content-Type` (415), shape, ID or bound violations (422); inspection query errors (422) |
 | `lease_expired` | 409 | import, events, gap, barrier: the feeder lease expired |
 | `loading` | 503 | operations in source-managed mode while a baseline loads; in a batch, every item of a 200 |
 | `mode_conflict` | 409 | every feeder route in standalone mode |
 | `node_limit_exceeded` | 422 | operations, batch items, events, import |
 | `out_of_order_sequence` | 409 | events: delivery sequence gap; carries `expected_sequence` |
-| `payload_too_large` | 413 | import: body over `KNOTREL_MAX_IMPORT_BODY_BYTES` |
+| `payload_too_large` | 413 | import: body over `KNOTREL_MAX_IMPORT_BODY_BYTES`, declared by `Content-Length` or received; never another body read failure |
 | `precondition_failed` | 412 | import `replace`: missing or mismatching `If-Match`, or no initialized graph |
 | `request_timeout` | 503 | any route: `KNOTREL_REQUEST_TIMEOUT_MS` exceeded; a state-changing outcome is unknown |
 | `self_loop` | 422 | operations, batch items, events, import |
