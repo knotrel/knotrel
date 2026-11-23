@@ -45,7 +45,7 @@ By default, the server binds to `127.0.0.1:8080`.
 | `KNOTREL_ALLOW_NON_LOOPBACK` | `false` | Set to `true` to permit non-loopback bind |
 | `KNOTREL_ENGINE` | `compact-bfs` | Dynamic connectivity engine (`compact-bfs`, `ett`, or `hdt`) |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Maximum queued and concurrent graph operations |
-| `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (unreleased) |
+| `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (since 0.9) |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered node count (`unlimited` to remove ceiling) |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum registered edge count (`unlimited` to remove ceiling) |
 | `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node and edge lifecycle operations (requires `KNOTREL_ENGINE=compact-bfs`); inactive nodes and disabled edges count against the limits |

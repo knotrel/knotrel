@@ -357,14 +357,17 @@ what needs attention.
 one version number (lockstep) and are released together; use the console with
 the server of the same version. With the previous server minor the console
 still works except for features the server lacks. Console 0.9 was verified
-against server 0.8.0 and 0.9.0 (browser tests, Chromium and Firefox, all
-passing on both); it adds no feature that server 0.8 lacks.
+against server 0.8.0 and 0.9.0. Console 1.0.0 (unreleased, release candidate)
+was verified against a server built from the 1.0.0 candidate and against
+server 0.9.0 (browser tests, Chromium and Firefox, 14 of 14 on each browser
+for each server); with server 0.9 the Performance page shows one unlabelled
+admission row, because per-lane metrics start with server 1.0.0.
 
 Within a supported server version, the server flags decide what is available;
 see [Server flags, in short](#server-flags-in-short).
 
 The console declares the server versions it supports in
-`console/package.json` (`knotrel.supportedServer`, currently `>=0.8.0 <0.10.0`).
+`console/package.json` (`knotrel.supportedServer`, currently `>=0.9.0 <1.1.0`).
 It also records the SHA-256 of the `docs/openapi.yaml` revision it was
 generated from (`knotrel.openapiSha256`), which the archive's
 `console-manifest.json` repeats. CI fails when the generated types or that
