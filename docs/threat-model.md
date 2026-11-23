@@ -1,6 +1,6 @@
 # Threat model
 
-**Status:** accepted pending maintainer review, for the v1.0.0-rc security
+**Status:** proposed; awaiting the maintainer's acceptance, for the v1.0.0-rc security
 gate (readiness criterion 7, [v1.0 readiness](releases/v1.0-readiness.md)).
 Written 2026-11-22 against `main` at `580af3f` (v0.9.0 plus documentation);
 refreshed 2026-11-23 against `main` at `e13b3cc` for the frozen 1.0 contract

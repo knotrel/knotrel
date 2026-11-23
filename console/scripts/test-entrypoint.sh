@@ -146,6 +146,18 @@ expect_refused "empty server names" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONS
 expect_refused "server names with a directive" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONSOLE_SERVER_NAMES='localhost; evil'
 expect_refused "label with a quote" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONSOLE_SERVER_LABEL='a"b'
 
+# Multi-line values: `grep -Eq` matches any one line, so each value is also
+# required to be a single line (a line feed or a carriage return is refused).
+lf=$'\n'
+cr=$'\r'
+expect_refused "upstream with a line feed" KNOTREL_CONSOLE_UPSTREAM="$new${lf}; return 200 injected; #"
+expect_refused "alias upstream with a line feed" KNOTREL_UPSTREAM="$new${lf}; return 200 injected; #"
+expect_refused "upstream with a carriage return" KNOTREL_CONSOLE_UPSTREAM="$new${cr}"
+expect_refused "timeout with a line feed" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONSOLE_UPSTREAM_TIMEOUT="35s${lf}evil"
+expect_refused "listen with a line feed" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONSOLE_LISTEN="8080${lf}0.0.0.0:80;evil"
+expect_refused "server names with a line feed" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONSOLE_SERVER_NAMES="localhost${lf}evil"
+expect_refused "label with a line feed" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONSOLE_SERVER_LABEL="demo${lf}two"
+
 run KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONSOLE_LISTEN=127.0.0.1:8080 \
     KNOTREL_CONSOLE_SERVER_NAMES='localhost console.example' KNOTREL_CONSOLE_SERVER_LABEL='demo (knotrel:8080)'
 if [[ "$status" == 0 ]] && rendered 'server_name localhost console.example;' default.conf &&

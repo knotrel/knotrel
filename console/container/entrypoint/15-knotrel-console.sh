@@ -16,7 +16,7 @@
 #
 # CONSOLE_ENTRYPOINT_TEMPLATE_DIR, CONSOLE_ENTRYPOINT_OUTPUT_DIR and
 # CONSOLE_ENTRYPOINT_LISTEN_DIR override the paths for the entrypoint tests
-# (console/test/entrypoint.test.sh) only; the image does not set them.
+# (console/scripts/test-entrypoint.sh) only; the image does not set them.
 set -eu
 
 fail() {
@@ -25,6 +25,19 @@ fail() {
 }
 warn() {
     echo "knotrel-console: warning: $*" >&2
+}
+
+# single_line NAME VALUE: refuses a value that contains a line feed or a
+# carriage return. `grep -Eq` succeeds when any one line matches, so without
+# this check a multi-line value would pass validation and its other lines
+# would be rendered into the nginx configuration or the JSON file.
+newline='
+'
+carriage_return="$(printf '\r')"
+single_line() {
+    case "$2" in
+        *"$newline"* | *"$carriage_return"*) fail "$1 must be a single line" ;;
+    esac
 }
 
 # resolve_alias NEW OLD NEW_VALUE OLD_VALUE: sets $resolved to the effective
@@ -53,6 +66,10 @@ resolve_alias KNOTREL_CONSOLE_UPSTREAM_TIMEOUT KNOTREL_UPSTREAM_TIMEOUT \
 upstream_timeout="${resolved:-35s}"
 server_names="${KNOTREL_CONSOLE_SERVER_NAMES-localhost 127.0.0.1 [::1]}"
 
+single_line KNOTREL_CONSOLE_UPSTREAM "$upstream"
+single_line KNOTREL_CONSOLE_UPSTREAM_TIMEOUT "$upstream_timeout"
+single_line KNOTREL_CONSOLE_SERVER_NAMES "$server_names"
+
 [ -n "$upstream" ] ||
     fail "set KNOTREL_CONSOLE_UPSTREAM to the Knotrel server base URL (see docs/console.md)"
 # http(s)://host[:port][/path] with no credentials, query, fragment, spaces or
@@ -67,10 +84,12 @@ printf '%s' "$upstream_timeout" | grep -Eq '^[0-9]{1,6}(ms|s|m)?$' ||
 
 # Listen addresses: port, IPv4:port or [IPv6]:port, space separated.
 listen="${KNOTREL_CONSOLE_LISTEN:-8080 [::]:8080}"
+single_line KNOTREL_CONSOLE_LISTEN "$listen"
 printf '%s' "$listen" | grep -Eq '^(([0-9]{1,3}(\.[0-9]{1,3}){3}:|\[[0-9A-Fa-f:.]+\]:)?[0-9]{1,5})( ([0-9]{1,3}(\.[0-9]{1,3}){3}:|\[[0-9A-Fa-f:.]+\]:)?[0-9]{1,5})*$' ||
     fail "KNOTREL_CONSOLE_LISTEN must be space-separated port, IPv4:port or [IPv6]:port values"
 
 label="${KNOTREL_CONSOLE_SERVER_LABEL:-$upstream}"
+single_line KNOTREL_CONSOLE_SERVER_LABEL "$label"
 printf '%s' "$label" | grep -Eq '^[][A-Za-z0-9 ._~:/@()-]{1,200}$' ||
     fail "KNOTREL_CONSOLE_SERVER_LABEL contains unsupported characters"
 
