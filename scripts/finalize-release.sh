@@ -8,6 +8,8 @@ set -euo pipefail
 # - Revalidates that both knotrel-core and knotrel-server are indexed and verified on crates.io.
 # - Revalidates draft release identity, exact 14-asset bundle, sizes, and downloaded digests.
 # - Explicitly publishes the release using `gh release edit --draft=false`.
+# - A release candidate (X.Y.Z-rc.N) must already be a GitHub prerelease, so
+#   publishing it never makes it the "Latest" release.
 # - Safe to retry; gracefully recognizes already-finalized releases.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +24,17 @@ ASSETS_DIR="${3:-final-release-assets}"
 if [[ -z "$VERSION" || -z "$CANDIDATE_SHA" ]]; then
     echo "Usage: $0 <version> <candidate-commit-sha> [assets-dir]" >&2
     exit 1
+fi
+
+# X.Y.Z, or a release candidate X.Y.Z-rc.N (the forms release.yml accepts). A
+# release candidate is a GitHub prerelease: it never becomes "Latest".
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]; then
+    echo "ERROR: Invalid version format '$VERSION'. Must match 'X.Y.Z' or 'X.Y.Z-rc.N'." >&2
+    exit 1
+fi
+PRERELEASE="false"
+if [[ "$VERSION" == *-rc.* ]]; then
+    PRERELEASE="true"
 fi
 
 GH_EXEC="${GH_BIN:-gh}"
@@ -162,7 +175,7 @@ cleanup_view_tmp() {
 }
 trap cleanup_view_tmp EXIT
 
-if ! "$GH_EXEC" release view "$TAG_NAME" --json isDraft,tagName,targetCommitish,assets >"$VIEW_STDOUT_FILE" 2>"$VIEW_STDERR_FILE"; then
+if ! "$GH_EXEC" release view "$TAG_NAME" --json isDraft,isPrerelease,tagName,targetCommitish,assets >"$VIEW_STDOUT_FILE" 2>"$VIEW_STDERR_FILE"; then
     echo "ERROR: Failed to inspect release $TAG_NAME:" >&2
     cat "$VIEW_STDERR_FILE" >&2
     exit 1
@@ -213,6 +226,14 @@ if tag != f'v{version}':
     print(f'ERROR_TAG:Tag mismatch: expected v{version}, got {tag}')
     sys.exit(0)
 
+# A release candidate must be a GitHub prerelease and a stable release must not
+# be one (a missing field counts as not a prerelease).
+expected_prerelease = sys.argv[6] == 'true'
+is_prerelease = data.get('isPrerelease', False)
+if not isinstance(is_prerelease, bool) or is_prerelease != expected_prerelease:
+    print(f'ERROR_PRERELEASE:Prerelease flag mismatch: expected {expected_prerelease}, got {is_prerelease}')
+    sys.exit(0)
+
 if target_commit and re.fullmatch(r'[0-9a-f]{7,40}', target_commit):
     if not cand_sha.startswith(target_commit) and not target_commit.startswith(cand_sha):
         print(f'ERROR_COMMIT:Target commit mismatch (expected {cand_sha}, got {target_commit})')
@@ -245,7 +266,7 @@ if is_draft:
     print('VALID_DRAFT')
 else:
     print('VALID_PUBLIC')
-" "$RAW_JSON" "$CANDIDATE_SHA" "$VERSION" "$ASSETS_DIR" "$(IFS=,; echo "${EXPECTED_FILES[*]}")")"
+" "$RAW_JSON" "$CANDIDATE_SHA" "$VERSION" "$ASSETS_DIR" "$(IFS=,; echo "${EXPECTED_FILES[*]}")" "$PRERELEASE")"
 
 if [[ "$VALIDATION_RESULT" =~ ^ERROR_ ]]; then
     echo "ERROR: Existing release $TAG_NAME failed pre-finalization verification:" >&2

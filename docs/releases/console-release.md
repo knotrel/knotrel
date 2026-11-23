@@ -20,8 +20,9 @@ Workflow: [`.github/workflows/console-release.yml`](../../.github/workflows/cons
   `CONTRIBUTING.md`): console, `knotrel-server` and `knotrel-core` are released
   together with the same number. The first console release is `0.8.0`.
 - The release workflow refuses a console version that differs from the
-  workspace version in `Cargo.toml` at the same commit (an `-rc.N` suffix is
-  allowed on top of it).
+  workspace version in `Cargo.toml` at the same commit, prerelease suffix
+  included: a release candidate carries `-rc.N` in both (for example
+  `1.0.0-rc.1`).
 - Release candidates use `X.Y.Z-rc.N`. They become GitHub prereleases and never
   move `latest`.
 - `knotrel.supportedServer` in `console/package.json` states the compatible

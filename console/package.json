@@ -1,6 +1,6 @@
 {
   "name": "@knotrel/console",
-  "version": "1.0.0",
+  "version": "1.0.0-rc.1",
   "private": true,
   "description": "Knotrel operational console: a static React application distributed as a container image and a versioned static archive.",
   "license": "Elastic-2.0",
@@ -30,8 +30,8 @@
     "archive": "node scripts/package-static.mjs"
   },
   "knotrel": {
-    "supportedServer": ">=0.9.0 <1.1.0",
-    "openapiSha256": "c2285b8b4c6d351d1a8b8cc81c51bf70d834cf71b49b6bb510e2de5fc7ff0cb2"
+    "supportedServer": ">=0.9.0 <1.0.0 || >=1.0.0-rc.1 <1.1.0",
+    "openapiSha256": "1639a0e0468b999e0156b4f1e01aba58d28b67da8db435d758046b26ff8520e9"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

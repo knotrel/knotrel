@@ -23,8 +23,8 @@ print(pkgs.get('knotrel-core', ''))
 ")"
 fi
 
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "ERROR: Invalid version format '$VERSION'. Must strictly match 'X.Y.Z'." >&2
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]; then
+    echo "ERROR: Invalid version format '$VERSION'. Must strictly match 'X.Y.Z' or 'X.Y.Z-rc.N'." >&2
     exit 1
 fi
 

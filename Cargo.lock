@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "knotrel-core"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "fixedbitset",
  "nohash-hasher",
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "knotrel-server"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "axum",
  "hyper",

@@ -24,7 +24,25 @@ component did not change; its release notes then say "no changes". To bump:
 - `version` in `[workspace.package]` and the `knotrel-core` dependency
   version in the root `Cargo.toml`, then `cargo update -w` for `Cargo.lock`;
 - `version` in `console/package.json`, then
-  `npm install --package-lock-only` in `console/`.
+  `npm install --package-lock-only` in `console/`;
+- the reference feeder `integrations/postgres-feeder` (`version` in its
+  `Cargo.toml`, then `cargo update -w` in that directory), which follows the
+  same number although it is not published;
+- `info.version` in `docs/openapi.yaml`, then `npm run generate:api` in
+  `console/`.
+
+**Release candidates.** The only prerelease form is `X.Y.Z-rc.N` (N from 1,
+no leading zero, for example `1.0.0-rc.1`); the release workflows reject any
+other suffix. A candidate carries the suffix everywhere above, in the tag
+(`v1.0.0-rc.1`) and in its own release notes
+(`docs/releases/v1.0.0-rc.1-release-notes.md`). The `knotrel-core`
+requirement of the server is then exact, `version = "=1.0.0-rc.1"`: Cargo's
+default caret requirement `1.0.0-rc.1` would also accept `1.0.0-rc.2` and
+`1.0.0`, so a published server candidate could resolve a different core;
+for a stable release it returns to the caret form (`version = "1.0.0"`). The
+console's `knotrel.supportedServer` must name a prerelease of the same
+`X.Y.Z` to admit it (npm range rules, see
+[docs/console.md](docs/console.md#compatibility)).
 
 Compatibility rules for a release (what may change, deprecation, the
 console's supported server range) are in

@@ -10,11 +10,19 @@ must name the same version X:
 - console/README.md: the "Status: released" line and the console image tags.
 
 X must be released: docs/releases/vX-release-notes.md exists and its status is
-"released", and X is not newer than the workspace version.
+"released", X is a stable version (never a release candidate such as
+1.0.0-rc.1) and X is not newer than the workspace version, which may itself
+be a release candidate.
 
-With --release VERSION (release workflow, dry runs included), X must also be
-VERSION and neither README may still call anything "unreleased": the READMEs
-of the tagged commit describe the release being published.
+With --release VERSION (release workflow, dry runs included):
+- for a stable VERSION, X must also be VERSION and neither README may still
+  call anything "unreleased": the READMEs of the tagged commit describe the
+  release being published;
+- for a release candidate (X.Y.Z-rc.N), the READMEs keep describing the
+  latest stable release, which must be older than VERSION; "unreleased"
+  labels stay, because the candidate's features are not in a stable release
+  yet. The candidate is announced by its own release notes and GitHub
+  prerelease.
 
 Usage: check-readme.py [--release VERSION] [REPO_ROOT]
 """
@@ -23,7 +31,10 @@ import re
 import sys
 from pathlib import Path
 
-VERSION = r"(\d+\.\d+\.\d+)"
+# A release version: X.Y.Z, optionally a release candidate X.Y.Z-rc.N (the only
+# prerelease form the release workflows accept). Matching the suffix keeps a
+# candidate from being read as its stable version (v1.0.0-rc.1 is not v1.0.0).
+VERSION = r"(\d+\.\d+\.\d+(?:-rc\.[1-9]\d*)?)"
 
 
 def workspace_version(root):
@@ -33,7 +44,16 @@ def workspace_version(root):
 
 
 def key(version):
-    return tuple(int(p) for p in version.split("."))
+    """SemVer precedence key: a release candidate sorts before its release."""
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-rc\.([1-9]\d*))?", version)
+    if not m:
+        raise ValueError(f"not a release version: {version!r}")
+    major, minor, patch, rc = m.groups()
+    return (int(major), int(minor), int(patch), 0 if rc else 1, int(rc or 0))
+
+
+def is_prerelease(version):
+    return "-" in version
 
 
 def readme_references(text):
@@ -76,6 +96,9 @@ def check(root, release=None):
     if not current:
         return ["README.md: no '**Latest release: [vX.Y.Z](...)**' line"]
     latest = current.group(1)
+    if is_prerelease(latest):
+        return [f"README.md: the latest release line names the release candidate v{latest}; "
+                "the READMEs describe the latest stable release"]
     minor = ".".join(latest.split(".")[:2])
 
     for name, refs in (("README.md", readme_references(readme)),
@@ -89,14 +112,21 @@ def check(root, release=None):
     notes = root / "docs" / "releases" / f"v{latest}-release-notes.md"
     if not notes.is_file():
         errors.append(f"README.md: latest release v{latest} has no {notes.relative_to(root)}")
-    elif release is None and not re.search(r"^\*\*Status: released", notes.read_text(encoding="utf-8"), re.M):
+    elif (release is None or is_prerelease(release)) and not re.search(r"^\*\*Status: released", notes.read_text(encoding="utf-8"), re.M):
         errors.append(f"README.md: v{latest} is not released ({notes.relative_to(root)} status)")
 
     workspace = workspace_version(root)
     if key(latest) > key(workspace):
         errors.append(f"README.md: latest release v{latest} is newer than the workspace {workspace}")
 
-    if release is not None:
+    if release is not None and is_prerelease(release):
+        if key(latest) >= key(release):
+            errors.append(f"README.md: latest release v{latest} is not older than the "
+                          f"release candidate v{release}")
+        if release != workspace:
+            errors.append(f"Cargo.toml: workspace version {workspace} is not the release "
+                          f"candidate v{release}")
+    elif release is not None:
         if latest != release:
             errors.append(f"README.md: latest release is v{latest}; the README of the "
                           f"v{release} release commit must describe v{release}")
@@ -117,6 +147,9 @@ def main(argv):
             return 2
         release = args[i + 1].removeprefix("v")
         del args[i : i + 2]
+        if not re.fullmatch(VERSION, release):
+            print(f"ERROR: --release {release!r} is not X.Y.Z or X.Y.Z-rc.N", file=sys.stderr)
+            return 2
     if len(args) > 1:
         print(__doc__, file=sys.stderr)
         return 2

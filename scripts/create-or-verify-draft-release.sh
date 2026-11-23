@@ -7,6 +7,7 @@ set -euo pipefail
 # - If no release exists for the tag: creates draft release attaching verified assets.
 # - If a draft release already exists: verifies candidate commit binding, tagName, exact asset inventory, sizes, and digests.
 # - If an already-public release exists: verifies matching commit, tag, and asset integrity.
+# - A release candidate (X.Y.Z-rc.N) is created, and verified, as a GitHub prerelease.
 # - Distinguishes GitHub API errors from missing release.
 # - Never silently overwrites or deletes an existing release.
 
@@ -22,6 +23,17 @@ ASSETS_DIR="${3:-final-release-assets}"
 if [[ -z "$VERSION" || -z "$CANDIDATE_SHA" ]]; then
     echo "Usage: $0 <version> <candidate-commit-sha> [assets-dir]" >&2
     exit 1
+fi
+
+# X.Y.Z, or a release candidate X.Y.Z-rc.N (the forms release.yml accepts). A
+# release candidate is a GitHub prerelease: it never becomes "Latest".
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]; then
+    echo "ERROR: Invalid version format '$VERSION'. Must match 'X.Y.Z' or 'X.Y.Z-rc.N'." >&2
+    exit 1
+fi
+PRERELEASE="false"
+if [[ "$VERSION" == *-rc.* ]]; then
+    PRERELEASE="true"
 fi
 
 GH_EXEC="${GH_BIN:-gh}"
@@ -152,7 +164,7 @@ cleanup_tmp() {
 trap cleanup_tmp EXIT
 
 RELEASE_EXISTS=0
-if "$GH_EXEC" release view "$TAG_NAME" --json isDraft,tagName,targetCommitish,assets >"$VIEW_STDOUT_FILE" 2>"$VIEW_STDERR_FILE"; then
+if "$GH_EXEC" release view "$TAG_NAME" --json isDraft,isPrerelease,tagName,targetCommitish,assets >"$VIEW_STDOUT_FILE" 2>"$VIEW_STDERR_FILE"; then
     RELEASE_EXISTS=1
 else
     VIEW_ERR="$(cat "$VIEW_STDERR_FILE")"
@@ -174,6 +186,9 @@ if [[ "$RELEASE_EXISTS" -eq 0 ]]; then
         --title "Knotrel $TAG_NAME Preview"
         --draft
     )
+    if [[ "$PRERELEASE" == "true" ]]; then
+        CREATE_ARGS+=(--prerelease)
+    fi
     if [[ -n "$NOTES_FILE" && -f "$NOTES_FILE" ]]; then
         CREATE_ARGS+=(--notes-file "$NOTES_FILE")
     else
@@ -215,6 +230,14 @@ if tag != f'v{version}':
     print(f'ERROR_TAG:Tag mismatch: expected v{version}, got {tag}')
     sys.exit(0)
 
+# A release candidate must be a GitHub prerelease and a stable release must not
+# be one (a missing field counts as not a prerelease).
+expected_prerelease = sys.argv[6] == 'true'
+is_prerelease = data.get('isPrerelease', False)
+if not isinstance(is_prerelease, bool) or is_prerelease != expected_prerelease:
+    print(f'ERROR_PRERELEASE:Prerelease flag mismatch: expected {expected_prerelease}, got {is_prerelease}')
+    sys.exit(0)
+
 if target_commit and re.fullmatch(r'[0-9a-f]{7,40}', target_commit):
     if not cand_sha.startswith(target_commit) and not target_commit.startswith(cand_sha):
         print(f'ERROR_COMMIT:Target commit mismatch (expected {cand_sha}, got {target_commit})')
@@ -247,7 +270,7 @@ if is_draft:
     print('VALID_DRAFT')
 else:
     print('VALID_PUBLIC')
-" "$RAW_JSON" "$CANDIDATE_SHA" "$VERSION" "$ASSETS_DIR" "$(IFS=,; echo "${EXPECTED_FILES[*]}")")"
+" "$RAW_JSON" "$CANDIDATE_SHA" "$VERSION" "$ASSETS_DIR" "$(IFS=,; echo "${EXPECTED_FILES[*]}")" "$PRERELEASE")"
 
 if [[ "$VALIDATION_RESULT" =~ ^ERROR_ ]]; then
     echo "ERROR: Existing release $TAG_NAME failed identity verification:" >&2
