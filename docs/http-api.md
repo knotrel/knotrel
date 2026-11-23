@@ -85,11 +85,16 @@ supported deployment is a single trusted local client:
   and the test that validates each mitigation.
 - Logs contain the method, path, status and latency of each request and the
   startup settings. They never contain request bodies, node IDs or parser
-  messages. Client error messages never quote request input (identifiers,
-  positions, epochs, `If-Match` values, operation, field or parameter names),
-  parser positions or internal paths. They may quote the server's own state
-  (for example the applied source position or the server's `source_epoch`) and
-  state numbers such as a node ID, delivery sequence or byte length.
+  messages.
+- Client error messages are **not** free of client data; what they exclude
+  is precise. They never quote a string taken from the current request:
+  identifiers (instance, session, source, graph and event IDs), source
+  positions, epochs, `If-Match` values, or operation, field and query
+  parameter names. They never contain parser positions or internal paths.
+  They may contain numbers from the request (node IDs, delivery sequences,
+  generations, byte lengths) and the server's own state, which includes
+  values a feeder supplied earlier (for example the applied source position,
+  the server's `source_id` or `source_epoch`, or a retained `event_id`).
 
 ## Request validation order
 
