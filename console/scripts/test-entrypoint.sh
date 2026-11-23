@@ -45,8 +45,10 @@ upstream_is() {
 }
 unrendered() { grep -q '\${KNOTREL' "$work/out/default.conf" "$work/out/api-proxy.inc"; }
 
-new=http://knotrel:8080
-old=http://legacy:8080
+# The plain-http upstream is a loopback address (the console accepts http and
+# https); the other values use https.
+new=http://127.0.0.1:8080
+old=https://legacy.example:8443
 
 # --- Upstream URL --------------------------------------------------------------
 run KNOTREL_CONSOLE_UPSTREAM="$new"
@@ -133,11 +135,11 @@ expect_refused() {
 }
 expect_refused "missing upstream"
 expect_refused "empty upstream" KNOTREL_CONSOLE_UPSTREAM=""
-expect_refused "credentials in the new name" KNOTREL_CONSOLE_UPSTREAM='http://user:pw@knotrel:8080'
-expect_refused "credentials in the alias" KNOTREL_UPSTREAM='http://user:pw@knotrel:8080'
-expect_refused "query in the upstream" KNOTREL_CONSOLE_UPSTREAM='http://knotrel:8080/?a=b'
-expect_refused "trailing slash" KNOTREL_CONSOLE_UPSTREAM='http://knotrel:8080/'
-expect_refused "nginx directive in the upstream" KNOTREL_UPSTREAM='http://knotrel:8080;return 200'
+expect_refused "credentials in the new name" KNOTREL_CONSOLE_UPSTREAM='https://user:pw@knotrel.example:8443'
+expect_refused "credentials in the alias" KNOTREL_UPSTREAM='https://user:pw@knotrel.example:8443'
+expect_refused "query in the upstream" KNOTREL_CONSOLE_UPSTREAM='https://knotrel.example:8443/?a=b'
+expect_refused "trailing slash" KNOTREL_CONSOLE_UPSTREAM='https://knotrel.example:8443/'
+expect_refused "nginx directive in the upstream" KNOTREL_UPSTREAM='https://knotrel.example:8443;return 200'
 expect_refused "invalid timeout (alias)" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_UPSTREAM_TIMEOUT='35s; evil'
 expect_refused "invalid listen" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONSOLE_LISTEN='0.0.0.0:8080; evil'
 expect_refused "empty server names" KNOTREL_CONSOLE_UPSTREAM="$new" KNOTREL_CONSOLE_SERVER_NAMES=""
