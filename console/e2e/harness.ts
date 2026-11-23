@@ -42,6 +42,17 @@ async function waitUntil(probe: () => Promise<boolean>, what: string): Promise<v
 }
 
 /** A running knotrel-server owned by the test. */
+/**
+ * The test process's environment without the harness's own settings: the
+ * server refuses unknown `KNOTREL_*` names, so `KNOTREL_SERVER_BIN` (which
+ * selects the binary under test) must not reach it.
+ */
+function serverEnvironment(): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name !== 'KNOTREL_SERVER_BIN'),
+  );
+}
+
 export class KnotrelServer {
   #child: ChildProcess | undefined;
   constructor(
@@ -67,7 +78,7 @@ export class KnotrelServer {
   /** Starts (again) on the same port; a restart creates a new instance. */
   async restart(): Promise<void> {
     this.#child = spawn(serverBin, [], {
-      env: { ...process.env, ...this.env, KNOTREL_ADDR: `127.0.0.1:${this.port}` },
+      env: { ...serverEnvironment(), ...this.env, KNOTREL_ADDR: `127.0.0.1:${this.port}` },
       stdio: 'ignore',
     });
     await waitUntil(async () => (await fetch(`${this.url}/health`)).ok, 'knotrel-server');
