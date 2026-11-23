@@ -68,8 +68,9 @@ impl EngineConfig {
     /// Returns `false` for [`EngineConfig::CompactBfs`] and `true` for
     /// [`EngineConfig::EulerTour`] and [`EngineConfig::Hdt`] in this release.
     /// The value for `EulerTour` and `Hdt` may stay `true` for the whole 1.x
-    /// series; it becomes `false` only when an engine is promoted, which the
-    /// release notes record. The value says nothing about the interface's
+    /// series; it becomes `false` only when an engine is promoted, in a minor
+    /// release that records it in the release notes, and it never changes
+    /// from `false` to `true` for an existing engine. The value says nothing about the interface's
     /// stability class: both variants are stable interfaces either way. The
     /// server reports the same value as the `experimental` field of
     /// `GET /v1/info`.

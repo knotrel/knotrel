@@ -163,6 +163,11 @@ removed or changed incompatibly in a 1.x release, minor releases included,
 and `#[non_exhaustive]` on `EngineConfig` does not change that. Only the
 engine's performance, maturity and usage recommendation are experimental
 ([compatibility.md](compatibility.md#22-stable-interface-experimental-engine)).
+`EngineConfig::is_experimental` and the `/v1/info` field `experimental`
+report that qualification, not a stability class. Their value for an engine
+may change from `true` to `false` in a minor release when the engine is
+promoted, which the release notes and this page record, and never from
+`false` to `true` for an existing engine.
 
 ## Reclassified from Stable to Experimental
 

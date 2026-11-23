@@ -365,6 +365,11 @@ struct Health {
 #[derive(Clone, serde::Serialize)]
 pub(crate) struct ServerInfo {
     engine: &'static str,
+    /// The engine's qualification ([`knotrel_core::EngineConfig::is_experimental`]),
+    /// not a stability class: `true` when its performance, maturity and usage
+    /// recommendation carry no promise. It may change from `true` to `false`
+    /// in a minor release when the engine is promoted, never from `false` to
+    /// `true` for an existing engine (`docs/compatibility.md` §2.2).
     experimental: bool,
     max_pending_jobs: usize,
     max_body_bytes: usize,

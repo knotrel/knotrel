@@ -120,7 +120,7 @@ To ensure deterministic synchronization and prevent split-brain anomalies or cro
    - Type: Ephemeral opaque string generated at process startup (for example `"srv-1a2b-0187f3c2d4e5f607-0001"`). Its format is not part of the contract: feeders must compare it for equality only and must not parse it or validate its shape.
    - Invariant: **Changes on every process launch/restart.**
    - Discovery: Exposed as `instance_id` in `GET /v1/info` and `GET /v1/stats` (source-managed mode). `GET /ready` does not expose it.
-   - **Enforcement Rule:** Every feeder request (`import`, `session`, `heartbeat`, `events`, `barrier`, `gap`) **must** supply `instance_id` in the HTTP header `X-Knotrel-Instance-Id` (and in the JSON payload). If the request `instance_id` does not match the active server `instance_id`, Knotrel rejects it immediately with **`409 Conflict` (`code: "stale_instance_id"`)** before reading the graph or acquiring permits. This prevents stale in-flight requests from a previous incarnation from colliding with a new incarnation that happens to be at generation 1.
+   - **Enforcement Rule:** Every feeder request (`import`, `session`, `heartbeat`, `events`, `barrier`, `gap`) **must** supply `instance_id` in the HTTP header `X-Knotrel-Instance-Id` (and in the JSON payload). If the request `instance_id` does not match the active server `instance_id`, Knotrel rejects it with **`409 Conflict` (`code: "stale_instance_id"`)** before reading the graph. The header is checked first, before the body is read and before any admission or import permit is acquired. The body `instance_id` is checked once the body is parsed, because it is inside the body: on `session`, `heartbeat`, `events`, `barrier` and `gap` that is still before an admission permit is acquired, but on `import` it is after the import permit is acquired and the body is received and parsed (the permit is taken before any body byte is read). A stale import that carries the current instance in its header and an old one in its body therefore holds the import permit while its body is received, and is then refused with `stale_instance_id` without reading or changing the graph. This prevents stale in-flight requests from a previous incarnation from colliding with a new incarnation that happens to be at generation 1.
 
 2. **Logical Graph Identity (`graph_id`):**
    - Type: UTF-8 string (1–64 characters, `[a-zA-Z0-9_-]+`).
@@ -195,7 +195,7 @@ Lease expiration is checked independently of slow graph worker jobs:
 - When a lease expires, Knotrel transitions to `Disconnected`/`Stale` and records the expired epoch (`last_expired_epoch`).
 - A subsequent valid heartbeat (`POST /v1/feeder/heartbeat`) successfully renews the lease deadline, but **DOES NOT restore readiness to `Ready`**.
 - **Explicit Recovery-Fencing Across Expiry:** To prevent delayed, obsolete in-flight barriers created before expiry from executing after a heartbeat and resurrecting `Ready` without fresh proof, Knotrel explicitly fences synchronization recovery:
-  - Any barrier submitted under `feeder_epoch <= last_expired_epoch` is rejected with `409 Conflict` (`code: "fenced_feeder_session"`).
+  - Any barrier submitted under `feeder_epoch <= last_expired_epoch` is rejected with `409 Conflict` (`code: "fenced_feeder_session"`), whatever its delivery sequence and source position: the fence is evaluated before B8, B9 and B7 (see the guaranteed precedence in §5.3).
   - To restore `Ready` after lease expiry, the feeder **must** register a strictly newer epoch (`POST /v1/feeder/session` with `feeder_epoch > last_expired_epoch`).
   - Under the new epoch, the feeder supplies fresh verification proof that Knotrel is synchronized with the source:
     1. If source updates were produced during the disconnect, the feeder streams them followed by barrier $B$.
@@ -282,6 +282,23 @@ Preconditions checked before table evaluation:
 2. `req.feeder_session_id == live.feeder_session_id` and `req.feeder_epoch == live.feeder_epoch` (mismatch $\to$ `409 fenced_feeder_session`, state preserved).
 3. Monotonic lease is unexpired (`monotonic_now() <= live.lease_deadline`; expired $\to$ `409 lease_expired`, state preserved).
 4. `req.generation == live.generation` (mismatch $\to$ `409 stale_generation`, state preserved).
+5. Recovery fence (§4.3): if a lease expired, `req.feeder_epoch > last_expired_epoch` (otherwise $\to$ `409 fenced_feeder_session`, state preserved). This is evaluated after B3/B4 and B5 and before B8, B9 and B7 (see the precedence below).
+
+**Guaranteed precedence.** When a barrier meets several rejection conditions, the first in this order decides the answer; every rejection preserves the state (graph, $D_{applied}$, $P_{applied}$, synchronization status, `/ready`):
+
+1. Failed worker (B6) $\to$ `503 unavailable`.
+2. Session and lease: no registered session $\to$ `409 session_required`; session or epoch mismatch $\to$ `409 fenced_feeder_session`; expired lease $\to$ `409 lease_expired`.
+3. Generation $\to$ `409 stale_generation`.
+4. Uninitialized or initial loading (B3, B4) $\to$ `409 graph_uninitialized`.
+5. Desynchronized (B5) $\to$ `409 graph_desynchronized`.
+6. Recovery fence, `feeder_epoch <= last_expired_epoch` $\to$ `409 fenced_feeder_session`, whatever the sequence and position.
+7. `barrier_source_position` outside 1 to 256 bytes of UTF-8 $\to$ `422 invalid_request`.
+8. Premature sequence (B8) $\to$ `409 barrier_not_reached`.
+9. Older sequence (B9) $\to$ `409 superseded_barrier`.
+10. Position mismatch at equal sequence (B7) $\to$ `409 barrier_position_mismatch`.
+11. Exact match: B1 or B2 (`200`).
+
+Checks made before the graph worker come first: operating mode (`409 mode_conflict`), the `X-Knotrel-Instance-Id` header and the body `instance_id` (`409 stale_instance_id`), `graph_id` (`400 invalid_graph_id`), service availability and the feeder data lane (`503 busy`). Before v1.0.0 the recovery fence was evaluated after B8, B9 and B7, so a fenced barrier with a wrong sequence or position got their code instead of `fenced_feeder_session` ([compatibility.md](compatibility.md#3-what-compatible-means), approved exception).
 
 Under the mutex, $(D_{barrier}, P_{barrier})$ is matched against $(D_{applied}, P_{applied})$:
 
