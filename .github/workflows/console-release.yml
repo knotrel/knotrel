@@ -65,7 +65,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::invalid version $VERSION"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]] || { echo "::error::invalid version $VERSION"; exit 1; }
           [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit_sha must be a full SHA"; exit 1; }
           if [[ -n "$RESUME_RUN_ID" ]]; then
             [[ "$RESUME_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::resume_run_id must be a run number"; exit 1; }
@@ -96,9 +96,10 @@ jobs:
           lock_version="$(node -p 'require("./console/package-lock.json").version')"
           [[ "$lock_version" == "$VERSION" ]] || { echo "::error::package-lock.json is $lock_version"; exit 1; }
           # Lockstep: the console version equals the workspace version
-          # (CONTRIBUTING.md); a prerelease suffix such as -rc.1 is allowed.
+          # (CONTRIBUTING.md), prerelease suffix included: a release candidate
+          # carries -rc.N in Cargo.toml and console/package.json alike.
           server_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
-          [[ "${VERSION%%-*}" == "$server_version" ]] || {
+          [[ "$VERSION" == "$server_version" ]] || {
             echo "::error::console $VERSION does not match the workspace version $server_version"; exit 1;
           }
           git fetch --quiet origin main

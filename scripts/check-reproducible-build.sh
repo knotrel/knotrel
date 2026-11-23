@@ -103,7 +103,8 @@ sha256_check() {
 COMMIT="$(git -C "$REPO_ROOT" rev-parse --verify "${REF}^{commit}")"
 VERSION="${RELEASE_VERSION:-${REF#v}}"
 VERSION="${VERSION#v}"
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+# The forms release.yml can publish: X.Y.Z or a release candidate X.Y.Z-rc.N.
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]; then
     echo "ERROR: cannot derive a release version from '$REF'; set RELEASE_VERSION." >&2
     exit 3
 fi

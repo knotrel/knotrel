@@ -384,6 +384,7 @@ exit 0
             args = f.read()
         self.assertIn("--target", args)
         self.assertIn(self.head_sha, args)
+        self.assertNotIn("--prerelease", args)
 
     def test_scenario_2_matching_draft_exists_reuses_draft_safely(self):
         """Scenario 2: Matching draft with 14 assets, matching sizes and digests is safely reused."""
@@ -1141,6 +1142,165 @@ class TestReleaseNotesFinal(unittest.TestCase):
         res = self.check(None)
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("not found", res.stderr)
+
+
+class TestPrereleaseVersions(unittest.TestCase):
+    """Release candidates (X.Y.Z-rc.N): accepted, published as GitHub prereleases;
+    malformed versions keep being rejected before any network or git access."""
+
+    RC = "1.0.0-rc.1"
+    MALFORMED = ["1.0.0-alpha", "1.0.0-rc.01", "1.0.0-rc.0", "1.0.0-rc", "1.0.0-rc.1.2", "1.0", "1.0.0+build"]
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.assets_dir = os.path.join(self.temp_dir, "assets")
+        self.expected_files = create_14_test_assets(self.assets_dir, self.RC)
+        self.mock_gh = os.path.join(self.temp_dir, "mock_gh.sh")
+        self.gh_log = os.path.join(self.temp_dir, "gh_args.log")
+        self.test_repo = os.path.join(self.temp_dir, "test_repo")
+        self.head_sha = setup_test_repo(self.test_repo)
+        subprocess.check_call(["git", "tag", f"v{self.RC}", self.head_sha], cwd=self.test_repo)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir)
+
+    def write_mock_gh(self, view_json=None):
+        """A gh that logs its arguments; `release view` returns view_json or 'not found'."""
+        view = (f"cat << 'EOF'\n{view_json}\nEOF\n    exit 0" if view_json is not None
+                else 'echo "release not found" >&2\n    exit 1')
+        with open(self.mock_gh, "w") as f:
+            f.write(f"""#!/usr/bin/env bash
+echo "$@" >> "{self.gh_log}"
+if [[ "$*" == *"release view"* ]]; then
+    {view}
+fi
+if [[ "$*" == *"release download"* ]]; then
+    DIR=""
+    while [[ "$#" -gt 0 ]]; do
+        if [[ "$1" == "--dir" ]]; then DIR="$2"; shift 2; else shift; fi
+    done
+    cp -r "{self.assets_dir}"/* "$DIR"/
+    exit 0
+fi
+exit 0
+""")
+        os.chmod(self.mock_gh, 0o755)
+
+    def view(self, **fields):
+        assets = [{"name": f, "size": os.path.getsize(os.path.join(self.assets_dir, f))} for f in self.expected_files]
+        data = {"isDraft": True, "tagName": f"v{self.RC}", "targetCommitish": self.head_sha, "assets": assets}
+        data.update(fields)
+        return json.dumps(data)
+
+    def run_script(self, name, version, crates_api=None):
+        env = os.environ.copy()
+        env["GH_BIN"] = self.mock_gh
+        env["KNOTREL_REPO_DIR"] = self.test_repo
+        if crates_api:
+            env["CRATES_IO_API_BASE"] = crates_api
+        script = os.path.join(REPO_ROOT, "scripts", name)
+        return subprocess.run([script, version, self.head_sha, self.assets_dir], env=env, capture_output=True, text=True)
+
+    def gh_args(self):
+        if not os.path.exists(self.gh_log):
+            return ""
+        with open(self.gh_log) as f:
+            return f.read()
+
+    def test_rc_draft_is_created_as_prerelease(self):
+        self.write_mock_gh()
+        res = self.run_script("create-or-verify-draft-release.sh", f"v{self.RC}")
+        self.assertEqual(res.returncode, 0, f"{res.stdout}\n{res.stderr}")
+        self.assertIn(f"Draft GitHub Release v{self.RC} created successfully", res.stdout)
+        create = [line for line in self.gh_args().splitlines() if line.startswith("release create")]
+        self.assertEqual(len(create), 1, self.gh_args())
+        self.assertIn(f"release create v{self.RC} ", create[0])
+        self.assertIn("--prerelease", create[0])
+        self.assertIn("--draft", create[0])
+        self.assertIn(f"knotrel-server-v{self.RC}-x86_64-unknown-linux-gnu.tar.gz", create[0])
+
+    def test_existing_rc_draft_must_be_a_prerelease(self):
+        self.write_mock_gh(self.view(isPrerelease=True))
+        res = self.run_script("create-or-verify-draft-release.sh", self.RC)
+        self.assertEqual(res.returncode, 0, f"{res.stdout}\n{res.stderr}")
+        self.assertIn("Safely reusing existing draft release", res.stdout)
+        for flag in (False, None):
+            fields = {} if flag is None else {"isPrerelease": flag}
+            self.write_mock_gh(self.view(**fields))
+            res = self.run_script("create-or-verify-draft-release.sh", self.RC)
+            self.assertNotEqual(res.returncode, 0, flag)
+            self.assertIn("Prerelease flag mismatch", res.stderr)
+
+    def test_stable_release_must_not_be_a_prerelease(self):
+        create_14_test_assets(self.assets_dir, "0.1.0")
+        assets = [{"name": f, "size": os.path.getsize(os.path.join(self.assets_dir, f))}
+                  for f in create_14_test_assets(self.assets_dir, "0.1.0")]
+        self.write_mock_gh(json.dumps({"isDraft": True, "isPrerelease": True, "tagName": "v0.1.0",
+                                       "targetCommitish": self.head_sha, "assets": assets}))
+        res = self.run_script("create-or-verify-draft-release.sh", "0.1.0")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("Prerelease flag mismatch: expected False, got True", res.stderr)
+
+    def test_finalize_rc_requires_prerelease_and_publishes_it(self):
+        core_sha = compute_sha256(os.path.join(self.assets_dir, f"knotrel-core-{self.RC}.crate"))
+        server_sha = compute_sha256(os.path.join(self.assets_dir, f"knotrel-server-{self.RC}.crate"))
+        mock = MockServer({
+            f"/knotrel-core/{self.RC}": (200, {"Content-Type": "application/json"},
+                                         json.dumps({"version": {"num": self.RC, "checksum": core_sha}})),
+            f"/knotrel-server/{self.RC}": (200, {"Content-Type": "application/json"},
+                                           json.dumps({"version": {"num": self.RC, "checksum": server_sha}})),
+        })
+        try:
+            self.write_mock_gh(self.view(isPrerelease=False))
+            res = self.run_script("finalize-release.sh", self.RC, mock.url())
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Prerelease flag mismatch", res.stderr)
+            self.assertNotIn("release edit", self.gh_args())
+
+            # A prerelease draft passes every check and reaches the edit (the
+            # mock keeps answering isDraft: true, so the post-check fails).
+            self.write_mock_gh(self.view(isPrerelease=True))
+            res = self.run_script("finalize-release.sh", self.RC, mock.url())
+            self.assertIn("All 14 release asset digests verified byte-for-byte", res.stdout)
+            self.assertIn(f"release edit v{self.RC} --draft=false", self.gh_args())
+        finally:
+            mock.shutdown()
+
+    def test_malformed_versions_rejected(self):
+        self.write_mock_gh()
+        for version in self.MALFORMED:
+            for name in ("create-or-verify-draft-release.sh", "finalize-release.sh"):
+                res = self.run_script(name, version)
+                self.assertEqual(res.returncode, 1, (name, version, res.stderr))
+                self.assertIn("Invalid version format", res.stderr, (name, version))
+            for name in ("publish-crates.sh", "verify-dry-run-publish.sh", "check-release-notes.sh"):
+                res = subprocess.run([os.path.join(REPO_ROOT, "scripts", name), version, self.head_sha],
+                                     cwd=self.test_repo, capture_output=True, text=True)
+                self.assertNotEqual(res.returncode, 0, (name, version))
+                self.assertIn("nvalid version", res.stderr, (name, version))
+        self.assertEqual(self.gh_args(), "", "no gh call for a malformed version")
+
+    def test_rc_passes_version_validation_of_publish_scripts(self):
+        """publish-crates.sh gets past the version check (and stops at the SHA check)."""
+        res = subprocess.run([os.path.join(REPO_ROOT, "scripts/publish-crates.sh"), self.RC, "not-a-sha"],
+                             cwd=self.test_repo, capture_output=True, text=True)
+        self.assertNotIn("Invalid version format", res.stderr)
+        self.assertIn("Invalid commit SHA format", res.stderr)
+
+    def test_release_notes_check_for_rc(self):
+        """check-release-notes.sh reads docs/releases/vX.Y.Z-rc.N-release-notes.md."""
+        script = os.path.join(REPO_ROOT, "scripts/check-release-notes.sh")
+        notes = os.path.join(self.test_repo, "docs", "releases", f"v{self.RC}-release-notes.md")
+        os.makedirs(os.path.dirname(notes))
+        res = subprocess.run([script, f"v{self.RC}", self.test_repo], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("not found", res.stderr)
+        for status, ok in (("**Status: DRAFT, not released.**", False),
+                           ("**Status: released 2026-11-30.** Release candidate.", True)):
+            with open(notes, "w") as f:
+                f.write(f"# Knotrel v{self.RC}\n\n{status}\n")
+            res = subprocess.run([script, self.RC, self.test_repo], capture_output=True, text=True)
+            self.assertEqual(res.returncode == 0, ok, res.stderr)
 
 
 if __name__ == "__main__":

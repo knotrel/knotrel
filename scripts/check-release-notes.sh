@@ -8,6 +8,10 @@
 # run, dry runs included.
 #
 # Rules:
+# - <version> is X.Y.Z or a release candidate X.Y.Z-rc.N (N >= 1, no leading
+#   zero), the forms release.yml accepts; a candidate has its own notes file,
+#   docs/releases/vX.Y.Z-rc.N-release-notes.md, because its GitHub Release
+#   body is taken from that file at the candidate's tag;
 # - the file docs/releases/v<version>-release-notes.md exists;
 # - its status paragraph (the paragraph starting with "**Status:" within the
 #   first 10 lines) starts with "**Status: released";
@@ -23,6 +27,11 @@ fi
 
 VERSION="${1#v}"
 ROOT="${2:-.}"
+
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]; then
+    echo "ERROR: invalid version '$1': expected X.Y.Z or X.Y.Z-rc.N." >&2
+    exit 2
+fi
 NOTES="$ROOT/docs/releases/v${VERSION}-release-notes.md"
 
 if [[ ! -f "$NOTES" ]]; then

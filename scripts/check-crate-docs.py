@@ -5,10 +5,18 @@ import sys
 import tomllib
 
 
+# A release number with an optional SemVer prerelease (1.0.0, 1.0.0-rc.1). The
+# prerelease is part of the number, so 1.0.0-rc.1 and 1.0.0 differ. Not
+# preceded by a word character or dot and not followed by one (a sentence's
+# final dot is allowed), so addresses such as 127.0.0.1 are not versions.
+RELEASE_NUMBER = re.compile(
+    r'(?<![\w.])v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?!\w|\.\w|-)')
+
+
 def stale_references(text, version):
     """Return line numbers containing release numbers unlike the workspace version."""
     return [n for n, line in enumerate(text.splitlines(), 1)
-            if any(match != version for match in re.findall(r'(?<![\w.])v?(\d+\.\d+\.\d+)(?![\w.]|-[0-9A-Za-z])', line))]
+            if any(match != version for match in RELEASE_NUMBER.findall(line))]
 
 
 def unsupported_math(text):

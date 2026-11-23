@@ -206,7 +206,7 @@ do not treat a run against an earlier commit as the final RC validation.
    - `commit_sha`: the full, committed RC SHA on `origin/main` (supply it explicitly)
    - `dry_run`: `true`
 3. The dry-run workflow executes:
-   - `validate-inputs-and-metadata`: Validates version format (anchored `^[0-9]+\.[0-9]+\.[0-9]+$`), verifies commit SHA lineage against `origin/main`, verifies version against `Cargo.toml`. Then runs `./scripts/check-release-notes.sh <version>`: the notes `docs/releases/v<version>-release-notes.md` must exist and their status paragraph must start with `**Status: released` and not mention draft or unreleased, because the GitHub Release body is taken from the notes at the tagged commit and the tag cannot be changed.
+   - `validate-inputs-and-metadata`: Validates version format (anchored `^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$`: a release or a release candidate, see below), verifies commit SHA lineage against `origin/main`, verifies version against `Cargo.toml`. Then runs `./scripts/check-release-notes.sh <version>`: the notes `docs/releases/v<version>-release-notes.md` must exist and their status paragraph must start with `**Status: released` and not mention draft or unreleased, because the GitHub Release body is taken from the notes at the tagged commit and the tag cannot be changed.
    - `candidate-quality-gates`: Executes fmt, Clippy, Rustdoc, workspace tests, test-support tests, all 3 examples, and the release-publishing and recovery simulation test suites on the candidate commit SHA before build jobs run.
    - `build-binaries`: Compiles release binaries, records build provenance receipts, validates executable architecture (ELF, Mach-O, PE32+), runs native smoke tests on Linux, macOS, and Windows, and packages release archives.
    - `build-source`: Runs `./scripts/verify-source-packages.sh`, executes the required `knotrel-core` publish dry run, conditionally checks the server publish dry run, and generates `.crate.sha256` files.
@@ -224,6 +224,31 @@ crates.io API confirms that `knotrel-core` 0.5.0 is absent (HTTP 404). The
 offline source-package check still runs, but it does not prove that the server
 can be published to the registry. A successful dry run does not guarantee
 publication.
+
+### 4.1 Release candidates (`X.Y.Z-rc.N`)
+
+A release candidate goes through the same workflows with the version
+`X.Y.Z-rc.N` (for example `1.0.0-rc.1`, tag `v1.0.0-rc.1`). It is the only
+prerelease form: `release.yml`, `console-release.yml`,
+`reproducible-build.yml` and the scripts they call reject any other suffix
+(`1.0.0-alpha`, `1.0.0-rc.0`, `1.0.0-rc.01`). For a candidate:
+
+- every version is `X.Y.Z-rc.N` in lockstep, and the server's `knotrel-core`
+  requirement is exact (`=X.Y.Z-rc.N`, see `CONTRIBUTING.md`);
+- its notes are `docs/releases/vX.Y.Z-rc.N-release-notes.md`, separate from the
+  notes of the final release, and `check-release-notes.sh X.Y.Z-rc.N` checks
+  them; their status line is set to `**Status: released <date>**` by the last
+  change before the candidate's tag, as for a release;
+- `scripts/check-readme.py --release X.Y.Z-rc.N` requires the READMEs to keep
+  naming the latest stable release (older than the candidate, with released
+  notes) and allows "unreleased" labels; a README never names a candidate as
+  its latest release;
+- `create-or-verify-draft-release.sh` creates the GitHub Release as a
+  **prerelease** (never "Latest"), and it and `finalize-release.sh` refuse an
+  existing release whose prerelease flag does not match the version;
+- crates.io publishes `X.Y.Z-rc.N`, which Cargo selects only for a
+  requirement naming a prerelease (`knotrel-core = "=1.0.0-rc.1"`); the
+  console image gets the tag `X.Y.Z-rc.N` and never `latest`.
 
 ---
 

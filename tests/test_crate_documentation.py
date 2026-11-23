@@ -22,6 +22,15 @@ class DocumentationTests(unittest.TestCase):
         self.assertEqual(check('127.0.0.1:8080 and 0.0.0.0', '0.4.0'), [])
         self.assertEqual(check('cargo add knotrel-core\nCurrent 0.4.0\nBefore 1.0', '0.4.0'), [])
 
+    def test_prerelease_versions(self):
+        """A release candidate is its own number: neither it nor its release is stale-equal."""
+        check = load('check-crate-docs').stale_references
+        rc = '1.0.0-rc.1'
+        self.assertEqual(check('Current 1.0.0-rc.1\nv1.0.0-rc.1, then 1.0.0-rc.1.', rc), [])
+        self.assertEqual(check('Current 1.0.0\nIn 1.0.0-rc.2\nIn 1.0.0-alpha', rc), [1, 2, 3])
+        self.assertEqual(check('Current 1.0.0-rc.1 (sentence end 1.0.0-rc.1.)', '1.0.0'), [1])
+        self.assertEqual(check('127.0.0.1:8080, 0.0.0.0 and 10.0.0.1-2', rc), [])
+
     def test_unsupported_math(self):
         check = load('check-crate-docs').unsupported_math
         self.assertEqual(check(r'$O(V + E)$ and $u$'), [1])

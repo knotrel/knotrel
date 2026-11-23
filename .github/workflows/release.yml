@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version or tag matching workspace Cargo.toml (e.g. v0.1.0 or 0.1.0)"
+        description: "Release version or tag matching workspace Cargo.toml (e.g. v1.0.0, 1.0.0 or 1.0.0-rc.1)"
         required: true
         default: "v0.1.0"
       commit_sha:
@@ -45,10 +45,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. Normalize and strictly validate version (accepts "vX.Y.Z" or "X.Y.Z")
+          # 1. Normalize and strictly validate version (accepts "vX.Y.Z" or "X.Y.Z",
+          #    or a release candidate "X.Y.Z-rc.N" with N >= 1 and no leading
+          #    zero; no other prerelease or build-metadata form)
           CLEAN_VERSION="${INPUT_VERSION#v}"
-          if [[ ! "$CLEAN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: Invalid version format '$INPUT_VERSION'. Must match 'X.Y.Z' or 'vX.Y.Z'." >&2
+          if [[ ! "$CLEAN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]; then
+            echo "ERROR: Invalid version format '$INPUT_VERSION'. Must match 'X.Y.Z' or 'X.Y.Z-rc.N' (optionally with a leading 'v')." >&2
             exit 1
           fi
 

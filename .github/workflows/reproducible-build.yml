@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Release tag (e.g. v1.0.0) or full candidate commit SHA"
+        description: "Release tag (e.g. v1.0.0 or v1.0.0-rc.1) or full candidate commit SHA"
         required: true
       version:
-        description: "Version of the reference assets (e.g. 1.0.0); required when ref is a commit"
+        description: "Version of the reference assets (e.g. 1.0.0 or 1.0.0-rc.1); required when ref is a commit"
         required: false
         default: ""
       dry_run_run_id:
@@ -70,7 +70,8 @@ jobs:
           COMMIT="$(git rev-parse --verify "${INPUT_REF}^{commit}")"
           VERSION="${INPUT_VERSION:-${INPUT_REF#v}}"
           VERSION="${VERSION#v}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+          # The forms release.yml can publish: X.Y.Z or X.Y.Z-rc.N.
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]; then
             echo "ERROR: cannot derive a version from '$INPUT_REF'; set the version input." >&2
             exit 1
           fi
