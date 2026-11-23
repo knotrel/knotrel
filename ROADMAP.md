@@ -134,7 +134,7 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 - [ ] **Feature M8:** Supported security and access control
 - [ ] **Feature M9:** Packaging, compatibility and operations
 - [ ] **Feature M7:** Multi-graph management (OPTIONAL, demand-gated)
-- [ ] **1.0.0a** rc plan — proposed, [plan](docs/releases/v1.0.0-rc-plan.md)
+- [x] **1.0.0a** rc plan — approved 2026-11-23, [plan](docs/releases/v1.0.0-rc-plan.md)
 - [ ] **R1** Disposition of every non-PASS result and unqualified requirement of the 0.9.6 campaign
 - [ ] **R2** [#87](https://github.com/knotrel/knotrel/issues/87) diagnosis: CPU hypothesis tested under an approved protocol variant; declared supported envelope
 - [ ] **R3** rc gates of the [readiness assessment](docs/releases/v1.0-readiness.md) (contract freeze review, randomized soak, reproducible build, threat model, acceptance review)
