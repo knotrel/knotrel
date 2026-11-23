@@ -1421,8 +1421,10 @@ fn test_regression_cancellation_during_startup_cleans_up_owned_server_and_preser
     let script_content = format!(
         r#"#!/bin/sh
 export PATH="/bin:/usr/bin"
-echo "$$" > "{pid_file}"
+# Emit the diagnostic before publishing the PID: the test sends SIGINT as
+# soon as the PID file appears, so the diagnostic must already be in the pipe.
 echo "STARTUP_DIAGNOSTIC_BEFORE_CANCEL: subsystem init ok, waiting for bind" >&2
+echo "$$" > "{pid_file}"
 exec /bin/sleep 60
 "#,
         pid_file = pid_file.display()
@@ -1583,10 +1585,12 @@ server.serve_forever()
         json_out.to_str().unwrap(),
     ]);
 
-    let proc = CancellableProcess::spawn(cmd, Duration::from_secs(10));
+    // Generous bounds: on a loaded CI runner, reaching the feeder phase (Python
+    // startup, dataset generation, bootstrap) can take well over 5 s.
+    let proc = CancellableProcess::spawn(cmd, Duration::from_secs(90));
 
     // Synchronize on observable active measurement marker evidence
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let mut active = false;
     let mut child_pid: Option<u32> = None;
 
