@@ -3,9 +3,9 @@
 **Status:** accepted by the maintainer on 2026-11-23 with the conditions of
 [section 10](#10-maintainer-acceptance-2026-11-23), for the v1.0.0-rc security
 gate (readiness criterion 7, [v1.0 readiness](releases/v1.0-readiness.md)).
-Open within that acceptance: the revised O1/N5 wording awaits the maintainer's
-review, and the reporting channel (G4, O7) is an rc gate verified after it is
-enabled.
+Open within that acceptance: the reporting channel (G4, O7) is an rc gate
+verified after it is enabled. DNS rebinding (O1) is an explicit residual risk,
+not resolved.
 Written 2026-11-22 against `main` at `580af3f` (v0.9.0 plus documentation);
 refreshed 2026-11-23 against `main` at `e13b3cc` for the frozen 1.0 contract
 ([v1.0 backlog](releases/v1.0-backlog.md) item N16): input byte limits and
@@ -286,7 +286,7 @@ here; each is a proposal.
 
 | ID | Finding | Severity within the trust model | Proposed fix |
 | --- | --- | --- | --- |
-| N1 | **DNS rebinding against a directly reachable listener (E1, E2).** Knotrel accepts any `Host`, so a web page in a browser that can reach the listener (on the same host as a loopback listener, or on the trusted network) can rebind its name to the listener's address and read and mutate the graph, including taking over the feeder session after reading the instance ID from `/v1/info`. The console container (T3.3) and the gateway check `Host` only for requests that pass through them; they do not protect a listener the browser can still reach directly. CSRF without rebinding is blocked by the JSON content-type check (T1.11) | Medium: E1 is the default exposure and trusts processes, not web pages | 1.0 (documented in the [trust model](http-api.md#trust-model), wording pending the maintainer's review): the protection requires that the listener is not reachable from any context where untrusted web content runs; using the console or a gateway is not by itself a mitigation. 1.x code proposal: an optional `Host` allowlist in the server (for example `KNOTREL_ALLOWED_HOSTS`, default loopback names and the bind address; 421 otherwise), additive, with a security test |
+| N1 | **DNS rebinding against a directly reachable listener (E1, E2).** Knotrel accepts any `Host`, so a web page in a browser that can reach the listener (on the same host as a loopback listener, or on the trusted network) can rebind its name to the listener's address and read and mutate the graph, including taking over the feeder session after reading the instance ID from `/v1/info`. The console container (T3.3) and the gateway check `Host` only for requests that pass through them; they do not protect a listener the browser can still reach directly. CSRF without rebinding is blocked by the JSON content-type check (T1.11) | Medium: E1 is the default exposure and trusts processes, not web pages | **Explicit residual risk for 1.0, not resolved** (section 8). Documented in the [trust model](http-api.md#trust-model), wording approved 2026-11-23: the protection requires that the listener is not reachable from any context where untrusted web content runs; using the console or a gateway is not by itself a mitigation. 1.x code proposal: an optional `Host` allowlist in the server (for example `KNOTREL_ALLOWED_HOSTS`, default loopback names and the bind address; 421 otherwise), additive, with a security test |
 | N2 | **Reference feeder has no TLS** to PostgreSQL (`NoTls`, `TlsConfig::disabled()`) or to Knotrel (`reqwest` without a TLS feature), so it cannot be used through the gateway example and sends the PostgreSQL password and graph data in clear text | Low for the documented local reference setup; blocks E3 for the reference feeder | Code proposal for the feeder: `sslmode` (`require`/`verify-full`) with a CA file for PostgreSQL; a rustls feature and a credential file for the Knotrel URL; extend the gateway smoke test with the reference feeder |
 | N3 | **Gateway example has no rate or connection limiting**, although the trust model lists rate limiting among the gateway's duties | Low (authenticated clients only) | Add `limit_req`/`limit_conn` per credential to `examples/gateway/nginx.conf` with a smoke-test check, or state the omission in the deployment guide |
 | N4 | **Unvalidated security configuration:** `console/deploy/nginx-gateway.conf` (static archive) is packaged but never run or syntax-checked; the console container's CSP and `nosniff` headers are not asserted by `smoke-container.sh`; the absence of CORS headers on Knotrel is not asserted | Low | Add `nginx -t` and an allowlist check for the archive config in the `console` workflow; header assertions in `smoke-container.sh`; a CORS-preflight assertion in `security.rs` |
@@ -309,6 +309,13 @@ here; each is a proposal.
   a restart depends on a rebuild from the authoritative source.
 - Feeder session takeover is not authenticated (G3, T4.2); it is mitigated
   only by the boundary (a separate feeder credential at the gateway in E3).
+- **DNS rebinding (O1, N1) is an explicit residual risk, not resolved.**
+  Knotrel does not validate `Host`, so untrusted web content in a browser that
+  can reach the listener can read and mutate the graph and take over the
+  feeder session. The console container and the gateway do not protect a
+  listener the browser can reach directly. The only protection in 1.0 is
+  deployment: the listener is not reachable from any context where untrusted
+  web content runs.
 
 ## 9. Maintenance
 
@@ -330,7 +337,7 @@ to fix, not an accepted risk (as D1 was, T4.6).
 
 | ID | Item | Disposition | Explicit limitation | Tracked activity |
 | --- | --- | --- | --- | --- |
-| O1 | DNS rebinding (N1, T1.12) | **Not accepted in the earlier wording.** Revised in the [trust model](http-api.md#trust-model) and in N1: the protection requires that the listener is not reachable from any context where untrusted web content runs, or that the backend validates `Host` itself, which Knotrel 1.0 does not; the console or a gateway alone is not a mitigation. **Awaiting the maintainer's review** | Until accepted, a browser that can reach the listener is an open exposure | Backlog TM-O1: review of the wording; 1.x optional `Host` allowlist |
+| O1 | DNS rebinding (N1, T1.12) | **Explicit residual risk, not resolved.** The earlier wording was not accepted; the revised wording in the [trust model](http-api.md#trust-model) and in N1 was approved on 2026-11-23: the protection requires that the listener is not reachable from any context where untrusted web content runs, or that the backend validates `Host` itself, which Knotrel 1.0 does not. The console and the gateway do not protect a listener directly reachable from the browser | A browser that can reach the listener is an open exposure in 1.0 | Backlog TM-O1: 1.x optional `Host` allowlist in the server |
 | O2 | No audit of input-reachable panics (N7, T1.15) | Deferred to 1.x with a tracked activity | **The soak does not replace an audit**: it shows the absence of panics only for the inputs it generates | Backlog TM-O2: panic-site audit of request and worker paths, property or fuzz test of feeder envelopes in every synchronization state |
 | O3 | Lock-holding work per request not measured (G2) | Deferred to 1.x with a tracked activity | **The request timeout does not bound the work that continues in the worker**: a timed-out request keeps its worker and the graph lock until the job ends | Backlog TM-O3: measure the worst-case lock time in the supported envelope; decide on a configurable batch ceiling |
 | O4 | Memory sizing term missing (G1) | **Done** (section 6, G1): sizing guide completed in `docs/deployment.md` | Figures are one graph shape and an upper-bound sum, not a guarantee | — |
