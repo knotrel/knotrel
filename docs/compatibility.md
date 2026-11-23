@@ -195,6 +195,19 @@ section 7); the release notes list them:
   session checks. Before, empty positions and over-long import and barrier
   positions were accepted. The OpenAPI entries are in
   `docs/api/approved-breaking-changes.yaml`.
+- *A different status and `code` for an existing condition (backlog N6,
+  approved by the maintainer on 2026-11-23,
+  [v1.0 backlog](releases/v1.0-backlog.md)):* on `POST /v1/feeder/import`,
+  413 `payload_too_large` now means only that the body exceeds
+  `KNOTREL_MAX_IMPORT_BODY_BYTES`, by its declared `Content-Length` (refused
+  before any body byte is read) or while it is received. A body that cannot
+  be read to its end for another reason (client abort, malformed chunked
+  encoding, receive error) answers `400 invalid_request` ("request body could
+  not be read"), as it already did on the other JSON routes. Before, every
+  import body read failure answered 413 `payload_too_large`. Feeders must not
+  shrink an import after a 400; they retry it unchanged once the transport
+  problem is fixed. The import still counts as `payload_rejected` in
+  `knotrel_imports_total` (or `abandoned` when the connection ends first).
 
 ## 4. Deprecation
 

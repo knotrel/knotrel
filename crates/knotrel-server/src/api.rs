@@ -1039,7 +1039,7 @@ where
             .await
             .map_err(|err| {
                 tracing::warn!(status = %err.status(), "failed to read request body bytes");
-                error_response(err.status(), ErrorCode::InvalidRequest, err.body_text())
+                body_rejection_response(&err)
             })?;
         // simd-json parses in place; reuse a uniquely owned body allocation
         // instead of always copying it.
@@ -1054,6 +1054,22 @@ where
             error_response(status, ErrorCode::InvalidRequest, request_error_message(&err))
         })?;
         Ok(Self(value))
+    }
+}
+
+/// Maps a failed read of a JSON body under the route's `DefaultBodyLimit`.
+///
+/// Only Axum's length-limit rejection (the fixed limit was exceeded) answers
+/// 413 `invalid_request`; every other read failure (client abort, malformed
+/// chunked encoding, receive error) answers 400 `invalid_request` with a
+/// fixed message, as an import body does, never with transport internals.
+fn body_rejection_response(err: &axum::extract::rejection::BytesRejection) -> Response {
+    use axum::extract::rejection::{BytesRejection, FailedToBufferBody};
+    match err {
+        BytesRejection::FailedToBufferBody(FailedToBufferBody::LengthLimitError(limit)) => {
+            error_response(limit.status(), ErrorCode::InvalidRequest, limit.body_text())
+        }
+        _ => unreadable_body_response(),
     }
 }
 
@@ -1443,6 +1459,80 @@ pub(crate) async fn feeder_heartbeat(
     }
 }
 
+/// Why an import body could not be read in full.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyReadError {
+    /// The declared `Content-Length` or the bytes received exceed the limit.
+    TooLarge,
+    /// The body stream failed before its end for any other reason: the client
+    /// aborted, the chunked encoding was malformed, or receiving failed.
+    Unreadable,
+}
+
+/// The fixed message of a body that could not be read for a reason other
+/// than its size; it never carries transport internals.
+const UNREADABLE_BODY_MESSAGE: &str = "request body could not be read";
+
+/// 400 `invalid_request` for a body whose read failed below the size limit.
+///
+/// The request is malformed or incomplete on the wire (client abort,
+/// malformed chunked encoding, receive error), a client error like malformed
+/// JSON, not a size problem; when the client is gone nobody reads it.
+fn unreadable_body_response() -> Response {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        ErrorCode::InvalidRequest,
+        UNREADABLE_BODY_MESSAGE.into(),
+    )
+}
+
+/// Reads an import body of at most `limit` bytes, classifying failures.
+///
+/// A declared `Content-Length` above `limit` is refused before any body byte
+/// is read. Otherwise frames are appended until the end of the stream; a data
+/// frame that would take the total past `limit` stops the read with
+/// [`BodyReadError::TooLarge`], so at most `limit` bytes are ever buffered,
+/// also for chunked bodies without a length. Any error from the body stream
+/// itself is [`BodyReadError::Unreadable`]: the limit is enforced here, not
+/// by a wrapper, so a stream error can never be a limit error. (Hyper
+/// rejects a malformed `Content-Length` header before the handler runs.)
+///
+/// Time and extra space are linear in the bytes received; the buffer is
+/// reserved once from a valid declared length.
+async fn read_import_body(
+    headers: &HeaderMap,
+    mut body: axum::body::Body,
+    limit: usize,
+) -> Result<Bytes, BodyReadError> {
+    use axum::body::HttpBody;
+    let declared = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let mut buffer = Vec::new();
+    if let Some(declared) = declared {
+        match usize::try_from(declared) {
+            Ok(length) if length <= limit => buffer.reserve_exact(length),
+            _ => return Err(BodyReadError::TooLarge),
+        }
+    }
+    while let Some(frame) =
+        std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+    {
+        let frame = frame.map_err(|err| {
+            tracing::debug!(%err, "import body read failed before its end");
+            BodyReadError::Unreadable
+        })?;
+        if let Ok(data) = frame.into_data() {
+            if data.len() > limit - buffer.len() {
+                return Err(BodyReadError::TooLarge);
+            }
+            buffer.extend_from_slice(&data);
+        }
+    }
+    Ok(Bytes::from(buffer))
+}
+
 /// Atomically imports a complete graph topology.
 ///
 /// Validates headers and acquires the single import permit BEFORE reading any body bytes.
@@ -1471,13 +1561,16 @@ pub(crate) async fn feeder_import(
         Err(err) => return feeder_error(err),
     };
 
-    // 2. Read body bytes with bounded limit under acquired permit
-    let max_bytes = service.max_import_body_bytes();
-    let read = axum::body::to_bytes(body, max_bytes).await;
+    // 2. Read body bytes with bounded limit under acquired permit. Either
+    // failure is a `payload_rejected` import; only the limit answers 413.
+    let read = read_import_body(&headers, body, service.max_import_body_bytes()).await;
     permit.received(read.is_ok());
     let bytes = match read {
         Ok(bytes) => bytes,
-        Err(_) => return feeder_error(crate::service::FeederError::PayloadTooLarge),
+        Err(BodyReadError::TooLarge) => {
+            return feeder_error(crate::service::FeederError::PayloadTooLarge);
+        }
+        Err(BodyReadError::Unreadable) => return unreadable_body_response(),
     };
 
     // 3. Dispatch to service.import, transferring owned permit and raw bytes
