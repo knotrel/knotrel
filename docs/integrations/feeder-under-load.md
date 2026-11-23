@@ -401,6 +401,41 @@ Reading, limited to what was measured:
   variant approved beforehand, then, depending on the result, B1 or B2 against
   the same criteria. Not assigned to a release.
 
+## v1.0.0 qualification result and operational envelope (2026-11-23)
+
+Block Q of the v1.0.0 qualification (candidate `0c49b2a`, decision record
+`results/v1.0.0-qualification/DECISION.md` in knotrel-benchmarks) ran this
+protocol unchanged, three rounds of one observation per cell.
+
+- **Q1, Q2, Q4 and Q5: PASS.** Q5 against v0.9.0 in the same session: query
+  throughput ×1.072 (16 clients) and ×1.014 (64), p99 ×1.012 and ×0.984.
+- **Q3: FAIL**, accepted by the maintainer as a known limit for 1.0. The
+  thresholds are unchanged and the result is not presented as passed.
+
+| L2 G100k, medians of three observations | Catch-up rate | Share of the C=0 rate | Required | Time to `ready` (94,604-event backlog) |
+| --- | --- | --- | --- | --- |
+| 0 query clients | 178,095 events/s | — | — | 0.53 s |
+| 16 query clients | 31,455 events/s | 17.7% | ≥ 50% | 3.0 s |
+| 64 query clients | 16,675 events/s | 9.4% | ≥ 25% | 5.7 s |
+
+The shares are ratios of the medians in the table (31,455 / 178,095 and
+16,675 / 178,095).
+
+**Operational envelope.**
+- Measured on one Apple M3 (4P+4E, 16 GB, macOS 26.5.2) with the Knotrel
+  server, PostgreSQL 18.7 and the load generator **on the same machine**,
+  graph G100k, 0, 16 and 64 concurrent query clients.
+- Catch-up time can be estimated as `backlog / rate` under these measured
+  conditions. This is an estimate, not a guarantee on the time to reach
+  `ready`.
+- 0 feeder refusals were observed at the load levels tested.
+- Not qualified: larger graphs, more than 64 concurrent clients, other
+  hardware, or a database on a separate host.
+- Consistent with what was observed in v0.9.0 (its qualification campaign
+  measured 17.98% and 10.15%); the two campaigns are separate sessions, and no
+  claim of absence of regression is made.
+- The two-Mac diagnosis (R2, below) is separate and does not change Q3.
+
 ## R2 two-Mac variant (APPROVED 2026-11-23, not yet run)
 
 **Status: APPROVED by the maintainer on 2026-11-23** ("R2: I approve the

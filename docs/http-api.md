@@ -490,6 +490,13 @@ authentication**. It returns 200 with
 `Content-Type: text/plain; version=0.0.4; charset=utf-8` and
 `Cache-Control: no-store`.
 
+**Measured cost.** In the v1.0.0 qualification (B4 `metrics-ops`,
+compact-bfs, sparse graph of 10,000 nodes), in the measured configuration,
+enabling metrics increased the time of batch operations by 5.4%; the
+confidence interval, [+1.5%, +6.6%] (a 96.14% order-statistic interval of 12
+paired runs), crosses the 6% budget, with upper bound +6.6%. Outcome
+INCONCLUSIVE. This is a measurement on one host, not a guaranteed bound.
+
 Like the probes, a scrape takes no graph lock and no admission or import
 permit; it does use synchronization internal to the metrics registry and
 reads each admission lane's available permits (one atomic load per lane). It is answered during saturation, after a worker failure and while
