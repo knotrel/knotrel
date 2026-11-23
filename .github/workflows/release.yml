@@ -180,6 +180,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
+      - name: Verify the server's knotrel-core requirement (DV6)
+        env:
+          VALID_VERSION: ${{ needs.validate-inputs-and-metadata.outputs.version }}
+        # Exact `=X.Y.Z-rc.N` for a candidate, caret for a stable release
+        # (CONTRIBUTING.md), read from cargo metadata. Runs in dry runs too.
+        run: |
+          python3 tests/test_core_pin.py
+          python3 scripts/check-core-pin.py "$VALID_VERSION"
+
       - name: Format check
         run: cargo fmt --all -- --check
 

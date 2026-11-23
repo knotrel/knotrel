@@ -210,6 +210,10 @@ jobs:
           python3 tests/test_readme_check.py
       - name: Reproducible-build comparer
         run: python3 tests/test_compare_binaries.py
+      - name: Server's knotrel-core requirement
+        run: |
+          python3 scripts/check-core-pin.py
+          python3 tests/test_core_pin.py
       - name: Documentation examples
         run: cargo test --workspace --doc --locked --all-features
       - name: Documentation
