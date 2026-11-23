@@ -401,14 +401,28 @@ Reading, limited to what was measured:
   variant approved beforehand, then, depending on the result, B1 or B2 against
   the same criteria. Not assigned to a release.
 
-## R2 two-Mac variant (PROPOSED, not approved)
+## R2 two-Mac variant (APPROVED 2026-11-23, not yet run)
 
-**Status: PROPOSED, NOT APPROVED.** This section turns
+**Status: APPROVED by the maintainer on 2026-11-23** ("R2: I approve the
+diagnostic protocol. Before the measurements, verify the remote SSH operation
+with a separate smoke. R2 does not change Q3 and not running it does not
+automatically block the RC."). This section turns
 [rc-plan §3](../releases/v1.0.0-rc-plan.md#3-r2--87-diagnosis-two-mac-protocol-variant-proposed)
 into a protocol that can be run. Nothing in it may be run until the
-maintainer has (1) approved this section and rc-plan §3, and (2) confirmed
-that both Macs are available, with the measurement window agreed (pre-flight
-checklist below). No measurement has been taken with it. The tool support it
+maintainer has confirmed that both Macs are available, with the measurement
+window agreed (pre-flight checklist below), **and** the separate SSH smoke
+(below) has passed.
+
+**Separate SSH smoke (required before any arm).** On the agreed window,
+before arm S: run the tool's remote mode once against host K from host L
+with the smoke overrides (`LOAD_REPS=1`, short window, small backlog, as
+for the loopback smoke), and check that the remote server starts and stops
+for the observation, the bind address and `KNOTREL_ALLOW_NON_LOOPBACK` are
+applied, host K's CPU samples and the remote stderr are recorded, and the
+link check runs. Its output is kept with the R2 evidence and is **not**
+measurement data. It could not be run on 2026-11-23: SSH to localhost is
+disabled on the development Mac (Remote Login off, a system setting not
+changed for this), and host L was not yet available. No measurement has been taken with it. The tool support it
 needs (`examples/load.rs`, `LOAD_ARM`) is opt-in; with `LOAD_ARM` unset the
 tool runs the approved single-host protocol above, unchanged.
 
