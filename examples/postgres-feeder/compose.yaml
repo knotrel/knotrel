@@ -78,6 +78,9 @@ services:
   console:
     image: ghcr.io/knotrel/knotrel-console:0.8.0@sha256:1c4ce3fda67acda0cb44dedd5a275fb19e5ab09dac2cce9a5dbc83c3f5f25f82
     environment:
+      # The pinned 0.8.0 image predates KNOTREL_CONSOLE_UPSTREAM (1.0.0) and
+      # knows only the name that 1.x keeps as a deprecated alias. Rename it when
+      # the pin moves to a 1.x image (docs/console.md, Container configuration).
       KNOTREL_UPSTREAM: http://knotrel:8080
       KNOTREL_CONSOLE_SERVER_LABEL: postgres-reference (knotrel:8080)
     ports:

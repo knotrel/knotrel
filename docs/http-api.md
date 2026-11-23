@@ -772,7 +772,14 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_SHUTDOWN_TIMEOUT_MS` | ASCII decimal milliseconds from 1 through 3600000 | `10000` |
 
 Unknown variables in the reserved `KNOTREL_` namespace, empty or non-Unicode
-values, unsupported engines and invalid addresses/limits fail startup. Values
+values, unsupported engines and invalid addresses/limits fail startup. Within
+that namespace, the `KNOTREL_CONSOLE_` prefix is reserved for the
+[operational console](console.md#container-configuration) container, together
+with the console's two deprecated aliases `KNOTREL_UPSTREAM` and
+`KNOTREL_UPSTREAM_TIMEOUT`: the server never defines a setting under these
+names and ignores them silently, without failing or logging, so one
+environment file can configure the server and the console. Every other
+unknown `KNOTREL_*` name still fails startup. Values
 are not trimmed; engine names are case-sensitive. Unrelated environment
 variables are ignored by this loader. `RUST_LOG` is handled separately by the
 logging subscriber (falling back to `info` if its filter is missing or invalid),

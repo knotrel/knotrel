@@ -82,7 +82,7 @@ image (or an image built with
 
 ```sh
 docker run --rm -p 127.0.0.1:7380:8080 \
-  -e KNOTREL_UPSTREAM=http://host.docker.internal:8080 \
+  -e KNOTREL_CONSOLE_UPSTREAM=http://host.docker.internal:8080 \
   --read-only --tmpfs /tmp --cap-drop ALL \
   ghcr.io/knotrel/knotrel-console:0.8.0
 ```
@@ -96,11 +96,35 @@ unauthenticated server just to reach it.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KNOTREL_UPSTREAM` | required | Server base URL, `http(s)://host[:port][/path]`, no credentials, query or trailing slash. Fixed for the container's lifetime. |
+| `KNOTREL_CONSOLE_UPSTREAM` | required | Server base URL, `http(s)://host[:port][/path]`, no credentials, query or trailing slash. Fixed for the container's lifetime. |
 | `KNOTREL_CONSOLE_LISTEN` | `8080 [::]:8080` | Addresses the container listens on (space separated: port, `IPv4:port` or `[IPv6]:port`). Set `127.0.0.1:8080` when a gateway shares the container's network namespace, so only the gateway can reach it. The image's health check uses `127.0.0.1:8080`. |
 | `KNOTREL_CONSOLE_SERVER_NAMES` | `localhost 127.0.0.1 [::1]` | Accepted `Host` names (space separated). Requests for any other host get 421. Add the public name when a gateway forwards to the container. |
 | `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL | Server name shown in the connection indicator (display only). |
-| `KNOTREL_UPSTREAM_TIMEOUT` | `35s` | Upstream send/read timeout. It exceeds the server's 30 s request timeout so that the server's `request_timeout` is reported when it applies. |
+| `KNOTREL_CONSOLE_UPSTREAM_TIMEOUT` | `35s` | Upstream send/read timeout. It exceeds the server's 30 s request timeout so that the server's `request_timeout` is reported when it applies. |
+
+Every console variable is named `KNOTREL_CONSOLE_*`. The server reserves that
+prefix for the console and ignores it, so one environment file can serve both
+containers ([startup configuration](http-api.md#startup-configuration-and-engine-selection)).
+
+**Deprecated aliases.** Before 1.0 the upstream variables were named
+`KNOTREL_UPSTREAM` and `KNOTREL_UPSTREAM_TIMEOUT`; the new names are new in
+1.0.0 (unreleased), and console images up to 0.9.x accept only the old ones.
+The console still accepts the old names, throughout the 1.x series, as
+aliases of `KNOTREL_CONSOLE_UPSTREAM` and `KNOTREL_CONSOLE_UPSTREAM_TIMEOUT`;
+their removal follows the [deprecation rule](compatibility.md#4-deprecation).
+For each pair, where an empty value counts as not set:
+
+| New name | Alias | Result |
+| --- | --- | --- |
+| set | not set | The new name is used. |
+| not set | set | The alias's value is used; a deprecation warning is written to stderr at startup. |
+| set | set, same value | The new name is used; a deprecation warning is written to stderr at startup. |
+| set | set, different value | The container refuses to start and names both variables. |
+| not set | not set | The default applies (`KNOTREL_CONSOLE_UPSTREAM` is required: the container refuses to start). |
+
+Refusing different values, rather than letting one name win, keeps an
+outdated alias left in an environment file from silently redirecting, or
+being silently overridden for, the console's only upstream.
 
 Invalid values stop the container at startup. The image runs nginx as uid
 101, listens on port 8080, works with a read-only root filesystem and a tmpfs

@@ -1,5 +1,5 @@
-# Shared settings of every forwarded API route. Rendered by envsubst at startup
-# (only KNOTREL_* variables are substituted).
+# Shared settings of every forwarded API route. Rendered at startup by the
+# entrypoint (15-knotrel-console.sh; only its validated values are substituted).
 include /etc/nginx/knotrel/security-headers.conf;
 
 # Cross-site request forgery: same-origin requests only (see the maps in
@@ -22,8 +22,8 @@ proxy_set_header Connection "";
 proxy_next_upstream off;
 proxy_intercept_errors off;
 proxy_connect_timeout 5s;
-proxy_send_timeout ${KNOTREL_UPSTREAM_TIMEOUT};
-proxy_read_timeout ${KNOTREL_UPSTREAM_TIMEOUT};
+proxy_send_timeout ${KNOTREL_CONSOLE_UPSTREAM_TIMEOUT};
+proxy_read_timeout ${KNOTREL_CONSOLE_UPSTREAM_TIMEOUT};
 proxy_buffering on;
 proxy_max_temp_file_size 0;
 proxy_hide_header Set-Cookie;
