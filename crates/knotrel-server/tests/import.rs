@@ -1685,3 +1685,33 @@ async fn test_20_json_routes_classify_body_read_failures_the_same_way() {
         assert_eq!(reply.json()["message"], UNREADABLE, "{path}");
     }
 }
+
+#[tokio::test]
+async fn test_21_chunked_import_with_trailers_is_read_to_its_end() {
+    let running = Running::start(config_small_import_limit()).await;
+    let instance_id = running.instance_id().await;
+    assert_eq!(
+        register_session(&running, "feeder-1", 1, 10000)
+            .await
+            .status,
+        200
+    );
+
+    // A valid body split over two chunks, ended by a trailer section: the
+    // trailers are not body bytes, count toward no limit and are ignored.
+    let body = create_only_body(&instance_id).into_bytes();
+    let (first, second) = body.split_at(body.len() / 2);
+    let mut stream = running.connect().await;
+    let mut request = format!(
+        "POST /v1/feeder/import HTTP/1.1\r\nhost: knotrel\r\ncontent-type: application/json\r\nx-knotrel-instance-id: {instance_id}\r\ntransfer-encoding: chunked\r\ntrailer: x-checksum\r\n\r\n"
+    )
+    .into_bytes();
+    request.extend(chunk(first));
+    request.extend(chunk(second));
+    request.extend_from_slice(b"0\r\nx-checksum: 0123456789abcdef\r\n\r\n");
+    stream.write_all(&request).await.unwrap();
+    let reply = read_reply(&mut stream).await.expect("a response");
+    assert_eq!(reply.status, 201, "{}", reply.body);
+    assert_eq!(reply.json()["generation"], 1);
+    assert_eq!(metric(&running, PAYLOAD_REJECTED).await, 0.0);
+}
