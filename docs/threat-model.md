@@ -3,9 +3,8 @@
 **Status:** accepted by the maintainer on 2026-11-23 with the conditions of
 [section 10](#10-maintainer-acceptance-2026-11-23), for the v1.0.0-rc security
 gate (readiness criterion 7, [v1.0 readiness](releases/v1.0-readiness.md)).
-Open within that acceptance: the reporting channel (G4, O7) is an rc gate
-verified after it is enabled. DNS rebinding (O1) is an explicit residual risk,
-not resolved.
+The reporting channel (G4, O7) was enabled and verified on 2026-11-23. DNS
+rebinding (O1) is an explicit residual risk, not resolved.
 Written 2026-11-22 against `main` at `580af3f` (v0.9.0 plus documentation);
 refreshed 2026-11-23 against `main` at `e13b3cc` for the frozen 1.0 contract
 ([v1.0 backlog](releases/v1.0-backlog.md) item N16): input byte limits and
@@ -262,8 +261,8 @@ validated.**
 
 ### G4 — `SECURITY.md` is stale
 
-**Status: document fixed (knotrel/knotrel#106); rc gate still open (enable
-and verify the reporting channel).**
+**Status: closed. Document fixed (knotrel/knotrel#106); reporting channel
+enabled by the maintainer and verified on 2026-11-23.**
 
 - [`SECURITY.md`](../SECURITY.md) now lists the supported versions by policy
   (latest minor release line; 0.9.x today, 1.0.x after 1.0.0), names GitHub
@@ -271,13 +270,13 @@ and verify the reporting channel).**
   option is removed), and links this document.
 - **Maintainer decision (2026-11-22):** GitHub Private Vulnerability
   Reporting is the security channel, to be enabled and verified before the rc.
-- **Open rc gate:** it is **disabled** on `knotrel/knotrel` (GitHub API,
-  2026-11-22 and again 2026-11-23: `"enabled": false`). Before the rc the maintainer enables it
-  (Settings → Code security → Private vulnerability reporting) and verifies it:
-  the API reports `"enabled": true` and the Security tab shows
-  **Report a vulnerability**. Until then the channel published in
-  `SECURITY.md` does not work. Repository settings were not changed by this
-  review.
+- **rc gate closed (2026-11-23):** it was disabled on `knotrel/knotrel`
+  (GitHub API `"enabled": false` on 2026-11-22 and 2026-11-23). The maintainer
+  enabled it on 2026-11-23. Verified the same day: `GET
+  /repos/knotrel/knotrel/private-vulnerability-reporting` returns
+  `{"enabled":true}`, and the public Security page (fetched without signing
+  in) shows **Report a vulnerability**. The channel published in
+  `SECURITY.md` works.
 
 ## 7. Further findings of this review
 
@@ -343,4 +342,4 @@ to fix, not an accepted risk (as D1 was, T4.6).
 | O4 | Memory sizing term missing (G1) | **Done** (section 6, G1): sizing guide completed in `docs/deployment.md` | Figures are one graph shape and an upper-bound sum, not a guarantee | — |
 | O5 | Reference feeder without TLS (N2) | Deferred to 1.x with a tracked activity | The reference feeder is supported only on a trusted network and cannot be used through the gateway (E3) | Backlog TM-O5: `sslmode` and CA file for PostgreSQL, rustls and a credential file for Knotrel, gateway smoke test with the feeder |
 | O6 | Gateway example without rate or connection limits; unvalidated security configuration (N3, N4) | Deferred to 1.x with a tracked activity | The example is not a production gateway; the static-archive nginx configuration, the console's CSP and `nosniff` headers and the absence of CORS headers on Knotrel are not asserted by tests | Backlog TM-O6: `limit_req`/`limit_conn` in the example with a smoke check; `nginx -t` of the archive configuration; header and CORS-preflight assertions |
-| O7 | Private Vulnerability Reporting disabled (G4) | **Remains an rc gate**, not an accepted risk | Until enabled and verified, the channel in `SECURITY.md` does not work | Backlog TM-O7: verify after activation (`"enabled": true` from the API and **Report a vulnerability** on the Security tab) |
+| O7 | Private Vulnerability Reporting disabled (G4) | **rc gate closed**: enabled by the maintainer and verified on 2026-11-23 (API `"enabled": true`; **Report a vulnerability** on the public Security page) | — | Backlog TM-O7: verify after activation (`"enabled": true` from the API and **Report a vulnerability** on the Security tab) |
