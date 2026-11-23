@@ -235,6 +235,8 @@ prerelease form: `release.yml`, `console-release.yml`,
 
 - every version is `X.Y.Z-rc.N` in lockstep, and the server's `knotrel-core`
   requirement is exact (`=X.Y.Z-rc.N`, see `CONTRIBUTING.md`);
+  `scripts/check-core-pin.py X.Y.Z-rc.N` checks it from `cargo metadata` in
+  CI and in the release dry run (caret `^X.Y.Z` for a stable release);
 - its notes are `docs/releases/vX.Y.Z-rc.N-release-notes.md`, separate from the
   notes of the final release, and `check-release-notes.sh X.Y.Z-rc.N` checks
   them; their status line is set to `**Status: released <date>**` by the last
