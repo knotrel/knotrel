@@ -1334,6 +1334,20 @@ impl GraphState {
             return Err(FeederError::GraphDesynchronized);
         }
 
+        // Recovery fencing (integration contract §4.3): synchronization proof
+        // after lease expiry requires registering a strictly newer epoch
+        // (> last_expired_epoch). Any barrier under a fenced epoch is
+        // rejected, whatever its sequence and position, so this check
+        // precedes the source-position bound and B8, B9, B7. The guaranteed
+        // precedence is: failed, session and lease, generation, B3/B4, B5,
+        // this fence, the position bound, B8, B9, B7, then B1/B2.
+        if self
+            .last_expired_epoch
+            .is_some_and(|expired| req.feeder_epoch <= expired)
+        {
+            return Err(FeederError::FencedSession);
+        }
+
         check_optional_source_position(
             "barrier_source_position",
             req.barrier_source_position.as_deref(),
@@ -1366,15 +1380,6 @@ impl GraphState {
             return Err(FeederError::BarrierPositionMismatch {
                 expected: current_pos.unwrap_or_default().to_string(),
             });
-        }
-
-        // Recovery fencing: synchronization proof after lease expiry requires
-        // registering a strictly newer epoch (> last_expired_epoch).
-        if self
-            .last_expired_epoch
-            .is_some_and(|expired| req.feeder_epoch <= expired)
-        {
-            return Err(FeederError::FencedSession);
         }
 
         // Exact match: B1 and B2

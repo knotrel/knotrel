@@ -816,14 +816,22 @@ async fn test_9_rejected_barriers_preserve_existing_synchronization_state() {
     heartbeat(&running, "feeder-1", 1).await;
     assert_eq!(get(&mut stream, "/ready").await.json()["status"], "stale");
 
-    // Send mismatched position barrier -> rejected, remains Stale
+    // Send mismatched position barrier under the expired epoch -> the
+    // recovery fence takes precedence over B7; remains Stale
     let b_mismatch = declare_barrier(&running, "feeder-1", 1, 1, 0, Some("bad-pos")).await;
+    assert_eq!(b_mismatch.status, 409);
+    assert_eq!(b_mismatch.json()["code"], "fenced_feeder_session");
+    assert_eq!(get(&mut stream, "/ready").await.json()["status"], "stale");
+
+    // Under a newly registered epoch, the same barrier reaches B7
+    register_session(&running, "feeder-1", 2, 30_000).await;
+    let b_mismatch = declare_barrier(&running, "feeder-1", 2, 1, 0, Some("bad-pos")).await;
     assert_eq!(b_mismatch.status, 409);
     assert_eq!(b_mismatch.json()["code"], "barrier_position_mismatch");
     assert_eq!(get(&mut stream, "/ready").await.json()["status"], "stale");
 
     // 3. Declare gap -> state becomes Desynchronized
-    declare_gap(&running, "feeder-1", 1, 1, 1).await;
+    declare_gap(&running, "feeder-1", 2, 1, 1).await;
     assert_eq!(get(&mut stream, "/ready").await.status, 503);
     assert_eq!(
         get(&mut stream, "/ready").await.json()["status"],
@@ -831,7 +839,7 @@ async fn test_9_rejected_barriers_preserve_existing_synchronization_state() {
     );
 
     // In Desynchronized: exact barrier is rejected, remains Desynchronized
-    let b_desync = declare_barrier(&running, "feeder-1", 1, 1, 0, Some("pos-0")).await;
+    let b_desync = declare_barrier(&running, "feeder-1", 2, 1, 0, Some("pos-0")).await;
     assert_eq!(b_desync.status, 409);
     assert_eq!(b_desync.json()["code"], "graph_desynchronized");
     assert_eq!(
@@ -1647,6 +1655,155 @@ async fn test_21_probe_paused_at_expiry_does_not_overwrite_newer_publication() {
     assert_eq!(q.status, 200);
     assert_eq!(q.header("x-knotrel-sync-status"), Some("ready"));
     assert_eq!(q.json()["connected"], true);
+
+    running.shutdown();
+    assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+    reset_clock();
+}
+
+/// Observable synchronization state: the `/ready` reply and the `/v1/stats`
+/// body and `ETag`. Two equal snapshots mean a request changed nothing a
+/// client can see.
+async fn observable_state(
+    running: &Running,
+) -> (u16, serde_json::Value, serde_json::Value, String) {
+    let mut stream = running.connect().await;
+    let ready = get(&mut stream, "/ready").await;
+    let stats = get(&mut stream, "/v1/stats").await;
+    assert_eq!(stats.status, 200);
+    let etag = stats.header("etag").unwrap_or_default().to_string();
+    (ready.status, ready.json(), stats.json(), etag)
+}
+
+/// Brings a source-managed server to `Ready` at delivery sequence 2 and
+/// source position `pos-2` under session `feeder-1` epoch 1 (10 s lease),
+/// then expires the lease and renews it by heartbeat, so that
+/// `last_expired_epoch == 1` and the status is `stale`.
+async fn ready_then_expired_and_renewed(running: &Running) {
+    register_session(running, "feeder-1", 1, 10_000).await;
+    import_graph(
+        running,
+        "feeder-1",
+        1,
+        "create_only",
+        "pos-0",
+        &[1, 2],
+        &[],
+        None,
+    )
+    .await;
+    let events = r#"[
+        {"event_id":"e-1","delivery_sequence":1,"prev_delivery_sequence":0,"source_position":"pos-1","prev_source_position":"pos-0","op":"link","source":"1","target":"2"},
+        {"event_id":"e-2","delivery_sequence":2,"prev_delivery_sequence":1,"source_position":"pos-2","prev_source_position":"pos-1","op":"progress"}
+    ]"#;
+    assert_eq!(
+        apply_events(running, "feeder-1", 1, 1, events).await.status,
+        200
+    );
+    let b = declare_barrier(running, "feeder-1", 1, 1, 2, Some("pos-2")).await;
+    assert_eq!(b.status, 200);
+    assert_eq!(b.json()["result"], "synchronized");
+
+    advance_clock(Duration::from_millis(10_500));
+    let hb = heartbeat(running, "feeder-1", 1).await;
+    assert_eq!(hb.status, 200);
+    assert_eq!(hb.json()["status"], "stale");
+}
+
+/// N5a: under `feeder_epoch <= last_expired_epoch` every barrier is fenced
+/// (integration contract §4.3), whatever its sequence and position: the
+/// recovery fence precedes B8, B9, B7 and the source-position bound. Each
+/// rejection leaves `/ready`, the stats and the `ETag` unchanged.
+#[tokio::test]
+async fn test_22_fenced_epoch_barrier_is_fenced_before_sequence_and_position_checks() {
+    let _guard = TEST_MUTEX.lock().await;
+    reset_clock();
+    let mut running = Running::start(config_source_managed()).await;
+    ready_then_expired_and_renewed(&running).await;
+
+    let before = observable_state(&running).await;
+    assert_eq!(before.0, 503);
+    assert_eq!(before.1["status"], "stale");
+    assert_eq!(before.2["sync_status"], "stale");
+    assert_eq!(before.2["source_position"], "pos-2");
+
+    let oversized = "p".repeat(257);
+    let cases: [(&str, u64, Option<&str>); 6] = [
+        ("premature sequence (B8)", 5, Some("pos-5")),
+        ("older sequence (B9)", 1, Some("pos-1")),
+        ("position mismatch (B7)", 2, Some("bad-pos")),
+        ("oversized position", 2, Some(oversized.as_str())),
+        ("premature sequence, no position", 5, None),
+        ("exact match (B1)", 2, Some("pos-2")),
+    ];
+    for (label, sequence, position) in cases {
+        let reply = declare_barrier(&running, "feeder-1", 1, 1, sequence, position).await;
+        assert_eq!(reply.status, 409, "{label}: {}", reply.body);
+        assert_eq!(reply.json()["code"], "fenced_feeder_session", "{label}");
+        assert_eq!(
+            observable_state(&running).await,
+            before,
+            "{label}: a fenced barrier must leave the state unchanged"
+        );
+    }
+
+    running.shutdown();
+    assert_eq!(running.finished().await, ShutdownOutcome::Drained);
+    reset_clock();
+}
+
+/// N5a: under a newly registered epoch (> `last_expired_epoch`) the fence no
+/// longer applies and B8, B9, B7 answer as before; an exact barrier then
+/// restores `Ready`.
+#[tokio::test]
+async fn test_23_new_epoch_barrier_reaches_decision_table_after_expiry() {
+    let _guard = TEST_MUTEX.lock().await;
+    reset_clock();
+    let mut running = Running::start(config_source_managed()).await;
+    ready_then_expired_and_renewed(&running).await;
+    assert_eq!(
+        register_session(&running, "feeder-1", 2, 10_000)
+            .await
+            .status,
+        200
+    );
+
+    let before = observable_state(&running).await;
+    assert_eq!(before.1["status"], "stale");
+
+    let cases: [(&str, u64, Option<&str>, &str); 3] = [
+        (
+            "premature sequence (B8)",
+            5,
+            Some("pos-5"),
+            "barrier_not_reached",
+        ),
+        (
+            "older sequence (B9)",
+            1,
+            Some("pos-1"),
+            "superseded_barrier",
+        ),
+        (
+            "position mismatch (B7)",
+            2,
+            Some("bad-pos"),
+            "barrier_position_mismatch",
+        ),
+    ];
+    for (label, sequence, position, code) in cases {
+        let reply = declare_barrier(&running, "feeder-1", 2, 1, sequence, position).await;
+        assert_eq!(reply.status, 409, "{label}: {}", reply.body);
+        assert_eq!(reply.json()["code"], code, "{label}");
+        assert_eq!(observable_state(&running).await, before, "{label}");
+    }
+
+    let b = declare_barrier(&running, "feeder-1", 2, 1, 2, Some("pos-2")).await;
+    assert_eq!(b.status, 200);
+    assert_eq!(b.json()["result"], "synchronized");
+    let after = observable_state(&running).await;
+    assert_eq!(after.0, 200);
+    assert_eq!(after.2["sync_status"], "ready");
 
     running.shutdown();
     assert_eq!(running.finished().await, ShutdownOutcome::Drained);

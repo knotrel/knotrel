@@ -103,6 +103,13 @@ It does not promise:
   the release notes and [stability.md](stability.md) record; that change is
   not breaking, because the value describes the qualification, not the
   interface;
+- a stability class in `experimental`: `EngineConfig::is_experimental()` and
+  the `/v1/info` field `experimental` report the engine's qualification
+  (whether it is qualified experimental as to performance, maturity and usage
+  recommendation), not whether its interfaces are stable; they are stable
+  either way. The value may change from `true` to `false` in a minor release
+  when an engine is promoted, and never changes from `false` to `true` for an
+  existing engine (an engine added later may start at `true`);
 - exact counter and storage values, which are implementation-dependent.
 
 ## 3. What "compatible" means
@@ -195,7 +202,8 @@ section 7); the release notes list them:
   initialization, desynchronization, `source_id` and `source_epoch` checks
   (so a request that also carries a different `source_epoch` still
   desynchronizes with `409 source_epoch_mismatch`); on a barrier after the
-  session, lease, generation, initialization and desynchronization checks;
+  session, lease, generation, initialization, desynchronization and
+  recovery-fence checks;
   on an import after the instance and `graph_id` checks and before the
   session checks. Before, empty positions and over-long import and barrier
   positions were accepted. The OpenAPI entries are in
@@ -213,6 +221,27 @@ section 7); the release notes list them:
   shrink an import after a 400; they retry it unchanged once the transport
   problem is fixed. The import still counts as `payload_rejected` in
   `knotrel_imports_total` (or `abandoned` when the connection ends first).
+- *A different `code` for an existing combined-fault condition (review N5a,
+  approved by the maintainer on 2026-11-23,
+  [v1.0 backlog](releases/v1.0-backlog.md)):* on `POST /v1/feeder/barrier`,
+  the recovery fence (`feeder_epoch <= last_expired_epoch` after a lease
+  expiry) is now evaluated right after the desynchronization check (B5) and
+  before the source-position bound and the sequence and position comparisons
+  (B8, B9, B7), as the
+  [integration contract](integration-contract.md#43-lease-renewal-vs-synchronization-proof--recovery-fencing)
+  §4.3 states. A barrier under a fenced epoch that also has a premature
+  sequence, an older sequence, a mismatched position or an out-of-bounds
+  position now answers `409 fenced_feeder_session`; before, it answered
+  `409 barrier_not_reached`, `409 superseded_barrier`,
+  `409 barrier_position_mismatch` or `422 invalid_request`. The guaranteed
+  precedence is: failed, session and lease, generation, uninitialized (B3,
+  B4), desynchronized (B5), recovery fence, position bound, B8, B9, B7, then
+  B1/B2 ([integration contract](integration-contract.md#53-verification-only-synchronization-barriers)
+  §5.3). Every rejection still leaves the state unchanged, and a barrier
+  under a newly registered epoch answers as before. Feeders already had to
+  register a newer epoch to recover from an expiry; only the code of these
+  doomed barriers changes. No OpenAPI entry is needed: the route, its
+  statuses and its codes are unchanged.
 
 ## 4. Deprecation
 

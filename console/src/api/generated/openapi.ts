@@ -716,7 +716,17 @@ export interface components {
        * @enum {string}
        */
       engine: 'compact-bfs' | 'ett' | 'hdt';
-      /** @description Whether the engine is experimental. */
+      /**
+       * @description The configured engine's qualification (see `docs/compatibility.md` §2.2):
+       *     `true` when the engine is qualified experimental as to performance,
+       *     maturity and usage recommendation, which carry no promise. It is not a
+       *     stability class: the engine's interfaces, including its `engine` value,
+       *     are stable either way. `false` for `compact-bfs`; `true` for `ett` and
+       *     `hdt`, possibly for the whole 1.x series. The value may change from
+       *     `true` to `false` in a minor release when an engine is promoted, which
+       *     the release notes record, and never changes from `false` to `true` for
+       *     an existing engine. Neither change is breaking.
+       */
       experimental: boolean;
       /** @description Maximum queued plus running graph operations on the shared admission lane. */
       max_pending_jobs: number;
@@ -2179,7 +2189,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`, `stale_generation`, `graph_uninitialized`, `graph_desynchronized`, `barrier_not_reached`, `superseded_barrier`, `barrier_position_mismatch`. */
+      /** @description `mode_conflict`, `stale_instance_id`, `session_required`, `fenced_feeder_session`, `lease_expired`, `stale_generation`, `graph_uninitialized`, `graph_desynchronized`, `barrier_not_reached`, `superseded_barrier`, `barrier_position_mismatch`. After a lease expiry, a barrier under `feeder_epoch <= last_expired_epoch` gets `fenced_feeder_session` whatever its sequence and position: the precedence is failed (503 `unavailable`), session and lease, generation, `graph_uninitialized`, `graph_desynchronized`, the recovery fence, the `barrier_source_position` bound (422), `barrier_not_reached`, `superseded_barrier`, `barrier_position_mismatch`. Every rejection leaves the state unchanged. */
       409: {
         headers: {
           [name: string]: unknown;

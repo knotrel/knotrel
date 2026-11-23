@@ -831,6 +831,16 @@ limit fields describe the actual service instance, including embedded routers.
 The default response has `engine: "compact-bfs"`, `experimental: false` and
 `max_pending_jobs: 32`.
 
+`experimental` reports the configured engine's qualification
+([compatibility.md](compatibility.md#22-stable-interface-experimental-engine)):
+`true` means the engine is qualified experimental as to performance, maturity
+and usage recommendation, which carry no promise. It is not a stability class:
+the engine's interfaces, including its `engine` value, are stable either way.
+It is `false` for `compact-bfs` and `true` for `ett` and `hdt`, possibly for
+the whole 1.x series. It may change from `true` to `false` in a minor release
+when an engine is promoted (recorded in the release notes), and never from
+`false` to `true` for an existing engine. Neither change is breaking.
+
 Operation and batch requests cannot configure the engine or the server. An
 `engine` field, for example, is rejected as an unknown field before mutation.
 There is no administrative engine-switch endpoint. A future migration would
@@ -1101,8 +1111,8 @@ These concepts remain strictly distinct:
    desynchronization, `source_id` and `source_epoch` checks (a request with a
    different `source_epoch` and a bad position desynchronizes with 409
    `source_epoch_mismatch`); on a barrier, after the session, lease,
-   generation, initialization and desynchronization checks and before the
-   sequence and position comparisons; on an import, after the instance and
+   generation, initialization, desynchronization and recovery-fence checks
+   and before the sequence and position comparisons; on an import, after the instance and
    `graph_id` checks and before the session checks. OpenAPI's
    `minLength`/`maxLength` count characters and are a looser approximation. Knotrel never interprets this string
    as an integer, never parses its internal structure, and never compares cursors
@@ -1285,6 +1295,37 @@ In source-managed mode, the feeder declares synchronization completion at barrie
 5. **Monotonic lease expiry:** Current monotonic time must not exceed `lease_deadline`. Expired lease returns HTTP 409 `lease_expired`.
 6. **Generation check:** Request `generation` must match live published generation; mismatch returns HTTP 409 `stale_generation`.
 7. **Worker health:** Permanent worker failure returns HTTP 503 `unavailable`.
+8. **Recovery fence:** after a lease expiry, a barrier under `feeder_epoch <= last_expired_epoch` returns HTTP 409 `fenced_feeder_session`, whatever its sequence and position (see below).
+
+#### Error precedence
+
+When a barrier meets several rejection conditions, the first in this order
+decides the response. Every rejection leaves the graph, the applied sequence
+and position, the synchronization status and `/ready` unchanged.
+
+1. Operating mode: `409 mode_conflict`.
+2. `X-Knotrel-Instance-Id` header, then (after the body is parsed) body
+   `instance_id`: `409 stale_instance_id`.
+3. `graph_id`: `400 invalid_graph_id`.
+4. Service availability and the feeder data lane: `503 unavailable`, `503 busy`.
+5. Permanent worker failure (B6): `503 unavailable`.
+6. Session and lease: `409 session_required`, then `409 fenced_feeder_session`
+   (session or epoch mismatch), then `409 lease_expired`.
+7. Generation: `409 stale_generation`.
+8. Uninitialized or initial loading (B3, B4): `409 graph_uninitialized`.
+9. Desynchronized (B5): `409 graph_desynchronized`.
+10. Recovery fence (`feeder_epoch <= last_expired_epoch`): `409 fenced_feeder_session`.
+11. `barrier_source_position` outside 1 to 256 bytes: `422 invalid_request`.
+12. Premature sequence (B8): `409 barrier_not_reached`.
+13. Older sequence (B9): `409 superseded_barrier`.
+14. Position mismatch at equal sequence (B7): `409 barrier_position_mismatch`.
+15. Exact match (B1, B2): `200`.
+
+Before v1.0.0 the recovery fence came after B8, B9 and B7, so a fenced
+barrier with a wrong sequence or position got `barrier_not_reached`,
+`superseded_barrier` or `barrier_position_mismatch`. The reorder is an
+approved v1.0.0 exception
+([compatibility.md](compatibility.md#3-what-compatible-means)).
 
 #### Barrier Decision Table (B1 through B9)
 
@@ -1312,7 +1353,7 @@ Under the graph mutex, $(D_B, P_B)$ is matched against live frontier $(D_{applie
 #### Recovery fencing across lease expiry and session takeover
 
 In-flight barriers from a superseded, disconnected, or expired feeder session cannot corrupt live synchronization state:
-- **Recovery fencing across lease expiry:** If a lease expired, Knotrel records the expired epoch (`last_expired_epoch`). Even if the same feeder re-extends the lease via heartbeat, any barrier submitted under `feeder_epoch <= last_expired_epoch` is rejected with HTTP 409 `fenced_feeder_session`. Readiness recovery from `Stale` strictly requires registering a newly incremented epoch (`POST /v1/feeder/session` with `feeder_epoch > last_expired_epoch`) and submitting fresh barrier verification proof.
+- **Recovery fencing across lease expiry:** If a lease expired, Knotrel records the expired epoch (`last_expired_epoch`). Even if the same feeder re-extends the lease via heartbeat, any barrier submitted under `feeder_epoch <= last_expired_epoch` is rejected with HTTP 409 `fenced_feeder_session`, whatever its sequence and position (the fence precedes B8, B9 and B7). Readiness recovery from `Stale` strictly requires registering a newly incremented epoch (`POST /v1/feeder/session` with `feeder_epoch > last_expired_epoch`) and submitting fresh barrier verification proof.
 - **Session takeover fencing:** If a session takeover occurred, incoming barrier requests bearing an older `feeder_epoch` fail precondition checks with HTTP 409 `fenced_feeder_session`.
 - **Superseded sequence:** If new events were ingested by the active session, the applied delivery sequence has advanced ($D_{applied} > D_B$), causing older barriers to be conservatively rejected under Case B9 with HTTP 409 `superseded_barrier`.
 - In all cases, live graph topology, sequence, cursor, and synchronization status remain strictly untouched.
