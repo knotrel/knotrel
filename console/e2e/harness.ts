@@ -41,7 +41,6 @@ async function waitUntil(probe: () => Promise<boolean>, what: string): Promise<v
   throw new Error(`timed out waiting for ${what}`);
 }
 
-/** A running knotrel-server owned by the test. */
 /**
  * The test process's environment without the harness's own settings: the
  * server refuses unknown `KNOTREL_*` names, so `KNOTREL_SERVER_BIN` (which
@@ -53,6 +52,7 @@ function serverEnvironment(): NodeJS.ProcessEnv {
   );
 }
 
+/** A running knotrel-server owned by the test. */
 export class KnotrelServer {
   #child: ChildProcess | undefined;
   constructor(

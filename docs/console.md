@@ -126,7 +126,7 @@ Refusing different values, rather than letting one name win, keeps an
 outdated alias left in an environment file from silently redirecting, or
 being silently overridden for, the console's only upstream.
 
-Invalid values stop the container at startup. The image runs nginx as uid
+Invalid values stop the container at startup, including any value that contains a line feed or a carriage return (every value must be a single line). The image runs nginx as uid
 101, listens on port 8080, works with a read-only root filesystem and a tmpfs
 at `/tmp`, and has a health check on `/healthz`. That endpoint reveals nothing
 about the server.
