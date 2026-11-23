@@ -1159,7 +1159,7 @@ process.
 | --- | --- | --- |
 | Refused before the permit (mode, instance header, content type, `unavailable`, import capacity) | `api::feeder_import`, `acquire_import_permit` | Nothing. Capacity and `unavailable` are counted by `requests_rejected_total` (section 8). |
 | Permit acquired | `acquire_import_permit` | `in_progress` 1; `receive` starts. |
-| Body read returns | `api::feeder_import`, after `to_bytes` | `receive` observed. A failed read (size limit or body I/O error, both returned as `413 payload_too_large`) is `payload_rejected`, and the import ends. |
+| Body read returns | `api::feeder_import`, after `read_import_body` | `receive` observed. A failed read is `payload_rejected`, and the import ends, whatever its HTTP answer: the size limit (`413 payload_too_large`, also for a declared `Content-Length` over the limit, refused before any byte is read) or another body read failure such as a client abort or malformed chunked encoding (`400 invalid_request`, since v1.0.0; earlier also answered 413). No label value changes. |
 | Caller abandons the body read (request timeout, disconnect) | handler future dropped | `abandoned`; no `receive` observation; `in_progress` 0. |
 | Worker closure dropped without running (blocking pool shut down) | `spawn_blocking` task cancelled | `abandoned`; no worker phase. The caller's existing `unavailable` handling of the join error is unchanged. |
 | Worker starts | `Service::import` closure, after `JobClock::start` | The worker owns the import, and a panic from here is `worker_failed`. |

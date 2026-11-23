@@ -582,13 +582,13 @@ export interface components {
      *     | `invalid_instance_id` | 400 | every feeder route: `X-Knotrel-Instance-Id` missing or not a valid header value |
      *     | `invalid_lease_duration` | 400 | session: `lease_duration_ms` outside 1000–60000 |
      *     | `invalid_node` | 422 | events, import: a node the graph refuses for a reason other than a limit; with lifecycle support, a conflicting duplicate node in an import |
-     *     | `invalid_request` | 400, 413, 415, 422 | every JSON route: malformed JSON (400), body over 1 MiB on routes other than import (413), wrong `Content-Type` (415), shape, ID or bound violations (422); inspection query errors (422) |
+     *     | `invalid_request` | 400, 413, 415, 422 | every JSON route: malformed JSON or a body that could not be read before its end, such as a client abort or malformed chunked encoding (400), body over 1 MiB on routes other than import (413), wrong `Content-Type` (415), shape, ID or bound violations (422); inspection query errors (422) |
      *     | `lease_expired` | 409 | import, events, gap, barrier: the feeder lease expired |
      *     | `loading` | 503 | operations in source-managed mode while a baseline loads; in a batch, every item of a 200 |
      *     | `mode_conflict` | 409 | every feeder route in standalone mode |
      *     | `node_limit_exceeded` | 422 | operations, batch items, events, import |
      *     | `out_of_order_sequence` | 409 | events: delivery sequence gap; carries `expected_sequence` |
-     *     | `payload_too_large` | 413 | import: body over `KNOTREL_MAX_IMPORT_BODY_BYTES` |
+     *     | `payload_too_large` | 413 | import: body over `KNOTREL_MAX_IMPORT_BODY_BYTES`, declared by `Content-Length` or received; never another body read failure |
      *     | `precondition_failed` | 412 | import `replace`: missing or mismatching `If-Match`, or no initialized graph |
      *     | `request_timeout` | 503 | any route: `KNOTREL_REQUEST_TIMEOUT_MS` exceeded; a state-changing outcome is unknown |
      *     | `self_loop` | 422 | operations, batch items, events, import |
@@ -1406,7 +1406,7 @@ export interface operations {
             | components['schemas']['EdgeStateOutcome'];
         };
       };
-      /** @description Malformed JSON syntax */
+      /** @description Malformed JSON syntax, or a body that could not be read before its end (client abort, malformed chunked encoding; `invalid_request`, "request body could not be read"). Never a 413. */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1454,7 +1454,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds 1 MiB limit */
+      /** @description Request body exceeds the 1 MiB limit (`invalid_request`); only the limit answers 413. */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1598,7 +1598,7 @@ export interface operations {
           'application/json': components['schemas']['BatchResponse'];
         };
       };
-      /** @description Malformed JSON syntax */
+      /** @description Malformed JSON syntax, or a body that could not be read before its end (client abort, malformed chunked encoding; `invalid_request`, "request body could not be read"). Never a 413. */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1627,7 +1627,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds 1 MiB limit */
+      /** @description Request body exceeds the 1 MiB limit (`invalid_request`); only the limit answers 413. */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1708,7 +1708,7 @@ export interface operations {
           'application/json': components['schemas']['SessionResponse'];
         };
       };
-      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `lease_duration_ms` outside 1000–60000 (`invalid_lease_duration`; checked by the server, not as a 422). */
+      /** @description Malformed JSON or a body that could not be read before its end (client abort, malformed chunked encoding; `invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `lease_duration_ms` outside 1000–60000 (`invalid_lease_duration`; checked by the server, not as a 422). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1726,7 +1726,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds 1 MiB (`invalid_request`). */
+      /** @description Request body exceeds 1 MiB (`invalid_request`); only the limit answers 413, an unreadable body answers 400. */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1807,7 +1807,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds 1 MiB (`invalid_request`). */
+      /** @description Request body exceeds 1 MiB (`invalid_request`); only the limit answers 413, an unreadable body answers 400. */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1879,7 +1879,7 @@ export interface operations {
           'application/json': components['schemas']['ImportResponse'];
         };
       };
-      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`). */
+      /** @description Malformed JSON or a body that could not be read before its end (client abort, malformed chunked encoding; `invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1906,7 +1906,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Body exceeds `KNOTREL_MAX_IMPORT_BODY_BYTES` (`payload_too_large`, unlike the 1 MiB limit of the other routes, which answers `invalid_request`). */
+      /** @description Body exceeds `KNOTREL_MAX_IMPORT_BODY_BYTES` (`payload_too_large`, unlike the 1 MiB limit of the other routes, which answers `invalid_request`), either by its declared `Content-Length` (refused before any body byte is read) or while it is received, chunked bodies included. Only the limit answers 413; a body that could not be read for another reason answers 400 `invalid_request`. */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1978,7 +1978,7 @@ export interface operations {
             | components['schemas']['FeederDuplicateResponse'];
         };
       };
-      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`). */
+      /** @description Malformed JSON or a body that could not be read before its end (client abort, malformed chunked encoding; `invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -2004,7 +2004,7 @@ export interface operations {
             components['schemas']['ErrorOutcome'] | components['schemas']['PartialBatchFailure'];
         };
       };
-      /** @description Request body exceeds 1 MiB (`invalid_request`). */
+      /** @description Request body exceeds 1 MiB (`invalid_request`); only the limit answers 413, an unreadable body answers 400. */
       413: {
         headers: {
           [name: string]: unknown;
@@ -2082,7 +2082,7 @@ export interface operations {
           'application/json': components['schemas']['GapResponse'];
         };
       };
-      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`). */
+      /** @description Malformed JSON or a body that could not be read before its end (client abort, malformed chunked encoding; `invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -2100,7 +2100,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds 1 MiB (`invalid_request`). */
+      /** @description Request body exceeds 1 MiB (`invalid_request`); only the limit answers 413, an unreadable body answers 400. */
       413: {
         headers: {
           [name: string]: unknown;
@@ -2170,7 +2170,7 @@ export interface operations {
           'application/json': components['schemas']['BarrierResponse'];
         };
       };
-      /** @description Malformed JSON (`invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`). */
+      /** @description Malformed JSON or a body that could not be read before its end (client abort, malformed chunked encoding; `invalid_request`), missing or invalid `X-Knotrel-Instance-Id` (`invalid_instance_id`) or `graph_id` other than `default` (`invalid_graph_id`; a 400, although the schema declares `const`). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -2188,7 +2188,7 @@ export interface operations {
           'application/json': components['schemas']['ErrorOutcome'];
         };
       };
-      /** @description Request body exceeds 1 MiB (`invalid_request`). */
+      /** @description Request body exceeds 1 MiB (`invalid_request`); only the limit answers 413, an unreadable body answers 400. */
       413: {
         headers: {
           [name: string]: unknown;
