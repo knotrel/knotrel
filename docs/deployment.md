@@ -94,7 +94,11 @@ curl -s -w ' %{http_code}\n' http://127.0.0.1:8080/ready    # {"status":"uniniti
 ```
 
 Add other `-e KNOTREL_…` variables at `docker run` time. Do not use `--rm` if
-you need the exit code after stopping.
+you need the exit code after stopping. An unknown `KNOTREL_*` variable stops the
+server at startup, except the console's: the server ignores every
+`KNOTREL_CONSOLE_*` variable (and the console's deprecated aliases
+`KNOTREL_UPSTREAM` and `KNOTREL_UPSTREAM_TIMEOUT`), so one environment file
+can serve the server and the [console](console.md#container-configuration).
 
 ## Probes and states
 

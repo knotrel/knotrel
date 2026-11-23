@@ -156,7 +156,12 @@ errors of their status class. Error `message` texts are internal.
 
 **Configuration.** A stable `KNOTREL_*` variable keeps its name, accepted
 values and default; a new variable has a default that preserves previous
-behavior.
+behavior. A renamed variable keeps its previous name as a deprecated alias
+(section 4), with a documented rule for when both names are set: the console's
+`KNOTREL_UPSTREAM` and `KNOTREL_UPSTREAM_TIMEOUT` are such aliases in 1.x
+([console.md](console.md#container-configuration)). The `KNOTREL_CONSOLE_`
+prefix and those two aliases belong to the console: the server never defines a
+setting under them and ignores them.
 
 **Metrics** (`GET /metrics`, opt-in). Stable families keep their name, type,
 unit and label names; label values documented as a closed set are only

@@ -275,7 +275,8 @@ cd knotrel-server-v0.9.0-x86_64-pc-windows-msvc
 
 Configuration is read once at startup from environment variables; it cannot be
 changed through requests. Invalid values and unknown `KNOTREL_` variables stop
-startup.
+startup; the console's `KNOTREL_CONSOLE_*` variables (and its two deprecated
+aliases) are reserved and ignored, so one environment file can serve both.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

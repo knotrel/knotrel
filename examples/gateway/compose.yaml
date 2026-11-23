@@ -43,7 +43,7 @@ services:
     image: knotrel-console:local
     network_mode: service:knotrel
     environment:
-      KNOTREL_UPSTREAM: http://127.0.0.1:9080
+      KNOTREL_CONSOLE_UPSTREAM: http://127.0.0.1:9080
       # Loopback only: other containers on the network cannot bypass the gateway.
       KNOTREL_CONSOLE_LISTEN: 127.0.0.1:8080
       KNOTREL_CONSOLE_SERVER_NAMES: localhost

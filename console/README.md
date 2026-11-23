@@ -108,14 +108,14 @@ docker network create knotrel
 docker run -d --name knotrel --network knotrel -e KNOTREL_MODE=standalone knotrel-server:example
 docker run -d --name knotrel-console --network knotrel \
   -p 127.0.0.1:7380:8080 \
-  -e KNOTREL_UPSTREAM=http://knotrel:8080 \
+  -e KNOTREL_CONSOLE_UPSTREAM=http://knotrel:8080 \
   --read-only --tmpfs /tmp --cap-drop ALL \
   ghcr.io/knotrel/knotrel-console:0.9.0
 ```
 
 Open <http://127.0.0.1:7380/>. If your server already runs in another
 container, attach the console to that container's network and point
-`KNOTREL_UPSTREAM` at it.
+`KNOTREL_CONSOLE_UPSTREAM` at it.
 
 ### Stop, restart, remove
 
@@ -140,20 +140,28 @@ curl http://127.0.0.1:7380/healthz                # prints "ok" while nginx is u
 Logs show the startup check (`forwarding /api to …`) and one line per request:
 client address, method, path without query string, status, size and
 duration. Request bodies, headers and credentials are never logged. Startup
-errors also appear here, for example an invalid `KNOTREL_UPSTREAM`.
+errors also appear here, for example an invalid `KNOTREL_CONSOLE_UPSTREAM`.
 
 `/healthz` checks the console container only. Server state is shown in the
 UI (Overview → Liveness and readiness).
 
 ## Configuration
 
-| Variable                       | Default                     | Meaning                                                                                      |
-| ------------------------------ | --------------------------- | -------------------------------------------------------------------------------------------- |
-| `KNOTREL_UPSTREAM`             | required                    | Server base URL, e.g. `http://knotrel:8080`. Fixed at startup; the browser cannot change it. |
-| `KNOTREL_CONSOLE_SERVER_NAMES` | `localhost 127.0.0.1 [::1]` | Host names the console answers to. Add your DNS name when a gateway forwards to it.          |
-| `KNOTREL_CONSOLE_SERVER_LABEL` | the upstream URL            | Server name shown in the connection indicator (display only).                                |
-| `KNOTREL_UPSTREAM_TIMEOUT`     | `35s`                       | Upstream timeout.                                                                            |
-| `KNOTREL_CONSOLE_LISTEN`       | `8080 [::]:8080`            | Listen addresses; `127.0.0.1:8080` when a gateway shares the container's network namespace.  |
+| Variable                           | Default                     | Meaning                                                                                      |
+| ---------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------- |
+| `KNOTREL_CONSOLE_UPSTREAM`         | required                    | Server base URL, e.g. `http://knotrel:8080`. Fixed at startup; the browser cannot change it. |
+| `KNOTREL_CONSOLE_SERVER_NAMES`     | `localhost 127.0.0.1 [::1]` | Host names the console answers to. Add your DNS name when a gateway forwards to it.          |
+| `KNOTREL_CONSOLE_SERVER_LABEL`     | the upstream URL            | Server name shown in the connection indicator (display only).                                |
+| `KNOTREL_CONSOLE_UPSTREAM_TIMEOUT` | `35s`                       | Upstream timeout.                                                                            |
+| `KNOTREL_CONSOLE_LISTEN`           | `8080 [::]:8080`            | Listen addresses; `127.0.0.1:8080` when a gateway shares the container's network namespace.  |
+
+The server ignores these `KNOTREL_CONSOLE_*` variables, so one environment file
+can configure both. The `KNOTREL_CONSOLE_UPSTREAM*` names are new in 1.0.0
+(unreleased); images up to 0.9.x accept only the pre-1.0 names
+`KNOTREL_UPSTREAM` and `KNOTREL_UPSTREAM_TIMEOUT`, which still work in 1.x as
+deprecated aliases (with a warning in the logs); setting both an alias and its
+new name to different values stops the container. Details:
+[docs/console.md](../docs/console.md#container-configuration).
 
 The container listens on port 8080 as an unprivileged user and supports a
 read-only filesystem with a tmpfs at `/tmp`.
@@ -169,14 +177,14 @@ through it.
 
 ## Troubleshooting
 
-| Symptom                                        | Cause and fix                                                                                                      |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `compose.yaml: no such file or directory`      | The command ran outside the repository root. Use the scripts, or `cd` to the repository root first.                |
-| Container exits right after start              | Invalid configuration: run `docker logs knotrel-console`, fix the variable and run it again.                       |
-| Browser shows `421` / "unexpected Host header" | You opened it through a name not in `KNOTREL_CONSOLE_SERVER_NAMES`; add it.                                        |
-| UI says "Server unreachable"                   | The server is down or not on the console's network. Check `KNOTREL_UPSTREAM` and `docker network inspect knotrel`. |
-| `docker pull` fails                            | Check the tag (`0.8.0` or later) and network access to `ghcr.io`, or build it locally.                             |
-| Port 7380 already in use                       | Publish another port, e.g. `-p 127.0.0.1:7381:8080`.                                                               |
+| Symptom                                        | Cause and fix                                                                                                              |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `compose.yaml: no such file or directory`      | The command ran outside the repository root. Use the scripts, or `cd` to the repository root first.                        |
+| Container exits right after start              | Invalid configuration: run `docker logs knotrel-console`, fix the variable and run it again.                               |
+| Browser shows `421` / "unexpected Host header" | You opened it through a name not in `KNOTREL_CONSOLE_SERVER_NAMES`; add it.                                                |
+| UI says "Server unreachable"                   | The server is down or not on the console's network. Check `KNOTREL_CONSOLE_UPSTREAM` and `docker network inspect knotrel`. |
+| `docker pull` fails                            | Check the tag (`0.8.0` or later) and network access to `ghcr.io`, or build it locally.                                     |
+| Port 7380 already in use                       | Publish another port, e.g. `-p 127.0.0.1:7381:8080`.                                                                       |
 
 ## License
 

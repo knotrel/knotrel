@@ -39,7 +39,7 @@ docker run -d --name "$server" --network "$network" --network-alias knotrel \
     -e KNOTREL_INSPECTION=true -e KNOTREL_METRICS_ENABLED=true \
     --read-only --cap-drop ALL "$server_image" >/dev/null
 docker run -d --name "$console" --network "$network" -p "127.0.0.1:$port:8080" \
-    -e KNOTREL_UPSTREAM=http://knotrel:8080 -e KNOTREL_CONSOLE_SERVER_LABEL="smoke server" \
+    -e KNOTREL_CONSOLE_UPSTREAM=http://knotrel:8080 -e KNOTREL_CONSOLE_SERVER_LABEL="smoke server" \
     --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
     "$console_image" >/dev/null
 
@@ -108,16 +108,36 @@ docker stop -t 1 "$server" >/dev/null
 [[ "$(status "$base/api/health")" =~ ^50[24]$ ]] || fail "unreachable status"
 pass "stopped server reported as upstream_unreachable (not delivered)"
 
+if docker run --rm -e KNOTREL_CONSOLE_UPSTREAM='http://user:pw@knotrel:8080' "$console_image" >/dev/null 2>&1; then
+    fail "credentials in KNOTREL_CONSOLE_UPSTREAM accepted"
+fi
 if docker run --rm -e KNOTREL_UPSTREAM='http://user:pw@knotrel:8080' "$console_image" >/dev/null 2>&1; then
-    fail "credentials in KNOTREL_UPSTREAM accepted"
+    fail "credentials in the alias KNOTREL_UPSTREAM accepted"
 fi
 if docker run --rm "$console_image" >/dev/null 2>&1; then
-    fail "missing KNOTREL_UPSTREAM accepted"
+    fail "missing KNOTREL_CONSOLE_UPSTREAM accepted"
 fi
-if docker run --rm -e KNOTREL_UPSTREAM=http://knotrel:8080 -e KNOTREL_CONSOLE_LISTEN='0.0.0.0:8080; evil' "$console_image" >/dev/null 2>&1; then
+if docker run --rm -e KNOTREL_CONSOLE_UPSTREAM=http://knotrel:8080 -e KNOTREL_CONSOLE_LISTEN='0.0.0.0:8080; evil' "$console_image" >/dev/null 2>&1; then
     fail "invalid KNOTREL_CONSOLE_LISTEN accepted"
 fi
 pass "invalid configuration stops the container"
+
+# Deprecated aliases (docs/console.md, "Container configuration"): the image's
+# entrypoint runs, then nginx -T prints the effective configuration. IP literals
+# keep nginx from resolving upstream names that exist only on the smoke network.
+config() { docker run --rm --read-only --tmpfs /tmp --cap-drop ALL "$@" "$console_image" nginx -T 2>&1; }
+deprecated='warning: KNOTREL_UPSTREAM is deprecated'
+out="$(config -e KNOTREL_CONSOLE_UPSTREAM=http://127.0.0.1:9081)" || fail "new name only: $out"
+[[ "$out" == *'proxy_pass http://127.0.0.1:9081/health;'* && "$out" != *'is deprecated'* && "$out" == *'proxy_read_timeout 35s;'* ]] || fail "new name only: $out"
+out="$(config -e KNOTREL_UPSTREAM=http://127.0.0.2:9082 -e KNOTREL_UPSTREAM_TIMEOUT=40s)" || fail "alias only: $out"
+[[ "$out" == *'proxy_pass http://127.0.0.2:9082/health;'* && "$out" == *"$deprecated"* && "$out" == *'proxy_read_timeout 40s;'* ]] || fail "alias only: $out"
+out="$(config -e KNOTREL_CONSOLE_UPSTREAM=http://127.0.0.1:9081 -e KNOTREL_UPSTREAM=http://127.0.0.1:9081)" || fail "both equal: $out"
+[[ "$out" == *'proxy_pass http://127.0.0.1:9081/health;'* && "$out" == *"$deprecated"* ]] || fail "both equal: $out"
+if out="$(config -e KNOTREL_CONSOLE_UPSTREAM=http://127.0.0.1:9081 -e KNOTREL_UPSTREAM=http://127.0.0.2:9082)"; then
+    fail "both names with different values accepted: $out"
+fi
+[[ "$out" == *'both set, with different values'* ]] || fail "both different: $out"
+pass "deprecated aliases: alias only and both equal warn, different values refused"
 
 if [[ -n "$dist_dir" ]]; then
     expected="$(cd "$dist_dir" && find . -type f | LC_ALL=C sort | xargs sha256sum 2>/dev/null || (cd "$dist_dir" && find . -type f | LC_ALL=C sort | xargs shasum -a 256))"

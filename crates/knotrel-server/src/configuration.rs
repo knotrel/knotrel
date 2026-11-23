@@ -160,6 +160,20 @@ impl Default for ServerConfig {
     }
 }
 
+/// Prefix of the variables owned by the operational console container; the
+/// server never defines a setting under it and ignores every such name.
+const CONSOLE_VARIABLE_PREFIX: &str = "KNOTREL_CONSOLE_";
+
+/// The console's deprecated variable names (aliases of
+/// `KNOTREL_CONSOLE_UPSTREAM` and `KNOTREL_CONSOLE_UPSTREAM_TIMEOUT`, kept for
+/// the 1.x series), also console-owned and ignored by the server.
+const CONSOLE_LEGACY_VARIABLES: [&str; 2] = ["KNOTREL_UPSTREAM", "KNOTREL_UPSTREAM_TIMEOUT"];
+
+/// Whether `name` belongs to the console's reserved namespace.
+fn is_console_variable(name: &str) -> bool {
+    name.starts_with(CONSOLE_VARIABLE_PREFIX) || CONSOLE_LEGACY_VARIABLES.contains(&name)
+}
+
 impl ServerConfig {
     /// Default loopback listener address.
     pub const DEFAULT_ADDRESS: SocketAddr =
@@ -483,7 +497,11 @@ impl ServerConfig {
     ///
     /// Returns [`ConfigError`] for unknown `KNOTREL_` keys, non-Unicode names
     /// or values in that namespace, unsupported engines and malformed values.
-    /// Unrelated environment variables are ignored. There is no hot reload.
+    /// Unrelated environment variables are ignored, and so are the variables
+    /// owned by the operational console: every `KNOTREL_CONSOLE_*` name and the
+    /// console's deprecated aliases `KNOTREL_UPSTREAM` and
+    /// `KNOTREL_UPSTREAM_TIMEOUT`, so that one environment file can configure
+    /// both. No server setting uses those names. There is no hot reload.
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_variables(std::env::vars_os())
     }
@@ -515,6 +533,9 @@ impl ServerConfig {
             let name = name
                 .into_string()
                 .map_err(|_| ConfigError("KNOTREL_ setting name must be valid Unicode".into()))?;
+            if is_console_variable(&name) {
+                continue;
+            }
             let Some(setting) = Setting::parse(&name) else {
                 return Err(ConfigError(format!("unknown setting: {name}")));
             };
@@ -770,6 +791,8 @@ mod tests {
         );
         for (setting, name) in Setting::ALL.into_iter().zip(names) {
             assert_eq!(Setting::parse(name), Some(setting));
+            // The console's namespace stays disjoint from the server's settings.
+            assert!(!is_console_variable(name), "{name}");
         }
         assert_eq!(Setting::parse("KNOTREL_UNKNOWN"), None);
     }
@@ -1153,6 +1176,71 @@ mod tests {
         assert!(
             ServerConfig::from_variables([(
                 OsString::from_vec(vec![0xff]),
+                OsString::from_vec(vec![0xff])
+            )])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn console_variables_are_ignored() {
+        let config = ServerConfig::from_variables([
+            (
+                "KNOTREL_CONSOLE_UPSTREAM".into(),
+                "http://knotrel:8080".into(),
+            ),
+            ("KNOTREL_CONSOLE_UPSTREAM_TIMEOUT".into(), "35s".into()),
+            ("KNOTREL_CONSOLE_LISTEN".into(), "127.0.0.1:8080".into()),
+            ("KNOTREL_CONSOLE_SERVER_NAMES".into(), "localhost".into()),
+            ("KNOTREL_CONSOLE_SERVER_LABEL".into(), "demo".into()),
+            // The prefix is reserved as a whole, including future names.
+            ("KNOTREL_CONSOLE_FUTURE_SETTING".into(), "x".into()),
+            ("KNOTREL_CONSOLE_".into(), "".into()),
+            ("KNOTREL_ENGINE".into(), "hdt".into()),
+        ])
+        .unwrap();
+        assert_eq!(config.engine(), EngineConfig::Hdt);
+        assert_eq!(config.address(), ServerConfig::default().address());
+    }
+
+    #[test]
+    fn console_legacy_aliases_are_ignored() {
+        let config = ServerConfig::from_variables([
+            ("KNOTREL_UPSTREAM".into(), "http://knotrel:8080".into()),
+            ("KNOTREL_UPSTREAM_TIMEOUT".into(), "35s".into()),
+        ])
+        .unwrap();
+        assert_eq!(config.engine(), EngineConfig::default());
+    }
+
+    #[test]
+    fn unknown_server_like_names_still_fail() {
+        for name in [
+            "KNOTREL_UPSTREAM_URL",
+            "KNOTREL_UPSTREAMS",
+            "KNOTREL_CONSOLE",
+            "KNOTREL_CONSOLEUPSTREAM",
+            "KNOTREL_console_UPSTREAM",
+            "KNOTREL_ADDRESS",
+            "KNOTREL_MAX_NODE",
+        ] {
+            let error = ServerConfig::from_variables([(name.into(), "1".into())]).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown setting: {name}")),
+                "{name}: {error}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_unicode_console_values_are_ignored() {
+        use std::os::unix::ffi::OsStringExt;
+        assert!(
+            ServerConfig::from_variables([(
+                "KNOTREL_CONSOLE_SERVER_LABEL".into(),
                 OsString::from_vec(vec![0xff])
             )])
             .is_ok()

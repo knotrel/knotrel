@@ -190,7 +190,8 @@ narrowed.
 Items that move the other way (now Stable): `router_with_lifecycle`
 (Internal before), `EngineConfig::as_str`, `ConnectivityGraph::new`,
 `with_limits`, `limits` and `engine` (unnamed before, R8), `LOG_FORMAT` (C2) and
-the console variables `KNOTREL_UPSTREAM_TIMEOUT`, `KNOTREL_CONSOLE_LISTEN` and
+the console variables `KNOTREL_UPSTREAM_TIMEOUT` (since renamed
+`KNOTREL_CONSOLE_UPSTREAM_TIMEOUT`, v1.0 review item S13), `KNOTREL_CONSOLE_LISTEN` and
 `KNOTREL_CONSOLE_SERVER_NAMES` (C1); from the later decisions of 2026-11-22,
 `LifecycleStorage` and every ETT and HDT interface (`EngineConfig::EulerTour`,
 `ForestGraph`, `ForestStats`, `EngineConfig::Hdt`, `HdtGraph`, `HdtStats`,
@@ -232,6 +233,7 @@ done only with an entry in `docs/api/approved-breaking-changes.yaml`.
 | `KNOTREL_FEEDER_RESERVED_JOBS` | Experimental (new in 0.9.0) |
 | `LOG_FORMAT` | Stable: `json` (any case) selects JSON log lines, any other value or none selects text. The content of log lines is internal |
 | `RUST_LOG` | Internal: filter syntax owned by `tracing-subscriber`; the default is `info` |
+| `KNOTREL_CONSOLE_*` prefix, `KNOTREL_UPSTREAM`, `KNOTREL_UPSTREAM_TIMEOUT` | Stable: reserved for the console container. The server defines no setting under these names and ignores them (no startup failure), so one environment file can configure both; every other unknown `KNOTREL_*` name fails startup |
 
 ## Metrics
 
@@ -265,7 +267,7 @@ Adding the label to these existing families is an approved exception of the
 
 | Artifact | Class |
 | --- | --- |
-| Console UI and its container configuration (`KNOTREL_UPSTREAM`, `KNOTREL_UPSTREAM_TIMEOUT`, `KNOTREL_CONSOLE_LISTEN`, `KNOTREL_CONSOLE_SERVER_NAMES`, `KNOTREL_CONSOLE_SERVER_LABEL`) | Stable for configuration; the UI itself carries no API promise |
+| Console UI and its container configuration (`KNOTREL_CONSOLE_UPSTREAM`, `KNOTREL_CONSOLE_UPSTREAM_TIMEOUT`, `KNOTREL_CONSOLE_LISTEN`, `KNOTREL_CONSOLE_SERVER_NAMES`, `KNOTREL_CONSOLE_SERVER_LABEL`) | Stable for configuration; the UI itself carries no API promise. `KNOTREL_UPSTREAM` and `KNOTREL_UPSTREAM_TIMEOUT` are deprecated aliases of the two upstream variables, supported throughout 1.x with the precedence rule of [console.md](console.md#container-configuration); their removal follows the [deprecation rule](compatibility.md#4-deprecation) |
 | Console static archive layout | Internal |
 | `integrations/postgres-feeder` (code, settings, positions, exit codes) | Example: no promise ([compatibility.md](compatibility.md#7-what-this-does-not-cover)) |
 | Log messages and fields | Internal |

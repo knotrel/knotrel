@@ -136,7 +136,7 @@ and the smoke script together).
 
 | ID | Threat | Mitigation | Validation |
 | --- | --- | --- | --- |
-| T3.1 | Console used as an open proxy to arbitrary upstreams (S, E) | Upstream fixed by `KNOTREL_UPSTREAM`; credentials in it are refused; startup fails without it | smoke-container: "credentials in KNOTREL_UPSTREAM accepted" / "missing KNOTREL_UPSTREAM accepted" must fail |
+| T3.1 | Console used as an open proxy to arbitrary upstreams (S, E) | Upstream fixed by `KNOTREL_CONSOLE_UPSTREAM`; credentials in it are refused; startup fails without it | smoke-container: "credentials in KNOTREL_CONSOLE_UPSTREAM accepted" / "missing KNOTREL_CONSOLE_UPSTREAM accepted" must fail |
 | T3.2 | Feeder takeover through the console (E) | Route allowlist; feeder routes never forwarded | smoke-container: "feeder route hidden" (404), "unknown node subpath rejected", "non-numeric node path rejected", "method check" |
 | T3.3 | DNS rebinding (S) | Only accepted `Host` names are served (421 otherwise) | smoke-container: "Host check" |
 | T3.4 | Cross-site request forgery (T) | `Origin` must match; `Sec-Fetch-Site` must be `same-origin` or absent | smoke-container: "Origin check", "Sec-Fetch-Site check" |

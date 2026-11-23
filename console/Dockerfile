@@ -1,6 +1,6 @@
 # knotrel-console: the static Knotrel operational console served by an
 # unprivileged nginx that forwards an allowlist of /api routes to one Knotrel
-# server fixed by KNOTREL_UPSTREAM. Build from the console/ directory:
+# server fixed by KNOTREL_CONSOLE_UPSTREAM. Build from the console/ directory:
 #   docker build -t knotrel-console:dev console
 # Configuration, trust boundary and deployment: docs/console.md.
 
@@ -30,13 +30,15 @@ RUN rm -f /etc/nginx/conf.d/default.conf && rm -rf /usr/share/nginx/html/*
 USER 101
 COPY container/nginx.conf /etc/nginx/nginx.conf
 COPY container/knotrel/ /etc/nginx/knotrel/
-COPY container/templates/ /etc/nginx/templates/
+# Not /etc/nginx/templates: the entrypoint script renders them itself with the
+# resolved values (KNOTREL_CONSOLE_UPSTREAM may come from its deprecated alias).
+COPY container/templates/ /etc/nginx/knotrel/templates/
 COPY container/entrypoint/15-knotrel-console.sh /docker-entrypoint.d/15-knotrel-console.sh
 COPY --from=assets /console/dist/ /usr/share/nginx/html/
-ENV NGINX_ENVSUBST_OUTPUT_DIR=/tmp/knotrel-console \
-    NGINX_ENVSUBST_FILTER=KNOTREL_ \
-    KNOTREL_CONSOLE_SERVER_NAMES="localhost 127.0.0.1 [::1]" \
-    KNOTREL_UPSTREAM_TIMEOUT=35s
+# No default for KNOTREL_CONSOLE_UPSTREAM_TIMEOUT here (the entrypoint applies
+# 35s): an image default would be indistinguishable from an operator's value
+# when the deprecated alias KNOTREL_UPSTREAM_TIMEOUT is also set.
+ENV KNOTREL_CONSOLE_SERVER_NAMES="localhost 127.0.0.1 [::1]"
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
     CMD ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
