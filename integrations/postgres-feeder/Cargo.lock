@@ -535,7 +535,7 @@ dependencies = [
 
 [[package]]
 name = "knotrel-pg-feeder"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "pgwire-replication",
  "reqwest",

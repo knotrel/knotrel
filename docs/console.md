@@ -357,10 +357,9 @@ what needs attention.
 one version number (lockstep) and are released together; use the console with
 the server of the same version. With the previous server minor the console
 still works except for features the server lacks. Console 0.9 was verified
-against server 0.8.0 and 0.9.0. Console 1.0.0-rc.1 (unreleased, the first
-release candidate of 1.0.0) was verified on 2026-11-23 against a server built
-from the candidate branch, which reports version `1.0.0-rc.1` in
-`knotrel_build_info`, and against server 0.9.0 built from tag `v0.9.0`
+against server 0.8.0 and 0.9.0. Console 1.0.0 was verified on 2026-11-24
+against the server built from the release commit, which reports version
+`1.0.0` in `knotrel_build_info`, and against server 0.9.0 built from tag `v0.9.0`
 (browser tests, Chromium and Firefox, 14 of 14 on each browser for each
 server); with server 0.9 the Performance page shows one unlabelled admission
 row, because per-lane metrics start with server 1.0.0.
@@ -370,13 +369,9 @@ see [Server flags, in short](#server-flags-in-short).
 
 The console declares the server versions it supports in
 `console/package.json` (`knotrel.supportedServer`, currently
-`>=0.9.0 <1.0.0 || >=1.0.0-rc.1 <1.1.0`). The range is read with npm (node-semver)
-rules, under which a prerelease such as `1.0.0-rc.1` satisfies only a comparator
-set that names a prerelease of the same `X.Y.Z`; a plain `>=0.9.0 <1.1.0` would
-therefore exclude every 1.0.0 release candidate. The second set admits the 1.0.0
-release candidates from `rc.1` on (not earlier prereleases such as
-`1.0.0-alpha`), 1.0.0 and its 1.0.x patches; prereleases of other versions, such
-as `1.1.0-rc.1`, are outside it.
+`>=0.9.0 <1.1.0`): servers 0.9.x, 1.0.0 and its 1.0.x patches. The range is
+read with npm (node-semver) rules, under which it admits no prerelease; no
+1.0.0 release candidate was published.
 It also records the SHA-256 of the `docs/openapi.yaml` revision it was
 generated from (`knotrel.openapiSha256`), which the archive's
 `console-manifest.json` repeats. CI fails when the generated types or that

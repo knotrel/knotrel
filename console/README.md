@@ -19,11 +19,11 @@ it (the Compose example turns them all on):
 
 Why each is optional, and what it costs: [docs/console.md](../docs/console.md#server-flags-in-short).
 
-> **Status: released.** Console 0.9.0 was released together with server 0.9.0
-> (2026-11-22).
+> **Status: released.** Console 1.0.0 was released together with server 1.0.0
+> (2026-11-24).
 
 **Versions.** The console has the same version as the server (lockstep):
-use them at the same version. Console 0.9 also works with server 0.8
+use them at the same version. Console 1.0 also works with server 0.9
 (verified with the browser tests on Chromium and Firefox).
 
 The console ships as a container image (nginx serving the UI and forwarding
@@ -83,7 +83,7 @@ repository root:
 Pull it from GitHub Container Registry:
 
 ```sh
-docker pull ghcr.io/knotrel/knotrel-console:0.9.0
+docker pull ghcr.io/knotrel/knotrel-console:1.0.0
 ```
 
 To test local changes, build it from the repository root:
@@ -92,7 +92,7 @@ To test local changes, build it from the repository root:
 docker build -t knotrel-console:dev console
 ```
 
-Use `knotrel-console:dev` in place of `ghcr.io/knotrel/knotrel-console:0.9.0`
+Use `knotrel-console:dev` in place of `ghcr.io/knotrel/knotrel-console:1.0.0`
 in the commands below. Images are tagged by version; `latest` is used only
 for stable releases.
 
@@ -110,7 +110,7 @@ docker run -d --name knotrel-console --network knotrel \
   -p 127.0.0.1:7380:8080 \
   -e KNOTREL_CONSOLE_UPSTREAM=http://knotrel:8080 \
   --read-only --tmpfs /tmp --cap-drop ALL \
-  ghcr.io/knotrel/knotrel-console:0.9.0
+  ghcr.io/knotrel/knotrel-console:1.0.0
 ```
 
 Open <http://127.0.0.1:7380/>. If your server already runs in another
@@ -156,8 +156,8 @@ UI (Overview → Liveness and readiness).
 | `KNOTREL_CONSOLE_LISTEN`           | `8080 [::]:8080`            | Listen addresses; `127.0.0.1:8080` when a gateway shares the container's network namespace.  |
 
 The server ignores these `KNOTREL_CONSOLE_*` variables, so one environment file
-can configure both. The `KNOTREL_CONSOLE_UPSTREAM*` names are new in 1.0.0
-(unreleased); images up to 0.9.x accept only the pre-1.0 names
+can configure both. The `KNOTREL_CONSOLE_UPSTREAM*` names are new in 1.0.0;
+images up to 0.9.x accept only the pre-1.0 names
 `KNOTREL_UPSTREAM` and `KNOTREL_UPSTREAM_TIMEOUT`, which still work in 1.x as
 deprecated aliases (with a warning in the logs); setting both an alias and its
 new name to different values stops the container. Details:
