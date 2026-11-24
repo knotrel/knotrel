@@ -12,9 +12,9 @@ the Knotrel in-memory dynamic graph connectivity engine ([`knotrel-core`](https:
 - **Dynamic graph mutations**: Insert (`link`) and delete (`cut`) edges dynamically.
 - **Exact reachability queries**: Query whether two vertices are connected (`connected`).
 - **Batch execution**: Isolated batch processing via `/v1/batch` (1–1024 operations). Batch operations execute sequentially in input order under one graph-lock acquisition without concurrent interleaving: exclusive when the batch contains a mutation, shared when every operation is a query, so query-only requests can run in parallel. If an operation fails, previously completed operations are retained in graph state (no transactional rollback is provided).
-- **Node and edge lifecycle (opt-in, `compact-bfs` only)**: With `KNOTREL_TOPOLOGY_LIFECYCLE=true` (which requires `KNOTREL_ENGINE=compact-bfs`; the server refuses to start with `ett` or `hdt`), deactivate and reactivate nodes, disable and re-enable edges without deleting them, remove nodes permanently, and inspect node and edge state. Connectivity uses only enabled edges between active nodes.
+- **Node and edge lifecycle (opt-in, `compact-bfs`; `cluster-forest` from 1.1, unreleased)**: With `KNOTREL_TOPOLOGY_LIFECYCLE=true` (which requires `KNOTREL_ENGINE=compact-bfs` or `cluster-forest`; the server refuses to start with `ett` or `hdt`), deactivate and reactivate nodes, disable and re-enable edges without deleting them, remove nodes permanently, and inspect node and edge state. Connectivity uses only enabled edges between active nodes.
 - **Inspection (opt-in, since 0.8)**: With `KNOTREL_INSPECTION=true`, read-only routes list nodes and edges with cursor paging and state filters (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges`), bounded per page and independent of graph size. They power the Knotrel console's data browser. When off (the default) the server keeps no extra state.
-- **Engine selection**: Built on `knotrel-core`, configurable with Compact BFS (default), experimental Euler Tour Trees (`ett`), or experimental Holm–de Lichtenberg–Thorup (`hdt`).
+- **Engine selection**: Built on `knotrel-core`, configurable with Compact BFS (default), experimental Euler Tour Trees (`ett`), experimental Holm–de Lichtenberg–Thorup (`hdt`), or, from 1.1 (unreleased), the experimental cluster forest (`cluster-forest`).
 - **Telemetry and lifecycle**: Clean liveness (`/health`), readiness (`/ready`), instance configuration (`/v1/info`), and live graph snapshot stats (`/v1/stats`).
 - **Safe defaults**: Loopback-only binding by default, bounded request timeout, configurable queue limits, and graceful drain.
 
@@ -43,7 +43,7 @@ By default, the server binds to `127.0.0.1:8080`.
 | --- | --- | --- |
 | `KNOTREL_ADDR` | `127.0.0.1:8080` | IP address and port to bind to |
 | `KNOTREL_ALLOW_NON_LOOPBACK` | `false` | Set to `true` to permit non-loopback bind |
-| `KNOTREL_ENGINE` | `compact-bfs` | Dynamic connectivity engine (`compact-bfs`, `ett`, or `hdt`) |
+| `KNOTREL_ENGINE` | `compact-bfs` | Dynamic connectivity engine (`compact-bfs`, `ett`, `hdt`, or `cluster-forest` from 1.1, unreleased) |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Maximum queued and concurrent graph operations |
 | `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (since 0.9) |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered node count (`unlimited` to remove ceiling) |

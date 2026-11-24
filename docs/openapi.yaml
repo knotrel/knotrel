@@ -1395,7 +1395,8 @@ paths:
       description: |
         Read-only inspection route (`KNOTREL_INSPECTION=true`). Returns the node's flag and
         registered degree. `degree` is `null` for engines without per-node adjacency (`ett`,
-        `hdt`). Accepts no query parameters.
+        `hdt`, and `cluster-forest` without lifecycle support; with lifecycle the degree comes
+        from the topology catalog). Accepts no query parameters.
       parameters:
         - $ref: '#/components/parameters/InspectionNode'
       responses:
@@ -1605,7 +1606,8 @@ components:
     InspectionConflict:
       description: |
         `inspection_disabled` (KNOTREL_INSPECTION is not enabled; rejected before admission)
-        or `inspection_unsupported` (incident and edge listing on `ett` or `hdt`).
+        or `inspection_unsupported` (incident and edge listing on `ett` or `hdt`, or on
+        `cluster-forest` without lifecycle support).
       headers:
         Cache-Control:
           schema:
@@ -2138,8 +2140,10 @@ components:
       properties:
         engine:
           type: string
-          enum: [compact-bfs, ett, hdt]
-          description: Configured connectivity engine.
+          enum: [compact-bfs, ett, hdt, cluster-forest]
+          description: |
+            Configured connectivity engine. `cluster-forest` is new in 1.1 (stable value,
+            experimental engine, like `ett` and `hdt`).
         experimental:
           type: boolean
           description: |
@@ -2147,8 +2151,8 @@ components:
             `true` when the engine is qualified experimental as to performance,
             maturity and usage recommendation, which carry no promise. It is not a
             stability class: the engine's interfaces, including its `engine` value,
-            are stable either way. `false` for `compact-bfs`; `true` for `ett` and
-            `hdt`, possibly for the whole 1.x series. The value may change from
+            are stable either way. `false` for `compact-bfs`; `true` for `ett`, `hdt`
+            and `cluster-forest`, possibly for the whole 1.x series. The value may change from
             `true` to `false` in a minor release when an engine is promoted, which
             the release notes record, and never changes from `false` to `true` for
             an existing engine. Neither change is breaking.
@@ -2171,10 +2175,16 @@ components:
           description: Maximum operations in a single batch request.
         max_nodes:
           type: [integer, "null"]
-          description: Maximum node capacity bound, or null if unlimited.
+          description: |
+            Configured maximum node capacity (`KNOTREL_MAX_NODES`), or null if unlimited.
+            With `cluster-forest` the enforced ceiling can be lower (the engine's
+            capacity; see `docs/http-api.md`, graph capacity errors).
         max_edges:
           type: [integer, "null"]
-          description: Maximum edge capacity bound, or null if unlimited.
+          description: |
+            Configured maximum edge capacity (`KNOTREL_MAX_EDGES`), or null if unlimited.
+            With `cluster-forest` the enforced ceiling can be lower (the engine's
+            capacity; see `docs/http-api.md`, graph capacity errors).
         topology_lifecycle:
           type: boolean
           const: true
@@ -2289,7 +2299,9 @@ components:
         degree:
           type: [integer, "null"]
           minimum: 0
-          description: Registered incident edges (enabled or not); `null` for `ett` and `hdt`.
+          description: |
+            Registered incident edges (enabled or not); `null` for `ett` and `hdt`, and for
+            `cluster-forest` without lifecycle support.
 
     NodePage:
       type: object

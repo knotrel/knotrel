@@ -33,6 +33,7 @@ async fn snapshots_count_only_effective_operations_for_every_engine() {
         EngineConfig::CompactBfs,
         EngineConfig::EulerTour,
         EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
     ] {
         let app = router_with_config(
             ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 32)

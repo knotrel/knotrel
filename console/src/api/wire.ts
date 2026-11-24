@@ -101,4 +101,9 @@ export const READINESS_LABELS = [
 ] as const satisfies readonly ReadinessLabel[];
 
 /** Every engine name. */
-export const ENGINES = ['compact-bfs', 'ett', 'hdt'] as const satisfies readonly EngineName[];
+export const ENGINES = [
+  'compact-bfs',
+  'ett',
+  'hdt',
+  'cluster-forest',
+] as const satisfies readonly EngineName[];

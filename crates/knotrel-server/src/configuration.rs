@@ -351,15 +351,16 @@ impl ServerConfig {
     /// # Errors
     ///
     /// Enabling it returns [`ConfigError`] unless the configured engine is
-    /// `compact-bfs`: lifecycle support for `ett` and `hdt` is deferred, and
+    /// `compact-bfs` or `cluster-forest` (new in 1.1, experimental engine):
+    /// lifecycle support for `ett` and `hdt` is deferred, and
     /// no other engine is substituted. Disabling always succeeds. The engine
     /// is fixed by [`Self::new`], so a configuration that passed this check
     /// keeps a supported engine.
     pub fn with_topology_lifecycle(mut self, enabled: bool) -> Result<Self, ConfigError> {
         if enabled && !knotrel_core::LifecycleGraph::supports_engine(self.engine) {
             return Err(ConfigError(format!(
-                "{} requires {}=compact-bfs; node and edge lifecycle support for {} is not \
-                 available in this release",
+                "{} requires {}=compact-bfs or cluster-forest; node and edge lifecycle \
+                 support for {} is not available in this release",
                 Setting::TopologyLifecycle,
                 Setting::Engine,
                 self.engine.as_str()
@@ -602,9 +603,10 @@ impl ServerConfig {
             None | Some("compact-bfs") => EngineConfig::CompactBfs,
             Some("ett") => EngineConfig::EulerTour,
             Some("hdt") => EngineConfig::Hdt,
+            Some("cluster-forest") => EngineConfig::ClusterForest,
             Some(_) => {
                 return Err(ConfigError(format!(
-                    "{} must be compact-bfs, ett or hdt",
+                    "{} must be compact-bfs, ett, hdt or cluster-forest",
                     Setting::Engine
                 )));
             }
@@ -892,15 +894,17 @@ mod tests {
     }
 
     /// Every engine/lifecycle combination, from the environment and from the
-    /// embedded builder: lifecycle is accepted only with `compact-bfs`; the
+    /// embedded builder: lifecycle is accepted only with `compact-bfs` and
+    /// `cluster-forest`; the
     /// rejection names both settings and the engine; the engine and the mode
     /// are never changed, and disabling lifecycle keeps every engine.
     #[test]
-    fn lifecycle_is_supported_only_on_compact_bfs_without_fallback() {
+    fn lifecycle_is_supported_only_on_lifecycle_engines_without_fallback() {
         let engines = [
             ("compact-bfs", EngineConfig::CompactBfs),
             ("ett", EngineConfig::EulerTour),
             ("hdt", EngineConfig::Hdt),
+            ("cluster-forest", EngineConfig::ClusterForest),
         ];
         for (name, engine) in engines {
             for mode in ["standalone", "source_managed"] {
@@ -922,14 +926,14 @@ mod tests {
                             ServerMode::SourceManaged
                         })
                         .with_topology_lifecycle(lifecycle);
-                    if lifecycle && engine != EngineConfig::CompactBfs {
+                    if lifecycle && !knotrel_core::LifecycleGraph::supports_engine(engine) {
                         for error in [from_env.unwrap_err(), embedded.unwrap_err()] {
                             assert_eq!(
                                 error.to_string(),
                                 format!(
-                                    "KNOTREL_TOPOLOGY_LIFECYCLE requires KNOTREL_ENGINE=compact-bfs; \
-                                     node and edge lifecycle support for {name} is not available \
-                                     in this release"
+                                    "KNOTREL_TOPOLOGY_LIFECYCLE requires KNOTREL_ENGINE=compact-bfs \
+                                     or cluster-forest; node and edge lifecycle support for {name} \
+                                     is not available in this release"
                                 )
                             );
                         }

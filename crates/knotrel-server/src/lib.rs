@@ -38,8 +38,9 @@
 //! events in source-managed mode). This topology lifecycle is unrelated to the
 //! process [`Lifecycle`] above. It is opt-in: the executable enables it with
 //! `KNOTREL_TOPOLOGY_LIFECYCLE=true`, embedded callers with
-//! [`ServerConfig::with_topology_lifecycle`]. It is supported only on the
-//! `compact-bfs` engine; enabling it with `ett` or `hdt` returns
+//! [`ServerConfig::with_topology_lifecycle`]. It is supported on the
+//! `compact-bfs` engine and, from 1.1 (unreleased), on the experimental
+//! `cluster-forest` engine; enabling it with `ett` or `hdt` returns
 //! [`ConfigError`] (the executable exits before binding), and those engines
 //! remain available without lifecycle. With lifecycle off, behavior is
 //! unchanged and lifecycle operations are refused with
@@ -53,6 +54,9 @@
 //! let config = ServerConfig::new(address, EngineConfig::CompactBfs, 32)?
 //!     .with_topology_lifecycle(true)?;
 //! assert!(config.topology_lifecycle());
+//!
+//! let forest = ServerConfig::new(address, EngineConfig::ClusterForest, 32)?;
+//! assert!(forest.with_topology_lifecycle(true).is_ok());
 //!
 //! let ett = ServerConfig::new(address, EngineConfig::EulerTour, 32)?;
 //! assert!(ett.with_topology_lifecycle(true).is_err());

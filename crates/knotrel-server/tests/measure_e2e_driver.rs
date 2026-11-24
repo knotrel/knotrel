@@ -694,7 +694,7 @@ fn test_json_out_write_failure_propagates() {
 /// A startup failure of the external server must surface its exit status and
 /// its own stderr instead of a bare "died prematurely".
 #[test]
-#[should_panic(expected = "KNOTREL_ENGINE must be compact-bfs, ett or hdt")]
+#[should_panic(expected = "KNOTREL_ENGINE must be compact-bfs, ett, hdt or cluster-forest")]
 fn test_external_server_startup_failure_reports_server_stderr() {
     let _server = ExternalServerGuard::spawn("not-an-engine");
 }

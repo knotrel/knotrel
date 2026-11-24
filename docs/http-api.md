@@ -288,9 +288,10 @@ the batch size check (see [Request validation order](#request-validation-order))
 
 ## Node and edge lifecycle (opt-in)
 
-Lifecycle support is available only with `KNOTREL_ENGINE=compact-bfs`; with
-`ett` or `hdt` the server refuses to start (their lifecycle support is
-deferred), and no engine is substituted.
+Lifecycle support is available with `KNOTREL_ENGINE=compact-bfs` and, from 1.1
+(unreleased), with the experimental `cluster-forest`; with `ett` or `hdt` the
+server refuses to start (their lifecycle support is deferred), and no engine is
+substituted.
 
 With `KNOTREL_TOPOLOGY_LIFECYCLE=true` the server keeps **registered
 topology** with one flag per node (`active`) and per edge (`enabled`), and
@@ -793,12 +794,12 @@ its listener. There is no file loader or runtime reload in this version.
 | --- | --- | --- |
 | `KNOTREL_ADDR` | IP socket address, such as `127.0.0.1:8080` or `[::1]:8080`; non-loopback requires `KNOTREL_ALLOW_NON_LOOPBACK=true` | `127.0.0.1:8080` |
 | `KNOTREL_ALLOW_NON_LOOPBACK` | Exactly `true` or `false` | `false` |
-| `KNOTREL_ENGINE` | Exactly `compact-bfs`, `ett` or `hdt` | `compact-bfs` |
+| `KNOTREL_ENGINE` | Exactly `compact-bfs`, `ett`, `hdt` or `cluster-forest` (new in 1.1, unreleased) | `compact-bfs` |
 | `KNOTREL_MODE` | Exactly `standalone`, `source_managed` or `source-managed`; `source-managed` is an accepted, stable alternative spelling of `source_managed` | `standalone` |
 | `KNOTREL_MAX_IMPORT_BODY_BYTES` | ASCII decimal integer from 1 through 536870912 (512 MiB) | `67108864` (64 MiB) |
 | `KNOTREL_DEDUP_WINDOW_SIZE` | ASCII decimal integer from 1 through 1000000 | `10000` |
 | `KNOTREL_METRICS_ENABLED` | Exactly `true` or `false`; `true` serves [`GET /metrics`](#metrics-opt-in) | `false` |
-| `KNOTREL_TOPOLOGY_LIFECYCLE` | Exactly `true` or `false`; `true` enables [node and edge lifecycle](#node-and-edge-lifecycle-opt-in) support and requires `KNOTREL_ENGINE=compact-bfs` (with `ett` or `hdt` startup fails before binding; their lifecycle support is deferred) | `false` |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | Exactly `true` or `false`; `true` enables [node and edge lifecycle](#node-and-edge-lifecycle-opt-in) support and requires `KNOTREL_ENGINE=compact-bfs` or `cluster-forest` (with `ett` or `hdt` startup fails before binding; their lifecycle support is deferred) | `false` |
 | `KNOTREL_INSPECTION` | Exactly `true` or `false`; `true` enables the read-only [inspection routes](#inspection-opt-in) and keeps an ordered node index | `false` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
 | `KNOTREL_FEEDER_RESERVED_JOBS` | ASCII decimal integer from 1 through 64; admission permits for feeder events, barriers and gaps, used in source-managed mode only | `4` |
@@ -831,8 +832,18 @@ experimental `ForestGraph`, the AVL Euler-tour forest with candidate-pruned
 replacement search. It is not HDT, and it has no polylogarithmic update guarantee.
 `hdt` opts into experimental `HdtGraph`, adding edge levels and promotions with
 O(log² N) amortized edge updates over a history reaching N vertices. It uses more
-memory, O(E + V log V), and a single cut can still be expensive. All three engines
-provide the same exact graph and batch semantics. None caches query answers;
+memory, O(E + V log V), and a single cut can still be expensive.
+`cluster-forest` (new in 1.1, unreleased) opts into the experimental cluster
+forest of [ADR 0014](architecture/0014-cluster-forest-backend.md): edge levels,
+clusters stored only where an edge of their level lies inside them, queries by
+walking to the roots. Its O(log² N) amortized update bound is this project's
+derivation for this variant, not a published theorem; a single cut can still
+be expensive, and it accepts at most 2²⁸ nodes and 2²⁸ edges (with lifecycle
+support at most 2²⁷ − 512 nodes, leaving room for retired slots), whatever
+`KNOTREL_MAX_NODES` and `KNOTREL_MAX_EDGES` allow; beyond them operations
+fail with the usual limit errors. No performance
+advantage is claimed before its 1.1 qualification. All four engines provide
+the same exact graph and batch semantics. None caches query answers;
 the indexed engines maintain their connectivity structures on updates.
 
 The job limit covers admitted queued plus running graph work, including
@@ -873,8 +884,8 @@ The default response has `engine: "compact-bfs"`, `experimental: false` and
 `true` means the engine is qualified experimental as to performance, maturity
 and usage recommendation, which carry no promise. It is not a stability class:
 the engine's interfaces, including its `engine` value, are stable either way.
-It is `false` for `compact-bfs` and `true` for `ett` and `hdt`, possibly for
-the whole 1.x series. It may change from `true` to `false` in a minor release
+It is `false` for `compact-bfs` and `true` for `ett`, `hdt` and
+`cluster-forest`, possibly for the whole 1.x series. It may change from `true` to `false` in a minor release
 when an engine is promoted (recorded in the release notes), and never from
 `false` to `true` for an existing engine. Neither change is breaking.
 
@@ -899,8 +910,14 @@ the core never loads server configuration or reads the environment.
 at startup. Missing values default to 100 000 nodes and 500 000 edges; the
 literal `unlimited` removes a ceiling; zero is allowed. Empty, signed,
 non-decimal, whitespace-padded and out-of-range values fail before binding.
-`GET /v1/info` includes `max_nodes` and `max_edges`, each an integer or `null`.
-These settings cannot be overridden in operation requests or changed at runtime.
+`GET /v1/info` includes `max_nodes` and `max_edges`, each an integer or `null`:
+the **configured** ceilings. These settings cannot be overridden in operation
+requests or changed at runtime. The ceilings **enforced** are the configured
+ones for every engine except the experimental `cluster-forest` (from 1.1,
+unreleased), which also applies its own capacity: 2²⁸ nodes and 2²⁸ edges, or
+2²⁷ − 512 nodes with lifecycle support. A rejection's `message` (for example
+`node limit 134217216 exceeded`) names the enforced ceiling, which can then
+differ from `/v1/info`; message texts are not part of the stable contract.
 
 An `add_node` or `link` that would exceed capacity returns HTTP 422 with
 `result: "error"` and code `node_limit_exceeded` or `edge_limit_exceeded`.
@@ -1069,9 +1086,11 @@ budget, independent of graph size. Node detail is `O(1)` expected.
 
 **Engines and modes.**
 
-- Node listing and node detail work with every engine. `ett` and `hdt` keep no
-  per-node adjacency: they report `degree: null` and answer 409
-  `inspection_unsupported` for incident and edge listing.
+- Node listing and node detail work with every engine. `ett` and `hdt`, and
+  `cluster-forest` without lifecycle support, keep no per-node adjacency: they
+  report `degree: null` and answer 409 `inspection_unsupported` for incident
+  and edge listing. With lifecycle, `cluster-forest` answers them from the
+  topology catalog like `compact-bfs`.
 - The routes use the same bounded admission, blocking worker and shared lock as
   `GET /v1/stats` (job kind `inspect` in the metrics), with no readiness gate.
 - They are available in both modes and never mutate. Responses carry

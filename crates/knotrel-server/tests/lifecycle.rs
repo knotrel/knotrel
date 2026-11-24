@@ -3,7 +3,9 @@
 //! These tests bind real loopback sockets, so they need an environment that
 //! permits local networking.
 
-use knotrel_core::EngineConfig;
+#[path = "common/engine.rs"]
+mod engine_under_test;
+
 #[cfg(feature = "test-support")]
 use knotrel_server::GateDecision;
 use knotrel_server::{
@@ -21,7 +23,12 @@ use tokio::{
 const STEP: Duration = Duration::from_secs(5);
 
 fn config() -> ServerConfig {
-    ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32).unwrap()
+    ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap()
 }
 
 struct Running {

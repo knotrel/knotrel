@@ -269,7 +269,11 @@ async fn every_state_filter_selects_its_elements() {
 
 #[tokio::test]
 async fn experimental_engines_list_nodes_only() {
-    for engine in [EngineConfig::EulerTour, EngineConfig::Hdt] {
+    for engine in [
+        EngineConfig::EulerTour,
+        EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
+    ] {
         let app = app(engine, false, true);
         op(&app, json!({"op": "link", "source": "1", "target": "2"})).await;
         let (_, _, nodes) = get(&app, "/v1/nodes").await;
