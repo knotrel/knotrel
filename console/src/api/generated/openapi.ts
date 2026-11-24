@@ -330,7 +330,8 @@ export interface paths {
      * Inspect one node
      * @description Read-only inspection route (`KNOTREL_INSPECTION=true`). Returns the node's flag and
      *     registered degree. `degree` is `null` for engines without per-node adjacency (`ett`,
-     *     `hdt`). Accepts no query parameters.
+     *     `hdt`, and `cluster-forest` without lifecycle support; with lifecycle the degree comes
+     *     from the topology catalog). Accepts no query parameters.
      */
     get: operations['get_node'];
     put?: never;
@@ -712,17 +713,18 @@ export interface components {
     };
     ServerInfo: {
       /**
-       * @description Configured connectivity engine.
+       * @description Configured connectivity engine. `cluster-forest` is new in 1.1 (stable value,
+       *     experimental engine, like `ett` and `hdt`).
        * @enum {string}
        */
-      engine: 'compact-bfs' | 'ett' | 'hdt';
+      engine: 'compact-bfs' | 'ett' | 'hdt' | 'cluster-forest';
       /**
        * @description The configured engine's qualification (see `docs/compatibility.md` §2.2):
        *     `true` when the engine is qualified experimental as to performance,
        *     maturity and usage recommendation, which carry no promise. It is not a
        *     stability class: the engine's interfaces, including its `engine` value,
-       *     are stable either way. `false` for `compact-bfs`; `true` for `ett` and
-       *     `hdt`, possibly for the whole 1.x series. The value may change from
+       *     are stable either way. `false` for `compact-bfs`; `true` for `ett`, `hdt`
+       *     and `cluster-forest`, possibly for the whole 1.x series. The value may change from
        *     `true` to `false` in a minor release when an engine is promoted, which
        *     the release notes record, and never changes from `false` to `true` for
        *     an existing engine. Neither change is breaking.
@@ -740,9 +742,17 @@ export interface components {
       max_body_bytes: number;
       /** @description Maximum operations in a single batch request. */
       max_batch_operations: number;
-      /** @description Maximum node capacity bound, or null if unlimited. */
+      /**
+       * @description Configured maximum node capacity (`KNOTREL_MAX_NODES`), or null if unlimited.
+       *     With `cluster-forest` the enforced ceiling can be lower (the engine's
+       *     capacity; see `docs/http-api.md`, graph capacity errors).
+       */
       max_nodes: number | null;
-      /** @description Maximum edge capacity bound, or null if unlimited. */
+      /**
+       * @description Configured maximum edge capacity (`KNOTREL_MAX_EDGES`), or null if unlimited.
+       *     With `cluster-forest` the enforced ceiling can be lower (the engine's
+       *     capacity; see `docs/http-api.md`, graph capacity errors).
+       */
       max_edges: number | null;
       /**
        * @description Present, and `true`, only when node and edge lifecycle support is enabled
@@ -783,9 +793,16 @@ export interface components {
       max_nodes: number | null;
       /** @description Configured edge limit ceiling, or null if unlimited. */
       max_edges: number | null;
-      /** @description Remaining vertex capacity before reaching limit, or null if unlimited. */
+      /**
+       * @description Remaining vertex capacity before the configured limit, or null if unlimited.
+       *     With `cluster-forest` the engine's own capacity can be reached first (see
+       *     `max_nodes` in `GET /v1/info`).
+       */
       remaining_nodes: number | null;
-      /** @description Remaining edge capacity before reaching limit, or null if unlimited. */
+      /**
+       * @description Remaining edge capacity before the configured limit, or null if unlimited.
+       *     With `cluster-forest` the engine's own capacity can be reached first.
+       */
       remaining_edges: number | null;
       /** @description Decimal string monotonic version counter incremented on effective mutations. */
       state_version: string;
@@ -814,7 +831,10 @@ export interface components {
       node: components['schemas']['NodeId'];
       /** @description The node's flag; always `true` without lifecycle support. */
       active: boolean;
-      /** @description Registered incident edges (enabled or not); `null` for `ett` and `hdt`. */
+      /**
+       * @description Registered incident edges (enabled or not); `null` for `ett` and `hdt`, and for
+       *     `cluster-forest` without lifecycle support.
+       */
       degree: number | null;
     };
     NodePage: {
@@ -1106,7 +1126,8 @@ export interface components {
     };
     /**
      * @description `inspection_disabled` (KNOTREL_INSPECTION is not enabled; rejected before admission)
-     *     or `inspection_unsupported` (incident and edge listing on `ett` or `hdt`).
+     *     or `inspection_unsupported` (incident and edge listing on `ett` or `hdt`, or on
+     *     `cluster-forest` without lifecycle support).
      */
     InspectionConflict: {
       headers: {

@@ -4,10 +4,11 @@ use knotrel_core::{
     ConnectivityGraph, EngineConfig, GraphError, GraphLimits, NodeId, ReferenceGraph,
 };
 
-const ENGINES: [EngineConfig; 3] = [
+const ENGINES: [EngineConfig; 4] = [
     EngineConfig::CompactBfs,
     EngineConfig::EulerTour,
     EngineConfig::Hdt,
+    EngineConfig::ClusterForest,
 ];
 
 fn incremental(

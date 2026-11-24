@@ -16,9 +16,10 @@ use knotrel_server::{ServerConfig, ServerMode, router_with_config};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// Engines with lifecycle support in v0.5.0; `ett` and `hdt` lifecycle support
-/// is deferred and rejected at configuration time.
-const ENGINES: [EngineConfig; 1] = [EngineConfig::CompactBfs];
+/// Engines with lifecycle support: `compact-bfs` and, from 1.1,
+/// `cluster-forest`; `ett` and `hdt` lifecycle support is deferred and
+/// rejected at configuration time.
+const ENGINES: [EngineConfig; 2] = [EngineConfig::CompactBfs, EngineConfig::ClusterForest];
 
 fn config(engine: EngineConfig, lifecycle: bool, mode: ServerMode) -> ServerConfig {
     ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 8)

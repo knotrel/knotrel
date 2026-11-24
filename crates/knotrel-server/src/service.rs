@@ -116,6 +116,7 @@ fn engine_from_label(label: &str) -> EngineConfig {
         EngineConfig::CompactBfs,
         EngineConfig::EulerTour,
         EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
     ]
     .into_iter()
     .find(|engine| engine.as_str() == label)
@@ -5013,6 +5014,7 @@ mod tests {
             EngineConfig::CompactBfs,
             EngineConfig::EulerTour,
             EngineConfig::Hdt,
+            EngineConfig::ClusterForest,
         ] {
             assert_eq!(engine_from_label(engine.as_str()), engine);
         }

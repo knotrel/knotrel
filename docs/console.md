@@ -41,7 +41,7 @@ deployment wants to pay.
 | Flag | What it unlocks in the console | Cost when on | Off (default) |
 | --- | --- | --- | --- |
 | `KNOTREL_INSPECTION=true` | Browser: lists of nodes and edges, node detail, incident edges | Up to about 20 bytes per node and a few percent slower node creation (measured: 2–5 %) | No cost. The browser explains how to turn it on; queries and operations still work. |
-| `KNOTREL_TOPOLOGY_LIFECYCLE=true` | Active/inactive nodes, enabled/disabled edges, removal, the related filters | Roughly twice the graph memory; `compact-bfs` only | Every node is active and every edge effective; those actions are hidden. |
+| `KNOTREL_TOPOLOGY_LIFECYCLE=true` | Active/inactive nodes, enabled/disabled edges, removal, the related filters | Roughly twice the graph memory; `compact-bfs` (and `cluster-forest` from 1.1, unreleased) | Every node is active and every edge effective; those actions are hidden. |
 | `KNOTREL_METRICS_ENABLED=true` | Performance page, feeder lease on the Synchronization page | Exposes `/metrics` (no authentication, like every route) | The pages say metrics are disabled. |
 
 Incident edges and the edge list also need the `compact-bfs` engine (the

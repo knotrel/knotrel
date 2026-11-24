@@ -8,6 +8,7 @@ fn selected_engines_preserve_exact_connectivity_after_mutations() {
         EngineConfig::CompactBfs,
         EngineConfig::EulerTour,
         EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
     ] {
         let mut graph = ConnectivityGraph::new(engine);
         assert_eq!(graph.engine(), engine);

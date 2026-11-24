@@ -1,0 +1,50 @@
+name: cluster-forest-long
+
+# ADR 0014, CF3: the long correctness variants of the experimental
+# cluster-forest engine (ignored in the regular test run). Weekly, on demand,
+# on release tags, and on pull requests that touch the engine or this workflow.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/knotrel-core/src/cluster_forest.rs'
+      - 'crates/knotrel-core/src/cluster_forest/**'
+      - 'crates/knotrel-core/src/topology.rs'
+      - 'crates/knotrel-core/src/configuration.rs'
+      - 'crates/knotrel-core/tests/cluster_forest.rs'
+      - '.github/workflows/cluster-forest-long.yml'
+  schedule:
+    - cron: '41 3 * * 2'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.100.0
+
+jobs:
+  long:
+    name: long variants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Debug assertions stay on (the backend's cheap checks), with
+      # optimizations for the core so the long histories finish in minutes.
+      - name: Long cluster-forest histories
+        run: >-
+          cargo test -p knotrel-core --locked --lib
+          --config 'profile.test.package."knotrel-core".opt-level=2'
+          cluster_forest -- --ignored
+      - name: Long cluster-forest differential and churn
+        run: >-
+          cargo test -p knotrel-core --locked --test cluster_forest
+          --config 'profile.test.package."knotrel-core".opt-level=2'
+          -- --ignored

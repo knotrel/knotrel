@@ -22,12 +22,15 @@
 //! boundaries with the worker pause hooks. Every test except `test_07` is
 //! deterministic.
 
+#[path = "common/engine.rs"]
+mod engine_under_test;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use knotrel_core::{EngineConfig, GraphLimits};
-use knotrel_server::{ServerConfig, ServerMode, router, router_with_config};
+use knotrel_core::GraphLimits;
+use knotrel_server::{ServerConfig, ServerMode, router_with_config};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -77,8 +80,12 @@ async fn get_stats(app: &axum::Router) -> (StatusCode, axum::http::HeaderMap, Va
 
 #[tokio::test]
 async fn test_01_batch_outcome_one_to_one_mapping_and_order() {
-    let config =
-        ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32).unwrap();
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap();
     let app = router_with_config(config);
 
     // Initial stats version is 0
@@ -154,8 +161,12 @@ async fn test_01_batch_outcome_one_to_one_mapping_and_order() {
 
 #[tokio::test]
 async fn test_02_batch_revision_progression_and_effective_mutations() {
-    let config =
-        ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32).unwrap();
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap();
     let app = router_with_config(config);
 
     // Initial revision: 0
@@ -228,8 +239,12 @@ async fn test_02_batch_revision_progression_and_effective_mutations() {
 
 #[tokio::test]
 async fn test_03_decimal_revision_carry_across_batches() {
-    let config =
-        ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32).unwrap();
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap();
     let app = router_with_config(config);
 
     // Add 9 nodes in batch 1: version goes from 0 to 9
@@ -265,7 +280,14 @@ async fn test_03_decimal_revision_carry_across_batches() {
 
 #[tokio::test]
 async fn test_04_intra_batch_sequential_visibility() {
-    let app = router(knotrel_core::Graph::new());
+    let app = router_with_config(
+        ServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            engine_under_test::engine(),
+            32,
+        )
+        .unwrap(),
+    );
 
     // Intra-batch sequential visibility:
     // A query inside a batch immediately reflects preceding operations in the exact same batch.
@@ -291,9 +313,13 @@ async fn test_04_intra_batch_sequential_visibility() {
 
 #[tokio::test]
 async fn test_05_source_managed_mode_rejects_mutating_batches_allows_query_only() {
-    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
-        .unwrap()
-        .with_mode(ServerMode::SourceManaged);
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap()
+    .with_mode(ServerMode::SourceManaged);
     let app = router_with_config(config);
 
     // Case 1: Batch containing a mutation is rejected with 409 direct_mutation_disabled
@@ -320,12 +346,16 @@ async fn test_05_source_managed_mode_rejects_mutating_batches_allows_query_only(
 #[tokio::test]
 async fn test_06_batch_capacity_limits_continue_on_error() {
     // Configure tight limits: 3 nodes, 2 edges
-    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
-        .unwrap()
-        .with_graph_limits(GraphLimits {
-            max_nodes: Some(3),
-            max_edges: Some(2),
-        });
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap()
+    .with_graph_limits(GraphLimits {
+        max_nodes: Some(3),
+        max_edges: Some(2),
+    });
     let app = router_with_config(config);
 
     let ops = json!([
@@ -374,7 +404,14 @@ async fn test_06_batch_capacity_limits_continue_on_error() {
 /// they do not prove determinism.
 #[tokio::test]
 async fn test_07_concurrent_batches_and_snapshots_stress_smoke() {
-    let app = router(knotrel_core::Graph::new());
+    let app = router_with_config(
+        ServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            engine_under_test::engine(),
+            32,
+        )
+        .unwrap(),
+    );
     let mut tasks = Vec::new();
 
     // Spawn 10 concurrent batch writers, each performing 2 operations: link then cut
@@ -424,7 +461,14 @@ async fn test_07_concurrent_batches_and_snapshots_stress_smoke() {
 
 #[tokio::test]
 async fn test_08_batch_boundary_validation_before_lock() {
-    let app = router(knotrel_core::Graph::new());
+    let app = router_with_config(
+        ServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            engine_under_test::engine(),
+            32,
+        )
+        .unwrap(),
+    );
 
     // 1. Empty operations array rejected with 422 invalid_batch_size
     let (status1, _, body1) = post_batch(&app, json!([])).await;
@@ -467,9 +511,13 @@ async fn test_08_batch_boundary_validation_before_lock() {
 
 #[tokio::test]
 async fn test_10_source_managed_mode_check_precedes_batch_size_check() {
-    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
-        .unwrap()
-        .with_mode(ServerMode::SourceManaged);
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap()
+    .with_mode(ServerMode::SourceManaged);
     let app = router_with_config(config);
 
     // An oversized batch containing a mutation fails the mode check first.
@@ -499,7 +547,6 @@ async fn test_10_source_managed_mode_check_precedes_batch_size_check() {
 /// a pause handle dropped during assertion unwinding releases its worker.
 #[cfg(feature = "test-support")]
 mod paused {
-    use knotrel_core::EngineConfig;
     use knotrel_server::{
         Lifecycle, ServerConfig, ServerMode, ShutdownOutcome, router_with_lifecycle, serve,
     };
@@ -515,11 +562,15 @@ mod paused {
     const STEP: Duration = Duration::from_secs(5);
 
     fn base_config(mode: ServerMode) -> ServerConfig {
-        ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
-            .unwrap()
-            .with_mode(mode)
-            .with_shutdown_timeout(STEP)
-            .unwrap()
+        ServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            crate::engine_under_test::engine(),
+            32,
+        )
+        .unwrap()
+        .with_mode(mode)
+        .with_shutdown_timeout(STEP)
+        .unwrap()
     }
 
     struct Running {

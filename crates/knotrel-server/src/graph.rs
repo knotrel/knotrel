@@ -567,7 +567,7 @@ pub(crate) struct EdgePage {
 pub(crate) enum InspectError {
     /// `KNOTREL_INSPECTION` is not enabled.
     Disabled,
-    /// The engine keeps no per-node adjacency (`ett`, `hdt`).
+    /// The engine keeps no per-node adjacency (`ett`, `hdt`, `cluster-forest`).
     Unsupported,
     /// The inspected node is not registered.
     UnknownNode,
@@ -950,7 +950,11 @@ mod tests {
     /// Engines without per-node adjacency support node listing only.
     #[test]
     fn experimental_engines_list_nodes_but_not_edges() {
-        for engine in [EngineConfig::EulerTour, EngineConfig::Hdt] {
+        for engine in [
+            EngineConfig::EulerTour,
+            EngineConfig::Hdt,
+            EngineConfig::ClusterForest,
+        ] {
             let mut graph = ServiceGraph::empty(engine, GraphLimits::default(), false, true);
             graph.link(1, 2).unwrap();
             assert_eq!(all_nodes(&graph, NodeFilter::All, 10), [1, 2]);

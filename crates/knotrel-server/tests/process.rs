@@ -614,8 +614,8 @@ fn lifecycle_with_a_deferred_engine_fails_before_serving() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(status.code(), Some(1), "{status} {stderr}");
         let expected = format!(
-            "KNOTREL_TOPOLOGY_LIFECYCLE requires KNOTREL_ENGINE=compact-bfs; node and edge \
-             lifecycle support for {engine} is not available in this release"
+            "KNOTREL_TOPOLOGY_LIFECYCLE requires KNOTREL_ENGINE=compact-bfs or cluster-forest; \
+             node and edge lifecycle support for {engine} is not available in this release"
         );
         assert!(stderr.contains(&expected), "stderr: {stderr}");
         assert!(!stderr.contains("AddrInUse"), "stderr: {stderr}");
@@ -630,4 +630,34 @@ fn lifecycle_with_a_deferred_engine_fails_before_serving() {
         assert_eq!(status, 200);
         assert!(info.contains(&format!(r#""engine":"{engine}""#)), "{info}");
     }
+}
+
+/// `cluster-forest` (new in 1.1) starts with lifecycle enabled, reports itself
+/// as an experimental engine and answers lifecycle operations.
+#[test]
+fn cluster_forest_serves_with_lifecycle() {
+    let server = Server::start(&[
+        ("KNOTREL_ENGINE", "cluster-forest"),
+        ("KNOTREL_TOPOLOGY_LIFECYCLE", "true"),
+    ]);
+    let (status, info) = call(&server, "GET", "/v1/info", "");
+    assert_eq!(status, 200);
+    assert!(info.contains(r#""engine":"cluster-forest""#), "{info}");
+    assert!(info.contains(r#""experimental":true"#), "{info}");
+    for body in [
+        r#"{"op":"link","source":"1","target":"2"}"#,
+        r#"{"op":"link","source":"2","target":"3"}"#,
+        r#"{"op":"set_node_active","node":"2","active":false}"#,
+    ] {
+        let (status, response) = call(&server, "POST", "/v1/operations", body);
+        assert_eq!(status, 200, "{body}: {response}");
+    }
+    let (status, response) = call(
+        &server,
+        "POST",
+        "/v1/operations",
+        r#"{"op":"connected","source":"1","target":"3"}"#,
+    );
+    assert_eq!(status, 200);
+    assert!(response.contains(r#""connected":false"#), "{response}");
 }

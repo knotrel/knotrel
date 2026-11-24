@@ -14,7 +14,9 @@
 
 #![cfg(feature = "test-support")]
 
-use knotrel_core::EngineConfig;
+#[path = "common/engine.rs"]
+mod engine_under_test;
+
 use knotrel_server::{
     Lifecycle, ServerConfig, ServerMode, ShutdownOutcome, router_with_lifecycle, serve,
 };
@@ -30,11 +32,15 @@ use tokio::{
 const STEP: Duration = Duration::from_secs(5);
 
 fn config_source_managed() -> ServerConfig {
-    ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
-        .unwrap()
-        .with_mode(ServerMode::SourceManaged)
-        .with_shutdown_timeout(Duration::from_secs(5))
-        .unwrap()
+    ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap()
+    .with_mode(ServerMode::SourceManaged)
+    .with_shutdown_timeout(Duration::from_secs(5))
+    .unwrap()
 }
 
 fn config_source_managed_custom_dedup(capacity: usize) -> ServerConfig {
@@ -1286,7 +1292,12 @@ async fn test_15_restart_rejects_previous_instance_requests() {
 async fn test_16_compatibility_with_standalone_and_direct_mutations() {
     // 1. Standalone server rejects feeder endpoints with mode_conflict
     let running_standalone = Running::start(
-        ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32).unwrap(),
+        ServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            engine_under_test::engine(),
+            32,
+        )
+        .unwrap(),
     )
     .await;
     let mut s_std = running_standalone.connect().await;
@@ -2050,11 +2061,15 @@ async fn test_26_queries_cannot_refuse_feeder_events_and_feeder_capacity_is_chec
     // Part 1: a query holding the only shared permit no longer refuses feeder
     // events: they are admitted on the reserved feeder lane
     // (docs/integrations/feeder-admission-design.md, section 3).
-    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 1)
-        .unwrap()
-        .with_mode(ServerMode::SourceManaged)
-        .with_shutdown_timeout(Duration::from_secs(5))
-        .unwrap();
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        1,
+    )
+    .unwrap()
+    .with_mode(ServerMode::SourceManaged)
+    .with_shutdown_timeout(Duration::from_secs(5))
+    .unwrap();
     let (running, instance_id) = start_with_baseline(config).await;
     let mut pause = running.lifecycle.pause_next_worker();
     let mut query_stream = running.connect().await;
@@ -2078,13 +2093,17 @@ async fn test_26_queries_cannot_refuse_feeder_events_and_feeder_capacity_is_chec
 
     // Part 2: when the feeder lane itself is full, a feeder request is still
     // refused before execution, with 503 `busy`.
-    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 4)
-        .unwrap()
-        .with_mode(ServerMode::SourceManaged)
-        .with_feeder_reserved_jobs(1)
-        .unwrap()
-        .with_shutdown_timeout(Duration::from_secs(5))
-        .unwrap();
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        4,
+    )
+    .unwrap()
+    .with_mode(ServerMode::SourceManaged)
+    .with_feeder_reserved_jobs(1)
+    .unwrap()
+    .with_shutdown_timeout(Duration::from_secs(5))
+    .unwrap();
     let (running, instance_id) = start_with_baseline(config).await;
     let mut pause = running.lifecycle.pause_next_worker();
     let first_body = format!(
@@ -2231,12 +2250,16 @@ const SCRIPT_LIMITS: knotrel_core::GraphLimits = knotrel_core::GraphLimits {
 };
 
 fn limited_config(mode: ServerMode) -> ServerConfig {
-    ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
-        .unwrap()
-        .with_mode(mode)
-        .with_graph_limits(SCRIPT_LIMITS)
-        .with_shutdown_timeout(Duration::from_secs(5))
-        .unwrap()
+    ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap()
+    .with_mode(mode)
+    .with_graph_limits(SCRIPT_LIMITS)
+    .with_shutdown_timeout(Duration::from_secs(5))
+    .unwrap()
 }
 
 fn effect_of_operation_result(result: &serde_json::Value) -> Effect {

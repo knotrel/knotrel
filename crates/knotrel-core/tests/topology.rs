@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// Engines with lifecycle support in v0.5.0 (`ett` and `hdt` are deferred and
 /// rejected, see `unsupported_engines_are_rejected_without_a_graph`).
-const ENGINES: [EngineConfig; 1] = [EngineConfig::CompactBfs];
+const ENGINES: [EngineConfig; 2] = [EngineConfig::CompactBfs, EngineConfig::ClusterForest];
 
 #[derive(Default, Clone)]
 struct Oracle {
@@ -593,12 +593,13 @@ fn repeated_remove_and_reinsert_keeps_engine_storage_bounded() {
     }
 }
 
-/// v0.5.0 supports lifecycle only on `compact-bfs`. Every constructor rejects
-/// `ett` and `hdt` explicitly (before examining any input) and never falls back
-/// to another engine; the plain engines stay available.
+/// Lifecycle runs on `compact-bfs` and, from 1.1, `cluster-forest`. Every
+/// constructor rejects `ett` and `hdt` explicitly (before examining any input)
+/// and never falls back to another engine; the plain engines stay available.
 #[test]
 fn unsupported_engines_are_rejected_without_a_graph() {
     assert!(LifecycleGraph::supports_engine(EngineConfig::CompactBfs));
+    assert!(LifecycleGraph::supports_engine(EngineConfig::ClusterForest));
     for engine in [EngineConfig::EulerTour, EngineConfig::Hdt] {
         assert!(!LifecycleGraph::supports_engine(engine));
         let expected = LifecycleError::UnsupportedEngine { engine };

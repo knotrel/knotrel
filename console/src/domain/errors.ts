@@ -28,7 +28,7 @@ const EXPLANATIONS: Record<ErrorCode, string> = {
   inspection_disabled:
     'The data browser needs the inspection routes: server 0.8 or later with KNOTREL_INSPECTION=true.',
   inspection_unsupported:
-    'This engine keeps no per-node adjacency (ett, hdt): incident and edge listing need compact-bfs.',
+    'This engine keeps no per-node adjacency (ett, hdt, or cluster-forest without lifecycle): incident and edge listing need compact-bfs or lifecycle.',
   invalid_batch_size: 'The batch size is outside the accepted range.',
   invalid_cursor: 'The listing position is no longer valid; restart the listing.',
   invalid_edge: 'The edge is invalid.',

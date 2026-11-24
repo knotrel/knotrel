@@ -413,6 +413,17 @@ describe('capabilities for browsing', () => {
       browseNodes: true,
       browseEdges: false,
     });
+    // cluster-forest: edges come from the lifecycle catalog when enabled.
+    expect(
+      deriveCapabilities(info({ engine: 'cluster-forest', topologyLifecycle: false })),
+    ).toMatchObject({ browseNodes: true, browseEdges: false });
+    expect(
+      deriveCapabilities(info({ engine: 'cluster-forest', topologyLifecycle: false }))
+        .browseBlockedReason,
+    ).toMatch(/cluster-forest engine keeps no per-node adjacency/);
+    expect(
+      deriveCapabilities(info({ engine: 'cluster-forest', topologyLifecycle: true })),
+    ).toMatchObject({ browseNodes: true, browseEdges: true, browseBlockedReason: undefined });
     expect(deriveCapabilities(undefined).browseBlockedReason).toMatch(/Waiting/);
   });
 });

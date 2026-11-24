@@ -36,6 +36,7 @@ async fn preview_health_and_configured_state_ownership() {
         EngineConfig::CompactBfs,
         EngineConfig::EulerTour,
         EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
     ] {
         let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 32).unwrap();
         let app = router_with_config(config.clone());
@@ -289,6 +290,7 @@ async fn configured_engines_report_actual_settings_and_observe_every_mutation() 
         (EngineConfig::CompactBfs, "compact-bfs", false),
         (EngineConfig::EulerTour, "ett", true),
         (EngineConfig::Hdt, "hdt", true),
+        (EngineConfig::ClusterForest, "cluster-forest", true),
     ] {
         let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 1).unwrap();
         let app = router_with_config(config);
@@ -399,6 +401,7 @@ async fn graph_limits_apply_to_batches_and_concurrent_requests() {
         EngineConfig::CompactBfs,
         EngineConfig::EulerTour,
         EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
     ] {
         let config = knotrel_server::ServerConfig::new("127.0.0.1:0".parse().unwrap(), engine, 32)
             .unwrap()

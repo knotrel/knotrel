@@ -17,10 +17,11 @@ use tower::ServiceExt;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_BATCH_OPERATIONS: usize = 1024;
 
-const ENGINES: [EngineConfig; 3] = [
+const ENGINES: [EngineConfig; 4] = [
     EngineConfig::CompactBfs,
     EngineConfig::EulerTour,
     EngineConfig::Hdt,
+    EngineConfig::ClusterForest,
 ];
 
 fn app_for(engine: EngineConfig) -> Router {

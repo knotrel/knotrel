@@ -148,8 +148,9 @@
 //! | **Compact BFS** (Default) | [`EngineConfig::CompactBfs`] | `O(V + E)` worst-case | `O(deg(u) + deg(v))` amortized | `O(deg(u) + deg(v))` worst-case | `O(V + E)` |
 //! | **Euler Tour Trees** (ETT) | [`EngineConfig::EulerTour`] | `O(log V)` algorithmically | `O(log V + log E)` amortized | `O(log V + log E + s + c log V)` amortized | `O(V + E)` |
 //! | **HDT** | [`EngineConfig::Hdt`] | `O(log V)` algorithmically | `O(log V)` amortized | `O(log² V)` amortized | `O(E + V log V)` |
+//! | **Cluster forest** (unreleased, planned for 1.1) | [`EngineConfig::ClusterForest`] | `O(log N)` worst-case | `O(log N)` actual | `O(log² N)` amortized (project derivation) | `O(V + E)` |
 //!
-//! *Note on memory:* `O(V + E)` and `O(E + V log V)` represent *logical* graph entity storage.
+//! `N` is the high-water vertex count. *Note on memory:* `O(V + E)` and `O(E + V log V)` represent *logical* graph entity storage.
 //! Allocated memory capacities are retained after cuts and do not bound process heap memory or RSS.
 //!
 //! ### 1. Compact BFS ([`EngineConfig::CompactBfs`])
@@ -181,6 +182,19 @@
 //!   However, its amortized bounds represent sequence averages rather than worst-case per-request latency guarantees;
 //!   large individual promotion passes or vector reallocations can cause latency spikes, and it may have higher constant
 //!   factors on small or sparse graphs; verify against your actual workload.
+//!
+//! ### 4. Cluster forest ([`EngineConfig::ClusterForest`], unreleased, planned for 1.1)
+//! - **Algorithmic properties**: Experimental sequential cluster forest of Wulff-Nilsen (SODA 2013, §3) with the
+//!   path compression of De Man et al. (PVLDB 2025, §4) and insertion at the lowest common cluster. Edges carry
+//!   levels; clusters are the components of each level and are stored only where an edge of their level lies
+//!   inside them. Queries walk both vertices to their roots. A deletion runs two alternating searches from the
+//!   endpoints' clusters, pushes the explored edges of the smaller side one level down and splits clusters when
+//!   no replacement exists. The `O(log² N)` amortized update bound is **this project's derivation** for this
+//!   variant ([ADR 0014](https://github.com/knotrel/knotrel/blob/main/docs/architecture/0014-cluster-forest-backend.md)),
+//!   not a published theorem; the sources state it for related variants only. At most 2²⁸ vertices and edges.
+//!   Also supported by [`LifecycleGraph`]. The backend type is internal.
+//! - **Workload expectations**: none yet. Its performance against the other engines is measured in the 1.1
+//!   qualification; until then no speed or memory advantage is claimed.
 //!
 //! ### Pragmatic Guidance
 //! - **No universal winner**: Micro-benchmarks demonstrate that no single engine dominates across all graph topologies
@@ -221,7 +235,8 @@
 //!   HDT engine ([`EngineConfig::Hdt`], [`HdtGraph`], [`HdtStats`], [`HdtStorageStats`], [`HdtLevelStorage`]) are
 //!   *stable interfaces with an experimental engine*: their public API stays compatible across 1.x, while their
 //!   performance, maturity and usage recommendation carry no promise ([`EngineConfig::is_experimental`] returns
-//!   `true`). [`LifecycleStorage`] is stable. For these diagnostic structs, the fields, units and the properties
+//!   `true`). [`EngineConfig::ClusterForest`] (unreleased, planned for 1.1) is a stable interface with an
+//!   experimental engine too; its backend type is not exported. [`LifecycleStorage`] is stable. For these diagnostic structs, the fields, units and the properties
 //!   their documentation lists as guaranteed are stable; the exact values are implementation-dependent.
 //!   [`ReferenceGraph`] is an internal test oracle.
 
@@ -232,6 +247,7 @@ use std::{collections::hash_map::Entry, error::Error, fmt};
 mod workspace;
 pub use workspace::BfsWorkspace;
 
+mod cluster_forest;
 mod configuration;
 mod dynamic;
 mod forest;

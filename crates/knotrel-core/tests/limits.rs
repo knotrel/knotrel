@@ -7,6 +7,7 @@ fn limits_are_atomic_idempotent_and_reusable_after_cut() {
         EngineConfig::CompactBfs,
         EngineConfig::EulerTour,
         EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
     ] {
         let mut g = ConnectivityGraph::with_limits(
             engine,
@@ -47,6 +48,7 @@ fn zero_capacity_preserves_validation_and_never_creates_endpoints() {
         EngineConfig::CompactBfs,
         EngineConfig::EulerTour,
         EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
     ] {
         let mut g = ConnectivityGraph::with_limits(
             engine,
@@ -89,6 +91,7 @@ fn generous_limits_never_change_outcomes_of_mixed_updates() {
         EngineConfig::CompactBfs,
         EngineConfig::EulerTour,
         EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
     ] {
         let mut limited = ConnectivityGraph::with_limits(
             engine,

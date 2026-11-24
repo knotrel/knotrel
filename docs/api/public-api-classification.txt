@@ -113,6 +113,7 @@ stable       impl core::panic::unwind_safe::UnwindSafe for knotrel_core::EngineC
 stable       knotrel_core::EngineConfig::CompactBfs
 stable       knotrel_core::EngineConfig::EulerTour
 stable       knotrel_core::EngineConfig::Hdt
+stable       knotrel_core::EngineConfig::ClusterForest
 stable       knotrel_core::EngineConfig::as_str
 stable       knotrel_core::EngineConfig::is_experimental
 stable       knotrel_core::ForestGraph

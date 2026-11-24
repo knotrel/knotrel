@@ -6,7 +6,9 @@
 
 #![cfg(feature = "test-support")]
 
-use knotrel_core::EngineConfig;
+#[path = "common/engine.rs"]
+mod engine_under_test;
+
 use knotrel_server::{
     Lifecycle, ServerConfig, ServerMode, ShutdownOutcome, router_with_lifecycle, serve,
 };
@@ -22,11 +24,15 @@ use tokio::{
 const STEP: Duration = Duration::from_secs(5);
 
 fn config_source_managed() -> ServerConfig {
-    ServerConfig::new("127.0.0.1:0".parse().unwrap(), EngineConfig::CompactBfs, 32)
-        .unwrap()
-        .with_mode(ServerMode::SourceManaged)
-        .with_shutdown_timeout(Duration::from_secs(5))
-        .unwrap()
+    ServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        engine_under_test::engine(),
+        32,
+    )
+    .unwrap()
+    .with_mode(ServerMode::SourceManaged)
+    .with_shutdown_timeout(Duration::from_secs(5))
+    .unwrap()
 }
 
 struct Running {

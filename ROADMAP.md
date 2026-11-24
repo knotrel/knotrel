@@ -147,11 +147,16 @@ Statuses: see [v0.9.0](#v090--integration--reliability).
 
 Statuses: see [v1.1.0](#v110--cluster-forest-backend).
 
-- [ ] **CF1** Design from the paper, licensing check of the authors' code
-- [ ] **CF2** Sequential cluster forest in `knotrel-core` (opt-in, experimental)
+- [x] **CF1** Design from the paper, licensing check of the authors' code
+  - [ ] Design proposed in [ADR 0014](docs/architecture/0014-cluster-forest-backend.md) (2026-11-24); licensing re-checked (no license, no reuse); D1–D4 approved (2026-11-24); R1–R3 closed after two independent reviews; revision 4 accepted
+- [x] **CF2** Sequential cluster forest in `knotrel-core` (opt-in, experimental)
+  - [x] Implemented and independently reviewed (2026-11-24): `EngineConfig::ClusterForest` / `cluster-forest`, lifecycle support with engine-bounded limits, invariant checker after every operation in the in-crate suites; review findings resolved with deterministic regressions (ADR 0014, section 12)
 - [ ] **CF3** Differential, property-based and adversarial correctness tests
+  - [x] Implemented (2026-11-24): differential against `ReferenceGraph` and `compact-bfs`, seeded property histories with the full checker, adversarial families, lifecycle churn across compactions; long variants in the `cluster-forest-long` workflow (first scheduled run pending)
 - [ ] **CF4** Integration behind the existing engine abstractions, contract preserved
+  - [x] Implemented (2026-11-24): `KNOTREL_ENGINE=cluster-forest` (with or without lifecycle), OpenAPI, HTTP docs, stability, console types; server suites run on it in CI
 - [ ] **CF5** Performance qualification against the existing backends
+  - [ ] Protocol proposed in the [CF5 plan](docs/releases/v1.1.0-cf5-qualification-plan.md) (2026-11-24), awaiting approval; no measurement before it
 - [ ] **CF6** Adoption decision and selection guidance
 - [ ] **CF7** Batch-parallel variant (DEFERRED beyond v1.1)
 
@@ -1009,6 +1014,13 @@ disposed; R1–R3 complete.
 implemented, and it changes neither the v0.9.0 scope nor the v1.0 readiness
 criteria.
 
+**Progress (2026-11-24):** CF1 design in
+[ADR 0014](docs/architecture/0014-cluster-forest-backend.md) (revision 3):
+D1–D4 approved and R1–R3 closed: CF1 complete. CF2 implemented in
+`knotrel-core` and independently reviewed; CF3 and CF4 implemented
+(ADR 0014, section 12); CI on the branch and the first long run still to
+pass; no performance result before CF5.
+
 **Reference.** Quinten De Man, Laxman Dhulipala, Adam Karczmarz, Jakub Łącki,
 Julian Shun, Zhongqi Wang. *Towards Scalable and Practical Batch-Dynamic
 Connectivity.* PVLDB 18(3): 889–901 (VLDB 2025). DOI
@@ -1060,7 +1072,7 @@ v1.1 implements the sequential blocked variant (or the basic one, if CF1
 shows the blocked invariant's cost is not justified for Knotrel; the choice
 and its reason are recorded).
 
-- [ ] **CF1 Design.** A design document before code:
+- [x] **CF1 Design.** A design document before code:
   - mapping from the paper's definitions, invariants (size invariant 2.1,
     blocked invariant 5.2) and algorithms to Knotrel data structures, with
     the proofs or lemmas each step relies on;
@@ -1074,7 +1086,7 @@ and its reason are recorded).
   - the licensing check of the authors' code and the reuse decision.
   - **Completion:** the document is reviewed and approved; every invariant
     has a planned check (CF2) and every claimed bound names its source.
-- [ ] **CF2 Sequential implementation.** A new backend in `knotrel-core`
+- [x] **CF2 Sequential implementation.** A new backend in `knotrel-core`
   (`EngineConfig::ClusterForest`, configuration name `cluster-forest`),
   experimental and opt-in. Every public item documented; private algorithms
   documented with invariants, correctness reasoning and complexity
