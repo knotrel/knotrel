@@ -151,12 +151,12 @@ Statuses: see [v1.1.0](#v110--cluster-forest-backend).
   - [ ] Design proposed in [ADR 0014](docs/architecture/0014-cluster-forest-backend.md) (2026-11-24); licensing re-checked (no license, no reuse); D1–D4 approved (2026-11-24); R1–R3 closed after two independent reviews; revision 4 accepted
 - [x] **CF2** Sequential cluster forest in `knotrel-core` (opt-in, experimental)
   - [x] Implemented and independently reviewed (2026-11-24): `EngineConfig::ClusterForest` / `cluster-forest`, lifecycle support with engine-bounded limits, invariant checker after every operation in the in-crate suites; review findings resolved with deterministic regressions (ADR 0014, section 12)
-- [ ] **CF3** Differential, property-based and adversarial correctness tests
-  - [x] Implemented (2026-11-24): differential against `ReferenceGraph` and `compact-bfs`, seeded property histories with the full checker, adversarial families, lifecycle churn across compactions; long variants in the `cluster-forest-long` workflow (first scheduled run pending)
-- [ ] **CF4** Integration behind the existing engine abstractions, contract preserved
+- [x] **CF3** Differential, property-based and adversarial correctness tests
+  - [x] Implemented (2026-11-24): differential against `ReferenceGraph` and `compact-bfs`, seeded property histories with the full checker, adversarial families, lifecycle churn across compactions; long variants in the `cluster-forest-long` workflow (green on the merged head of #150)
+- [x] **CF4** Integration behind the existing engine abstractions, contract preserved
   - [x] Implemented (2026-11-24): `KNOTREL_ENGINE=cluster-forest` (with or without lifecycle), OpenAPI, HTTP docs, stability, console types; server suites run on it in CI
 - [ ] **CF5** Performance qualification against the existing backends
-  - [ ] Protocol proposed in the [CF5 plan](docs/releases/v1.1.0-cf5-qualification-plan.md) (2026-11-24), awaiting approval; no measurement before it
+  - [ ] Protocol proposed in the [CF5 plan](docs/releases/v1.1.0-cf5-qualification-plan.md), revision 2 (2026-11-24: full matrix, comparisons with v1.0.0, confidence rationale, capped cells, CF6 criteria, exploratory provenance), awaiting approval; no measurement before it
 - [ ] **CF6** Adoption decision and selection guidance
 - [ ] **CF7** Batch-parallel variant (DEFERRED beyond v1.1)
 
@@ -1017,9 +1017,9 @@ criteria.
 **Progress (2026-11-24):** CF1 design in
 [ADR 0014](docs/architecture/0014-cluster-forest-backend.md) (revision 3):
 D1–D4 approved and R1–R3 closed: CF1 complete. CF2 implemented in
-`knotrel-core` and independently reviewed; CF3 and CF4 implemented
-(ADR 0014, section 12); CI on the branch and the first long run still to
-pass; no performance result before CF5.
+`knotrel-core` and independently reviewed; CF3 and CF4 implemented and
+merged (#150), with CI and the long workflow green on the merged head; no
+performance result before CF5.
 
 **Reference.** Quinten De Man, Laxman Dhulipala, Adam Karczmarz, Jakub Łącki,
 Julian Shun, Zhongqi Wang. *Towards Scalable and Practical Batch-Dynamic
@@ -1094,7 +1094,7 @@ and its reason are recorded).
   - **Completion:** the core's existing engine-agnostic tests pass on the new
     backend; the invariant checker passes after every operation in the test
     suites.
-- [ ] **CF3 Correctness.**
+- [x] **CF3 Correctness.**
   - differential tests against `ReferenceGraph` and `compact-bfs` on the same
     operation sequences;
   - property-based tests over random insert, delete and query sequences
@@ -1106,7 +1106,7 @@ and its reason are recorded).
     deletions, and answers stay exact across compactions.
   - **Completion:** all of the above run in CI (long variants in a scheduled
     or release job), with no oracle disagreement.
-- [ ] **CF4 Integration.** Behind the existing abstractions
+- [x] **CF4 Integration.** Behind the existing abstractions
   (`ConnectivityGraph`, `LifecycleGraph`, the server's engine selection),
   preserving the public contract: node IDs, lifecycle flags, registered and
   effective topology, import validation and off-lock construction, and
