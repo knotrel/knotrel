@@ -249,17 +249,40 @@ identical code. But a release binary should be derivable from its tag alone.
 From v1.0.0 the `build-binaries` job builds without a cache and sets
 `SOURCE_DATE_EPOCH` to the commit time.
 
+## Result for v1.0.0 (2026-11-24)
+
+The first release built without cache and with `SOURCE_DATE_EPOCH` (the
+commit time of `d38df5f`, the commit tagged `v1.0.0`). Rebuilt on GitHub's
+runners from a clean export:
+
+| Run | Reference | Linux x86-64 | macOS arm64 |
+|---|---|---|---|
+| [45345236283](https://github.com/knotrel/knotrel/actions/runs/45345236283) | release dry-run bundle (run [45343956324](https://github.com/knotrel/knotrel/actions/runs/45343956324)) on `d38df5f`, `accept: byte` | byte-identical (`15bdf7aa…`) | not byte-identical; equivalent after excluding `LC_UUID` and `LC_CODE_SIGNATURE` (48 bytes differ); code and data identical. The run fails under `accept: byte`, as the procedure expects for this case. |
+| [45353258097](https://github.com/knotrel/knotrel/actions/runs/45353258097) | the published GitHub Release `v1.0.0`, `accept: equivalent` | byte-identical | the same verdicts |
+
+The binaries of the published release are identical to those of the verified
+dry-run bundle (Linux `15bdf7aa…`, macOS `27a8f5ca…`); the archives differ
+only in packaging metadata.
+
+**Maintainer decision (2026-11-24):** for v1.0.0 the macOS arm64 result,
+equivalent after excluding only `LC_UUID` and the ad-hoc signature, is
+accepted. Linux is byte-identical. Why the UUID differs on the runner is not
+established: the toolchain path ([above](#the-macos-uuid-difference)) is a
+hypothesis. Logs and hashes are kept with the evidence
+(`evidence/v1.0.0-reproducible-build-d38df5f/`, private).
+
 ### Gate status
 
-The gate is **open**. Steps:
+The gate is **closed for v1.0.0** (Linux byte-identical; macOS equivalent by
+maintainer decision). Steps:
 
 1. ~~The Linux v0.9.0 rebuild~~: done on the runner, byte-identical.
 2. ~~The workflow run on `v0.9.0`~~: done (Linux byte-identical; macOS
    equivalent after excluding `LC_UUID` and `LC_CODE_SIGNATURE`).
-3. The run on the v1.0.0 release candidate against its dry-run bundle, the
-   first release built without cache and with `SOURCE_DATE_EPOCH`; whether a
-   macOS result that is equivalent but not byte-identical is accepted needs
-   the recorded maintainer decision of the release procedure.
+3. ~~The run on the v1.0.0 release commit against its dry-run bundle~~: done
+   (see Result for v1.0.0); the macOS equivalent result was accepted by the
+   maintainer for v1.0.0. A later release needs its own decision if macOS is
+   again not byte-identical.
 
 Even when closed, the gate covers Linux and macOS only; Windows remains
 untested.
