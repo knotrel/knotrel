@@ -17,12 +17,11 @@ Add or remove connections, take nodes offline and restore them, then check
 whether two endpoints remain connected. Use it as a Rust library or an HTTP
 service alongside your existing database.
 
-**Latest release: [v0.9.0](https://github.com/knotrel/knotrel/releases/tag/v0.9.0)**
-(reference PostgreSQL integration, reserved feeder admission, compatibility
-policy and a verified gateway deployment). Node/edge lifecycle is opt-in and
-supported on `compact-bfs` only. **Next: v1.0.0**, through a release-candidate
-cycle that is in progress on `main` (nothing of it is released yet); see the
-[roadmap](ROADMAP.md#r--release-candidate-cycle-v100-rc--v100).
+**Latest release: [v1.0.0](https://github.com/knotrel/knotrel/releases/tag/v1.0.0)**
+(stable contract: the public Rust API, the `/v1` HTTP API and feeder protocol,
+the stable variables and metrics follow the [compatibility
+policy](docs/compatibility.md) for the whole 1.x series). Node/edge lifecycle
+is opt-in and supported on `compact-bfs` only.
 
 ## Architecture
 
@@ -51,8 +50,8 @@ Take A offline: B keeps the endpoints connected. Take B offline too: the
 connection is lost. Restore A: the connection returns without recreating its
 configured edges.
 
-Download and extract the **v0.9.0** server for your platform from the
-[release assets](https://github.com/knotrel/knotrel/releases/tag/v0.9.0),
+Download and extract the **v1.0.0** server for your platform from the
+[release assets](https://github.com/knotrel/knotrel/releases/tag/v1.0.0),
 [verify its checksum](#installing-a-release), and clone this repository for the
 example. With Python 3.9 or newer, run from the repository root:
 
@@ -105,7 +104,7 @@ persistent graph storage, directed reachability or electrical simulation.
 
 ```toml
 [dependencies]
-knotrel-core = "0.9"
+knotrel-core = "1.0"
 ```
 
 ```rust
@@ -232,6 +231,13 @@ requirements stay unqualified, and feeder catch-up under heavy query load
 (Q3) fails as a declared limitation; no speedup is claimed
 ([release notes](docs/releases/v0.9.0-release-notes.md#performance-qualification),
 [performance by version](docs/performance-by-version.md)).
+v1.0.0 was measured against v0.9.0 with the same method: its qualification
+is **accepted with exceptions**, for v1.0.0 only. No deciding result is a
+regression; four results are not PASS (one unresolved, three inconclusive),
+the two hub lifecycle requirements stay unqualified, and feeder catch-up
+under query load (Q3) fails as a declared limitation with an operational
+envelope; no speedup is claimed
+([release notes](docs/releases/v1.0.0-release-notes.md#performance-qualification)).
 
 ## Installing a release
 
@@ -246,28 +252,28 @@ the SHA-256 checksum before running.
 
 ```sh
 # Verify checksum on Linux:
-sha256sum -c knotrel-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c knotrel-server-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 # Or on macOS:
-# shasum -a 256 -c knotrel-server-v0.9.0-aarch64-apple-darwin.tar.gz.sha256
+# shasum -a 256 -c knotrel-server-v1.0.0-aarch64-apple-darwin.tar.gz.sha256
 
 # Extract and start on Linux (x86_64):
-tar -xzf knotrel-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz
-cd knotrel-server-v0.9.0-x86_64-unknown-linux-gnu
+tar -xzf knotrel-server-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
+cd knotrel-server-v1.0.0-x86_64-unknown-linux-gnu
 ./knotrel-server
 
 # Or on macOS (Apple Silicon):
-# tar -xzf knotrel-server-v0.9.0-aarch64-apple-darwin.tar.gz
-# cd knotrel-server-v0.9.0-aarch64-apple-darwin
+# tar -xzf knotrel-server-v1.0.0-aarch64-apple-darwin.tar.gz
+# cd knotrel-server-v1.0.0-aarch64-apple-darwin
 # ./knotrel-server
 ```
 
 On Windows (PowerShell):
 ```powershell
 # Compare the displayed hash with the downloaded .sha256 file before extracting.
-Get-FileHash -Algorithm SHA256 knotrel-server-v0.9.0-x86_64-pc-windows-msvc.zip
-Get-Content knotrel-server-v0.9.0-x86_64-pc-windows-msvc.zip.sha256
-Expand-Archive knotrel-server-v0.9.0-x86_64-pc-windows-msvc.zip -DestinationPath .
-cd knotrel-server-v0.9.0-x86_64-pc-windows-msvc
+Get-FileHash -Algorithm SHA256 knotrel-server-v1.0.0-x86_64-pc-windows-msvc.zip
+Get-Content knotrel-server-v1.0.0-x86_64-pc-windows-msvc.zip.sha256
+Expand-Archive knotrel-server-v1.0.0-x86_64-pc-windows-msvc.zip -DestinationPath .
+cd knotrel-server-v1.0.0-x86_64-pc-windows-msvc
 .\knotrel-server.exe
 ```
 
@@ -347,10 +353,10 @@ metrics. See [the console documentation](docs/console.md).
 - [Operational console](docs/console.md) (since v0.8.0; same version as the server): browser UI, container image and static archive for operating one server; [console release procedure](docs/releases/console-release.md).
 - [PostgreSQL reference feeder](docs/integrations/postgresql-feeder.md) (since v0.9.0): keeps Knotrel synchronized with two PostgreSQL tables through logical replication; [feeder and Compose example](integrations/postgres-feeder/README.md).
 - [Compatibility policy](docs/compatibility.md) and [stability classes](docs/stability.md) (since v0.9.0): what may change between releases, and how.
-- [Threat model](docs/threat-model.md) (unreleased, v1.0.0-rc cycle): threats per trust boundary for the supported exposure, each mitigation with the test that validates it, and residual risks. Vulnerability reporting: [SECURITY.md](SECURITY.md).
-- [Reproducible release builds](docs/releases/reproducible-build.md) (unreleased, v1.0.0-rc cycle): how to rebuild a release binary from its tag and compare it, Linux and macOS only.
+- [Threat model](docs/threat-model.md) (since v1.0.0): threats per trust boundary for the supported exposure, each mitigation with the test that validates it, and residual risks. Vulnerability reporting: [SECURITY.md](SECURITY.md).
+- [Reproducible release builds](docs/releases/reproducible-build.md) (since v1.0.0): how to rebuild a release binary from its tag and compare it, Linux and macOS only.
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
-- [v0.9.0 release notes](docs/releases/v0.9.0-release-notes.md), [v0.8.0](docs/releases/v0.8.0-release-notes.md), [v0.7.0](docs/releases/v0.7.0-release-notes.md), [v0.6.0](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
+- [v1.0.0 release notes](docs/releases/v1.0.0-release-notes.md), [v0.9.0](docs/releases/v0.9.0-release-notes.md), [v0.8.0](docs/releases/v0.8.0-release-notes.md), [v0.7.0](docs/releases/v0.7.0-release-notes.md), [v0.6.0](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
 - [Release procedure](docs/releases/release-procedure.md): verification, packaging and authorized publication.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.
