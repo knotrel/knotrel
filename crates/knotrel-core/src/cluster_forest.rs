@@ -83,11 +83,16 @@ pub(crate) fn max_elements() -> usize {
 /// (test-only).
 #[cfg(test)]
 pub(crate) fn with_max_elements<T>(limit: usize, body: impl FnOnce() -> T) -> T {
+    /// Restores the previous override on drop, also when `body` panics.
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MAX_ELEMENTS_OVERRIDE.with(|cell| cell.set(self.0));
+        }
+    }
     assert!(limit > 0 && limit <= MAX_ELEMENTS);
-    let previous = MAX_ELEMENTS_OVERRIDE.with(|cell| cell.replace(limit));
-    let result = body();
-    MAX_ELEMENTS_OVERRIDE.with(|cell| cell.set(previous));
-    result
+    let _restore = Restore(MAX_ELEMENTS_OVERRIDE.with(|cell| cell.replace(limit)));
+    body()
 }
 
 /// Slots of the binary counter used to pair rank trees; ranks stay below

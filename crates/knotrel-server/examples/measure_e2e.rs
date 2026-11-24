@@ -68,6 +68,8 @@ enum EngineSelector {
     EulerTour,
     /// Experimental Holm-de Lichtenberg-Thorup hierarchical levels engine.
     Hdt,
+    /// Experimental cluster forest engine (new in 1.1).
+    ClusterForest,
 }
 
 impl EngineSelector {
@@ -77,8 +79,10 @@ impl EngineSelector {
             "compact-bfs" => Ok(Self::CompactBfs),
             "ett" => Ok(Self::EulerTour),
             "hdt" => Ok(Self::Hdt),
+            "cluster-forest" => Ok(Self::ClusterForest),
             other => Err(format!(
-                "Error: invalid engine '{other}'; expected one of: compact-bfs, ett, hdt"
+                "Error: invalid engine '{other}'; expected one of: compact-bfs, ett, hdt, \
+                 cluster-forest"
             )),
         }
     }
@@ -89,6 +93,7 @@ impl EngineSelector {
             Self::CompactBfs => "compact-bfs",
             Self::EulerTour => "ett",
             Self::Hdt => "hdt",
+            Self::ClusterForest => "cluster-forest",
         }
     }
 }
@@ -3650,6 +3655,11 @@ mod tests {
             EngineSelector::EulerTour
         );
         assert_eq!(EngineSelector::parse("hdt").unwrap(), EngineSelector::Hdt);
+        assert_eq!(
+            EngineSelector::parse("cluster-forest").unwrap(),
+            EngineSelector::ClusterForest
+        );
+        assert_eq!(EngineSelector::ClusterForest.as_str(), "cluster-forest");
         assert!(EngineSelector::parse("invalid").is_err());
         assert!(EngineSelector::parse("").is_err());
     }

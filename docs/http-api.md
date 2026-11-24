@@ -915,9 +915,13 @@ the **configured** ceilings. These settings cannot be overridden in operation
 requests or changed at runtime. The ceilings **enforced** are the configured
 ones for every engine except the experimental `cluster-forest` (from 1.1,
 unreleased), which also applies its own capacity: 2²⁸ nodes and 2²⁸ edges, or
-2²⁷ − 512 nodes with lifecycle support. A rejection's `message` (for example
-`node limit 134217216 exceeded`) names the enforced ceiling, which can then
-differ from `/v1/info`; message texts are not part of the stable contract.
+2²⁷ − 512 nodes with lifecycle support. A rejection's `message` names the
+enforced ceiling, which can then differ from `/v1/info`: for example
+`node limit exceeded: 134217216` on `/v1/operations` and `/v1/batch`, and
+`node limit 134217216 exceeded` on feeder events and imports. `remaining_nodes`
+and `remaining_edges` of `GET /v1/stats` are computed from the configured
+ceilings, so with `cluster-forest` the engine's capacity can be reached first.
+Message texts are not part of the stable contract.
 
 An `add_node` or `link` that would exceed capacity returns HTTP 422 with
 `result: "error"` and code `node_limit_exceeded` or `edge_limit_exceeded`.

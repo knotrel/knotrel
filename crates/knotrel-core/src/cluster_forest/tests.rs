@@ -1321,6 +1321,34 @@ fn lifecycle_stays_within_the_engine_capacity() {
                 Err(GraphError::NodeLimitExceeded { limit: node_cap })
             );
         }
+        // Retired slots near their maximum (delta review, finding 6): at the
+        // node limit, remove a few nodes and refill with fresh IDs, many
+        // times. Retired slots then climb to about the catalog size before
+        // each compaction, so engine vertices approach `2 × node_cap`; they
+        // must stay within the capacity, and the climb must really happen
+        // (a looser compaction policy would overflow the capacity here).
+        let mut peak_vertices = 0;
+        for _ in 0..600 {
+            for _ in 0..8 {
+                let node = live.swap_remove(rng.below(live.len() as u64) as usize);
+                assert!(graph.remove_node(node));
+            }
+            for _ in 0..8 {
+                graph.add_node(next).unwrap();
+                let other = live[rng.below(live.len() as u64) as usize];
+                graph.link(other, next).unwrap();
+                live.push(next);
+                next += 1;
+            }
+            peak_vertices = peak_vertices.max(graph.engine_vertex_count());
+            assert!(graph.engine_vertex_count() <= 4096);
+        }
+        assert!(
+            peak_vertices >= 2 * node_cap - 64,
+            "retired slots reached their bound: peak {peak_vertices} of {}",
+            2 * node_cap
+        );
+
         // Edge limit: registered edges cap at the capacity.
         let mut edges = graph.edge_count();
         'fill: for &a in &live {

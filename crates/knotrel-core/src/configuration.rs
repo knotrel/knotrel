@@ -72,7 +72,11 @@ pub enum EngineConfig {
     /// [`GraphError::EdgeLimitExceeded`] carrying that limit (or the
     /// configured [`GraphLimits`] value, when lower). Under
     /// [`crate::LifecycleGraph`] the enforced limits are 2²⁷ − 512 nodes and
-    /// 2²⁸ edges, leaving room for retired slots.
+    /// 2²⁸ edges, leaving room for retired slots. Through
+    /// [`ConnectivityGraph`] the configured limits are checked first (node
+    /// before edge), then the engine's capacity: at that capacity a
+    /// configured edge limit can therefore be reported before the engine's
+    /// node capacity.
     ClusterForest,
 }
 

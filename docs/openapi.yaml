@@ -433,7 +433,7 @@ paths:
                   value:
                     result: error
                     code: topology_lifecycle_disabled
-                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true (requires KNOTREL_ENGINE=compact-bfs)"
+                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true (requires KNOTREL_ENGINE=compact-bfs or cluster-forest)"
         '413':
           description: Request body exceeds the 1 MiB limit (`invalid_request`); only the limit answers 413.
           content:
@@ -673,7 +673,7 @@ paths:
                   value:
                     result: error
                     code: topology_lifecycle_disabled
-                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true (requires KNOTREL_ENGINE=compact-bfs)"
+                    message: "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true (requires KNOTREL_ENGINE=compact-bfs or cluster-forest)"
         '422':
           description: Invalid batch size (not 1–1024) or invalid operation shape in batch
           content:
@@ -2245,10 +2245,15 @@ components:
           description: Configured edge limit ceiling, or null if unlimited.
         remaining_nodes:
           type: [integer, "null"]
-          description: Remaining vertex capacity before reaching limit, or null if unlimited.
+          description: |
+            Remaining vertex capacity before the configured limit, or null if unlimited.
+            With `cluster-forest` the engine's own capacity can be reached first (see
+            `max_nodes` in `GET /v1/info`).
         remaining_edges:
           type: [integer, "null"]
-          description: Remaining edge capacity before reaching limit, or null if unlimited.
+          description: |
+            Remaining edge capacity before the configured limit, or null if unlimited.
+            With `cluster-forest` the engine's own capacity can be reached first.
         state_version:
           type: string
           pattern: '^[0-9]+$'

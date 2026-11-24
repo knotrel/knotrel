@@ -289,6 +289,24 @@ async fn experimental_engines_list_nodes_only() {
     }
 }
 
+/// With lifecycle support, `cluster-forest` answers degree, incident and
+/// edge listing from the topology catalog, like `compact-bfs`.
+#[tokio::test]
+async fn cluster_forest_with_lifecycle_lists_edges() {
+    let app = app(EngineConfig::ClusterForest, true, true);
+    op(&app, json!({"op": "link", "source": "1", "target": "2"})).await;
+    op(&app, json!({"op": "link", "source": "2", "target": "3"})).await;
+    let (status, _, node) = get(&app, "/v1/nodes/2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(node["degree"], 2);
+    let (status, _, incident) = get(&app, "/v1/nodes/2/edges").await;
+    assert_eq!(status, StatusCode::OK, "{incident}");
+    assert_eq!(incident["edges"].as_array().unwrap().len(), 2);
+    let (status, _, edges) = get(&app, "/v1/edges").await;
+    assert_eq!(status, StatusCode::OK, "{edges}");
+    assert_eq!(edges["edges"].as_array().unwrap().len(), 2);
+}
+
 #[tokio::test]
 async fn invalid_parameters_are_rejected_before_admission() {
     let app = app(EngineConfig::CompactBfs, true, true);

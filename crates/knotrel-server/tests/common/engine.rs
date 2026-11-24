@@ -1,8 +1,10 @@
 //! Engine under test for suites that run on more than one engine.
 //!
 //! `KNOTREL_TEST_ENGINE` selects it (`compact-bfs` when unset). CI runs the
-//! lifecycle, import, feeder-event, batch and bootstrap suites a second time
-//! with `cluster-forest` (ADR 0014, CF4). An unknown value fails loudly.
+//! process-lifecycle, import, feeder-event, batch and bootstrap suites a
+//! second time with `cluster-forest` (ADR 0014, CF4), in plain mode; the
+//! topology-lifecycle path on `cluster-forest` is covered by the topology,
+//! inspection and process suites. An unknown value fails loudly.
 
 use knotrel_core::EngineConfig;
 

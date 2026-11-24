@@ -542,7 +542,8 @@ fn test_cli_argument_validation() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains(
-            "invalid engine 'unsupported-engine'; expected one of: compact-bfs, ett, hdt"
+            "invalid engine 'unsupported-engine'; expected one of: compact-bfs, ett, hdt, \
+             cluster-forest"
         ),
         "stderr was: {stderr}"
     );

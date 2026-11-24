@@ -793,9 +793,16 @@ export interface components {
       max_nodes: number | null;
       /** @description Configured edge limit ceiling, or null if unlimited. */
       max_edges: number | null;
-      /** @description Remaining vertex capacity before reaching limit, or null if unlimited. */
+      /**
+       * @description Remaining vertex capacity before the configured limit, or null if unlimited.
+       *     With `cluster-forest` the engine's own capacity can be reached first (see
+       *     `max_nodes` in `GET /v1/info`).
+       */
       remaining_nodes: number | null;
-      /** @description Remaining edge capacity before reaching limit, or null if unlimited. */
+      /**
+       * @description Remaining edge capacity before the configured limit, or null if unlimited.
+       *     With `cluster-forest` the engine's own capacity can be reached first.
+       */
       remaining_edges: number | null;
       /** @description Decimal string monotonic version counter incremented on effective mutations. */
       state_version: string;

@@ -48,7 +48,7 @@ By default, the server binds to `127.0.0.1:8080`.
 | `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (since 0.9) |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered node count (`unlimited` to remove ceiling) |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum registered edge count (`unlimited` to remove ceiling) |
-| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node and edge lifecycle operations (requires `KNOTREL_ENGINE=compact-bfs`); inactive nodes and disabled edges count against the limits |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node and edge lifecycle operations (requires `KNOTREL_ENGINE=compact-bfs`, or `cluster-forest` from 1.1, unreleased); inactive nodes and disabled edges count against the limits |
 
 ### Library Usage
 

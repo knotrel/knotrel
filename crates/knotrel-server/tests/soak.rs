@@ -1394,9 +1394,9 @@ impl Driver {
     fn random_server_spec(rng: &mut Rng, lifecycle: bool) -> ServerSpec {
         let managed = rng.chance(80);
         let engine = if lifecycle {
-            "compact-bfs"
+            rng.pick(&["compact-bfs", "cluster-forest"])
         } else {
-            rng.pick(&["compact-bfs", "ett", "hdt"])
+            rng.pick(&["compact-bfs", "ett", "hdt", "cluster-forest"])
         };
         let window = rng.pick(&[1, 2, 3, 5, 8, 64]);
         ServerSpec {
@@ -2671,7 +2671,9 @@ impl Driver {
         let nodes = self
             .request("GET", "/v1/nodes?limit=1000", None, None, None)
             .await;
-        let edge_listing = self.server_spec.engine == "compact-bfs";
+        // Per-node adjacency: compact-bfs keeps it; with lifecycle support the
+        // server answers from its topology catalog for any lifecycle engine.
+        let edge_listing = self.server_spec.engine == "compact-bfs" || self.server_spec.lifecycle;
         if nodes.status != 200 {
             problems.push(format!("nodes: status {} {}", nodes.status, nodes.body));
         } else {
@@ -2950,7 +2952,8 @@ async fn soak_short_lifecycle_off() {
     }
 }
 
-/// Short variant for CI: fixed seeds, lifecycle support on (`compact-bfs`).
+/// Short variant for CI: fixed seeds, lifecycle support on (`compact-bfs` or
+/// `cluster-forest`, picked by the seed).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn soak_short_lifecycle_on() {
     for seed in [0x5eed_1001_u64, 0x5eed_1002] {

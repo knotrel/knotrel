@@ -923,7 +923,7 @@ fn core_error_code(error: LifecycleError) -> ErrorCode {
 }
 
 /// Message of the `topology_lifecycle_disabled` rejection.
-pub(crate) const LIFECYCLE_DISABLED_MESSAGE: &str = "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true (requires KNOTREL_ENGINE=compact-bfs)";
+pub(crate) const LIFECYCLE_DISABLED_MESSAGE: &str = "node and edge lifecycle support is disabled; set KNOTREL_TOPOLOGY_LIFECYCLE=true (requires KNOTREL_ENGINE=compact-bfs or cluster-forest)";
 
 /// An operation result; batches preserve errors at the corresponding index.
 #[derive(Debug, Serialize)]
@@ -2089,7 +2089,8 @@ fn inspect_error(error: crate::graph::InspectError) -> Response {
         InspectError::Unsupported => error_response(
             StatusCode::CONFLICT,
             ErrorCode::InspectionUnsupported,
-            "incident and edge listing require KNOTREL_ENGINE=compact-bfs".into(),
+            "incident and edge listing require KNOTREL_ENGINE=compact-bfs or lifecycle support"
+                .into(),
         ),
         InspectError::UnknownNode => error_response(
             StatusCode::NOT_FOUND,

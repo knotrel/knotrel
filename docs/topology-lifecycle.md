@@ -107,8 +107,11 @@ are **every registered node, whatever its flag, plus retired slots**; its
 edges are **exactly the effective edges**. No engine state machine is
 duplicated and no engine deletion invariant is modified.
 
-**Supported engines (v0.5.0).** Lifecycle support is available only with
-`compact-bfs`. Lifecycle support for the experimental `ett` and `hdt` engines
+**Supported engines.** Lifecycle support is available with `compact-bfs` and,
+from 1.1 (unreleased), with the experimental `cluster-forest` (ADR 0014; the
+engine sees only the effective graph, rebuilt on compaction, and the enforced
+limits of section 3 apply). Lifecycle support for the experimental `ett` and
+`hdt` engines
 is deferred: their resource behavior under lifecycle churn was not
 established well enough for this release (see decision 8). Every
 `LifecycleGraph` constructor returns `LifecycleError::UnsupportedEngine` for
@@ -119,8 +122,9 @@ configurations are unchanged.
 
 **Costs.** Let `d` be the registered degree of the node concerned, `d_eff` its
 effective degree, `U` the cost of one effective edge insertion or deletion in
-the engine (for `compact-bfs`, the only engine with lifecycle support,
-`O(d_max)` because adjacency lists are sorted vectors), and `V`,
+the engine (for `compact-bfs`, `O(d_max)` because adjacency lists are sorted
+vectors; for `cluster-forest`, `O(log² N)` amortized by the project's
+derivation, ADR 0014), and `V`,
 `E_eff` the registered nodes and effective edges at the time of the call.
 Hash-map lookups are expected `O(1)`, not worst case.
 
@@ -311,10 +315,11 @@ notes (lifecycle request names, events and flagged import entries get 409
 `topology_lifecycle_disabled` instead of 422, and one more feeder-rejection
 series).
 
-`true` requires `KNOTREL_ENGINE=compact-bfs` (the default). With `ett` or
-`hdt`, `ServerConfig::from_env` fails with "`KNOTREL_TOPOLOGY_LIFECYCLE`
-requires `KNOTREL_ENGINE=compact-bfs`; node and edge lifecycle support for
-`<engine>` is not available in this release", so the executable exits with
+`true` requires `KNOTREL_ENGINE=compact-bfs` (the default) or, from 1.1
+(unreleased), `cluster-forest`. With `ett` or `hdt`, `ServerConfig::from_env`
+fails with "`KNOTREL_TOPOLOGY_LIFECYCLE` requires
+`KNOTREL_ENGINE=compact-bfs or cluster-forest`; node and edge lifecycle
+support for `<engine>` is not available in this release", so the executable exits with
 status 1 before binding or serving. Embedded callers get the same
 `ConfigError` from `ServerConfig::with_topology_lifecycle(true)`, which
 returns `Result<ServerConfig, ConfigError>`; the engine is fixed by

@@ -26,7 +26,8 @@ own. Configuration is read once at startup; changing it requires a restart.
     [startup configuration](http-api.md#startup-configuration-and-engine-selection)).
   - Node and edge lifecycle support (`KNOTREL_TOPOLOGY_LIFECYCLE=true|false`,
     default `false`; [lifecycle](http-api.md#node-and-edge-lifecycle-opt-in);
-    requires `KNOTREL_ENGINE=compact-bfs`, startup fails with `ett` or `hdt`)
+    requires `KNOTREL_ENGINE=compact-bfs`, or `cluster-forest` from 1.1
+    (unreleased); startup fails with `ett` or `hdt`)
     keeps a catalog of the registered topology in addition to the engine.
     Structurally this is about twice the plain engine's storage for an
     all-active graph; that is an estimate, and measured values are in the

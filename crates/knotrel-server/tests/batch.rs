@@ -30,7 +30,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use knotrel_core::GraphLimits;
-use knotrel_server::{ServerConfig, ServerMode, router, router_with_config};
+use knotrel_server::{ServerConfig, ServerMode, router_with_config};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -280,7 +280,14 @@ async fn test_03_decimal_revision_carry_across_batches() {
 
 #[tokio::test]
 async fn test_04_intra_batch_sequential_visibility() {
-    let app = router(knotrel_core::Graph::new());
+    let app = router_with_config(
+        ServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            engine_under_test::engine(),
+            32,
+        )
+        .unwrap(),
+    );
 
     // Intra-batch sequential visibility:
     // A query inside a batch immediately reflects preceding operations in the exact same batch.
@@ -397,7 +404,14 @@ async fn test_06_batch_capacity_limits_continue_on_error() {
 /// they do not prove determinism.
 #[tokio::test]
 async fn test_07_concurrent_batches_and_snapshots_stress_smoke() {
-    let app = router(knotrel_core::Graph::new());
+    let app = router_with_config(
+        ServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            engine_under_test::engine(),
+            32,
+        )
+        .unwrap(),
+    );
     let mut tasks = Vec::new();
 
     // Spawn 10 concurrent batch writers, each performing 2 operations: link then cut
@@ -447,7 +461,14 @@ async fn test_07_concurrent_batches_and_snapshots_stress_smoke() {
 
 #[tokio::test]
 async fn test_08_batch_boundary_validation_before_lock() {
-    let app = router(knotrel_core::Graph::new());
+    let app = router_with_config(
+        ServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            engine_under_test::engine(),
+            32,
+        )
+        .unwrap(),
+    );
 
     // 1. Empty operations array rejected with 422 invalid_batch_size
     let (status1, _, body1) = post_batch(&app, json!([])).await;

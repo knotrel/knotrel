@@ -477,7 +477,11 @@ are not p99 guarantees.
 - **Server:** `KNOTREL_ENGINE=cluster-forest` is an additive value with the
   same stability as `ett` and `hdt` (stable value, experimental engine);
   `/v1/info` reports `engine: "cluster-forest"` and `experimental: true`.
-  Incident listing and inspection behave as for `ett` and `hdt`.
+  Inspection: without lifecycle support the engine keeps no per-node
+  adjacency, so like `ett` and `hdt` it reports `degree: null` and answers
+  `inspection_unsupported` for incident and edge listing; with lifecycle
+  support the facade's catalog answers them, as for `compact-bfs` (the
+  console enables edge browsing accordingly).
   `docs/openapi.yaml`, `docs/http-api.md`, the console's generated types and
   `supportedServer` follow in CF4.
 - **Imports and atomicity:** unchanged (off-lock `try_from_edges`; every
@@ -719,14 +723,39 @@ with lifecycle; `/v1/info` reports it as experimental; `docs/openapi.yaml`
 (engine enum and descriptions), `docs/http-api.md`, `docs/stability.md`, the
 console's generated types, engine list and digest are updated. The OpenAPI
 compatibility check against v1.0.0 passes (an added response enum value is
-compatible). The lifecycle, import, feeder-event, batch and bootstrap server
-suites run on the engine selected by `KNOTREL_TEST_ENGINE`, and CI runs them
-again with `cluster-forest`; contract, topology, stats, HTTP and inspection
-suites include the engine in their engine lists. Before CF4 the server's
+compatible). The process-lifecycle, import, feeder-event, batch and
+bootstrap server suites run on the engine selected by `KNOTREL_TEST_ENGINE`,
+and CI runs them again with `cluster-forest` in plain mode (none of them
+enables topology lifecycle). Topology lifecycle on `cluster-forest` is
+covered by the topology suite (its engine list), an inspection test with
+lifecycle, and a process test that starts the executable with lifecycle;
+contract, stats and HTTP suites include the engine in their engine lists
+(delta review, finding 4). Before CF4 the server's
 internal engine-label mapping panicked on `cluster-forest` (reachable only
 by embedding the server with the new variant); fixed and covered.
 `supportedServer` of the console is unchanged until the release
 compatibility run.
+
+**Independent review of the fix delta and of CF4 (2026-11-24),** on PR
+knotrel/knotrel#150, by a new reviewer. It verified the lifecycle limit
+invariant on every path (registration, slot reuse, removal and compaction,
+imports; no bypass of the enforced limits; other engines unaffected) and
+found no blocking defect. Findings and resolution:
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| 1 | should-fix | Console disabled edge browsing for `cluster-forest` with lifecycle | Capability derived from lifecycle support; tests |
+| 2 | should-fix | Messages and docs still said lifecycle is `compact-bfs` only | `UnsupportedEngine`, lifecycle-disabled and inspection messages, README, deployment, console and lifecycle docs updated |
+| 3 | should-fix | Section 7 said inspection behaves as for `ett`/`hdt` | Section 7 corrected; server test of inspection with lifecycle |
+| 4 | should-fix | CI's `cluster-forest` step covers plain mode only; three batch tests hardcoded `compact-bfs` | Batch tests parameterized; CI comment and the CF4 record state the coverage exactly |
+| 5 | should-fix | CF5 K2 replicated the exploratory workload | K2 now follows the paper's staged protocol, with densities and sizes chosen on stated grounds and the exploratory parameters excluded |
+| 6 | minor | Lifecycle capacity test never approached the bound | Churn drives retired slots to their bound; the test fails under a looser compaction policy |
+| 7 | minor | Error precedence at the engine capacity | Documented on `EngineConfig::ClusterForest` |
+| 8 | minor | `/v1/stats` remainders use configured limits | Documented (OpenAPI, HTTP docs) |
+| 9 | minor | Message example matched feeder routes only | Both message forms documented |
+| 10 | minor | `measure_e2e` and the soak test omitted the engine | Added |
+| 11 | minor | Limit override had no drop guard | RAII guard |
+| 12 | minor | CF5 plan wording (abbreviations, attempts, budget) | Corrected |
 
 **Completion of CF1** (roadmap): this document approved; every invariant has
 a planned check (section 8); every claimed bound names its source or is

@@ -21,7 +21,8 @@ service alongside your existing database.
 (stable contract: the public Rust API, the `/v1` HTTP API and feeder protocol,
 the stable variables and metrics follow the [compatibility
 policy](docs/compatibility.md) for the whole 1.x series). Node/edge lifecycle
-is opt-in and supported on `compact-bfs` only.
+is opt-in and supported on `compact-bfs` (and, from 1.1, unreleased, on the
+experimental `cluster-forest`).
 
 ## Architecture
 
@@ -183,7 +184,8 @@ variant were measured in v0.3.0 release qualification. See
 ### Node and edge lifecycle
 
 Since v0.5.0, opt-in lifecycle supports reversible node activation, reversible
-edge enabling and permanent node removal, **only on `compact-bfs`**. Select
+edge enabling and permanent node removal, **only on `compact-bfs`** (from 1.1,
+unreleased, also on the experimental `cluster-forest`). Select
 `KNOTREL_TOPOLOGY_LIFECYCLE=true` for the server or `LifecycleGraph` in Rust.
 The server rejects lifecycle with experimental `ett` or `hdt` engines.
 
@@ -294,7 +296,7 @@ aliases) are reserved and ignored, so one environment file can serve both.
 | `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (since v0.9.0) |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges (registered edges with lifecycle support); zero allowed; `unlimited` opts out |
-| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (or `cluster-forest` from 1.1, unreleased; startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
 | `KNOTREL_INSPECTION` | `false` | `true` enables the read-only inspection routes (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges`) used by the console's data browser; since v0.8.0; see [Inspection](docs/http-api.md#inspection-opt-in) |
 | `RUST_LOG` | `info` | Logging filter |
 

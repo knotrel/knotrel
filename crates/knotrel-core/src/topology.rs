@@ -280,7 +280,7 @@ impl fmt::Display for LifecycleError {
             Self::UnsupportedEngine { engine } => write!(
                 formatter,
                 "node and edge lifecycle support is not available for engine {}; \
-                 only compact-bfs is supported",
+                 supported engines: compact-bfs, cluster-forest",
                 engine.as_str()
             ),
         }
@@ -772,7 +772,7 @@ impl LifecycleGraph {
     /// Builds an unlimited engine holding every catalog node as a vertex and
     /// exactly the effective edges; returns it with the effective edge count.
     ///
-    /// For `compact-bfs` (the only engine with lifecycle support) the engine
+    /// For `compact-bfs` the engine
     /// is built in one pass ([`Graph::from_sorted_adjacency`](crate::Graph::from_sorted_adjacency)): node IDs are
     /// sorted and receive engine indices in ascending ID order (the index is
     /// parked in the construction-only `pending` field, reset to zero
@@ -784,7 +784,8 @@ impl LifecycleGraph {
     /// no vector grows. `O(V log V + E)` time with expected `O(1)` probes;
     /// scratch memory is the `O(V)` sorted ID vector.
     ///
-    /// Other engines, and catalogs too large for 32-bit indices, use the
+    /// `cluster-forest` (the other lifecycle engine), and catalogs too large
+    /// for 32-bit indices, use the
     /// incremental [`Self::build_engine_incremental`]. `order` is used only
     /// by that path, as the vertex insertion order when it lists every catalog
     /// node; otherwise (compaction passes an empty slice) the catalog's keys

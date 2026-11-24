@@ -43,8 +43,10 @@ jobs:
       - name: Run tests (test-support)
         shell: bash
         run: cargo test -p knotrel-server --locked --features test-support --config 'profile.test.package."knotrel-core".opt-level=2'
-      # ADR 0014, CF4: the lifecycle, import, feeder-event, batch and
-      # bootstrap suites again with the experimental cluster-forest engine.
+      # ADR 0014, CF4: the process-lifecycle, import, feeder-event, batch and
+      # bootstrap suites again with the experimental cluster-forest engine
+      # (plain mode; topology lifecycle on cluster-forest is covered by the
+      # topology, inspection and process suites in the steps above).
       - name: Run server suites (cluster-forest)
         shell: bash
         env:

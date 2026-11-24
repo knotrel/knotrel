@@ -82,11 +82,14 @@ export function deriveCapabilities(info: ServerInfo | undefined): Capabilities {
       ? undefined
       : 'This server is source-managed. Topology changes belong in the authoritative source and are delivered by its feeder; the console offers diagnostics only.',
     browseNodes: info.inspection,
-    browseEdges: info.inspection && info.engine === 'compact-bfs',
+    // Incident and edge listing need per-node adjacency: compact-bfs keeps it,
+    // and with lifecycle support the server answers from its topology catalog
+    // for any lifecycle engine (compact-bfs, cluster-forest).
+    browseEdges: info.inspection && (info.engine === 'compact-bfs' || info.topologyLifecycle),
     browseBlockedReason: !info.inspection
       ? 'The server does not expose the inspection routes. Browsing nodes and edges needs server 0.8 or later started with KNOTREL_INSPECTION=true.'
-      : info.engine !== 'compact-bfs'
-        ? `The ${info.engine} engine keeps no per-node adjacency: nodes can be listed, but incident edges and the edge list need compact-bfs.`
+      : info.engine !== 'compact-bfs' && !info.topologyLifecycle
+        ? `The ${info.engine} engine keeps no per-node adjacency: nodes can be listed, but incident edges and the edge list need compact-bfs or lifecycle support.`
         : undefined,
   };
 }
