@@ -157,7 +157,7 @@ UI (Overview → Liveness and readiness).
 
 The server ignores these `KNOTREL_CONSOLE_*` variables, so one environment file
 can configure both. The `KNOTREL_CONSOLE_UPSTREAM*` names are new in 1.0.0
-(unreleased); images up to 0.9.x accept only the pre-1.0 names
+(first in 1.0.0-rc.1); images up to 0.9.x accept only the pre-1.0 names
 `KNOTREL_UPSTREAM` and `KNOTREL_UPSTREAM_TIMEOUT`, which still work in 1.x as
 deprecated aliases (with a warning in the logs); setting both an alias and its
 new name to different values stops the container. Details:
