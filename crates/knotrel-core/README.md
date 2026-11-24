@@ -77,8 +77,8 @@ assert!(!graph.connected(1, 99)?);
 
 ## Node and Edge Lifecycle
 
-`LifecycleGraph` (`compact-bfs` engine only; `ett` and `hdt` are
-rejected with `LifecycleError::UnsupportedEngine`) keeps the **registered** topology with a
+`LifecycleGraph` (`compact-bfs`, and `cluster-forest` from 1.1, unreleased;
+`ett` and `hdt` are rejected with `LifecycleError::UnsupportedEngine`) keeps the **registered** topology with a
 node-active flag per node and an edge-enabled flag per edge, and answers
 `connected` over the **effective** graph: an edge counts only when it is
 enabled and both endpoints are active. Deactivating a node keeps its edges and
@@ -98,8 +98,9 @@ assert!(graph.connected(1, 3)?);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-It is available on `compact-bfs` only (lifecycle support for `ett` and `hdt`
-is deferred), and it is not free: deactivating or removing a
+It is available on `compact-bfs` and, from 1.1 (unreleased), on the
+experimental `cluster-forest` engine; lifecycle support for `ett` and `hdt`
+is deferred. It is not free: deactivating or removing a
 node costs work proportional to its degree, and the graph keeps a topology
 catalog besides the engine's effective graph. `ConnectivityGraph` is
 unchanged. See the
@@ -117,11 +118,12 @@ reports each edge's state. A cursor is the last neighbor returned; pages are
 not a snapshot of a graph that changes between them.
 ## Engine Selection
 
-Knotrel provides three dynamic connectivity engines via `EngineConfig`:
+Knotrel provides three released dynamic connectivity engines via `EngineConfig`, and a fourth unreleased one planned for 1.1:
 
 - **Compact BFS (`EngineConfig::CompactBfs`) — Default**: Sorted adjacency vectors of stable internal indices; `O(V + E)` worst-case BFS queries; `O(deg(u) + deg(v))` amortized link and cut; `O(V + E)` logical memory. Best for general use or mutation-heavy workloads.
 - **Euler Tour Trees (`EngineConfig::EulerTour`) — Experimental engine, stable interface**: Spanning forest using AVL Euler tour sequences. `O(log V)` algorithmic queries and link operations. Non-tree cuts cost `O(log V + log E)`; tree cuts scan the smaller side (`O(log V + log E + s + c log V)` amortized) using candidate-pruned subtrees. Effective for query-dominated workloads on tree-like topologies.
 - **HDT (`EngineConfig::Hdt`) — Experimental engine, stable interface**: Deterministic Holm–de Lichtenberg–Thorup dynamic connectivity with an append-only growth policy for expanding vertices. Maintains a hierarchy of `O(log V)` levels materialized lazily as promotions require them. Bounds amortized update costs to `O(log² V)`, eliminating repeated scan storms in dense bridge-churn workloads.
+- **Cluster forest (`EngineConfig::ClusterForest`) — unreleased (planned for 1.1), experimental engine, stable interface**: Sequential cluster forest (Wulff-Nilsen 2013, with the path compression of De Man et al. 2025). `O(log N)` queries by walking to the roots, `O(V + E)` logical memory; `O(log² N)` amortized updates by this project's derivation for this variant (not a published theorem). Also supported by `LifecycleGraph`. No performance claim before its 1.1 qualification.
 
 ### Complexity & Memory Notes
 

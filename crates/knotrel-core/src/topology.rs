@@ -413,7 +413,11 @@ pub struct LifecycleGraph {
     // control tag and degrade probing (measured in the v0.5.0 qualification).
     nodes: FxHashMap<NodeId, NodeRecord>,
     engine: ConnectivityGraph,
+    /// Configured limits, as returned by [`Self::limits`].
     limits: GraphLimits,
+    /// Limits actually enforced: the configured ones tightened by the
+    /// engine's own capacity ([`Self::bounded`]).
+    checks: GraphLimits,
     active_nodes: usize,
     registered_edges: usize,
     enabled_edges: usize,
@@ -426,12 +430,41 @@ pub struct LifecycleGraph {
 impl LifecycleGraph {
     /// Reports whether lifecycle support is available for `engine`.
     ///
-    /// In v0.5.0 only [`EngineConfig::CompactBfs`] is supported. Lifecycle
-    /// support for the experimental `ett` and `hdt` engines is deferred; their
-    /// plain [`ConnectivityGraph`] use is unaffected.
+    /// [`EngineConfig::CompactBfs`] and, from 1.1,
+    /// [`EngineConfig::ClusterForest`] are supported. Lifecycle support for
+    /// the experimental `ett` and `hdt` engines is deferred; their plain
+    /// [`ConnectivityGraph`] use is unaffected.
     #[must_use]
     pub const fn supports_engine(engine: EngineConfig) -> bool {
-        matches!(engine, EngineConfig::CompactBfs)
+        matches!(
+            engine,
+            EngineConfig::CompactBfs | EngineConfig::ClusterForest
+        )
+    }
+
+    /// Tightens `limits` by the engine's capacity, so the engine never
+    /// rejects (or panics on) a mutation the catalog accepted.
+    ///
+    /// `cluster-forest` holds at most `max_elements()` (2²⁸) vertices and
+    /// edges. Engine vertices include retired slots, at most
+    /// `max(catalog, 1024)` of them between compactions (see
+    /// [`Self::compact_if_needed`]), so at most `2 × catalog + 1024`: the
+    /// catalog is capped at `(2²⁸ − 1024) / 2` nodes and registered edges
+    /// (an upper bound of effective edges) at 2²⁸. Other engines are
+    /// unlimited.
+    fn bounded(engine: EngineConfig, limits: GraphLimits) -> GraphLimits {
+        if engine != EngineConfig::ClusterForest {
+            return limits;
+        }
+        let capacity = crate::cluster_forest::max_elements();
+        let nodes = capacity.saturating_sub(MIN_RETIRED_BEFORE_COMPACTION) / 2;
+        let tighten = |configured: Option<usize>, cap: usize| {
+            Some(configured.map_or(cap, |limit| limit.min(cap)))
+        };
+        GraphLimits {
+            max_nodes: tighten(limits.max_nodes, nodes),
+            max_edges: tighten(limits.max_edges, capacity),
+        }
     }
 
     fn check_engine(engine: EngineConfig) -> Result<(), LifecycleError> {
@@ -464,6 +497,7 @@ impl LifecycleGraph {
             nodes: FxHashMap::default(),
             engine: ConnectivityGraph::new(engine),
             limits,
+            checks: Self::bounded(engine, limits),
             active_nodes: 0,
             registered_edges: 0,
             enabled_edges: 0,
@@ -501,9 +535,10 @@ impl LifecycleGraph {
         edges: &[EdgeSpec],
     ) -> Result<Self, LifecycleError> {
         Self::check_engine(engine)?;
-        match Self::catalog_fast(limits, nodes, edges) {
+        let checks = Self::bounded(engine, limits);
+        match Self::catalog_fast(checks, nodes, edges) {
             Some((catalog, order)) => Ok(Self::finish(engine, limits, catalog, order)),
-            None => Self::catalog_exact(limits, nodes, edges)
+            None => Self::catalog_exact(checks, nodes, edges)
                 .map(|(catalog, order)| Self::finish(engine, limits, catalog, order)),
         }
     }
@@ -725,6 +760,7 @@ impl LifecycleGraph {
             nodes: catalog,
             engine: engine_graph,
             limits,
+            checks: Self::bounded(engine, limits),
             active_nodes,
             registered_edges: registered_edges / 2,
             enabled_edges: enabled_incidences / 2,
@@ -849,7 +885,15 @@ impl LifecycleGraph {
         (graph, effective.len())
     }
 
-    /// Returns the configured limits on registered topology.
+    /// Returns the **configured** limits on registered topology, exactly as
+    /// passed at construction; they are not adjusted for the engine.
+    ///
+    /// The **enforced** limits are the configured ones, except with
+    /// [`EngineConfig::ClusterForest`], where they can be lower:
+    /// at most `2²⁷ − 512` registered nodes and `2²⁸` registered edges,
+    /// whatever is configured (the engine's capacity, with room for retired
+    /// slots); mutations beyond them return [`GraphError::NodeLimitExceeded`]
+    /// or [`GraphError::EdgeLimitExceeded`] carrying the enforced limit.
     #[must_use]
     pub fn limits(&self) -> GraphLimits {
         self.limits
@@ -871,12 +915,13 @@ impl LifecycleGraph {
     /// # Errors
     ///
     /// [`GraphError::NodeLimitExceeded`] when registering a new node would
-    /// exceed `max_nodes`.
+    /// exceed the enforced node limit: `max_nodes`, or the engine's lower
+    /// capacity (see [`Self::limits`]). The error carries the enforced value.
     pub fn add_node(&mut self, node: NodeId) -> Result<bool, GraphError> {
         if self.nodes.contains_key(&node) {
             return Ok(false);
         }
-        if let Some(limit) = self.limits.max_nodes
+        if let Some(limit) = self.checks.max_nodes
             && self.nodes.len() >= limit
         {
             return Err(GraphError::NodeLimitExceeded { limit });
@@ -929,12 +974,14 @@ impl LifecycleGraph {
     ///
     /// In precedence order: [`GraphError::SelfLoop`];
     /// [`GraphError::NodeLimitExceeded`] when the missing endpoints do not
-    /// fit; [`GraphError::EdgeLimitExceeded`] for a new edge at `max_edges`.
+    /// fit; [`GraphError::EdgeLimitExceeded`] for a new edge at the enforced
+    /// edge limit. Both carry the enforced value, which can be lower than the
+    /// configured one (see [`Self::limits`]).
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
         GraphError::check_distinct(source, target)?;
         let source_known = self.nodes.contains_key(&source);
         let target_known = self.nodes.contains_key(&target);
-        if let Some(limit) = self.limits.max_nodes {
+        if let Some(limit) = self.checks.max_nodes {
             let missing = usize::from(!source_known) + usize::from(!target_known);
             if missing > limit.saturating_sub(self.nodes.len()) {
                 return Err(GraphError::NodeLimitExceeded { limit });
@@ -944,7 +991,7 @@ impl LifecycleGraph {
         if exists {
             return Ok(false);
         }
-        if let Some(limit) = self.limits.max_edges
+        if let Some(limit) = self.checks.max_edges
             && self.registered_edges >= limit
         {
             return Err(GraphError::EdgeLimitExceeded { limit });

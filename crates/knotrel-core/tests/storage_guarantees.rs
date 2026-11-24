@@ -231,6 +231,16 @@ fn hdt_selector_and_qualification_are_stable_values() {
     );
 }
 
+#[test]
+fn cluster_forest_selector_and_qualification_are_stable_values() {
+    assert_eq!(EngineConfig::ClusterForest.as_str(), "cluster-forest");
+    assert!(EngineConfig::ClusterForest.is_experimental());
+    assert_eq!(
+        ConnectivityGraph::new(EngineConfig::ClusterForest).engine(),
+        EngineConfig::ClusterForest
+    );
+}
+
 /// Asserts every guaranteed property of a lifecycle storage snapshot.
 fn check_lifecycle_storage(graph: &LifecycleGraph, storage: LifecycleStorage) {
     assert_eq!(storage.catalog_nodes, graph.node_count());

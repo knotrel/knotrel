@@ -2,8 +2,8 @@
 //!
 //! Demonstrates:
 //! - Selecting between BFS, Euler Tour Trees (ETT), and HDT via `EngineConfig`.
-//! - Applying the identical sequence of mutations and queries to all three engines.
-//! - Verifying that all three engines produce identical observable reachability results.
+//! - Applying the identical sequence of mutations and queries to all four engines.
+//! - Verifying that all four engines produce identical observable reachability results.
 //!
 //! Run with: `cargo run -p knotrel-core --example engine_selection`
 
@@ -116,12 +116,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         EngineConfig::CompactBfs,
         EngineConfig::EulerTour,
         EngineConfig::Hdt,
+        EngineConfig::ClusterForest,
     ];
 
     for &engine in &engines {
         exercise_engine(engine)?;
     }
 
-    println!("All three engines produced identical, exact connectivity results.");
+    println!("All four engines produced identical, exact connectivity results.");
     Ok(())
 }

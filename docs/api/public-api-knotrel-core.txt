@@ -88,6 +88,7 @@ impl core::marker::Unpin for knotrel_core::EngineConfig
 impl core::marker::UnsafeUnpin for knotrel_core::EngineConfig
 impl core::panic::unwind_safe::RefUnwindSafe for knotrel_core::EngineConfig
 impl core::panic::unwind_safe::UnwindSafe for knotrel_core::EngineConfig
+pub knotrel_core::EngineConfig::ClusterForest
 pub knotrel_core::EngineConfig::CompactBfs
 pub knotrel_core::EngineConfig::EulerTour
 pub knotrel_core::EngineConfig::Hdt

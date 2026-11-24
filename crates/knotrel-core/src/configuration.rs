@@ -1,6 +1,6 @@
 //! Explicit engine selection, independent of any transport or environment.
 
-use crate::{ForestGraph, Graph, GraphError, HdtGraph, NodeId};
+use crate::{ForestGraph, Graph, GraphError, HdtGraph, NodeId, cluster_forest::ClusterForestGraph};
 
 /// Immutable cardinality ceilings for one graph instance.
 ///
@@ -49,6 +49,31 @@ pub enum EngineConfig {
     /// it carries no performance, latency or memory promise, lifecycle support
     /// is not available, and [`EngineConfig::CompactBfs`] remains the default.
     Hdt,
+    /// Cluster forest (Wulff-Nilsen, SODA 2013, §3, with the path compression
+    /// of De Man et al., PVLDB 2025, §4): a stable interface for an
+    /// experimental engine, new in 1.1.
+    ///
+    /// The variant and its selector `"cluster-forest"`
+    /// ([`EngineConfig::as_str`]) stay compatible across 1.x like
+    /// [`EngineConfig::EulerTour`] and [`EngineConfig::Hdt`]: they are
+    /// removed or renamed only after a deprecation and in a major release,
+    /// and `#[non_exhaustive]` on this enum does not authorize removing them.
+    /// "Experimental" qualifies only the engine's performance, maturity and
+    /// usage recommendation ([`EngineConfig::is_experimental`] returns
+    /// `true`): it carries no performance, latency or memory promise, and
+    /// [`EngineConfig::CompactBfs`] remains the default. The backend type
+    /// itself is internal: use the engine through [`ConnectivityGraph`] or
+    /// [`crate::LifecycleGraph`], which supports it.
+    ///
+    /// Updates are `O(log² N)` amortized by this project's derivation for
+    /// this variant (ADR 0014), not by a published theorem; queries walk to
+    /// the roots in `O(log N)`. It accepts at most 2²⁸ vertices and 2²⁸ edges
+    /// and reports more as [`GraphError::NodeLimitExceeded`] or
+    /// [`GraphError::EdgeLimitExceeded`] carrying that limit (or the
+    /// configured [`GraphLimits`] value, when lower). Under
+    /// [`crate::LifecycleGraph`] the enforced limits are 2²⁷ − 512 nodes and
+    /// 2²⁸ edges, leaving room for retired slots.
+    ClusterForest,
 }
 
 impl EngineConfig {
@@ -58,6 +83,7 @@ impl EngineConfig {
             Self::CompactBfs => "compact-bfs",
             Self::EulerTour => "ett",
             Self::Hdt => "hdt",
+            Self::ClusterForest => "cluster-forest",
         }
     }
 
@@ -66,8 +92,9 @@ impl EngineConfig {
     /// public interface may be stable.
     ///
     /// Returns `false` for [`EngineConfig::CompactBfs`] and `true` for
-    /// [`EngineConfig::EulerTour`] and [`EngineConfig::Hdt`] in this release.
-    /// The value for `EulerTour` and `Hdt` may stay `true` for the whole 1.x
+    /// [`EngineConfig::EulerTour`], [`EngineConfig::Hdt`] and
+    /// [`EngineConfig::ClusterForest`] in this release. The value for the
+    /// experimental engines may stay `true` for the whole 1.x
     /// series; it becomes `false` only when an engine is promoted, in a minor
     /// release that records it in the release notes, and it never changes
     /// from `false` to `true` for an existing engine. The value says nothing about the interface's
@@ -83,10 +110,12 @@ impl EngineConfig {
     /// assert!(!EngineConfig::CompactBfs.is_experimental());
     /// assert!(EngineConfig::EulerTour.is_experimental());
     /// assert!(EngineConfig::Hdt.is_experimental());
+    /// assert!(EngineConfig::ClusterForest.is_experimental());
     /// assert_eq!(EngineConfig::Hdt.as_str(), "hdt");
+    /// assert_eq!(EngineConfig::ClusterForest.as_str(), "cluster-forest");
     /// ```
     pub fn is_experimental(self) -> bool {
-        matches!(self, Self::EulerTour | Self::Hdt)
+        matches!(self, Self::EulerTour | Self::Hdt | Self::ClusterForest)
     }
 }
 
@@ -94,7 +123,8 @@ impl EngineConfig {
 ///
 /// All engines preserve the [`Graph`] operation contract, including growing
 /// `u64` IDs and retained vertices after cuts. This wrapper adds constant-time
-/// enum dispatch; operation costs are those of [`Graph`], [`ForestGraph`] or [`HdtGraph`].
+/// enum dispatch; operation costs are those of [`Graph`], [`ForestGraph`], [`HdtGraph`]
+/// or the internal cluster forest ([`EngineConfig::ClusterForest`]).
 /// It reads no environment variables or files and performs no internal locking.
 ///
 /// ```
@@ -115,6 +145,8 @@ enum Backend {
     Compact(Graph),
     EulerTour(ForestGraph),
     Hdt(HdtGraph),
+    /// Boxed: the backend keeps reusable search buffers inline.
+    ClusterForest(Box<ClusterForestGraph>),
 }
 
 impl Default for ConnectivityGraph {
@@ -147,6 +179,9 @@ impl ConnectivityGraph {
                 EngineConfig::CompactBfs => Backend::Compact(Graph::new()),
                 EngineConfig::EulerTour => Backend::EulerTour(ForestGraph::new()),
                 EngineConfig::Hdt => Backend::Hdt(HdtGraph::new()),
+                EngineConfig::ClusterForest => {
+                    Backend::ClusterForest(Box::new(ClusterForestGraph::new()))
+                }
             },
         }
     }
@@ -210,7 +245,14 @@ impl ConnectivityGraph {
         Ok(graph)
     }
 
-    /// Returns the immutable limits configured for this instance.
+    /// Returns the immutable limits configured for this instance, as passed
+    /// at construction.
+    ///
+    /// They are the enforced limits for every engine except
+    /// [`EngineConfig::ClusterForest`], whose own capacity (2²⁸ vertices and
+    /// 2²⁸ edges) also applies: when it is lower, the error carries the
+    /// capacity instead of the configured value, which this method still
+    /// returns.
     pub fn limits(&self) -> GraphLimits {
         self.limits
     }
@@ -221,6 +263,7 @@ impl ConnectivityGraph {
             Backend::Compact(_) => EngineConfig::CompactBfs,
             Backend::EulerTour(_) => EngineConfig::EulerTour,
             Backend::Hdt(_) => EngineConfig::Hdt,
+            Backend::ClusterForest(_) => EngineConfig::ClusterForest,
         }
     }
 
@@ -263,6 +306,7 @@ impl ConnectivityGraph {
             Backend::Compact(graph) => graph.contains_node(node),
             Backend::EulerTour(graph) => graph.contains_node(node),
             Backend::Hdt(graph) => graph.contains_node(node),
+            Backend::ClusterForest(graph) => graph.contains_node(node),
         }
     }
 
@@ -283,6 +327,7 @@ impl ConnectivityGraph {
             Backend::Compact(graph) => graph.add_node(node),
             Backend::EulerTour(graph) => graph.add_node(node),
             Backend::Hdt(graph) => graph.add_node(node),
+            Backend::ClusterForest(graph) => graph.add_node(node)?,
         })
     }
 
@@ -314,6 +359,7 @@ impl ConnectivityGraph {
                 Backend::Compact(g) => g.contains_edge(source, target),
                 Backend::EulerTour(g) => g.contains_edge(source, target),
                 Backend::Hdt(g) => g.contains_edge(source, target),
+                Backend::ClusterForest(g) => g.contains_edge(source, target),
             };
             return if exists {
                 Ok(false)
@@ -325,6 +371,7 @@ impl ConnectivityGraph {
             Backend::Compact(graph) => graph.link(source, target),
             Backend::EulerTour(graph) => graph.link(source, target),
             Backend::Hdt(graph) => graph.link(source, target),
+            Backend::ClusterForest(graph) => graph.link(source, target),
         }
     }
 
@@ -337,6 +384,7 @@ impl ConnectivityGraph {
             Backend::Compact(graph) => graph.cut(source, target),
             Backend::EulerTour(graph) => graph.cut(source, target),
             Backend::Hdt(graph) => graph.cut(source, target),
+            Backend::ClusterForest(graph) => graph.cut(source, target),
         }
     }
 
@@ -349,6 +397,7 @@ impl ConnectivityGraph {
             Backend::Compact(graph) => graph.connected(source, target),
             Backend::EulerTour(graph) => graph.connected(source, target),
             Backend::Hdt(graph) => graph.connected(source, target),
+            Backend::ClusterForest(graph) => graph.connected(source, target),
         }
     }
 
@@ -362,7 +411,7 @@ impl ConnectivityGraph {
                 graph.enable_neighbor_listing();
                 true
             }
-            Backend::EulerTour(_) | Backend::Hdt(_) => false,
+            Backend::EulerTour(_) | Backend::Hdt(_) | Backend::ClusterForest(_) => false,
         }
     }
 
@@ -386,7 +435,7 @@ impl ConnectivityGraph {
     pub fn as_compact(&self) -> Option<&Graph> {
         match &self.backend {
             Backend::Compact(graph) => Some(graph),
-            Backend::EulerTour(_) | Backend::Hdt(_) => None,
+            Backend::EulerTour(_) | Backend::Hdt(_) | Backend::ClusterForest(_) => None,
         }
     }
 
@@ -396,6 +445,7 @@ impl ConnectivityGraph {
             Backend::Compact(graph) => graph.node_count(),
             Backend::EulerTour(graph) => graph.node_count(),
             Backend::Hdt(graph) => graph.node_count(),
+            Backend::ClusterForest(graph) => graph.node_count(),
         }
     }
 
@@ -405,6 +455,7 @@ impl ConnectivityGraph {
             Backend::Compact(graph) => graph.edge_count(),
             Backend::EulerTour(graph) => graph.edge_count(),
             Backend::Hdt(graph) => graph.edge_count(),
+            Backend::ClusterForest(graph) => graph.edge_count(),
         }
     }
 }
@@ -429,7 +480,11 @@ mod tests {
         assert_eq!(compact.adjacency_capacity(99), None);
         assert!(compact.connected(0, 8).unwrap());
 
-        for engine in [EngineConfig::EulerTour, EngineConfig::Hdt] {
+        for engine in [
+            EngineConfig::EulerTour,
+            EngineConfig::Hdt,
+            EngineConfig::ClusterForest,
+        ] {
             let mut other = ConnectivityGraph::new(engine);
             other.add_node(5).unwrap();
             other.release_isolated_storage(5);

@@ -67,6 +67,14 @@ Consequences:
 `max_nodes` and `max_edges` bound **registered** nodes and edges. Deactivating
 or disabling never frees capacity; only `remove_node` and `cut` do.
 
+**Configured versus enforced limits.** `LifecycleGraph::limits()` returns the
+limits as configured. The limits actually enforced are the same, except with
+the experimental `cluster-forest` engine (from 1.1, unreleased), where they
+are at most 2²⁷ − 512 registered nodes and 2²⁸ registered edges whatever is
+configured (the engine's capacity, leaving room for retired slots). A
+rejected mutation returns `NodeLimitExceeded` or `EdgeLimitExceeded` carrying
+the **enforced** value, and changes nothing.
+
 Without lifecycle support nothing changes: `node_count` and `edge_count` keep
 their meaning, and the additional counts are not reported.
 
@@ -260,7 +268,7 @@ pub enum LifecycleError {
 }
 
 impl LifecycleGraph {
-    pub const fn supports_engine(engine: EngineConfig) -> bool; // compact-bfs only
+    pub const fn supports_engine(engine: EngineConfig) -> bool; // compact-bfs; cluster-forest from 1.1 (unreleased)
     pub fn new(engine: EngineConfig) -> Result<Self, LifecycleError>;
     pub fn with_limits(engine: EngineConfig, limits: GraphLimits)
         -> Result<Self, LifecycleError>;
