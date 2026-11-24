@@ -18,6 +18,10 @@
 //! for smoke runs of the tool; a protocol run leaves them unset, and every
 //! observation records the values it used.
 //!
+//! `LOAD_ENGINE` (`compact-bfs`, the default, or `cluster-forest`) selects the
+//! local server's engine for the CF5 qualification of v1.1.0 (both run with
+//! lifecycle support, as the protocol requires); every observation records it.
+//!
 //! # R2 two-Mac variant (proposed, opt-in)
 //!
 //! The section "R2 two-Mac variant" of the protocol document adds three arms
@@ -1251,6 +1255,7 @@ async fn main() {
             let mut record = json!({
                 "scenario": cell.scenario, "graph": cell.graph, "clients": cell.clients, "rep": rep,
                 "window_secs": s.window.as_secs(), "backlog": s.backlog,
+                "engine": load_engine(),
                 "metrics": metrics,
             });
             if let (Some(r2), Some(obj)) = (&s.r2, record.as_object_mut()) {
@@ -1346,11 +1351,24 @@ const DEFAULT_POSTGRES_PATTERNS: [&str; 7] = [
     "postgres",
 ];
 
+/// The engine of the local server: `LOAD_ENGINE` (CF5 arms: `compact-bfs` or
+/// `cluster-forest`, the two lifecycle engines), `compact-bfs` when unset,
+/// which is the approved protocol's engine. Any other value stops the tool.
+fn load_engine() -> String {
+    let engine = std::env::var("LOAD_ENGINE").unwrap_or_else(|_| "compact-bfs".to_owned());
+    assert!(
+        matches!(engine.as_str(), "compact-bfs" | "cluster-forest"),
+        "LOAD_ENGINE must be compact-bfs or cluster-forest (the protocol runs with lifecycle)"
+    );
+    engine
+}
+
 /// The server process of the approved single-host protocol on `127.0.0.1`.
 fn start_local_server(bin: &Path, port: u16) -> Child {
     Command::new(bin)
         .env_clear()
         .env("KNOTREL_ADDR", format!("127.0.0.1:{port}"))
+        .env("KNOTREL_ENGINE", load_engine())
         .envs(SERVER_ENV)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
