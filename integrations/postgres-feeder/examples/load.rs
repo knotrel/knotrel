@@ -632,6 +632,32 @@ async fn marker(
     (at, None)
 }
 
+/// The `engine` label of the server's `knotrel_build_info` metric, if it can be read.
+async fn server_engine(base: &str) -> Option<String> {
+    let text = reqwest::get(format!("{base}/metrics"))
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    build_info_engine(&text)
+}
+
+/// Parses the `engine` label of the first `knotrel_build_info` sample in `text`.
+fn build_info_engine(text: &str) -> Option<String> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("knotrel_build_info{"))
+        .find_map(|rest| {
+            let (labels, _) = rest.split_once('}')?;
+            labels.split(',').find_map(|l| {
+                l.trim()
+                    .strip_prefix("engine=\"")
+                    .and_then(|v| v.strip_suffix('"'))
+                    .map(str::to_owned)
+            })
+        })
+}
+
 /// Sums and counts of the three graph-job phase histograms per `kind`.
 async fn phase_metrics(base: &str) -> BTreeMap<String, f64> {
     let text = match reqwest::get(format!("{base}/metrics")).await {
@@ -1251,11 +1277,15 @@ async fn main() {
             } else {
                 run_l2(&s, *cell, &mut obs).await
             };
+            // The engine the server reports (`knotrel_build_info`), read back rather than
+            // echoed from `LOAD_ENGINE`, so the CF5 S3 evaluation checks what actually ran.
+            let server_engine = server_engine(&obs.base).await;
             obs.cleanup().await;
             let mut record = json!({
                 "scenario": cell.scenario, "graph": cell.graph, "clients": cell.clients, "rep": rep,
                 "window_secs": s.window.as_secs(), "backlog": s.backlog,
                 "engine": load_engine(),
+                "server_engine": server_engine,
                 "metrics": metrics,
             });
             if let (Some(r2), Some(obj)) = (&s.r2, record.as_object_mut()) {
@@ -2445,6 +2475,14 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         move |k: &str| map.get(k).cloned()
+    }
+
+    #[test]
+    fn build_info_engine_reads_the_server_label() {
+        let text = "# HELP knotrel_build_info x\n# TYPE knotrel_build_info gauge\n\
+                    knotrel_build_info{version=\"1.0.0\",engine=\"cluster-forest\",mode=\"standalone\"} 1\n";
+        assert_eq!(build_info_engine(text).as_deref(), Some("cluster-forest"));
+        assert_eq!(build_info_engine("knotrel_up 1\n"), None);
     }
 
     #[test]
