@@ -53,7 +53,7 @@ crash: panic payloads are not logged, so keep the process's stderr.
 
 Admitted work on one admission lane (queued plus running) stays near that
 lane's permit limit; the alert's `lane` label says which
-([contract section 21](observability-contract.md#21-per-lane-admission-metrics-v100-unreleased)).
+([contract section 21](observability-contract.md#21-per-lane-admission-metrics-v100)).
 The expression divides `knotrel_graph_jobs_outstanding` by
 `knotrel_graph_job_capacity` with the same label set, so each lane's
 numerator meets only its own capacity; the ratio never exceeds 1 and is 1

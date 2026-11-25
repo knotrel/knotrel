@@ -15,9 +15,9 @@ Insight:
 
 ![Browser: the node list fills the height; the selected node shows its state, neighbors and a connectivity check](images/console/browser.jpg)
 
-> **Status: released (0.8.0, 2026-11-21)**, together with server 0.8.0.
-> Image `ghcr.io/knotrel/knotrel-console:0.8.0` (`sha256:1c4ce3fda67acda0cb44dedd5a275fb19e5ab09dac2cce9a5dbc83c3f5f25f82`);
-> archive on the [GitHub Release v0.8.0](https://github.com/knotrel/knotrel/releases/tag/v0.8.0).
+> **Status: released (1.0.0, 2026-11-24)**, together with server 1.0.0.
+> Image `ghcr.io/knotrel/knotrel-console:1.0.0` (multi-platform index `sha256:722ba54ecb26d9cc5ca15f6580ebaa1e09b9de40246e27a559ce1828a127591c`);
+> archive on the [GitHub Release v1.0.0](https://github.com/knotrel/knotrel/releases/tag/v1.0.0). Console 1.0 also works with server 0.9.
 
 The console is a static React application, released as its own artifacts
 (never inside the Rust crates or binary) and distributed in two forms:
@@ -84,7 +84,7 @@ image (or an image built with
 docker run --rm -p 127.0.0.1:7380:8080 \
   -e KNOTREL_CONSOLE_UPSTREAM=http://host.docker.internal:8080 \
   --read-only --tmpfs /tmp --cap-drop ALL \
-  ghcr.io/knotrel/knotrel-console:0.8.0
+  ghcr.io/knotrel/knotrel-console:1.0.0
 ```
 
 The server must be reachable from the container. A server bound to the host's
@@ -108,7 +108,7 @@ containers ([startup configuration](http-api.md#startup-configuration-and-engine
 
 **Deprecated aliases.** Before 1.0 the upstream variables were named
 `KNOTREL_UPSTREAM` and `KNOTREL_UPSTREAM_TIMEOUT`; the new names are new in
-1.0.0 (unreleased), and console images up to 0.9.x accept only the old ones.
+1.0.0, and console images up to 0.9.x accept only the old ones.
 The console still accepts the old names, throughout the 1.x series, as
 aliases of `KNOTREL_CONSOLE_UPSTREAM` and `KNOTREL_CONSOLE_UPSTREAM_TIMEOUT`;
 their removal follows the [deprecation rule](compatibility.md#4-deprecation).
