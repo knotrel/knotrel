@@ -213,10 +213,14 @@ jobs:
         run: |
           python3 scripts/check-crate-docs.py
           python3 tests/test_crate_documentation.py
-      - name: README versions
+      - name: README and release surface versions
+        # check-readme.py also runs check-release-surfaces.py
+        # (docs/releases/release-surfaces.toml); knotrel-benchmarks surfaces
+        # are skipped here because its checkout is absent.
         run: |
           python3 scripts/check-readme.py
           python3 tests/test_readme_check.py
+          python3 tests/test_release_surfaces.py
       - name: Reproducible-build comparer
         run: python3 tests/test_compare_binaries.py
       - name: Server's knotrel-core requirement
