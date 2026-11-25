@@ -69,6 +69,21 @@ classification with `origin/main` (or `--base <rev>`) to detect narrowings.
 crate documentation, and the console release workflow refuses a console
 version that differs from the workspace version.
 
+## Definition of Done for feature issues
+
+A feature issue is accepted only when every applicable item holds. Copy the
+list into the issue, or link this section, and check items with evidence.
+
+- [ ] REQUIRED/OPTIONAL/DEFERRED scope and dependencies explicit; no future feature implicitly marked complete.
+- [ ] Public behavior, authority, acknowledgment, version scopes and failure semantics documented, including compatibility.
+- [ ] Core invariants and coherent graph/generation/revision/source-position observations verified where applicable.
+- [ ] Deterministic unit/integration/failure tests cover the newly promised contract; reference/differential oracles used where relevant.
+- [ ] Resource bounds, cancellation, restart/rebuild, source unavailability and observability considered; storage faults only for applicable persistence features.
+- [ ] Relevant formatting, Clippy, tests and warning-denied Rustdoc pass for code changes; documentation-only changes receive scoped consistency/link/diff checks.
+- [ ] English docs, examples and operational notes updated; Rust conventions and Elastic-2.0 preserved.
+- [ ] Performance, synchronization and durability claims distinguish measured evidence from assumptions and guarantees.
+- [ ] Source/evidence changes scoped; no historical benchmark artifacts rewritten; independent review completed before feature acceptance.
+
 ## Before submitting
 
 Before submitting changes, run the four development commands in the README.

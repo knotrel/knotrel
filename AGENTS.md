@@ -111,7 +111,7 @@ covers what is easy to miss. Check every item on the exact candidate commit.
 - **Tags:** signed tag (`git tag -s`, `git verify-tag`) in knotrel and the
   matching tag in knotrel-benchmarks.
 - **After publication:** remove "unreleased" labels, update installation
-  examples and the roadmap.
+  examples, and close or relabel the release's version-labelled issues.
 
 ## Git & Naming Rulesets
 
@@ -124,4 +124,4 @@ covers what is easy to miss. Check every item on the exact candidate commit.
 
 ## Planning
 
-Track future work in GitHub issues with a version label and priority label. https://github.com/knotrel/knotrel/issues/183 records coverage and dependencies. Do not create a parallel planning file; retain historical measurement provenance unchanged.
+Track future work in GitHub issues with a version label and priority label. https://github.com/knotrel/knotrel/issues/183 records coverage and dependencies. Do not create a parallel planning file; retain historical measurement provenance unchanged. Feature issues follow the [Definition of Done](CONTRIBUTING.md#definition-of-done-for-feature-issues).
