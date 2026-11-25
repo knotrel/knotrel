@@ -99,6 +99,7 @@ covers what is easy to miss. Check every item on the exact candidate commit.
 - **User-facing performance pages:** add the release to
   `docs/performance-by-version.md` and the README performance section, with
   no claim beyond the qualification and its maintainer decisions.
+- **Release surfaces:** `scripts/check-release-surfaces.py` checks the pages listed in `docs/releases/release-surfaces.toml`; the `release-docs` skill (`.claude/skills/release-docs/SKILL.md`) proposes their updates for review.
 - **Release notes:** the "Outstanding release gates" section reflects the
   current state. The last change before the tag sets the status to
   `**Status: released <date>**`: the GitHub Release body is taken from the
