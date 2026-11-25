@@ -121,3 +121,7 @@ covers what is easy to miss. Check every item on the exact candidate commit.
 - **Commit Messages**: All commits and PR titles must follow Conventional Commits matching:
   `^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9_./-]+\))?!?: .+$`
   Examples: `feat(core): add pruning`, `fix(server): handle zero capacity`, `chore: update dependencies`.
+
+## Planning
+
+Track future work in GitHub issues with a version label and priority label. https://github.com/knotrel/knotrel/issues/183 records coverage and dependencies. Do not create a parallel planning file; retain historical measurement provenance unchanged.

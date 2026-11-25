@@ -1154,7 +1154,7 @@ This test matrix defines reproducible, deterministic test traces for the future 
 
 ## 12. Resolution of Roadmap Decisions D1–D6
 
-This section documents the formal architectural decisions resolving items D1–D6 from `ROADMAP.md`.
+This section documents the formal architectural decisions resolving items D1–D6 from [historical planning record](https://github.com/knotrel/knotrel/blob/d6a273c5ffa9819cd2a6904c6a3f5e4bb74475b7/ROADMAP.md).
 
 ### Decision D1: Identity and Ownership
 

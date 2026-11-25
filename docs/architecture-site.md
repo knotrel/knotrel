@@ -16,3 +16,5 @@ PostgreSQL has a [reference feeder](integrations/postgresql-feeder.md) (since v0
 ## Standalone mode
 
 Clients issue graph operations and queries directly to the server. There is no external feeder or source synchronization; graph state is lost when the process stops. See the [HTTP API](http-api.md).
+
+Future work is tracked in [versioned GitHub issues](https://github.com/knotrel/knotrel/issues/183).

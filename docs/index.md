@@ -18,3 +18,5 @@ The authoritative source and feeder are external. In source-managed mode, the fe
 - **Volatile by design.** The graph lives in memory. After a restart, rebuild or resynchronize from the authoritative source.
 - **No built-in authentication.** Place Knotrel behind a trusted boundary or gateway; see the [deployment guide](deployment.md) and the [threat model](threat-model.md).
 {: .callouts}
+
+Future work is tracked in [versioned GitHub issues](https://github.com/knotrel/knotrel/issues/183).
