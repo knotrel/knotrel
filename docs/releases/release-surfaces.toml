@@ -122,7 +122,7 @@ path = "README.md"
 kind = "performance"
 rules = [
   { describe = "'Latest published release' heading", pattern = '^### Latest published release: v(\d+\.\d+\.\d+)', required = false },
-  { describe = "current release's qualification", pattern = "the current release's\\s+qualification is \\[`results/v(\\d+\\.\\d+\\.\\d+)-qualification`\\]", required = false },
+  { describe = "current release's qualification", pattern = "the current release's\\s+qualification is \\[`results/v(\\d+\\.\\d+\\.\\d+)-[a-z0-9-]+`\\]", required = false },
   { describe = "latest published release report", pattern = '(\d+\.\d+\.\d+) is the\s+latest published release' },
 ]
 
@@ -131,7 +131,7 @@ repo = "knotrel-benchmarks"
 path = "docs/SITE.md"
 kind = "performance"
 rules = [
-  { describe = "latest published release", pattern = '(\d+\.\d+\.\d+)\s+remains the latest published release' },
+  { describe = "latest published release", pattern = '(\d+\.\d+\.\d+)\s+(?:remains|is) the latest published release' },
 ]
 
 [[surface]]

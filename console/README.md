@@ -19,8 +19,8 @@ it (the Compose example turns them all on):
 
 Why each is optional, and what it costs: [docs/console.md](../docs/console.md#server-flags-in-short).
 
-> **Status: released.** Console 1.0.0 was released together with server 1.0.0
-> (2026-11-24).
+> **Status: released.** Console 1.1.0 was released together with server 1.1.0
+> (2026-11-25).
 
 **Versions.** The console has the same version as the server (lockstep):
 use them at the same version. Console 1.0 also works with server 0.9
@@ -83,7 +83,7 @@ repository root:
 Pull it from GitHub Container Registry:
 
 ```sh
-docker pull ghcr.io/knotrel/knotrel-console:1.0.0
+docker pull ghcr.io/knotrel/knotrel-console:1.1.0
 ```
 
 To test local changes, build it from the repository root:
@@ -92,7 +92,7 @@ To test local changes, build it from the repository root:
 docker build -t knotrel-console:dev console
 ```
 
-Use `knotrel-console:dev` in place of `ghcr.io/knotrel/knotrel-console:1.0.0`
+Use `knotrel-console:dev` in place of `ghcr.io/knotrel/knotrel-console:1.1.0`
 in the commands below. Images are tagged by version; `latest` is used only
 for stable releases.
 
@@ -110,7 +110,7 @@ docker run -d --name knotrel-console --network knotrel \
   -p 127.0.0.1:7380:8080 \
   -e KNOTREL_CONSOLE_UPSTREAM=http://knotrel:8080 \
   --read-only --tmpfs /tmp --cap-drop ALL \
-  ghcr.io/knotrel/knotrel-console:1.0.0
+  ghcr.io/knotrel/knotrel-console:1.1.0
 ```
 
 Open <http://127.0.0.1:7380/>. If your server already runs in another

@@ -9,13 +9,11 @@ differ only in speed, memory and the operations they make cheap. This page is
 the canonical guide for choosing one. Keep the default, `compact-bfs`, unless
 measurements on your own workload show a reason to change.
 
-> **Which version you need.** `compact-bfs`, `ett` and `hdt` are in the latest
-> release, [v1.0.0](https://github.com/knotrel/knotrel/releases/tag/v1.0.0).
-> **`cluster-forest` is new in 1.1.0, which is not released yet.** Every
-> example on this page marked **1.1.0 candidate** needs a build from `main`
-> (see [Getting the 1.1.0 candidate](#getting-the-110-candidate)). The v1.0.0
-> server refuses `KNOTREL_ENGINE=cluster-forest` at startup ("must be
-> compact-bfs, ett or hdt"), and `knotrel-core` 1.0 has no
+> **Which version you need.** All four engines are in the latest release,
+> [v1.1.0](https://github.com/knotrel/knotrel/releases/tag/v1.1.0).
+> **`cluster-forest` is new in 1.1.0** (see [Getting 1.1.0](#getting-110)).
+> The v1.0.0 server refuses `KNOTREL_ENGINE=cluster-forest` at startup ("must
+> be compact-bfs, ett or hdt"), and `knotrel-core` 1.0 has no
 > `EngineConfig::ClusterForest`.
 
 ## At a glance
@@ -25,7 +23,7 @@ measurements on your own workload show a reason to change.
 | `compact-bfs` | **Default**, stable | Yes | Yes | General and update-heavy workloads; lowest memory |
 | `ett` | Experimental engine | Yes | No | Query-heavy work on tree-like graphs |
 | `hdt` | Experimental engine | Yes | No | Dense graphs with frequent bridge cuts |
-| `cluster-forest` | Experimental engine | **No: 1.1.0 candidate** | **Yes** | Query-heavy work where `compact-bfs` searches; dense bridge churn; see [when to try it](#when-to-try-cluster-forest) |
+| `cluster-forest` | Experimental engine | **No: new in 1.1.0** | **Yes** | Query-heavy work where `compact-bfs` searches; dense bridge churn; see [when to try it](#when-to-try-cluster-forest) |
 
 How to select each engine:
 
@@ -41,11 +39,8 @@ the selector, the enum variant and the API stay compatible across 1.x, while
 performance, maturity and the usage recommendation carry no promise
 ([compatibility policy](compatibility.md#22-stable-interface-experimental-engine)).
 The asymptotic costs of every engine are in the "Choosing a Backend Engine"
-section of the `knotrel-core` crate documentation: on
-[docs.rs](https://docs.rs/knotrel-core/latest/knotrel_core/#choosing-a-backend-engine)
-for v1.0.0 (three engines), and in
-[`crates/knotrel-core/src/lib.rs`](https://github.com/knotrel/knotrel/blob/main/crates/knotrel-core/src/lib.rs)
-for the 1.1.0 candidate.
+section of the `knotrel-core` crate documentation, on
+[docs.rs](https://docs.rs/knotrel-core/latest/knotrel_core/#choosing-a-backend-engine).
 
 ## How `cluster-forest` works
 
@@ -140,7 +135,7 @@ for the same operations.
 
 ## Examples
 
-### Library, 1.1.0 candidate
+### Library
 
 Plain connectivity:
 
@@ -184,7 +179,7 @@ The same two examples are doctests of the
 [`knotrel-core` crate documentation](https://github.com/knotrel/knotrel/blob/main/crates/knotrel-core/src/lib.rs)
 (section "Choosing a Backend Engine"), run by `cargo test --doc -p knotrel-core`.
 
-### Server, 1.1.0 candidate
+### Server
 
 Plain mode:
 
@@ -227,26 +222,19 @@ cluster-forest`.
   as the [deployment guide](deployment.md) describes, or replay your writes. `GET /v1/info` then reports `"engine": "compact-bfs"` and
   `"experimental": false`.
 
-## Getting the 1.1.0 candidate
+## Getting 1.1.0
 
-Until 1.1.0 is tagged, `cluster-forest` exists only on `main`:
-
-- **Server:** clone the repository and build it with Rust 1.100.0:
-
-  ```sh
-  git clone https://github.com/knotrel/knotrel && cd knotrel
-  cargo build --release -p knotrel-server
-  ```
-
-- **Library:** depend on the repository instead of the published crate:
+- **Server:** download and verify the v1.1.0 server for your platform from the
+  [release assets](https://github.com/knotrel/knotrel/releases/tag/v1.1.0)
+  ([installing a release](https://github.com/knotrel/knotrel#installing-a-release)).
+- **Library:**
 
   ```toml
   [dependencies]
-  knotrel-core = { git = "https://github.com/knotrel/knotrel", branch = "main" }
+  knotrel-core = "1.1"
   ```
 
-Unreleased code can change before the tag; pin a commit (`rev = "..."`) for
-reproducible builds. With the published v1.0.0, use the selectors in the first
+With v1.0.0 (server or `knotrel-core` 1.0), use the selectors in the first
 three rows of the table only.
 
 ## See also

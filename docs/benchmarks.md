@@ -14,17 +14,17 @@ Knotrel publishes reproducible workloads and release comparison evidence in the 
 
 ## Current release
 
-**v1.0.0** was measured against v0.9.0: the campaign is valid and the qualification is **accepted with exceptions**, for v1.0.0 only. No deciding result is a regression; four results are not PASS, two hub lifecycle requirements are not qualified, and feeder catch-up under query load (Q3) fails as a declared limitation. The [performance-by-version report](performance-by-version.md) explains the results, methodology and limitations, and the [1.0.0 page of the performance site](https://knotrel.github.io/knotrel-benchmarks/releases/1.0.0.html) shows every verdict as measured.
+**v1.1.0** was checked against v1.0.0 by the regression checks of its CF5 campaign: the qualification is **accepted with exceptions** for the measured build `02cba68`. No check of the existing engines is a regression; five are left open (two unresolved, one inconclusive, two timer-limited). Host swap activity was not verifiable; the results are accepted by the maintainer with this limitation. Their transfer to the 1.1.0 build is a separate maintainer decision. The [performance-by-version report](performance-by-version.md) explains the results, methodology and limitations, and the [1.1.0 page of the performance site](https://knotrel.github.io/knotrel-benchmarks/releases/1.1.0.html) shows every verdict as measured.
 
-The previous qualified release is **v0.9.0 versus v0.7.0**, accepted with explicit exceptions; see the [performance history](performance-history.md#v090-compared-with-v070).
+The previous qualified release is **v1.0.0 versus v0.9.0**, accepted with exceptions; see the [performance history](performance-history.md#v100-compared-with-v090).
 
-## Choosing an engine (1.1.0 candidate)
+## Choosing an engine
 
-The unreleased 1.1.0 adds the experimental `cluster-forest` engine; `compact-bfs` stays the default. Its CF5 qualification compared it with `compact-bfs`, ETT and HDT on one build (candidate `02cba68`), not one release with another. Start from [Choosing an engine](choosing-an-engine.md); the results by workload family, with their limitations, are on the [engine comparison page](https://knotrel.github.io/knotrel-benchmarks/engines/cluster-forest-cf5-02cba68.html).
+v1.1.0 adds the experimental `cluster-forest` engine; `compact-bfs` stays the default. Its CF5 qualification compared it with `compact-bfs`, ETT and HDT on one build (`02cba68`), not one release with another. Start from [Choosing an engine](choosing-an-engine.md); the results by workload family, with their limitations, are on the [engine comparison page](https://knotrel.github.io/knotrel-benchmarks/engines/cluster-forest-cf5-02cba68.html).
 
 ## Explore the evidence
 
-- [Performance site](https://knotrel.github.io/knotrel-benchmarks/): release-to-release reports, starting with 1.0.0 against v0.9.0, and engine comparisons.
+- [Performance site](https://knotrel.github.io/knotrel-benchmarks/): release-to-release reports from 1.0.0 against v0.9.0 (1.1.0 against v1.0.0 is the latest), and engine comparisons.
 - [Performance history](performance-history.md): earlier comparisons, each with its own conditions.
 - [Benchmark repository](https://github.com/knotrel/knotrel-benchmarks): workloads, tooling and campaign evidence.
 - [v0.8.0 release notes](releases/v0.8.0-release-notes.md#performance-qualification): v0.8.0 was not performance-qualified.

@@ -17,11 +17,11 @@ Add or remove connections, take nodes offline and restore them, then check
 whether two endpoints remain connected. Use it as a Rust library or an HTTP
 service alongside your existing database.
 
-**Latest release: [v1.0.0](https://github.com/knotrel/knotrel/releases/tag/v1.0.0)**
+**Latest release: [v1.1.0](https://github.com/knotrel/knotrel/releases/tag/v1.1.0)**
 (stable contract: the public Rust API, the `/v1` HTTP API and feeder protocol,
 the stable variables and metrics follow the [compatibility
 policy](docs/compatibility.md) for the whole 1.x series). Node/edge lifecycle
-is opt-in and supported on `compact-bfs` (and, from 1.1, unreleased, on the
+is opt-in and supported on `compact-bfs` (and, since 1.1, on the
 experimental `cluster-forest`).
 
 ## Architecture
@@ -51,8 +51,8 @@ Take A offline: B keeps the endpoints connected. Take B offline too: the
 connection is lost. Restore A: the connection returns without recreating its
 configured edges.
 
-Download and extract the **v1.0.0** server for your platform from the
-[release assets](https://github.com/knotrel/knotrel/releases/tag/v1.0.0),
+Download and extract the **v1.1.0** server for your platform from the
+[release assets](https://github.com/knotrel/knotrel/releases/tag/v1.1.0),
 [verify its checksum](#installing-a-release), and clone this repository for the
 example. With Python 3.9 or newer, run from the repository root:
 
@@ -105,7 +105,7 @@ persistent graph storage, directed reachability or electrical simulation.
 
 ```toml
 [dependencies]
-knotrel-core = "1.0"
+knotrel-core = "1.1"
 ```
 
 ```rust
@@ -174,7 +174,7 @@ examples and how to go back to `compact-bfs`.
 | `compact-bfs` / `EngineConfig::CompactBfs` | **Default** | Queries $O(V + E)$ worst case; link/cut $O(\deg u + \deg v)$ amortized; memory $O(V + E)$ | General and mutation-heavy workloads; simplest, lowest memory | [ADR 0004](docs/architecture/0004-compact-core.md) |
 | `ett` / `EngineConfig::EulerTour` | Experimental engine with a stable interface ([compatibility](docs/compatibility.md#22-stable-interface-experimental-engine)), opt-in | Queries $O(\log V)$; tree cuts may scan non-tree edges of the smaller side | Query-heavy workloads on tree-like topologies | [ADR 0005](docs/architecture/0005-experimental-euler-tour-forest.md), [0006](docs/architecture/0006-candidate-pruning.md) |
 | `hdt` / `EngineConfig::Hdt` | Experimental engine with a stable interface ([compatibility](docs/compatibility.md#22-stable-interface-experimental-engine)), opt-in | Queries $O(\log V)$; updates $O(\log^2 V)$ amortized; memory $O(E + V \log V)$ | Dense graphs with frequent bridge cuts | [ADR 0008](docs/architecture/0008-experimental-hdt.md) |
-| `cluster-forest` / `EngineConfig::ClusterForest` | **1.1.0 candidate, unreleased** (not in v1.0.0: build from `main`). Experimental engine with a stable interface, opt-in; supports node and edge lifecycle | Queries $O(\log N)$; updates $O(\log^2 N)$ amortized by the project's derivation, not a published theorem; memory $O(V + E)$ | Query-heavy workloads where `compact-bfs` searches; dense bridge churn ([guide](docs/choosing-an-engine.md#when-to-try-cluster-forest)) | [ADR 0014](docs/architecture/0014-cluster-forest-backend.md) |
+| `cluster-forest` / `EngineConfig::ClusterForest` | **New in 1.1.0.** Experimental engine with a stable interface, opt-in; supports node and edge lifecycle | Queries $O(\log N)$; updates $O(\log^2 N)$ amortized by the project's derivation, not a published theorem; memory $O(V + E)$ | Query-heavy workloads where `compact-bfs` searches; dense bridge churn ([guide](docs/choosing-an-engine.md#when-to-try-cluster-forest)) | [ADR 0014](docs/architecture/0014-cluster-forest-backend.md) |
 
 Library callers can also reuse traversal scratch space with the opt-in
 `BfsWorkspace`, and compare against the original ordered-adjacency
@@ -182,16 +182,16 @@ Library callers can also reuse traversal scratch space with the opt-in
 hash maps with expected, not worst-case, $O(1)$ lookups, and logical memory does
 not bound heap or RSS because capacity is retained after cuts. Amortized bounds
 are not per-request latency guarantees. Release qualifications measure the
-default `compact-bfs`; the four engines were compared with each other on the
-1.1.0 candidate (CF5,
+default `compact-bfs`; the four engines were compared with each other in the
+v1.1.0 qualification (CF5, on build `02cba68`,
 [engine comparison](https://knotrel.github.io/knotrel-benchmarks/engines/cluster-forest-cf5-02cba68.html)).
 See [startup engine configuration](docs/architecture/0007-startup-engine-configuration.md).
 
 ### Node and edge lifecycle
 
 Since v0.5.0, opt-in lifecycle supports reversible node activation, reversible
-edge enabling and permanent node removal, **only on `compact-bfs`** (from 1.1,
-unreleased, also on the experimental `cluster-forest`). Select
+edge enabling and permanent node removal, **only on `compact-bfs`** (since 1.1,
+also on the experimental `cluster-forest`). Select
 `KNOTREL_TOPOLOGY_LIFECYCLE=true` for the server or `LifecycleGraph` in Rust.
 The server rejects lifecycle with experimental `ett` or `hdt` engines.
 
@@ -208,7 +208,7 @@ regression qualification, engine/competitor comparisons and algorithm
 experiments, each labelled with the version and host it actually measured.
 [Performance by version](docs/performance-by-version.md) summarizes, for
 users, the comparison of the current release with the previous qualified
-release (v1.0.0 against v0.9.0), with its limits, and the
+release (v1.1.0 against v1.0.0), with its limits, and the
 [performance site](https://knotrel.github.io/knotrel-benchmarks/) publishes
 the release reports from 1.0.0. Earlier comparisons are
 kept separately in the [performance history](docs/performance-history.md);
@@ -249,10 +249,23 @@ under query load (Q3) fails as a declared limitation with an operational
 envelope; no speedup is claimed
 ([release notes](docs/releases/v1.0.0-release-notes.md#performance-qualification),
 [performance by version](docs/performance-by-version.md)).
-The unreleased 1.1.0 candidate adds the experimental `cluster-forest` engine:
-its CF5 qualification compares engines on one build, not releases, and
-`compact-bfs` stays the default
-([Choosing an engine](docs/choosing-an-engine.md)).
+v1.1.0 was checked against v1.0.0 by the regression checks of its CF5
+campaign: its qualification is **accepted with exceptions** for the measured
+build.
+No check of the existing engines is a regression; five are left open (two
+unresolved, one inconclusive, two timer-limited). Host swap activity was not
+verifiable, and the results are accepted by the maintainer with this
+limitation. They were measured on build `02cba68`; v1.1.0 adds documentation,
+CI changes and a server dependency patch update, and the transfer of the
+results to the 1.1.0 build is a separate maintainer decision. The
+new experimental `cluster-forest` engine was compared with the other engines
+on the same build: it is faster on some workloads and slower on others, two
+lifecycle memory checks fail on a sparse 1 000-node graph (documented
+limitation), and `compact-bfs` stays the default; no speedup of the existing
+engines is claimed
+([release notes](docs/releases/v1.1.0-release-notes.md#performance-qualification),
+[performance by version](docs/performance-by-version.md),
+[Choosing an engine](docs/choosing-an-engine.md)).
 
 ## Installing a release
 
@@ -267,28 +280,28 @@ the SHA-256 checksum before running.
 
 ```sh
 # Verify checksum on Linux:
-sha256sum -c knotrel-server-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c knotrel-server-v1.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 # Or on macOS:
-# shasum -a 256 -c knotrel-server-v1.0.0-aarch64-apple-darwin.tar.gz.sha256
+# shasum -a 256 -c knotrel-server-v1.1.0-aarch64-apple-darwin.tar.gz.sha256
 
 # Extract and start on Linux (x86_64):
-tar -xzf knotrel-server-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
-cd knotrel-server-v1.0.0-x86_64-unknown-linux-gnu
+tar -xzf knotrel-server-v1.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd knotrel-server-v1.1.0-x86_64-unknown-linux-gnu
 ./knotrel-server
 
 # Or on macOS (Apple Silicon):
-# tar -xzf knotrel-server-v1.0.0-aarch64-apple-darwin.tar.gz
-# cd knotrel-server-v1.0.0-aarch64-apple-darwin
+# tar -xzf knotrel-server-v1.1.0-aarch64-apple-darwin.tar.gz
+# cd knotrel-server-v1.1.0-aarch64-apple-darwin
 # ./knotrel-server
 ```
 
 On Windows (PowerShell):
 ```powershell
 # Compare the displayed hash with the downloaded .sha256 file before extracting.
-Get-FileHash -Algorithm SHA256 knotrel-server-v1.0.0-x86_64-pc-windows-msvc.zip
-Get-Content knotrel-server-v1.0.0-x86_64-pc-windows-msvc.zip.sha256
-Expand-Archive knotrel-server-v1.0.0-x86_64-pc-windows-msvc.zip -DestinationPath .
-cd knotrel-server-v1.0.0-x86_64-pc-windows-msvc
+Get-FileHash -Algorithm SHA256 knotrel-server-v1.1.0-x86_64-pc-windows-msvc.zip
+Get-Content knotrel-server-v1.1.0-x86_64-pc-windows-msvc.zip.sha256
+Expand-Archive knotrel-server-v1.1.0-x86_64-pc-windows-msvc.zip -DestinationPath .
+cd knotrel-server-v1.1.0-x86_64-pc-windows-msvc
 .\knotrel-server.exe
 ```
 
@@ -304,12 +317,12 @@ aliases) are reserved and ignored, so one environment file can serve both.
 | `KNOTREL_ADDR` | `127.0.0.1:8080` | IP address and port; non-loopback needs `KNOTREL_ALLOW_NON_LOOPBACK=true` |
 | `KNOTREL_ALLOW_NON_LOOPBACK` | `false` | `true` permits a non-loopback `KNOTREL_ADDR` (no auth/TLS; see [trust model](docs/http-api.md#trust-model)) |
 | `KNOTREL_MODE` | `standalone` | `standalone` or `source_managed` (alternative spelling `source-managed`); the latter requires an external feeder |
-| `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` (or `cluster-forest` from 1.1, unreleased); see [Choosing an engine](docs/choosing-an-engine.md) |
+| `KNOTREL_ENGINE` | `compact-bfs` | `compact-bfs`, experimental `ett` or `hdt` (or `cluster-forest`, since 1.1); see [Choosing an engine](docs/choosing-an-engine.md) |
 | `KNOTREL_MAX_PENDING_JOBS` | `32` | Positive limit on queued plus running graph jobs |
 | `KNOTREL_FEEDER_RESERVED_JOBS` | `4` | Source-managed mode: admission permits reserved for feeder events, barriers and gaps, which queries never use (since v0.9.0) |
 | `KNOTREL_MAX_NODES` | `100000` | Maximum registered nodes; zero allowed; `unlimited` opts out |
 | `KNOTREL_MAX_EDGES` | `500000` | Maximum live edges (registered edges with lifecycle support); zero allowed; `unlimited` opts out |
-| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (or `cluster-forest` from 1.1, unreleased; startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
+| `KNOTREL_TOPOLOGY_LIFECYCLE` | `false` | `true` enables node activation, edge enabling and node removal; requires `KNOTREL_ENGINE=compact-bfs` (or `cluster-forest`, since 1.1; startup fails with `ett` or `hdt`); see the [lifecycle contract](docs/topology-lifecycle.md) |
 | `KNOTREL_INSPECTION` | `false` | `true` enables the read-only inspection routes (`GET /v1/nodes`, `/v1/nodes/{node}`, `/v1/nodes/{node}/edges`, `/v1/edges`) used by the console's data browser; since v0.8.0; see [Inspection](docs/http-api.md#inspection-opt-in) |
 | `RUST_LOG` | `info` | Logging filter |
 
@@ -371,7 +384,7 @@ metrics. See [the console documentation](docs/console.md).
 - [Threat model](docs/threat-model.md) (since v1.0.0): threats per trust boundary for the supported exposure, each mitigation with the test that validates it, and residual risks. Vulnerability reporting: [SECURITY.md](SECURITY.md).
 - [Reproducible release builds](docs/releases/reproducible-build.md) (since v1.0.0): how to rebuild a release binary from its tag and compare it, Linux and macOS only.
 - [Architecture decisions](docs/architecture/0001-foundation.md): contracts, costs and scope, starting with ADR 0001.
-- [v1.0.0 release notes](docs/releases/v1.0.0-release-notes.md), [v0.9.0](docs/releases/v0.9.0-release-notes.md), [v0.8.0](docs/releases/v0.8.0-release-notes.md), [v0.7.0](docs/releases/v0.7.0-release-notes.md), [v0.6.0](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
+- [v1.1.0 release notes](docs/releases/v1.1.0-release-notes.md), [v1.0.0](docs/releases/v1.0.0-release-notes.md), [v0.9.0](docs/releases/v0.9.0-release-notes.md), [v0.8.0](docs/releases/v0.8.0-release-notes.md), [v0.7.0](docs/releases/v0.7.0-release-notes.md), [v0.6.0](docs/releases/v0.6.0-release-notes.md), [v0.5.0](docs/releases/v0.5.0-release-notes.md), [v0.4.0](docs/releases/v0.4.0-release-notes.md) and [v0.3.0](docs/releases/v0.3.0-release-notes.md) release notes: scope, qualification outcomes, platform coverage and limitations.
 - [v0.2.0](docs/releases/v0.2.0-release-notes.md) and [v0.1.0](docs/releases/v0.1.0-release-notes.md) release notes, and the [v0.1.0 scope](docs/releases/v0.1.0-scope.md).
 - [Release procedure](docs/releases/release-procedure.md): verification, packaging and authorized publication.
 - [Contributing](CONTRIBUTING.md): quality and documentation requirements.
