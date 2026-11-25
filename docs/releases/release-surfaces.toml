@@ -1,0 +1,143 @@
+# User-facing surfaces that must name the current release or describe the
+# current performance evidence. Checked by scripts/check-release-surfaces.py
+# (called from scripts/check-readme.py in CI and in the release workflow).
+#
+# Each [[surface]] has:
+#   path      file, relative to the repository named by `repo`
+#   repo      "knotrel" (default) or "knotrel-benchmarks"; cross-repo surfaces
+#             are checked only when the sibling checkout exists
+#             (../knotrel-benchmarks, or --benchmarks PATH)
+#   kind      "release": must name the latest released version (the newest
+#             docs/releases/vX.Y.Z-release-notes.md whose status line starts
+#             with "**Status: released"), or VERSION with --release VERSION;
+#             "performance": must name the latest performance-qualified
+#             release (see [performance] below)
+#   rules     list of checks; each rule has
+#               pattern   Python regex (multiline); every capture group is a
+#                         version X.Y.Z that must equal the expected one
+#               match     "first" (default) checks the first match only,
+#                         "all" checks every match
+#               required  true (default): the pattern must match at least once
+#               describe  what the match is, for error messages
+#             or, for a JSON release list, `releases_json = true`: the newest
+#             entry with "status": "published" must be the expected version
+#   must_contain  strings that must appear (for templates)
+#   note      why the surface is listed
+#
+# With --release X.Y.Z (stable), every surface below is also scanned for a
+# remaining "unreleased" or "X.Y(.Z) candidate" label naming X.Y.Z.
+# Any surface is also scanned for [stale] phrases.
+#
+# When a surface is added or its wording changes, update the pattern here in
+# the same change; tests/test_release_surfaces.py runs the check on this
+# repository.
+
+[performance]
+# Released versions that were deliberately not performance-qualified, by
+# maintainer decision recorded in their release notes. Every other released
+# version must be the subject of the user-facing performance pages once it is
+# the latest release. Adding a version here is a maintainer decision.
+not_qualified = [
+  "0.8.0", # docs/releases/v0.8.0-release-notes.md#performance-qualification
+]
+
+[stale]
+# Phrases describing pre-1.0.0 states that must not come back.
+phrases = [
+  "No report is published yet",
+  "describes the plan",
+  "no performance report is published",
+]
+
+# --- knotrel ---------------------------------------------------------------
+
+[[surface]]
+path = "README.md"
+kind = "performance"
+note = "Release line, downloads, crate snippet and 'unreleased' labels are checked by check-readme.py; this rule covers the performance paragraph."
+rules = [
+  { describe = "Performance by version summary", pattern = '\[Performance by version\]\(docs/performance-by-version\.md\) summarizes[^()]*?\(v(\d+\.\d+\.\d+)' },
+]
+
+[[surface]]
+path = "console/README.md"
+kind = "release"
+note = "Status line and image tags are checked by check-readme.py; listed for the 'unreleased' scan."
+rules = [
+  { describe = "console status line", pattern = '\*\*Status: released\.\*\* Console (\d+\.\d+\.\d+)' },
+]
+
+[[surface]]
+path = "docs/index.md"
+kind = "release"
+note = "Front matter `release:` drives the release pill and release-notes links of the site layout."
+rules = [
+  { describe = "front matter release", pattern = '\A---\n(?:.*\n)*?release: v(\d+\.\d+\.\d+)\n' },
+]
+
+[[surface]]
+path = "docs/getting-started.md"
+kind = "release"
+rules = [
+  { describe = "download step", pattern = 'from \[release v(\d+\.\d+\.\d+)\]\(https://github\.com/knotrel/knotrel/releases/tag/v(\d+\.\d+\.\d+)\)' },
+  { describe = "release link", pattern = '/releases/tag/v(\d+\.\d+\.\d+)\b', match = "all" },
+]
+
+[[surface]]
+path = "docs/benchmarks.md"
+kind = "performance"
+rules = [
+  { describe = "'Current release' section", pattern = '^## Current release\s+\*\*v(\d+\.\d+\.\d+)\*\*' },
+]
+
+[[surface]]
+path = "docs/performance-by-version.md"
+kind = "performance"
+note = "The first comparison heading is the latest qualified release."
+rules = [
+  { describe = "first comparison heading", pattern = '^## v(\d+\.\d+\.\d+) compared with v\d+\.\d+\.\d+' },
+]
+
+[[surface]]
+path = "docs/_layouts/home.html"
+kind = "release"
+note = "Takes the release from docs/index.md; must not hard-code an older version."
+must_contain = ["page.release"]
+rules = [
+  { describe = "hard-coded release version", pattern = '(?<![\w.])v(\d+\.\d+\.\d+)(?![\w.-])', match = "all", required = false },
+]
+
+[[surface]]
+path = "docs/_layouts/default.html"
+kind = "release"
+rules = [
+  { describe = "hard-coded release version", pattern = '(?<![\w.])v(\d+\.\d+\.\d+)(?![\w.-])', match = "all", required = false },
+]
+
+# --- knotrel-benchmarks (cross-repository) ---------------------------------
+
+[[surface]]
+repo = "knotrel-benchmarks"
+path = "README.md"
+kind = "performance"
+rules = [
+  { describe = "'Latest published release' heading", pattern = '^### Latest published release: v(\d+\.\d+\.\d+)', required = false },
+  { describe = "current release's qualification", pattern = "the current release's\\s+qualification is \\[`results/v(\\d+\\.\\d+\\.\\d+)-qualification`\\]", required = false },
+  { describe = "latest published release report", pattern = '(\d+\.\d+\.\d+) is the\s+latest published release' },
+]
+
+[[surface]]
+repo = "knotrel-benchmarks"
+path = "docs/SITE.md"
+kind = "performance"
+rules = [
+  { describe = "latest published release", pattern = '(\d+\.\d+\.\d+)\s+remains the latest published release' },
+]
+
+[[surface]]
+repo = "knotrel-benchmarks"
+path = "docs/data/releases.json"
+kind = "performance"
+rules = [
+  { describe = "newest published release entry", releases_json = true },
+]

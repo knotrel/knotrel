@@ -24,9 +24,17 @@ With --release VERSION (release workflow, dry runs included):
   yet. The candidate is announced by its own release notes and GitHub
   prerelease.
 
-Usage: check-readme.py [--release VERSION] [REPO_ROOT]
+After the READMEs, it runs scripts/check-release-surfaces.py with the same
+arguments: the other user-facing pages listed in
+docs/releases/release-surfaces.toml (documentation site, getting started,
+benchmarks and performance pages, and the knotrel-benchmarks surfaces when
+that checkout exists next to this one).
+
+Usage: check-readme.py [--release VERSION] [--benchmarks PATH] [--no-cross-repo]
+                       [REPO_ROOT]
 """
 
+import importlib.util
 import re
 import sys
 from pathlib import Path
@@ -137,8 +145,24 @@ def check(root, release=None):
     return errors
 
 
+def release_surfaces(argv):
+    """Runs scripts/check-release-surfaces.py with argv; returns its exit code."""
+    path = Path(__file__).resolve().parent / "check-release-surfaces.py"
+    spec = importlib.util.spec_from_file_location("check_release_surfaces", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run(argv)
+
+
 def main(argv):
+    surfaces_args = argv[1:]
     args = argv[1:]
+    # Options of check-release-surfaces.py only.
+    if "--no-cross-repo" in args:
+        args.remove("--no-cross-repo")
+    if "--benchmarks" in args:
+        i = args.index("--benchmarks")
+        del args[i : i + 2]
     release = None
     if "--release" in args:
         i = args.index("--release")
@@ -159,9 +183,10 @@ def main(argv):
         print(f"ERROR: {e}", file=sys.stderr)
     if errors:
         print("Update the READMEs (docs/releases/release-procedure.md, section 5).", file=sys.stderr)
-        return 1
-    print("READMEs consistent" + (f" for release v{release}" if release else ""))
-    return 0
+    else:
+        print("READMEs consistent" + (f" for release v{release}" if release else ""))
+    surfaces = release_surfaces(surfaces_args)
+    return 1 if errors or surfaces else 0
 
 
 if __name__ == "__main__":
