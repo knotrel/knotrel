@@ -366,3 +366,64 @@ fn link_endpoint_resolution_and_registration_invariants() {
     assert_eq!(graph.connected(0, 0), Ok(true));
     assert_eq!(graph.connected(u64::MAX, u64::MAX), Ok(true));
 }
+
+/// Bidirectional search (#181): every ordered pair of a graph with several
+/// components, hubs, paths and isolated vertices answers like the reference,
+/// in both directions and after bridge cuts that split components.
+#[test]
+fn bidirectional_search_matches_reference_on_all_pairs() {
+    let mut compact = Graph::new();
+    let mut reference = knotrel_core::ReferenceGraph::new();
+    let mut seed = 181_u64;
+    let mut next = |bound: u64| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) % bound
+    };
+    let mut edges = Vec::new();
+    // Component 1: a hub (0) with 40 leaves, two of them joined by a long path.
+    for leaf in 1..=40 {
+        edges.push((0, leaf));
+    }
+    for step in 100..160 {
+        edges.push((step, step + 1));
+    }
+    edges.push((5, 100));
+    edges.push((160, 6));
+    // Component 2: a sparse random graph on 200..260.
+    for _ in 0..90 {
+        edges.push((200 + next(60), 200 + next(60)));
+    }
+    // Component 3: a long path (unbalanced frontiers) 300..380.
+    for step in 300..380 {
+        edges.push((step, step + 1));
+    }
+    for (a, b) in edges {
+        assert_eq!(compact.link(a, b), reference.link(a, b));
+    }
+    for isolated in [500, 501, 502] {
+        assert_eq!(compact.add_node(isolated), reference.add_node(isolated));
+    }
+    let check = |compact: &Graph, reference: &knotrel_core::ReferenceGraph, phase: &str| {
+        let nodes: Vec<u64> = (0..=502)
+            .filter(|&node| compact.connected(node, node).is_ok())
+            .collect();
+        assert!(nodes.len() > 200, "{phase}: graph built");
+        for &a in &nodes {
+            for &b in &nodes {
+                assert_eq!(
+                    compact.connected(a, b),
+                    reference.connected(a, b),
+                    "{phase}: {a} -> {b}"
+                );
+            }
+        }
+    };
+    check(&compact, &reference, "initial");
+    // Cut bridges: the hub-to-path links and the middle of component 3.
+    for (a, b) in [(5, 100), (0, 7), (340, 341)] {
+        assert_eq!(compact.cut(a, b), reference.cut(a, b));
+    }
+    check(&compact, &reference, "after cuts");
+}
