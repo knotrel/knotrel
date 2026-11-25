@@ -15,9 +15,9 @@ Insight:
 
 ![Browser: the node list fills the height; the selected node shows its state, neighbors and a connectivity check](images/console/browser.jpg)
 
-> **Status: released (1.0.0, 2026-11-24)**, together with server 1.0.0.
-> Image `ghcr.io/knotrel/knotrel-console:1.0.0` (multi-platform index `sha256:722ba54ecb26d9cc5ca15f6580ebaa1e09b9de40246e27a559ce1828a127591c`);
-> archive on the [GitHub Release v1.0.0](https://github.com/knotrel/knotrel/releases/tag/v1.0.0). Console 1.0 also works with server 0.9.
+> **Status: released (1.1.0, 2026-11-25)**, together with server 1.1.0.
+> Image `ghcr.io/knotrel/knotrel-console:1.1.0`; archive on the
+> [GitHub Release v1.1.0](https://github.com/knotrel/knotrel/releases/tag/v1.1.0).
 
 The console is a static React application, released as its own artifacts
 (never inside the Rust crates or binary) and distributed in two forms:
@@ -84,7 +84,7 @@ image (or an image built with
 docker run --rm -p 127.0.0.1:7380:8080 \
   -e KNOTREL_CONSOLE_UPSTREAM=http://host.docker.internal:8080 \
   --read-only --tmpfs /tmp --cap-drop ALL \
-  ghcr.io/knotrel/knotrel-console:1.0.0
+  ghcr.io/knotrel/knotrel-console:1.1.0
 ```
 
 The server must be reachable from the container. A server bound to the host's
@@ -362,16 +362,21 @@ against the server built from the release commit, which reports version
 `1.0.0` in `knotrel_build_info`, and against server 0.9.0 built from tag `v0.9.0`
 (browser tests, Chromium and Firefox, 14 of 14 on each browser for each
 server); with server 0.9 the Performance page shows one unlabelled admission
-row, because per-lane metrics start with server 1.0.0.
+row, because per-lane metrics start with server 1.0.0. Console 1.1.0 was
+verified on 2026-11-25 against the server built from the release branch
+(version 1.1.0) and against the published server v1.0.0 (release asset for
+macOS arm64, checksum verified): browser tests, Chromium and Firefox, 28 of
+28 against each server. Server 0.9 was not tested again with console 1.1, so
+it is outside the 1.1 range; console 1.0 keeps its range.
 
 Within a supported server version, the server flags decide what is available;
 see [Server flags, in short](#server-flags-in-short).
 
 The console declares the server versions it supports in
 `console/package.json` (`knotrel.supportedServer`, currently
-`>=0.9.0 <1.1.0`): servers 0.9.x, 1.0.0 and its 1.0.x patches. The range is
-read with npm (node-semver) rules, under which it admits no prerelease; no
-1.0.0 release candidate was published.
+`>=1.0.0 <1.2.0`): servers 1.0.x and 1.1.x, the same and the previous
+minor. The range is read with npm (node-semver) rules, under which it admits
+no prerelease.
 It also records the SHA-256 of the `docs/openapi.yaml` revision it was
 generated from (`knotrel.openapiSha256`), which the archive's
 `console-manifest.json` repeats. CI fails when the generated types or that

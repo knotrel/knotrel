@@ -36,15 +36,5 @@ prometheus-client.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 tower.workspace = true
 
-# docs/compatibility.md, section 6: maintainer-approved breaking changes.
-# Each lint below has a [[semver_exception]] entry in
-# docs/api/public-api-policy.toml naming its items, decision and release
-# ("until"); scripts/public-api.py fails once the workspace version is past
-# that release, so the entry and the lint must then be removed. The lint is
-# crate-wide: the public API snapshot, the approved #[non_exhaustive] list and
-# the narrowing check of the same script remain the per-item guard.
-[package.metadata.cargo-semver-checks.lints]
-enum_marked_non_exhaustive = "allow"
-
 [lints]
 workspace = true

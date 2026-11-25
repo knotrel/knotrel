@@ -60,21 +60,5 @@ reason = "R6, decision 8 of 2026-11-22: follows KNOTREL_FEEDER_RESERVED_JOBS."
 # past "until", the check fails until the lint and the entry are removed.
 # While an exception exists, the snapshot, the non_exhaustive list and the
 # narrowing check above stay the per-item guard.
-[[semver_exception]]
-crate = "knotrel-core"
-lints = ["enum_marked_non_exhaustive", "struct_marked_non_exhaustive"]
-until = "1.0.0"
-items = [
-    "knotrel_core::EdgeState",
-    "knotrel_core::EngineConfig",
-    "knotrel_core::GraphError",
-    "knotrel_core::IncidenceError",
-]
-decision = "Contract freeze decision 1 of 2026-11-22 (docs/releases/v1.0-contract-freeze-review.md, R1-R3)."
-
-[[semver_exception]]
-crate = "knotrel-server"
-lints = ["enum_marked_non_exhaustive"]
-until = "1.0.0"
-items = ["knotrel_server::Phase"]
-decision = "Contract freeze decision 1 of 2026-11-22 (docs/releases/v1.0-contract-freeze-review.md, R2)."
+# None at present: the v1.0.0 exceptions (contract freeze decision 1 of
+# 2026-11-22) were removed with the 1.1.0 version bump.
