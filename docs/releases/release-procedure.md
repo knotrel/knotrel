@@ -294,6 +294,17 @@ For every release, retain a versioned performance comparison in
   such rather than relabelled PASS, with links to durable raw evidence and its
   checksum manifest. Private evidence must remain private.
 
+**Scope of the qualification (from v1.2.0).** Releases after v1.1.0 follow the
+[per-release measurement policy](https://github.com/knotrel/knotrel-benchmarks/blob/main/docs/methodology.md#per-release-measurement-policy)
+([#186](https://github.com/knotrel/knotrel/issues/186)): one release qualification
+per release, run on the candidate against the previous release and scoped to the
+areas changed since the previous release tag (`crates/*/src`, `Cargo.lock`, the
+toolchain, server configuration defaults). The freeze record lists unchanged
+areas with the diff evidence. Impact estimates of individual changes decide
+adoption only and never replace the release qualification; carried non-PASS
+results are re-measured only if their code path changed, otherwise they keep a
+written disposition. No sentinel set of unchanged cells is added.
+
 Reuse valid qualification evidence; producing this report does not itself
 require a new benchmark campaign. If the final commit differs from the measured
 candidate, document why the evidence applies or perform the required
