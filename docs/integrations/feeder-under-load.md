@@ -826,3 +826,44 @@ protocol's rates. Host L's CPU differs from host K's; arm S on host K keeps
 the reference layout. Arm U reproduces CPU demand only. In T and U, host K's
 CPU samples are timed on arrival over SSH, and its per-process snapshots are
 taken over SSH (a few milliseconds of skew against a catch-up of seconds).
+
+## v1.2.0: B1/B2 decision after the H1 profiling and the bidirectional BFS (2026-11-26)
+
+**Status: decision recorded under the maintainer's delegation for the v1.2.0
+plan; no Q verdict.** Issue [#87](https://github.com/knotrel/knotrel/issues/87),
+step 2. The earlier sections, verdicts and thresholds above are unchanged.
+
+**What the evidence says.**
+- H1 profiling (knotrel-benchmarks
+  [`results/v1.2.0-h1-profiling/REPORT.md`](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/v1.2.0-h1-profiling/REPORT.md),
+  diagnostic): on v1.1.0, `compact-bfs` `Graph::connected` was 84–96 % of the
+  server's on-CPU samples under query load, and each feeder job waited
+  7.8–9.3 ms for the write lock behind query batches of about the same length.
+- The bidirectional BFS (#196) was adopted by its impact estimate (knotrel-benchmarks
+  [`results/v1.2.0-h3-bidirectional-bfs/REPORT.md`](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/v1.2.0-h3-bidirectional-bfs/REPORT.md)).
+  In its descriptive part (L2 G100k, 3 observations per arm), query batch
+  execution fell from about 7 ms to 0.05 ms, the feeder's lock wait from
+  7.0–7.5 ms to 0.08–0.18 ms (`C`=16), and the median catch-up share rose from
+  15.0 % to 43.7 % (`C`=16) and from 9.6 % to 38.4 % (`C`=64), while the
+  closed-loop clients sent about 30 times as many query requests.
+- A diagnostic profile of the candidate under the same load (raw evidence in the
+  maintainer's `evidence/v1.2.0-h1-profiling-57c35e8/q3-after-bibfs/`, not
+  published data) shows `connected` at 37–39 % of on-CPU server samples; the rest
+  is HTTP, JSON and allocation work for the much higher request rate.
+
+**Decision.**
+- **B1 (queued feeder work passes waiting readers): not pursued.** The server's
+  `parking_lot` lock is already task-fair (a waiting writer blocks newly arriving
+  readers), so B1 could only shorten the wait for readers already running, and
+  that wait is now 0.08–0.41 ms per job. There is nothing left for B1 to act on.
+- **B2 (bounded concurrent query execution): deferred, not implemented in
+  v1.2.0 unless #182 needs it.** With queries this cheap, bounding their
+  execution would mainly throttle query throughput to free CPU for the feeder
+  and PostgreSQL. That trades one user-visible quantity for another, needs a new
+  configuration setting, and the v1.2.0 Q3 verdict may not require it.
+- **Next step:** the v1.2.0 release qualification (#182) measures Q1–Q5 on the
+  candidate under the unchanged thresholds, since the query path changed. If Q3
+  still fails there, B2 is designed as an opt-in setting with its own impact
+  estimate (criteria fixed beforehand), or Q3 keeps its declared limitation by
+  maintainer decision. The descriptive 43.7 % at `C`=16 is below Q3's 50 % and
+  is not a verdict.
