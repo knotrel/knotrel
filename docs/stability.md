@@ -261,7 +261,7 @@ the stable interfaces of the experimental engines.
 
 The `lane` label of `knotrel_graph_jobs_outstanding`,
 `knotrel_graph_job_capacity` and `knotrel_requests_rejected_total` (new in
-1.0.0, [contract section 21](observability-contract.md#21-per-lane-admission-metrics-v100-unreleased))
+1.0.0, [contract section 21](observability-contract.md#21-per-lane-admission-metrics-v100))
 is stable. Its values are a closed set: `shared`, `feeder_data`,
 `feeder_control`, `import`, plus `none` on `knotrel_requests_rejected_total`
 for `shutting_down` and `unavailable`. For a lane, outstanding and capacity

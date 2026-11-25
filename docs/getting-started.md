@@ -8,7 +8,7 @@ Knotrel answers connectivity queries on a changing undirected graph. The server 
 
 ## Try a graph locally
 
-1. Download the server for your platform from [release v0.9.0](https://github.com/knotrel/knotrel/releases/tag/v0.9.0) and [verify the checksum](https://github.com/knotrel/knotrel#installing-a-release).
+1. Download the server for your platform from [release v1.0.0](https://github.com/knotrel/knotrel/releases/tag/v1.0.0) and [verify the checksum](https://github.com/knotrel/knotrel#installing-a-release).
 2. Clone the [repository](https://github.com/knotrel/knotrel) for the example. Install Python 3.9 or newer.
 3. From the repository root, run:
 

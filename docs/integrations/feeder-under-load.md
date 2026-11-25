@@ -7,7 +7,7 @@ as a declared limitation of v0.9.0, limited to the measured configuration
 (section "Maintainer decision on Q3").**
 
 "0.9.3" is the roadmap item, not a version: the work belongs to the
-unreleased v0.9.0.
+v0.9.0.
 The protocol, the criteria and the decision rule below are fixed **before**
 any measurement. After approval they do not change; a failed criterion is
 reported as a failure, with its numbers, and is not reinterpreted.
