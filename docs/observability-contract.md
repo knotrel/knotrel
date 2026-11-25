@@ -15,8 +15,7 @@ status code or body of the [HTTP API](http-api.md), the
 node and edge lifecycle support (v0.5.0), which exist only when
 `KNOTREL_TOPOLOGY_LIFECYCLE=true`. Section 20 adds the label values of the
 inspection routes (v0.8.0) and section 21 the per-lane admission metrics
-(v1.0.0, unreleased). Apart from section 21, the document describes the
-metrics served by v0.9.0.
+(v1.0.0). The document describes the metrics served by v1.0.0.
 
 Scope: service health, workload pressure and feeder synchronization of one
 `knotrel-server` process, including structured logs (section 17) and the
@@ -1643,7 +1642,7 @@ pinned by the unit tests of `metrics::JobKind`, and the route templates by
 concurrent work are measured in
 [console inspection costs](console-inspection-costs.md).
 
-## 21. Per-lane admission metrics (v1.0.0, unreleased)
+## 21. Per-lane admission metrics (v1.0.0)
 
 **Problem (contract freeze review, finding M1).** Until v0.9.x,
 `knotrel_graph_job_capacity` reported only the shared lane
