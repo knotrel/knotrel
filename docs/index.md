@@ -2,7 +2,7 @@
 layout: home
 title: Knotrel Documentation
 body_class: home
-release: v0.9.0
+release: v1.0.0
 ---
 <p class="eyebrow">Architecture</p>
 
