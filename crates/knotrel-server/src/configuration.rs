@@ -483,7 +483,9 @@ impl ServerConfig {
     /// Loads and validates a snapshot of the process environment.
     ///
     /// Recognized variables are `KNOTREL_ADDR` (default `127.0.0.1:8080`),
-    /// `KNOTREL_ENGINE` (`compact-bfs` by default, or experimental `ett` / `hdt`) and
+    /// `KNOTREL_ENGINE` (`compact-bfs` by default, or experimental `ett`, `hdt` or
+    /// `cluster-forest`, new in 1.1; see the
+    /// [engine selection guide](https://knotrel.github.io/knotrel/choosing-an-engine.html)) and
     /// `KNOTREL_MAX_PENDING_JOBS` (default `32`). `KNOTREL_MAX_NODES` and
     /// `KNOTREL_MAX_EDGES` are nonnegative decimal integers or `unlimited`; absent
     /// means [`Self::DEFAULT_MAX_NODES`] / [`Self::DEFAULT_MAX_EDGES`], zero

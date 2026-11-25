@@ -132,7 +132,9 @@
 //!
 //! # Choosing a Backend Engine
 //!
-//! Knotrel provides three underlying dynamic connectivity engines through [`EngineConfig`].
+//! Knotrel provides four dynamic connectivity engines through [`EngineConfig`]; every engine
+//! returns the same exact answers. The canonical selection guide, with the 1.1 qualification
+//! results, is [Choosing an engine](https://knotrel.github.io/knotrel/choosing-an-engine.html).
 //!
 //! ### Algorithmic Complexity and API Assumptions
 //!
@@ -148,7 +150,7 @@
 //! | **Compact BFS** (Default) | [`EngineConfig::CompactBfs`] | `O(V + E)` worst-case | `O(deg(u) + deg(v))` amortized | `O(deg(u) + deg(v))` worst-case | `O(V + E)` |
 //! | **Euler Tour Trees** (ETT) | [`EngineConfig::EulerTour`] | `O(log V)` algorithmically | `O(log V + log E)` amortized | `O(log V + log E + s + c log V)` amortized | `O(V + E)` |
 //! | **HDT** | [`EngineConfig::Hdt`] | `O(log V)` algorithmically | `O(log V)` amortized | `O(log² V)` amortized | `O(E + V log V)` |
-//! | **Cluster forest** (unreleased, planned for 1.1) | [`EngineConfig::ClusterForest`] | `O(log N)` worst-case | `O(log N)` actual | `O(log² N)` amortized (project derivation) | `O(V + E)` |
+//! | **Cluster forest** (new in 1.1, experimental) | [`EngineConfig::ClusterForest`] | `O(log N)` worst-case | `O(log N)` actual | `O(log² N)` amortized (project derivation) | `O(V + E)` |
 //!
 //! `N` is the high-water vertex count. *Note on memory:* `O(V + E)` and `O(E + V log V)` represent *logical* graph entity storage.
 //! Allocated memory capacities are retained after cuts and do not bound process heap memory or RSS.
@@ -183,7 +185,7 @@
 //!   large individual promotion passes or vector reallocations can cause latency spikes, and it may have higher constant
 //!   factors on small or sparse graphs; verify against your actual workload.
 //!
-//! ### 4. Cluster forest ([`EngineConfig::ClusterForest`], unreleased, planned for 1.1)
+//! ### 4. Cluster forest ([`EngineConfig::ClusterForest`], new in 1.1, experimental)
 //! - **Algorithmic properties**: Experimental sequential cluster forest of Wulff-Nilsen (SODA 2013, §3) with the
 //!   path compression of De Man et al. (PVLDB 2025, §4) and insertion at the lowest common cluster. Edges carry
 //!   levels; clusters are the components of each level and are stored only where an edge of their level lies
@@ -193,8 +195,49 @@
 //!   variant ([ADR 0014](https://github.com/knotrel/knotrel/blob/main/docs/architecture/0014-cluster-forest-backend.md)),
 //!   not a published theorem; the sources state it for related variants only. At most 2²⁸ vertices and edges.
 //!   Also supported by [`LifecycleGraph`]. The backend type is internal.
-//! - **Workload expectations**: none yet. Its performance against the other engines is measured in the 1.1
-//!   qualification; until then no speed or memory advantage is claimed.
+//! - **Workload expectations** (1.1 qualification, CF5: one host, candidate `02cba68`, the measured workloads only;
+//!   [results](https://knotrel.github.io/knotrel-benchmarks/engines/cluster-forest-cf5-02cba68.html)):
+//!   much faster than Compact BFS where Compact BFS answers queries by search (server mixed traffic, the
+//!   components and hub families), faster than every other engine on dense bridge churn, and faster than ETT and
+//!   HDT on construction; slower than Compact BFS on updates and construction, with more memory, and slower than
+//!   all three on path- and ring-like bridge churn. Under sustained lifecycle churn on a sparse 1 000-node graph
+//!   two heap-growth checks failed (projected growth, a documented limitation). It stays experimental and
+//!   Compact BFS stays the default. See the [selection guide](https://knotrel.github.io/knotrel/choosing-an-engine.html).
+//!
+//! ```rust
+//! use knotrel_core::{ConnectivityGraph, EngineConfig, GraphError};
+//!
+//! fn main() -> Result<(), GraphError> {
+//!     let mut graph = ConnectivityGraph::new(EngineConfig::ClusterForest);
+//!     graph.link(1, 2)?;
+//!     graph.link(2, 3)?;
+//!     assert!(graph.connected(1, 3)?);
+//!     graph.cut(2, 3)?;
+//!     assert!(!graph.connected(1, 3)?);
+//!     assert!(graph.engine().is_experimental());
+//!     Ok(())
+//! }
+//! ```
+//!
+//! With node and edge lifecycle:
+//!
+//! ```rust
+//! use knotrel_core::{EngineConfig, LifecycleGraph};
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut graph = LifecycleGraph::new(EngineConfig::ClusterForest)?;
+//!     for (u, v) in [(1, 2), (2, 4), (1, 3), (3, 4)] {
+//!         graph.link(u, v)?;
+//!     }
+//!     graph.set_node_active(2, false)?;
+//!     assert!(graph.connected(1, 4)?); // through 3
+//!     graph.set_node_active(3, false)?;
+//!     assert!(!graph.connected(1, 4)?);
+//!     graph.set_node_active(2, true)?;
+//!     assert!(graph.connected(1, 4)?); // the edges of 2 are back
+//!     Ok(())
+//! }
+//! ```
 //!
 //! ### Pragmatic Guidance
 //! - **No universal winner**: Micro-benchmarks demonstrate that no single engine dominates across all graph topologies
@@ -202,8 +245,10 @@
 //! - **Empirical evaluation**: If your workload characteristics (topology, scale, mutation mix) are uncertain, profile
 //!   empirically rather than assuming polylogarithmic engines will outperform Compact BFS.
 //! - **Starting point**: Start with Compact BFS ([`EngineConfig::CompactBfs`]); evaluate ETT ([`EngineConfig::EulerTour`])
-//!   for query-dominated workloads or HDT ([`EngineConfig::Hdt`]) for workloads with repeated bridge replacement searches,
-//!   measuring actual topology, scale, and mutation mix.
+//!   for query-dominated workloads on tree-like graphs, HDT ([`EngineConfig::Hdt`]) for workloads with repeated bridge
+//!   replacement searches, or cluster forest ([`EngineConfig::ClusterForest`]) for query-heavy workloads where Compact BFS
+//!   searches, also with [`LifecycleGraph`], measuring actual topology, scale, and mutation mix. To go back, construct
+//!   the graph with [`EngineConfig::CompactBfs`]; there is no in-place conversion.
 //!
 //! # Error and Resource Limit Handling
 //!
@@ -235,7 +280,7 @@
 //!   HDT engine ([`EngineConfig::Hdt`], [`HdtGraph`], [`HdtStats`], [`HdtStorageStats`], [`HdtLevelStorage`]) are
 //!   *stable interfaces with an experimental engine*: their public API stays compatible across 1.x, while their
 //!   performance, maturity and usage recommendation carry no promise ([`EngineConfig::is_experimental`] returns
-//!   `true`). [`EngineConfig::ClusterForest`] (unreleased, planned for 1.1) is a stable interface with an
+//!   `true`). [`EngineConfig::ClusterForest`] (new in 1.1) is a stable interface with an
 //!   experimental engine too; its backend type is not exported. [`LifecycleStorage`] is stable. For these diagnostic structs, the fields, units and the properties
 //!   their documentation lists as guaranteed are stable; the exact values are implementation-dependent.
 //!   [`ReferenceGraph`] is an internal test oracle.
