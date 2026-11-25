@@ -157,7 +157,10 @@ jobs:
         shell: bash
         # README.md and console/README.md at the tag are what users see for
         # this release: latest release, download names, dependency snippet,
-        # console image, and no "unreleased" left. Runs in dry runs too.
+        # console image, and no "unreleased" left. It also checks the other
+        # release surfaces of docs/releases/release-surfaces.toml (site,
+        # getting started, benchmarks and performance pages). Runs in dry runs
+        # too.
         run: python3 scripts/check-readme.py --release "$VALID_VERSION"
 
   candidate-quality-gates:
