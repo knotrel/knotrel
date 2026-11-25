@@ -39,8 +39,10 @@
 //! process [`Lifecycle`] above. It is opt-in: the executable enables it with
 //! `KNOTREL_TOPOLOGY_LIFECYCLE=true`, embedded callers with
 //! [`ServerConfig::with_topology_lifecycle`]. It is supported on the
-//! `compact-bfs` engine and, from 1.1 (unreleased), on the experimental
-//! `cluster-forest` engine; enabling it with `ett` or `hdt` returns
+//! `compact-bfs` engine and, new in 1.1, on the experimental
+//! `cluster-forest` engine (see the
+//! [engine selection guide](https://knotrel.github.io/knotrel/choosing-an-engine.html));
+//! enabling it with `ett` or `hdt` returns
 //! [`ConfigError`] (the executable exits before binding), and those engines
 //! remain available without lifecycle. With lifecycle off, behavior is
 //! unchanged and lifecycle operations are refused with

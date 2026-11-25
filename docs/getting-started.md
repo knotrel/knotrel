@@ -27,4 +27,5 @@ The browser console is distributed separately from the server. Follow the [conso
 - Read the [architecture](architecture-site.md) and [HTTP API](http-api.md).
 - For an external source, read the [integration contract](integration-contract.md).
 - Before deploying, follow the [deployment guide](deployment.md) and place Knotrel behind an appropriate trusted boundary.
+- To pick a connectivity engine, read [Choosing an engine](choosing-an-engine.md); the default, `compact-bfs`, suits most workloads.
 - For the Rust library, see [knotrel-core on docs.rs](https://docs.rs/knotrel-core/latest/knotrel_core/).

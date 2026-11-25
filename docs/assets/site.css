@@ -102,3 +102,5 @@ footer .footer-grid h2{margin:0 0 .6rem;font-size:.8rem;text-transform:uppercase
 @media(max-width:900px){.hero-grid,.split{grid-template-columns:1fr;gap:2.5rem}.steps{grid-template-columns:1fr}.cards{grid-template-columns:1fr 1fr}.hero{padding:3.5rem 0}.band{padding:3.5rem 0}}
 @media(max-width:560px){.cards,.callouts{grid-template-columns:1fr}.wrap{padding:0 1rem}}
 .tag{display:inline-block;margin-left:.3rem;padding:0 .45rem;border:1px solid var(--border);border-radius:999px;color:var(--muted);font-size:.72rem;vertical-align:.1em}
+main table,main pre{display:block;max-width:100%;overflow-x:auto}
+main p>code,main li>code{overflow-wrap:anywhere}@media(max-width:650px){main th,main td{min-width:7rem}}
