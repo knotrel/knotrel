@@ -410,3 +410,7 @@ documentation of invariants, correctness and complexity. Workspace lints enforce
 missing docs and forbid unsafe code; each crate inherits them explicitly.
 CI builds and tests on Linux, Windows and macOS; formatting, Clippy and Rustdoc
 gates run on Linux.
+
+## Development planning
+
+Planned work and release targets are tracked in [GitHub issues](https://github.com/knotrel/knotrel/issues/183). Use version and priority labels to select upcoming work. Historical release evidence remains in the release documentation.

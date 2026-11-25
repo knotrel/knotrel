@@ -106,10 +106,10 @@ Purpose: record what ships, what is accepted, and what is deferred, in the roadm
 
 Deliverables:
 
-- `ROADMAP.md` amended with the text in §3, after approval.
+- [historical planning record](https://github.com/knotrel/knotrel/blob/d6a273c5ffa9819cd2a6904c6a3f5e4bb74475b7/ROADMAP.md) amended with the text in §3, after approval.
 - Release notes carry the limitations in D8, written in Package 4.
 
-Completion condition: `ROADMAP.md` shows the approved text, with each acceptance dated and its
+Completion condition: [historical planning record](https://github.com/knotrel/knotrel/blob/d6a273c5ffa9819cd2a6904c6a3f5e4bb74475b7/ROADMAP.md) shows the approved text, with each acceptance dated and its
 evidence cited, and every deferral labelled "Deferred to a later release". No box is checked
 without a recorded owner acceptance.
 
@@ -166,7 +166,7 @@ from the release candidate SHA (or a docs-only descendant of it). Any later chan
 and the O3 transcript at the new SHA.
 
 Progress:
-- Package 1 (S1) applied to `ROADMAP.md` and `docs/performance-v0.3.0.md`.
+- Package 1 (S1) applied to [historical planning record](https://github.com/knotrel/knotrel/blob/d6a273c5ffa9819cd2a6904c6a3f5e4bb74475b7/ROADMAP.md) and `docs/performance-v0.3.0.md`.
 - O1, O2 and O4 delivered: `examples/container/`, `docs/deployment.md` and `docs/http-api.md`.
 - O3 is scripted as `examples/container/check-deployment.sh`. It was executed with 0 failures on an
   uncommitted working tree based on `cdb0e5b`. That run is retained in the `docs/deployment.md`
@@ -255,7 +255,7 @@ Execute in order. Each line is complete only when its condition holds.
 
 **1 — Corrections and missing functionality**
 
-- [x] **S1** `ROADMAP.md` amended per §3; acceptances M3.2–M3.5 and M4.1–M4.4 dated with evidence (D1, D2).
+- [x] **S1** [historical planning record](https://github.com/knotrel/knotrel/blob/d6a273c5ffa9819cd2a6904c6a3f5e4bb74475b7/ROADMAP.md) amended per §3; acceptances M3.2–M3.5 and M4.1–M4.4 dated with evidence (D1, D2).
 - [x] **O1** Container example builds and runs as non-root; the candidate build and check are recorded in the O3 transcript.
 - [x] **O2** `docs/deployment.md` runbook covers the Package 2 assumptions.
 - [x] **O4** `docs/http-api.md` stale wording corrected.
@@ -570,7 +570,7 @@ the Cargo dep-info (`*.d`) files of these three binaries at the qualified SHA.
 - it changes the core harness or collector revision used.
 
 **Exempt, if absent from the recorded source set:**
-- `*.md` documentation, `ROADMAP.md` and release notes;
+- `*.md` documentation, [historical planning record](https://github.com/knotrel/knotrel/blob/d6a273c5ffa9819cd2a6904c6a3f5e4bb74475b7/ROADMAP.md) and release notes;
 - integration-test files such as `crates/knotrel-server/tests/events.rs`;
 - `examples/external_feeder.rs`;
 - CI changes that do not alter build flags.
@@ -618,11 +618,11 @@ final-candidate qualification; no campaign is to run in this step.
 
 ## 7. First executable task after approval (S1, executed 2026-11-12)
 
-**S1 — Apply the approved scope to `ROADMAP.md`.**
+**S1 — Apply the approved scope to [historical planning record](https://github.com/knotrel/knotrel/blob/d6a273c5ffa9819cd2a6904c6a3f5e4bb74475b7/ROADMAP.md).**
 - Insert the §3 text with the approval date.
 - Check M3.2–M3.5 and M4.1–M4.4, each with a dated evidence line citing the tests and sections in Package 1.
 - Mark M3.6, M5, M6 and P2 as deferred.
 - Append the status pointer to `docs/performance-v0.3.0.md`.
 
-Completion condition: `git diff --name-only` shows only `ROADMAP.md` and `docs/performance-v0.3.0.md`.
+Completion condition: `git diff --name-only` shows only [historical planning record](https://github.com/knotrel/knotrel/blob/d6a273c5ffa9819cd2a6904c6a3f5e4bb74475b7/ROADMAP.md) and `docs/performance-v0.3.0.md`.
 Every checked box cites its evidence and approval date. No deferred item is checked.
