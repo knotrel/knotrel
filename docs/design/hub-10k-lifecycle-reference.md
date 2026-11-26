@@ -1,6 +1,40 @@
 # Atomic reference for the hub 10k lifecycle requirements (B4 `ops`, `events`)
 
-Status: PROPOSED — awaiting maintainer approval; no measurement taken.
+Status: APPROVED (2026-11-26) with outcome M1(b) — application gate for
+`ops`; `events` disposed with the §5 text; no measurement taken.
+
+**Maintainer decisions (2026-11-26).**
+
+- **M1:** (b). The `-atomic` reference of §3 is adopted for `ops` only;
+  `events` stays unqualified under the §5 disposition (no reference adopted).
+- **M2:** for `ops`, isolation for readers through the application is
+  accepted as the equivalence condition. For `events` it is not: in the
+  feeder deployment readers query the server directly and can observe the
+  state between the two plain requests.
+- **M3:** any non-success response aborts the pair; the comparison covers
+  successful executions only, and no rollback or cross-request failure
+  atomicity is attributed to the reference.
+- **M4:** new cell `B4-http-ops-atomic-compact-bfs-hub-10000` (deciding when
+  in scope); the existing `-equivalent-` hub cells for `ops` and `events`
+  keep running as descriptive cells whenever B4 is in scope.
+- **M5:** the §3.4 path list is approved for `ops-atomic`; the diff
+  `v1.1.0..candidate` is evaluated at the #182 freeze. If #87 changes the
+  `events` path, its impact estimate includes the `events` cell with the
+  reference's limit stated.
+- **M6:** 25 % tolerance and the B4 interval rule; the untimed gate check
+  (only all-before or all-after observations with the gate on) and its
+  negative control (an intermediate state detected with the gate off) are a
+  conformance condition; a failure stops the probe.
+- **M7:** the §5 text is approved for `events` (variant "no reference
+  adopted") and, if `ops-atomic` stays out of #182 because its path is
+  unchanged, for `ops` with the bracketed variant citing the diff.
+
+Publishable wording if `ops-atomic` runs and passes: "On the 10,000-node hub
+graph, B4 `ops` trace, single client, native `compact-bfs` lifecycle is
+within the 25 % tolerance of a reference that serializes the requests in the
+application; the reference's isolation holds for readers that go through the
+same application."
+
 
 Tracking: [#180](https://github.com/knotrel/knotrel/issues/180) (H2, ledger
 row "Hub 10k lifecycle ops and events (B4)"). Measurement policy:
