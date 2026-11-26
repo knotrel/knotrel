@@ -1,6 +1,17 @@
 # Compact internal node indices (option B): design and comparison protocol
 
-**Status: PROPOSED — design and protocol awaiting maintainer approval; nothing implemented or measured.**
+**Status: APPROVED (2026-11-26) — design and protocol approved by the maintainer with the decisions below; implementation and comparison authorized; nothing measured yet. The host-time cap is still to be approved after the pilot, before the freeze.**
+
+**Maintainer decisions (2026-11-26).** Q1: B64 is the only formal candidate;
+B32 and the width promotion are not pursued. Q2: the `compact-bfs` engine
+adjacency stays `usize`. Q3: `LifecycleStorage` stays unchanged. Q4: the
+memory classes and the benefit criteria G1 and G2 of section 6.6 are
+approved; both are required. Q5: strict; any SLOWER primary or tail metric
+of the timed blocks, the `D = 10⁶` hub cells included, rejects B; the 25 %
+alternative is refused. Q6: M1-iso is report-only; if B is adopted its
+observed value is published in the release notes and in the
+`LifecycleGraph` memory documentation. B enters the v1.2.0 release
+qualification (#182) only if it is adopted under section 6.7.
 
 Issue: [knotrel/knotrel#151](https://github.com/knotrel/knotrel/issues/151)
 (v1.2.0, Performance Hardening). This document covers Step 1 (design) and
@@ -595,7 +606,7 @@ edge registered for the whole traversal is visited exactly once.
 
 ## 6. Comparison protocol: current vs B
 
-**Status: PROPOSED.** Criteria, thresholds, run counts, order and the
+**Status: APPROVED (2026-11-26), not yet frozen.** Criteria, thresholds, run counts, order and the
 decision rule are written here before any measurement; they become binding
 only when the maintainer approves them and the matrix is frozen. No result
 is assumed: not the memory saving, and not the cost of the extra
