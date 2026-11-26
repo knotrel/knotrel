@@ -648,3 +648,180 @@ fn unsupported_engines_are_rejected_without_a_graph() {
     let graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
     assert_eq!(graph.engine(), EngineConfig::CompactBfs);
 }
+
+/// The oracle's incident list of `node` after `cursor`, in ascending
+/// neighbor ID, or `None` if `node` is not registered.
+fn oracle_incident(
+    oracle: &Oracle,
+    node: u64,
+    cursor: Option<u64>,
+) -> Option<Vec<(u64, EdgeState)>> {
+    oracle.nodes.get(&node)?;
+    let mut edges: Vec<(u64, EdgeState)> = oracle
+        .edges
+        .keys()
+        .filter_map(|&(a, b)| match node {
+            n if n == a => Some(b),
+            n if n == b => Some(a),
+            _ => None,
+        })
+        .filter(|&neighbor| cursor.is_none_or(|c| neighbor > c))
+        .map(|neighbor| (neighbor, oracle.edge_state(node, neighbor).unwrap()))
+        .collect();
+    edges.sort_unstable_by_key(|edge| edge.0);
+    Some(edges)
+}
+
+/// Every node of `universe` paged from every cursor of `cursors` (and from
+/// the start) matches the oracle, whether the cursor is a registered
+/// neighbor, a removed node or an ID that was never registered.
+fn assert_pages(graph: &LifecycleGraph, oracle: &Oracle, universe: &[u64], cursors: &[u64]) {
+    for &node in universe {
+        for cursor in std::iter::once(None).chain(cursors.iter().copied().map(Some)) {
+            let got = graph
+                .incident_after(node, cursor)
+                .map(|edges| edges.collect::<Vec<_>>());
+            assert_eq!(
+                got,
+                oracle_incident(oracle, node, cursor),
+                "node {node}, cursor {cursor:?}"
+            );
+        }
+    }
+}
+
+/// Bulk import, then long random churn (removals and re-registrations make
+/// the catalog reuse slots), checked against the oracle, including
+/// incidence pages at cursors naming removed and never-registered nodes.
+#[test]
+fn bulk_import_followed_by_churn_matches_the_oracle() {
+    // Scrambled IDs; the last four are never registered (cursors only).
+    let ids: Vec<u64> = (0..28_u64)
+        .map(|k| k.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(29))
+        .collect();
+    let (universe, unregistered) = ids.split_at(24);
+    for engine in ENGINES {
+        for seed in 0..6_u64 {
+            let mut rng = Rng(seed ^ 0xb017);
+            let mut oracle = Oracle::default();
+            let mut nodes = Vec::new();
+            for &node in universe {
+                if rng.below(3) != 0 {
+                    let active = rng.below(4) != 0;
+                    nodes.push(NodeSpec { node, active });
+                    oracle.add_node(node).unwrap();
+                    oracle.set_node_active(node, active).unwrap();
+                }
+            }
+            let mut edges = Vec::new();
+            for _ in 0..60 {
+                let pick = |rng: &mut Rng| universe[rng.below(universe.len() as u64) as usize];
+                let (source, target) = (pick(&mut rng), pick(&mut rng));
+                if source == target || oracle.edge_state(source, target).is_some() {
+                    continue;
+                }
+                let enabled = rng.below(4) != 0;
+                edges.push(EdgeSpec {
+                    source,
+                    target,
+                    enabled,
+                });
+                oracle.link(source, target).unwrap();
+                oracle.set_edge_enabled(source, target, enabled).unwrap();
+            }
+            let mut graph =
+                LifecycleGraph::try_from_topology(engine, GraphLimits::default(), &nodes, &edges)
+                    .unwrap();
+            assert_matches(&graph, &oracle, universe);
+            assert_pages(&graph, &oracle, universe, &ids);
+            for round in 0..1_200 {
+                step(&mut graph, &mut oracle, &mut rng, universe);
+                if round % 300 == 299 {
+                    assert_matches(&graph, &oracle, universe);
+                    assert_pages(&graph, &oracle, universe, &ids);
+                }
+            }
+            for &node in unregistered {
+                assert_eq!(graph.node_active(node), None);
+            }
+        }
+    }
+}
+
+/// A hub with thousands of spokes registered in scrambled ID order pages in
+/// ascending neighbor ID with the right flags, before and after removing
+/// spokes, with cursors naming removed spokes and never-registered IDs.
+#[test]
+fn hub_with_thousands_of_scrambled_spokes_pages_in_id_order() {
+    const SPOKES: u64 = 5_000;
+    const HUB: u64 = u64::MAX / 3;
+    // Odd IDs only, so `spoke + 1` is never registered.
+    let spoke = |k: u64| (k.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 1) | 1;
+    for engine in ENGINES {
+        let mut graph = LifecycleGraph::new(engine).unwrap();
+        for k in 0..SPOKES {
+            graph.link(HUB, spoke(k)).unwrap();
+            if k.is_multiple_of(5) {
+                graph.set_edge_enabled(spoke(k), HUB, false).unwrap();
+            }
+            if k.is_multiple_of(7) {
+                graph.set_node_active(spoke(k), false).unwrap();
+            }
+        }
+        let expected = |k: u64| {
+            let enabled = !k.is_multiple_of(5);
+            EdgeState::new(enabled, enabled && !k.is_multiple_of(7))
+        };
+        let mut sorted: Vec<(u64, EdgeState)> =
+            (0..SPOKES).map(|k| (spoke(k), expected(k))).collect();
+        sorted.sort_unstable_by_key(|edge| edge.0);
+        let traverse = |graph: &LifecycleGraph, limit: usize| {
+            let mut all = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page: Vec<_> = graph
+                    .incident_after(HUB, cursor)
+                    .unwrap()
+                    .take(limit)
+                    .collect();
+                let Some(last) = page.last() else { break };
+                cursor = Some(last.0);
+                all.extend(page);
+            }
+            all
+        };
+        assert_eq!(graph.degree(HUB), Some(SPOKES as usize));
+        assert_eq!(traverse(&graph, 128), sorted);
+
+        // Remove every third spoke in sorted order; cursors naming them, and
+        // never-registered IDs, resume after them.
+        let removed: Vec<u64> = sorted.iter().step_by(3).map(|edge| edge.0).collect();
+        for &node in &removed {
+            assert!(graph.remove_node(node));
+        }
+        sorted.retain(|edge| !removed.contains(&edge.0));
+        assert_eq!(traverse(&graph, 97), sorted);
+        for cursor in removed
+            .iter()
+            .step_by(50)
+            .flat_map(|&node| [node, node + 1])
+            .chain([0, u64::MAX])
+        {
+            let got: Vec<_> = graph.incident_after(HUB, Some(cursor)).unwrap().collect();
+            let want: Vec<_> = sorted
+                .iter()
+                .copied()
+                .filter(|edge| edge.0 > cursor)
+                .collect();
+            assert_eq!(got, want, "cursor {cursor}");
+        }
+        // Re-registered spokes return as fresh edges, in ID order.
+        for &node in removed.iter().take(100) {
+            graph.link(node, HUB).unwrap();
+            sorted.push((node, EdgeState::new(true, true)));
+        }
+        sorted.sort_unstable_by_key(|edge| edge.0);
+        assert_eq!(traverse(&graph, 1_000), sorted);
+        assert!(graph.connected(HUB, removed[0]).unwrap());
+    }
+}

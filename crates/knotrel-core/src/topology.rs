@@ -19,12 +19,52 @@
 //! **Invariants,** restored before every public method returns:
 //!
 //! 1. `v` is in `incident(u)` with flag `f` iff `u` is in `incident(v)` with
-//!    flag `f`; incident vectors are strictly sorted and never contain the
-//!    owner itself.
+//!    flag `f`; incident vectors are strictly sorted by the neighbors'
+//!    external IDs and never contain the owner itself.
 //! 2. Every registered node is an engine vertex. Engine vertices that are not
 //!    registered are *retired* slots: isolated, with no incident engine edge.
 //! 3. The engine's edge set equals the effective edge set.
 //! 4. The maintained counters equal the counts they name.
+//!
+//! With the catalog layout below, also:
+//!
+//! - **I5 (occupied targets).** Every stored incidence names an occupied
+//!   catalog slot, and that slot's `id` is the neighbor's external ID.
+//! - **I6 (map).** The ID map maps `x` to `i` iff slot `i` is occupied with
+//!   `id == x`.
+//! - **I7 (closure).** Catalog slot indices are stored only in incidences, in
+//!   ID-map values and in the free list (which names only vacant slots). No
+//!   index is returned to callers, stored by the engine, or kept across
+//!   calls: the iterator of [`LifecycleGraph::incident_after`] borrows the
+//!   graph, so no mutation can happen while it lives.
+//!
+//! # Catalog layout
+//!
+//! The catalog (design: `docs/design/compact-node-index.md`, option B64) is
+//! an ID map `FxHashMap<NodeId, usize>` into a dense slot vector of 40-byte
+//! records (on 64-bit targets), each holding the node's external ID, its
+//! incident vector, a construction scratch word and a state (vacant,
+//! inactive or active). An incidence is one `usize`: the neighbor's slot
+//! index in the low `usize::BITS - 1` bits and the edge's `enabled` flag in
+//! the top bit. Incident vectors stay sorted by the neighbor's *external* ID,
+//! so every binary search translates the probed slot to its ID, and a
+//! pagination cursor (an external ID) is resolved by a lower bound on IDs
+//! without being looked up itself.
+//!
+//! A removed node's slot is vacated only after every incidence naming it was
+//! removed (symmetry, invariant 1), then pushed on an intrusive LIFO free
+//! list threaded through the vacant slots' `id` fields; the next registration
+//! reuses it, and no stored index can still name it (I5, I7). When vacant
+//! slots exceed `max(V, 1024)`, the rule of engine compaction below, the slot
+//! vector is compacted: occupied slots are renumbered densely in ascending
+//! external ID through one bijection that rewrites every incidence and every
+//! ID-map value, in `O(V log V + E)`. More than `max(V, 1024)` removals
+//! separate two slot compactions, so the amortized cost is
+//! `O(log V + E / V)` per removal. Remapping keeps every incidence at its
+//! position with the same external ID, so cursors resolve to the same
+//! position before and after. Bulk import also assigns slots in ascending
+//! external ID. A new slot reserves the slot vector up to the ID map's
+//! capacity, so that both grow in step.
 //!
 //! Each mutation validates every ordinary error before changing either
 //! representation. After validation, engine calls cannot fail (self-loops are
@@ -49,15 +89,15 @@
 //!
 //! # Catalog tombstones
 //!
-//! Removing a node from the catalog hash table can leave a tombstone, which
+//! Removing a node from the catalog's ID map can leave a tombstone, which
 //! uses insert headroom without holding an entry. Under fresh-ID churn the
 //! headroom runs out while live entries stay constant, and the table would
 //! double although it is far from full (at 100,000 nodes, from 131,072 to
 //! 262,144 buckets within a few percent of churn). Before an insert that would
-//! grow the table, the catalog is instead rebuilt into a fresh table sized for
+//! grow the table, the ID map is instead rebuilt into a fresh table sized for
 //! its live entries when they are at most 90% of the table's full capacity
 //! (its capacity right after its last growth or rebuild): entries move, no
-//! incident vector is copied, and the tombstones are dropped. A table sized
+//! slot record or incident vector is touched, and the tombstones are dropped. A table sized
 //! for the live entries has the same bucket count whenever they exceed half
 //! of the old capacity (the case under churn), and fewer buckets otherwise; it
 //! is never larger. In the rare case where the live entries exactly fill the
@@ -302,39 +342,104 @@ impl From<GraphError> for LifecycleError {
     }
 }
 
-/// One incident registered edge, stored at an endpoint.
-#[derive(Debug, Clone, Copy)]
-struct Incidence {
-    neighbor: NodeId,
-    enabled: bool,
+/// Bit of a packed [`Incidence`] holding the edge's `enabled` flag: the top
+/// bit of `usize`. The slot index occupies the other `usize::BITS - 1` bits.
+const ENABLED_BIT: usize = 1 << (usize::BITS - 1);
+
+/// Free-list terminator: stored in [`Catalog::free_head`] when no slot is
+/// vacant and in the link of the last vacant slot. Never a valid slot index,
+/// since a slot vector holds at most `isize::MAX / size_of::<NodeRecord>()`
+/// records.
+const NO_SLOT: usize = usize::MAX;
+
+/// One incident registered edge, stored at an endpoint (B64 layout of
+/// `docs/design/compact-node-index.md`, section 3.1).
+///
+/// The neighbor's catalog slot index is packed into the low
+/// `usize::BITS - 1` bits and the edge's `enabled` flag into the top bit:
+/// 8 bytes on 64-bit targets. A slot index always fits, because a
+/// `Vec<NodeRecord>` holds at most `isize::MAX / size_of::<NodeRecord>()`
+/// records, which needs at most 58 bits on 64-bit targets and 26 on 32-bit
+/// ones. Incident lists stay sorted by the neighbor's **external** ID, read
+/// from the neighbor's slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Incidence(usize);
+
+impl Incidence {
+    fn new(slot: usize, enabled: bool) -> Self {
+        debug_assert_eq!(slot & ENABLED_BIT, 0, "slot index below the flag bit");
+        Self(slot | if enabled { ENABLED_BIT } else { 0 })
+    }
+
+    /// The neighbor's catalog slot.
+    fn slot(self) -> usize {
+        self.0 & !ENABLED_BIT
+    }
+
+    /// The edge's `enabled` flag.
+    fn enabled(self) -> bool {
+        self.0 & ENABLED_BIT != 0
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        *self = Self::new(self.slot(), enabled);
+    }
+
+    fn set_slot(&mut self, slot: usize) {
+        *self = Self::new(slot, self.enabled());
+    }
 }
 
-/// Catalog entry of one registered node.
-#[derive(Debug, Default)]
+/// State of a catalog slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotState {
+    /// On the free list; holds no node.
+    Vacant,
+    /// Holds a registered inactive node.
+    Inactive,
+    /// Holds a registered active node.
+    Active,
+}
+
+impl SlotState {
+    fn registered(active: bool) -> Self {
+        if active { Self::Active } else { Self::Inactive }
+    }
+}
+
+/// One catalog slot: a registered node, or a vacant entry of the free list.
+#[derive(Debug)]
 struct NodeRecord {
-    active: bool,
-    /// Construction-only scratch, zero between public calls: the saturating
-    /// degree count that sizes `incident` in bulk import (only a capacity
-    /// hint), then the node's engine index during
-    /// [`LifecycleGraph::build_engine`]. It occupies the record's padding, so
-    /// the record stays 32 bytes on 64-bit targets.
-    pending: u32,
-    /// Incident registered edges, strictly sorted by `neighbor`.
+    /// The external ID of an occupied slot. For a vacant slot, the index of
+    /// the next vacant slot (`NO_SLOT` ends the list), stored as a `NodeId`
+    /// (lossless: slot indices fit in 58 bits).
+    id: NodeId,
+    /// Incident registered edges, strictly sorted by the neighbor's external
+    /// ID. Empty, without allocation, in a vacant slot.
     incident: Vec<Incidence>,
+    /// Construction-only scratch, zero between public calls: the node's
+    /// engine index during [`LifecycleGraph::build_engine`]. It occupies the
+    /// record's padding, so the record stays 40 bytes on 64-bit targets.
+    pending: u32,
+    state: SlotState,
 }
 
 impl NodeRecord {
-    fn active() -> Self {
+    fn registered(id: NodeId, active: bool) -> Self {
         Self {
-            active: true,
-            pending: 0,
+            id,
             incident: Vec::new(),
+            pending: 0,
+            state: SlotState::registered(active),
         }
     }
 
-    fn position(&self, neighbor: NodeId) -> Result<usize, usize> {
-        self.incident
-            .binary_search_by_key(&neighbor, |incidence| incidence.neighbor)
+    fn is_active(&self) -> bool {
+        self.state == SlotState::Active
+    }
+
+    fn is_occupied(&self) -> bool {
+        self.state != SlotState::Vacant
     }
 
     /// Removes the incidence at `index`, shrinking a mostly empty vector.
@@ -347,6 +452,236 @@ impl NodeRecord {
         removed
     }
 }
+
+/// The lifecycle catalog: an ID map into a dense slot vector (see the module
+/// documentation, "Catalog layout", for the invariants I5 to I7).
+#[derive(Debug)]
+struct Catalog {
+    // `FxHashMap`, not the identity-hashed `IntMap`: with hashbrown, identity
+    // hashes of small IDs or IDs sharing their high bits collide in the 7-bit
+    // control tag and degrade probing (measured in the v0.5.0 qualification).
+    /// External ID → slot index of every registered node (I6).
+    ids: FxHashMap<NodeId, usize>,
+    /// Slot records, occupied and vacant, indexed by slot.
+    slots: Vec<NodeRecord>,
+    /// First vacant slot of the intrusive LIFO free list, or `NO_SLOT`.
+    free_head: usize,
+    /// Number of vacant slots, all of them on the free list.
+    vacant: usize,
+    /// The ID map's `capacity()` right after its last growth or rebuild;
+    /// tombstones lower `capacity()` below it.
+    full_capacity: usize,
+    /// Slot compactions run so far. Test support.
+    #[cfg(test)]
+    slot_compactions: usize,
+    /// Registrations that reused a vacant slot so far. Test support.
+    #[cfg(test)]
+    slot_reuses: usize,
+}
+
+impl Catalog {
+    fn new() -> Self {
+        Self::from_parts(FxHashMap::default(), Vec::new())
+    }
+
+    /// A catalog with every slot occupied.
+    fn from_parts(ids: FxHashMap<NodeId, usize>, slots: Vec<NodeRecord>) -> Self {
+        debug_assert_eq!(ids.len(), slots.len());
+        Self {
+            full_capacity: ids.capacity(),
+            ids,
+            slots,
+            free_head: NO_SLOT,
+            vacant: 0,
+            #[cfg(test)]
+            slot_compactions: 0,
+            #[cfg(test)]
+            slot_reuses: 0,
+        }
+    }
+
+    /// Number of registered nodes.
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    fn slot(&self, node: NodeId) -> Option<usize> {
+        self.ids.get(&node).copied()
+    }
+
+    fn contains(&self, node: NodeId) -> bool {
+        self.ids.contains_key(&node)
+    }
+
+    fn record(&self, node: NodeId) -> Option<&NodeRecord> {
+        self.slot(node).map(|slot| &self.slots[slot])
+    }
+
+    /// Binary search for `neighbor` (an external ID) in the incident list of
+    /// slot `owner`, translating each probed entry's slot to its ID:
+    /// `O(log d)` probes, each followed by one slot read.
+    fn locate(&self, owner: usize, neighbor: NodeId) -> Result<usize, usize> {
+        self.slots[owner]
+            .incident
+            .binary_search_by_key(&neighbor, |incidence| self.slots[incidence.slot()].id)
+    }
+
+    /// Sorts every incident list by the neighbors' external IDs and drops
+    /// adjacent repeats; returns whether a repeat had a different flag.
+    /// `O(E log E)` comparisons, each reading two slots.
+    fn sort_incident_lists(&mut self) -> bool {
+        let mut conflict = false;
+        for slot in 0..self.slots.len() {
+            let mut list = std::mem::take(&mut self.slots[slot].incident);
+            list.sort_unstable_by_key(|incidence| self.slots[incidence.slot()].id);
+            list.dedup_by(|later, kept| {
+                let repeat = later.slot() == kept.slot();
+                conflict |= repeat && later.enabled() != kept.enabled();
+                repeat
+            });
+            self.slots[slot].incident = list;
+        }
+        conflict
+    }
+
+    /// Registers `node`, known to be absent, and returns its slot: the head
+    /// of the free list if any slot is vacant, otherwise a new slot at the
+    /// end. A new slot reserves the slot vector up to the ID map's capacity,
+    /// so that both grow in step (design section 4.2). Expected `O(1)`,
+    /// amortized for growth and for ID-map rebuilds.
+    fn insert(&mut self, node: NodeId, active: bool) -> usize {
+        self.reserve_id_entry();
+        self.ids.reserve(1);
+        let record = NodeRecord::registered(node, active);
+        let slot = if self.free_head == NO_SLOT {
+            if self.slots.len() == self.slots.capacity() {
+                let target = self.ids.capacity().max(self.slots.len() + 1);
+                self.slots.reserve_exact(target - self.slots.len());
+            }
+            self.slots.push(record);
+            self.slots.len() - 1
+        } else {
+            let slot = self.free_head;
+            debug_assert!(!self.slots[slot].is_occupied());
+            self.free_head = self.slots[slot].id as usize;
+            self.vacant -= 1;
+            self.slots[slot] = record;
+            #[cfg(test)]
+            {
+                self.slot_reuses += 1;
+            }
+            slot
+        };
+        self.ids.insert(node, slot);
+        slot
+    }
+
+    /// Makes room for one new ID-map entry without growing a table whose
+    /// headroom was consumed by tombstones (see the module documentation):
+    /// when the next insert would grow the table and live entries are at most
+    /// 90% of its full capacity, the map is rebuilt into a fresh table sized
+    /// for its live entries (never larger than the old one). `O(V)` when it
+    /// rebuilds, `O(1)` otherwise.
+    fn reserve_id_entry(&mut self) {
+        let capacity = self.ids.capacity();
+        self.full_capacity = self.full_capacity.max(capacity);
+        let live = self.ids.len();
+        if capacity == live
+            && live * REBUILD_LIVE_DENOMINATOR <= self.full_capacity * REBUILD_LIVE_NUMERATOR
+        {
+            let mut fresh: FxHashMap<NodeId, usize> =
+                FxHashMap::with_capacity_and_hasher(live, Default::default());
+            fresh.extend(self.ids.drain());
+            self.ids = fresh;
+            self.full_capacity = self.ids.capacity();
+        }
+    }
+
+    /// Vacates `slot` after every incidence naming it was removed: unmaps its
+    /// ID, releases its incident vector and pushes it on the free list.
+    /// Expected `O(1)`.
+    fn release(&mut self, slot: usize) {
+        let record = &mut self.slots[slot];
+        debug_assert!(record.is_occupied());
+        self.ids.remove(&record.id);
+        record.incident = Vec::new();
+        record.pending = 0;
+        record.state = SlotState::Vacant;
+        record.id = self.free_head as NodeId;
+        self.free_head = slot;
+        self.vacant += 1;
+    }
+
+    /// Compacts the slot vector when vacant slots exceed
+    /// `max(registered nodes, MIN_VACANT_BEFORE_SLOT_COMPACTION)`, the rule
+    /// of engine compaction. More than `max(V, 1024)` removals separate two
+    /// compactions, so the `O(V log V + E)` cost of
+    /// [`Self::renumber_by_id`] is amortized to `O(log V + E / V)` per
+    /// removal, and slots stay at most `V + max(V, 1024)`.
+    fn compact_if_needed(&mut self) {
+        if self.vacant <= self.len().max(MIN_VACANT_BEFORE_SLOT_COMPACTION) {
+            return;
+        }
+        self.renumber_by_id();
+        self.slots.shrink_to(self.ids.capacity());
+        #[cfg(test)]
+        {
+            self.slot_compactions += 1;
+        }
+    }
+
+    /// Renumbers the occupied slots densely in ascending external ID and
+    /// drops the vacant ones (design section 5.4).
+    ///
+    /// One bijection, old occupied slot → new dense slot, is built from an ID
+    /// sort; every incidence and every ID-map value is rewritten through it
+    /// (they are the only stored slot indices, I7), then the records are
+    /// permuted in place by cycle-following swaps and the vector is truncated.
+    /// Each incidence keeps its position, so incident lists stay sorted by
+    /// external ID (and are now sorted by slot too). `O(V log V + E)` time;
+    /// scratch: the sorted slot list (`V` words, dropped before the rewrite)
+    /// and the bijection (`V + F` words).
+    fn renumber_by_id(&mut self) {
+        let len = self.slots.len();
+        let mut order: Vec<usize> = (0..len)
+            .filter(|&slot| self.slots[slot].is_occupied())
+            .collect();
+        order.sort_unstable_by_key(|&slot| self.slots[slot].id);
+        let mut renumbered = vec![NO_SLOT; len];
+        for (new, &old) in order.iter().enumerate() {
+            renumbered[old] = new;
+        }
+        drop(order);
+        for record in &mut self.slots {
+            for incidence in &mut record.incident {
+                incidence.set_slot(renumbered[incidence.slot()]);
+            }
+        }
+        for slot in self.ids.values_mut() {
+            *slot = renumbered[*slot];
+        }
+        // Each swap moves one record to its final position, where it stays;
+        // the record displaced from there lands at `position` and is handled
+        // next. Vacant records (`NO_SLOT`) end up beyond the occupied prefix.
+        for position in 0..len {
+            loop {
+                let target = renumbered[position];
+                if target == position || target == NO_SLOT {
+                    break;
+                }
+                self.slots.swap(position, target);
+                renumbered.swap(position, target);
+            }
+        }
+        self.slots.truncate(self.ids.len());
+        self.free_head = NO_SLOT;
+        self.vacant = 0;
+    }
+}
+
+/// Minimum number of vacant catalog slots before a slot compaction is
+/// considered: the engine-compaction threshold, so both follow one rule.
+const MIN_VACANT_BEFORE_SLOT_COMPACTION: usize = MIN_RETIRED_BEFORE_COMPACTION;
 
 /// A graph with reversible node activation, reversible edge enabling and
 /// permanent node removal.
@@ -408,10 +743,7 @@ impl NodeRecord {
 /// ```
 #[derive(Debug)]
 pub struct LifecycleGraph {
-    // `FxHashMap`, not the identity-hashed `IntMap`: with hashbrown, identity
-    // hashes of small IDs or IDs sharing their high bits collide in the 7-bit
-    // control tag and degrade probing (measured in the v0.5.0 qualification).
-    nodes: FxHashMap<NodeId, NodeRecord>,
+    catalog: Catalog,
     engine: ConnectivityGraph,
     /// Configured limits, as returned by [`Self::limits`].
     limits: GraphLimits,
@@ -422,9 +754,6 @@ pub struct LifecycleGraph {
     registered_edges: usize,
     enabled_edges: usize,
     effective_edges: usize,
-    /// The catalog's `capacity()` right after its last growth or rebuild;
-    /// tombstones lower `capacity()` below it.
-    catalog_full_capacity: usize,
 }
 
 impl LifecycleGraph {
@@ -494,7 +823,7 @@ impl LifecycleGraph {
     pub fn with_limits(engine: EngineConfig, limits: GraphLimits) -> Result<Self, LifecycleError> {
         Self::check_engine(engine)?;
         Ok(Self {
-            nodes: FxHashMap::default(),
+            catalog: Catalog::new(),
             engine: ConnectivityGraph::new(engine),
             limits,
             checks: Self::bounded(engine, limits),
@@ -502,7 +831,6 @@ impl LifecycleGraph {
             registered_edges: 0,
             enabled_edges: 0,
             effective_edges: 0,
-            catalog_full_capacity: 0,
         })
     }
 
@@ -537,9 +865,9 @@ impl LifecycleGraph {
         Self::check_engine(engine)?;
         let checks = Self::bounded(engine, limits);
         match Self::catalog_fast(checks, nodes, edges) {
-            Some((catalog, order)) => Ok(Self::finish(engine, limits, catalog, order)),
+            Some(catalog) => Ok(Self::finish(engine, limits, catalog)),
             None => Self::catalog_exact(checks, nodes, edges)
-                .map(|(catalog, order)| Self::finish(engine, limits, catalog, order)),
+                .map(|catalog| Self::finish(engine, limits, catalog)),
         }
     }
 
@@ -549,143 +877,139 @@ impl LifecycleGraph {
     /// the edge limit), and [`Self::catalog_exact`] then reproduces the exact
     /// first error in input order.
     ///
-    /// Edges are appended without a per-edge duplicate lookup: incident lists
-    /// are sorted once and adjacent repeats are dropped (a repeated edge with a
-    /// different flag returns `None`). Without a node limit each endpoint costs
-    /// two expected O(1) catalog probes (counting pass and fill pass; two more
-    /// per edge with a node limit) instead of the exact path's duplicate-map
-    /// lookup and insertion plus endpoint probes. `O(V + E log E)` time
-    /// overall, the same bound as the exact path. An input that fails is
-    /// detected here first, so error paths pay up to about twice the work.
+    /// Slots are assigned in first-registration order (`nodes`, then new edge
+    /// endpoints), so slot order is the registration order;
+    /// [`Self::finish`] renumbers them by ID. A first pass registers every ID
+    /// in the ID map and counts degrees in a 4-byte-per-node scratch vector;
+    /// the slot vector is then allocated exactly once with its final length,
+    /// each incident vector likewise (exactly sized for duplicate-free
+    /// input; repeated entries are counted, so such vectors are shrunk by
+    /// `finish`). Edges are appended without a per-edge duplicate lookup:
+    /// incident lists are sorted once and adjacent repeats are dropped (a
+    /// repeated edge with a different flag returns `None`). Without a node
+    /// limit each endpoint costs two expected O(1) ID-map probes (counting
+    /// pass and fill pass; two more per edge with a node limit) instead of
+    /// the exact path's duplicate-map lookup and insertion plus endpoint
+    /// probes. `O(V + E log E)` time overall, the same bound as the exact
+    /// path. An input that fails is detected here first, so error paths pay
+    /// up to about twice the work.
     fn catalog_fast(
         limits: GraphLimits,
         nodes: &[NodeSpec],
         edges: &[EdgeSpec],
-    ) -> Option<(FxHashMap<NodeId, NodeRecord>, Vec<NodeId>)> {
+    ) -> Option<Catalog> {
         if limits.max_edges.is_some_and(|limit| edges.len() > limit) {
             return None;
         }
-        let mut catalog: FxHashMap<NodeId, NodeRecord> = FxHashMap::default();
-        catalog.reserve(nodes.len());
-        let mut order: Vec<NodeId> = Vec::with_capacity(nodes.len());
+        let mut ids: FxHashMap<NodeId, usize> = FxHashMap::default();
+        ids.reserve(nodes.len());
+        // Flags of the nodes listed in `nodes`, which take the first slots.
+        let mut flags: Vec<bool> = Vec::with_capacity(nodes.len());
         for spec in nodes {
-            match catalog.entry(spec.node) {
+            match ids.entry(spec.node) {
                 std::collections::hash_map::Entry::Occupied(entry) => {
-                    if entry.get().active != spec.active {
+                    if flags[*entry.get()] != spec.active {
                         return None;
                     }
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    if limits.max_nodes.is_some_and(|limit| order.len() >= limit) {
+                    if limits.max_nodes.is_some_and(|limit| flags.len() >= limit) {
                         return None;
                     }
-                    entry.insert(NodeRecord {
-                        active: spec.active,
-                        pending: 0,
-                        incident: Vec::new(),
-                    });
-                    order.push(spec.node);
+                    entry.insert(flags.len());
+                    flags.push(spec.active);
                 }
             }
         }
+        // Saturating degree counts (only a capacity hint), indexed by slot.
+        let mut degrees: Vec<u32> = vec![0; flags.len()];
         for spec in edges {
             if spec.source == spec.target {
                 return None;
             }
             if let Some(limit) = limits.max_nodes {
-                let missing = usize::from(!catalog.contains_key(&spec.source))
-                    + usize::from(!catalog.contains_key(&spec.target));
-                if missing > limit.saturating_sub(order.len()) {
+                let missing = usize::from(!ids.contains_key(&spec.source))
+                    + usize::from(!ids.contains_key(&spec.target));
+                if missing > limit.saturating_sub(ids.len()) {
                     return None;
                 }
             }
-            // Count degrees first so each incident vector is allocated once:
-            // exactly sized for duplicate-free input (repeated entries are
-            // counted, so such vectors are shrunk by `finish`).
             for endpoint in [spec.source, spec.target] {
-                let record = catalog.entry(endpoint).or_insert_with(|| {
-                    order.push(endpoint);
-                    NodeRecord::active()
-                });
-                record.pending = record.pending.saturating_add(1);
+                let next = degrees.len();
+                let slot = *ids.entry(endpoint).or_insert(next);
+                if slot == next {
+                    degrees.push(0);
+                }
+                degrees[slot] = degrees[slot].saturating_add(1);
             }
         }
-        for record in catalog.values_mut() {
-            record.incident = Vec::with_capacity(record.pending as usize);
-            record.pending = 0;
+        let mut slots: Vec<NodeRecord> = Vec::with_capacity(degrees.len());
+        for (slot, &degree) in degrees.iter().enumerate() {
+            slots.push(NodeRecord {
+                id: 0, // set from the ID map below
+                incident: Vec::with_capacity(degree as usize),
+                pending: 0,
+                state: SlotState::registered(flags.get(slot).copied().unwrap_or(true)),
+            });
+        }
+        drop(degrees);
+        drop(flags);
+        for (&node, &slot) in &ids {
+            slots[slot].id = node;
         }
         for spec in edges {
-            for (endpoint, neighbor) in [(spec.source, spec.target), (spec.target, spec.source)] {
-                catalog
-                    .get_mut(&endpoint)
-                    .expect("endpoint registered by the counting pass")
-                    .incident
-                    .push(Incidence {
-                        neighbor,
-                        enabled: spec.enabled,
-                    });
-            }
-        }
-        for record in catalog.values_mut() {
-            record
+            let (source, target) = (ids[&spec.source], ids[&spec.target]);
+            slots[source]
                 .incident
-                .sort_unstable_by_key(|incidence| incidence.neighbor);
-            let mut conflict = false;
-            record.incident.dedup_by(|later, kept| {
-                let repeat = later.neighbor == kept.neighbor;
-                conflict |= repeat && later.enabled != kept.enabled;
-                repeat
-            });
-            if conflict {
-                return None;
-            }
+                .push(Incidence::new(target, spec.enabled));
+            slots[target]
+                .incident
+                .push(Incidence::new(source, spec.enabled));
         }
-        Some((catalog, order))
+        let mut catalog = Catalog::from_parts(ids, slots);
+        if catalog.sort_incident_lists() {
+            return None;
+        }
+        Some(catalog)
     }
 
     /// Exact catalog assembly: processes entries in input order and stops at
-    /// the first failing one (see [`Self::try_from_topology`]). Incident lists
-    /// are sorted here. `O((V + E) log E)` time.
+    /// the first failing one (see [`Self::try_from_topology`]). Slots are
+    /// assigned in first-registration order, as in [`Self::catalog_fast`].
+    /// Incident lists are sorted here. `O((V + E) log E)` time.
     fn catalog_exact(
         limits: GraphLimits,
         nodes: &[NodeSpec],
         edges: &[EdgeSpec],
-    ) -> Result<(FxHashMap<NodeId, NodeRecord>, Vec<NodeId>), LifecycleError> {
-        let mut catalog: FxHashMap<NodeId, NodeRecord> = FxHashMap::default();
-        catalog.reserve(nodes.len());
-        let mut order: Vec<NodeId> = Vec::with_capacity(nodes.len());
+    ) -> Result<Catalog, LifecycleError> {
+        let mut ids: FxHashMap<NodeId, usize> = FxHashMap::default();
+        ids.reserve(nodes.len());
+        let mut slots: Vec<NodeRecord> = Vec::with_capacity(nodes.len());
         let node_limit = limits.max_nodes;
         for spec in nodes {
-            if let Some(record) = catalog.get(&spec.node) {
-                if record.active != spec.active {
+            if let Some(&slot) = ids.get(&spec.node) {
+                if slots[slot].is_active() != spec.active {
                     return Err(LifecycleError::ConflictingNode { node: spec.node });
                 }
                 continue;
             }
             if let Some(limit) = node_limit
-                && order.len() >= limit
+                && slots.len() >= limit
             {
                 return Err(GraphError::NodeLimitExceeded { limit }.into());
             }
-            catalog.insert(
-                spec.node,
-                NodeRecord {
-                    active: spec.active,
-                    pending: 0,
-                    incident: Vec::new(),
-                },
-            );
-            order.push(spec.node);
+            ids.insert(spec.node, slots.len());
+            slots.push(NodeRecord::registered(spec.node, spec.active));
         }
 
         let mut seen: FxHashMap<(NodeId, NodeId), bool> = FxHashMap::default();
         seen.reserve(edges.len());
         for spec in edges {
             GraphError::check_distinct(spec.source, spec.target)?;
-            let missing = usize::from(!catalog.contains_key(&spec.source))
-                + usize::from(!catalog.contains_key(&spec.target));
+            let missing = usize::from(!ids.contains_key(&spec.source))
+                + usize::from(!ids.contains_key(&spec.target));
             if let Some(limit) = node_limit
-                && missing > limit.saturating_sub(order.len())
+                && missing > limit.saturating_sub(slots.len())
             {
                 return Err(GraphError::NodeLimitExceeded { limit }.into());
             }
@@ -704,60 +1028,64 @@ impl LifecycleGraph {
             {
                 return Err(GraphError::EdgeLimitExceeded { limit }.into());
             }
-            for endpoint in [spec.source, spec.target] {
-                catalog.entry(endpoint).or_insert_with(|| {
-                    order.push(endpoint);
-                    NodeRecord::active()
+            let mut endpoints = [0; 2];
+            for (endpoint_slot, endpoint) in endpoints.iter_mut().zip([spec.source, spec.target]) {
+                *endpoint_slot = *ids.entry(endpoint).or_insert_with(|| {
+                    slots.push(NodeRecord::registered(endpoint, true));
+                    slots.len() - 1
                 });
             }
             seen.insert(key, spec.enabled);
-            let incidence = |neighbor| Incidence {
-                neighbor,
-                enabled: spec.enabled,
-            };
-            catalog
-                .get_mut(&spec.source)
-                .expect("endpoint registered above")
+            let [source, target] = endpoints;
+            slots[source]
                 .incident
-                .push(incidence(spec.target));
-            catalog
-                .get_mut(&spec.target)
-                .expect("endpoint registered above")
+                .push(Incidence::new(target, spec.enabled));
+            slots[target]
                 .incident
-                .push(incidence(spec.source));
+                .push(Incidence::new(source, spec.enabled));
         }
         drop(seen);
 
-        for record in catalog.values_mut() {
-            record
-                .incident
-                .sort_unstable_by_key(|incidence| incidence.neighbor);
-        }
-        Ok((catalog, order))
+        let mut catalog = Catalog::from_parts(ids, slots);
+        let conflict = catalog.sort_incident_lists();
+        debug_assert!(!conflict, "repeated edges were skipped above");
+        Ok(catalog)
     }
 
-    /// Shrinks incident lists, computes counts and builds the engine from the
-    /// effective edges of a validated catalog with sorted, duplicate-free
-    /// incident lists. `O(V log V + E)` (see [`Self::build_engine`]).
-    fn finish(
-        engine: EngineConfig,
-        limits: GraphLimits,
-        mut catalog: FxHashMap<NodeId, NodeRecord>,
-        order: Vec<NodeId>,
-    ) -> Self {
+    /// Shrinks the slot vector and the incident lists, computes counts,
+    /// builds the engine from the effective edges of a validated catalog
+    /// with sorted, duplicate-free incident lists, and renumbers the slots in
+    /// ascending ID order (design section 5.1). `O(V log V + E)` (see
+    /// [`Self::build_engine`] and [`Catalog::renumber_by_id`]).
+    ///
+    /// For the one-pass `compact-bfs` build the slots are renumbered first,
+    /// so that the build visits them in address order. The incremental build
+    /// runs before renumbering, so it inserts vertices in registration order
+    /// (the slot order of the assembled catalog), as before the slot layout.
+    fn finish(engine: EngineConfig, limits: GraphLimits, mut catalog: Catalog) -> Self {
+        // A no-op after `catalog_fast`, which allocates the slot vector with
+        // its final length; `catalog_exact` grows it.
+        catalog.slots.shrink_to_fit();
         let mut active_nodes = 0;
         let mut registered_edges = 0;
         let mut enabled_incidences = 0;
-        for record in catalog.values_mut() {
+        for record in &mut catalog.slots {
             record.incident.shrink_to_fit();
             registered_edges += record.incident.len();
-            enabled_incidences += record.incident.iter().filter(|i| i.enabled).count();
-            active_nodes += usize::from(record.active);
+            enabled_incidences += record.incident.iter().filter(|i| i.enabled()).count();
+            active_nodes += usize::from(record.is_active());
         }
-        let (engine_graph, effective_edges) = Self::build_engine(engine, &mut catalog, &order);
-        let catalog_full_capacity = catalog.capacity();
+        let (engine_graph, effective_edges) = if Self::builds_in_one_pass(engine, catalog.len()) {
+            catalog.renumber_by_id();
+            Self::build_engine(engine, &mut catalog)
+        } else {
+            let built = Self::build_engine_incremental(engine, &catalog);
+            catalog.renumber_by_id();
+            built
+        };
+        catalog.full_capacity = catalog.ids.capacity();
         Self {
-            nodes: catalog,
+            catalog,
             engine: engine_graph,
             limits,
             checks: Self::bounded(engine, limits),
@@ -765,59 +1093,55 @@ impl LifecycleGraph {
             registered_edges: registered_edges / 2,
             enabled_edges: enabled_incidences / 2,
             effective_edges,
-            catalog_full_capacity,
         }
+    }
+
+    /// Whether [`Self::build_engine`] uses the one-pass `compact-bfs` build:
+    /// only for that engine and for catalogs indexable by `u32`.
+    fn builds_in_one_pass(engine: EngineConfig, nodes: usize) -> bool {
+        engine == EngineConfig::CompactBfs && u32::try_from(nodes).is_ok()
     }
 
     /// Builds an unlimited engine holding every catalog node as a vertex and
     /// exactly the effective edges; returns it with the effective edge count.
     ///
-    /// For `compact-bfs` the engine
-    /// is built in one pass ([`Graph::from_sorted_adjacency`](crate::Graph::from_sorted_adjacency)): node IDs are
-    /// sorted and receive engine indices in ascending ID order (the index is
-    /// parked in the construction-only `pending` field, reset to zero
-    /// afterwards). Each effective edge costs one catalog probe, from its
-    /// smaller endpoint, and is appended to both adjacency lists; visiting
-    /// nodes in index order keeps every list strictly sorted. Each
-    /// adjacency vector is allocated once with capacity equal to the node's
-    /// enabled registered degree (an upper bound of its effective degree), so
-    /// no vector grows. `O(V log V + E)` time with expected `O(1)` probes;
-    /// scratch memory is the `O(V)` sorted ID vector.
+    /// For `compact-bfs` the engine is built in one pass
+    /// ([`Graph::from_sorted_adjacency`](crate::Graph::from_sorted_adjacency)):
+    /// the occupied slots are sorted by node ID and receive engine indices in
+    /// ascending ID order (the index is parked in the construction-only
+    /// `pending` field, reset to zero afterwards). Each effective edge is
+    /// found once, from its smaller endpoint, whose incident list is entered
+    /// by a binary search past its smaller neighbors, and is appended to both
+    /// adjacency lists; visiting nodes in index order keeps every list
+    /// strictly sorted. Each adjacency vector is allocated once with capacity
+    /// equal to the node's enabled registered degree (an upper bound of its
+    /// effective degree), so no vector grows. `O(V log V + E)` time with
+    /// `O(1)` slot reads; scratch memory is the `O(V)` sorted slot vector,
+    /// converted in place into the engine's sorted ID vector.
     ///
     /// `cluster-forest` (the other lifecycle engine), and catalogs too large
-    /// for 32-bit indices, use the
-    /// incremental [`Self::build_engine_incremental`]. `order` is used only
-    /// by that path, as the vertex insertion order when it lists every catalog
-    /// node; otherwise (compaction passes an empty slice) the catalog's keys
-    /// are used, so no registered node is ever left out of the engine.
-    fn build_engine(
-        engine: EngineConfig,
-        catalog: &mut FxHashMap<NodeId, NodeRecord>,
-        order: &[NodeId],
-    ) -> (ConnectivityGraph, usize) {
-        if engine != EngineConfig::CompactBfs || u32::try_from(catalog.len()).is_err() {
-            // `order` may be empty (compaction passes none): every catalog node
-            // must still become a vertex, so fall back to the catalog's keys.
-            if order.len() == catalog.len() {
-                return Self::build_engine_incremental(engine, catalog, order);
-            }
-            let keys: Vec<NodeId> = catalog.keys().copied().collect();
-            return Self::build_engine_incremental(engine, catalog, &keys);
+    /// for 32-bit indices, use the incremental
+    /// [`Self::build_engine_incremental`], which inserts vertices in slot
+    /// order.
+    fn build_engine(engine: EngineConfig, catalog: &mut Catalog) -> (ConnectivityGraph, usize) {
+        if !Self::builds_in_one_pass(engine, catalog.len()) {
+            return Self::build_engine_incremental(engine, catalog);
         }
-        let mut ids: Vec<NodeId> = catalog.keys().copied().collect();
-        ids.sort_unstable();
-        for (index, node) in ids.iter().enumerate() {
-            catalog
-                .get_mut(node)
-                .expect("listed node is registered")
-                .pending = u32::try_from(index).expect("node count checked above");
+        let slots = &mut catalog.slots;
+        let mut order: Vec<usize> = (0..slots.len())
+            .filter(|&slot| slots[slot].is_occupied())
+            .collect();
+        order.sort_unstable_by_key(|&slot| slots[slot].id);
+        for (index, &slot) in order.iter().enumerate() {
+            slots[slot].pending = u32::try_from(index).expect("node count checked above");
         }
-        let records: Vec<&NodeRecord> = ids.iter().map(|node| &catalog[node]).collect();
-        let mut adjacency: Vec<Vec<usize>> = records
+        let slots = &catalog.slots;
+        let mut adjacency: Vec<Vec<usize>> = order
             .iter()
-            .map(|record| {
-                if record.active {
-                    Vec::with_capacity(record.incident.iter().filter(|i| i.enabled).count())
+            .map(|&slot| {
+                let record = &slots[slot];
+                if record.is_active() {
+                    Vec::with_capacity(record.incident.iter().filter(|i| i.enabled()).count())
                 } else {
                     Vec::new()
                 }
@@ -829,17 +1153,20 @@ impl LifecycleGraph {
         // visiting them, in ascending order) and then its larger ones (from
         // its own sorted incident list): every list ends strictly sorted.
         let mut edges = 0;
-        for (index, record) in records.iter().enumerate() {
-            if !record.active {
+        for (index, &slot) in order.iter().enumerate() {
+            let record = &slots[slot];
+            if !record.is_active() {
                 continue;
             }
-            let node = ids[index];
-            for incidence in &record.incident {
-                if incidence.neighbor < node || !incidence.enabled {
+            let larger = record
+                .incident
+                .partition_point(|incidence| slots[incidence.slot()].id < record.id);
+            for incidence in &record.incident[larger..] {
+                if !incidence.enabled() {
                     continue;
                 }
-                let neighbor = &catalog[&incidence.neighbor];
-                if neighbor.active {
+                let neighbor = &slots[incidence.slot()];
+                if neighbor.is_active() {
                     let other = neighbor.pending as usize;
                     adjacency[index].push(other);
                     adjacency[other].push(index);
@@ -847,41 +1174,44 @@ impl LifecycleGraph {
                 }
             }
         }
-        drop(records);
-        for record in catalog.values_mut() {
-            record.pending = 0;
+        for &slot in &order {
+            catalog.slots[slot].pending = 0;
         }
+        let slots = &catalog.slots;
+        let ids: Vec<NodeId> = order.into_iter().map(|slot| slots[slot].id).collect();
         let graph = crate::Graph::from_sorted_adjacency(ids, adjacency);
         (ConnectivityGraph::from(graph), edges)
     }
 
     /// Incremental engine construction through
-    /// [`ConnectivityGraph::try_from_edges`]: vertices in `order`, then the
-    /// effective edges. `O(V + E)` catalog work plus one engine insertion per
-    /// effective edge. Used for engines other than `compact-bfs` and as the
-    /// differential reference in tests.
+    /// [`ConnectivityGraph::try_from_edges`]: the occupied slots' nodes in
+    /// slot order, then the effective edges. `O(V + E)` catalog work plus one
+    /// engine insertion per effective edge. Used for engines other than
+    /// `compact-bfs` and as the differential reference in tests.
     fn build_engine_incremental(
         engine: EngineConfig,
-        catalog: &FxHashMap<NodeId, NodeRecord>,
-        order: &[NodeId],
+        catalog: &Catalog,
     ) -> (ConnectivityGraph, usize) {
+        let slots = &catalog.slots;
+        let order: Vec<NodeId> = slots
+            .iter()
+            .filter(|record| record.is_occupied())
+            .map(|record| record.id)
+            .collect();
         let mut effective: Vec<(NodeId, NodeId)> = Vec::new();
-        for &node in order {
-            let record = &catalog[&node];
-            if !record.active {
-                continue;
-            }
+        for record in slots.iter().filter(|record| record.is_active()) {
             for incidence in &record.incident {
-                if node < incidence.neighbor
-                    && incidence.enabled
-                    && catalog[&incidence.neighbor].active
-                {
-                    effective.push((node, incidence.neighbor));
+                if !incidence.enabled() {
+                    continue;
+                }
+                let neighbor = &slots[incidence.slot()];
+                if record.id < neighbor.id && neighbor.is_active() {
+                    effective.push((record.id, neighbor.id));
                 }
             }
         }
         let graph =
-            ConnectivityGraph::try_from_edges(engine, GraphLimits::default(), order, &effective)
+            ConnectivityGraph::try_from_edges(engine, GraphLimits::default(), &order, &effective)
                 .expect("an unlimited engine accepts a validated simple graph");
         (graph, effective.len())
     }
@@ -919,11 +1249,11 @@ impl LifecycleGraph {
     /// exceed the enforced node limit: `max_nodes`, or the engine's lower
     /// capacity (see [`Self::limits`]). The error carries the enforced value.
     pub fn add_node(&mut self, node: NodeId) -> Result<bool, GraphError> {
-        if self.nodes.contains_key(&node) {
+        if self.catalog.contains(node) {
             return Ok(false);
         }
         if let Some(limit) = self.checks.max_nodes
-            && self.nodes.len() >= limit
+            && self.catalog.len() >= limit
         {
             return Err(GraphError::NodeLimitExceeded { limit });
         }
@@ -931,37 +1261,16 @@ impl LifecycleGraph {
         Ok(true)
     }
 
-    /// Registers a node known to be absent and within limits.
-    fn register(&mut self, node: NodeId) {
-        self.reserve_catalog_slot();
-        self.nodes.insert(node, NodeRecord::active());
+    /// Registers a node known to be absent and within limits; returns its
+    /// catalog slot.
+    fn register(&mut self, node: NodeId) -> usize {
+        let slot = self.catalog.insert(node, true);
         // A retired engine slot for `node` is isolated and is reused as is.
         self.engine
             .add_node(node)
             .expect("an unlimited engine accepts any vertex");
         self.active_nodes += 1;
-    }
-
-    /// Makes room for one new catalog entry without growing a table whose
-    /// headroom was consumed by tombstones (see the module documentation):
-    /// when the next insert would grow the table and live entries are at most
-    /// 90% of its full capacity, the catalog is rebuilt into a fresh table
-    /// sized for its live entries (never larger than the old one). `O(V)` when
-    /// it rebuilds, `O(1)` otherwise.
-    fn reserve_catalog_slot(&mut self) {
-        let capacity = self.nodes.capacity();
-        self.catalog_full_capacity = self.catalog_full_capacity.max(capacity);
-        let live = self.nodes.len();
-        if capacity == live
-            && live * REBUILD_LIVE_DENOMINATOR
-                <= self.catalog_full_capacity * REBUILD_LIVE_NUMERATOR
-        {
-            let mut fresh: FxHashMap<NodeId, NodeRecord> =
-                FxHashMap::with_capacity_and_hasher(live, Default::default());
-            fresh.extend(self.nodes.drain());
-            self.nodes = fresh;
-            self.catalog_full_capacity = self.nodes.capacity();
-        }
+        slot
     }
 
     /// Registers the undirected edge `{source, target}` as enabled.
@@ -980,16 +1289,17 @@ impl LifecycleGraph {
     /// configured one (see [`Self::limits`]).
     pub fn link(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
         GraphError::check_distinct(source, target)?;
-        let source_known = self.nodes.contains_key(&source);
-        let target_known = self.nodes.contains_key(&target);
+        let source_slot = self.catalog.slot(source);
+        let target_slot = self.catalog.slot(target);
         if let Some(limit) = self.checks.max_nodes {
-            let missing = usize::from(!source_known) + usize::from(!target_known);
-            if missing > limit.saturating_sub(self.nodes.len()) {
+            let missing = usize::from(source_slot.is_none()) + usize::from(target_slot.is_none());
+            if missing > limit.saturating_sub(self.catalog.len()) {
                 return Err(GraphError::NodeLimitExceeded { limit });
             }
         }
-        let exists = source_known && target_known && self.nodes[&source].position(target).is_ok();
-        if exists {
+        if let (Some(slot), Some(_)) = (source_slot, target_slot)
+            && self.catalog.locate(slot, target).is_ok()
+        {
             return Ok(false);
         }
         if let Some(limit) = self.checks.max_edges
@@ -997,31 +1307,30 @@ impl LifecycleGraph {
         {
             return Err(GraphError::EdgeLimitExceeded { limit });
         }
-        if !source_known {
-            self.register(source);
-        }
-        if !target_known {
-            self.register(target);
-        }
-        self.insert_edge(source, target, true);
+        let source_slot = source_slot.unwrap_or_else(|| self.register(source));
+        let target_slot = target_slot.unwrap_or_else(|| self.register(target));
+        self.insert_edge(source_slot, target_slot, true);
         Ok(true)
     }
 
-    /// Inserts a validated, absent edge between registered distinct nodes.
-    fn insert_edge(&mut self, source: NodeId, target: NodeId, enabled: bool) {
+    /// Inserts a validated, absent edge between the registered distinct
+    /// nodes in slots `source` and `target`.
+    fn insert_edge(&mut self, source: usize, target: usize, enabled: bool) {
         for (owner, neighbor) in [(source, target), (target, source)] {
-            let record = self.nodes.get_mut(&owner).expect("endpoint is registered");
-            let index = record
-                .position(neighbor)
+            let index = self
+                .catalog
+                .locate(owner, self.catalog.slots[neighbor].id)
                 .expect_err("edge is absent at both endpoints");
-            record
+            self.catalog.slots[owner]
                 .incident
-                .insert(index, Incidence { neighbor, enabled });
+                .insert(index, Incidence::new(neighbor, enabled));
         }
         self.registered_edges += 1;
         if enabled {
             self.enabled_edges += 1;
-            if self.nodes[&source].active && self.nodes[&target].active {
+            let (source, target) = (&self.catalog.slots[source], &self.catalog.slots[target]);
+            if source.is_active() && target.is_active() {
+                let (source, target) = (source.id, target.id);
                 self.engine_link(source, target);
             }
         }
@@ -1055,27 +1364,24 @@ impl LifecycleGraph {
     /// [`GraphError::SelfLoop`] if `source == target`.
     pub fn cut(&mut self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
         GraphError::check_distinct(source, target)?;
-        let (Some(source_record), Some(target_record)) =
-            (self.nodes.get(&source), self.nodes.get(&target))
+        let (Some(source_slot), Some(target_slot)) =
+            (self.catalog.slot(source), self.catalog.slot(target))
         else {
             return Ok(false);
         };
-        let Ok(index) = source_record.position(target) else {
+        let Ok(index) = self.catalog.locate(source_slot, target) else {
             return Ok(false);
         };
-        let both_active = source_record.active && target_record.active;
-        let removed = self
-            .nodes
-            .get_mut(&source)
-            .expect("source is registered")
-            .remove_at(index);
-        let target_record = self.nodes.get_mut(&target).expect("target is registered");
-        let reverse = target_record
-            .position(source)
+        let reverse = self
+            .catalog
+            .locate(target_slot, source)
             .expect("incidence is symmetric");
-        target_record.remove_at(reverse);
+        let slots = &mut self.catalog.slots;
+        let both_active = slots[source_slot].is_active() && slots[target_slot].is_active();
+        let removed = slots[source_slot].remove_at(index);
+        slots[target_slot].remove_at(reverse);
         self.registered_edges -= 1;
-        if removed.enabled {
+        if removed.enabled() {
             self.enabled_edges -= 1;
             if both_active {
                 self.engine_cut(source, target);
@@ -1098,19 +1404,24 @@ impl LifecycleGraph {
     ///
     /// [`GraphError::UnknownNode`] (wrapped) if `node` is not registered.
     pub fn set_node_active(&mut self, node: NodeId, active: bool) -> Result<bool, LifecycleError> {
-        let record = self
-            .nodes
-            .get(&node)
+        let slot = self
+            .catalog
+            .slot(node)
             .ok_or(GraphError::UnknownNode { node })?;
-        if record.active == active {
+        let slots = &self.catalog.slots;
+        let record = &slots[slot];
+        if record.is_active() == active {
             return Ok(false);
         }
         // Effective incident edges are visited in descending neighbor order
         // (see `remove_node` for why).
         let mut affected = Vec::new();
         for incidence in record.incident.iter().rev() {
-            if incidence.enabled && self.nodes[&incidence.neighbor].active {
-                affected.push(incidence.neighbor);
+            if incidence.enabled() {
+                let neighbor = &slots[incidence.slot()];
+                if neighbor.is_active() {
+                    affected.push(neighbor.id);
+                }
             }
         }
         for neighbor in affected {
@@ -1120,10 +1431,7 @@ impl LifecycleGraph {
                 self.engine_cut(node, neighbor);
             }
         }
-        self.nodes
-            .get_mut(&node)
-            .expect("node is registered")
-            .active = active;
+        self.catalog.slots[slot].state = SlotState::registered(active);
         if active {
             self.active_nodes += 1;
         } else {
@@ -1149,34 +1457,29 @@ impl LifecycleGraph {
         enabled: bool,
     ) -> Result<bool, LifecycleError> {
         GraphError::check_distinct(source, target)?;
-        let source_record = self
-            .nodes
-            .get(&source)
+        let source_slot = self
+            .catalog
+            .slot(source)
             .ok_or(GraphError::UnknownNode { node: source })?;
-        let target_record = self
-            .nodes
-            .get(&target)
+        let target_slot = self
+            .catalog
+            .slot(target)
             .ok_or(GraphError::UnknownNode { node: target })?;
-        let index = source_record
-            .position(target)
+        let index = self
+            .catalog
+            .locate(source_slot, target)
             .map_err(|_| LifecycleError::UnknownEdge { source, target })?;
-        if source_record.incident[index].enabled == enabled {
+        if self.catalog.slots[source_slot].incident[index].enabled() == enabled {
             return Ok(false);
         }
-        let both_active = source_record.active && target_record.active;
-        let reverse = target_record
-            .position(source)
+        let reverse = self
+            .catalog
+            .locate(target_slot, source)
             .expect("incidence is symmetric");
-        self.nodes
-            .get_mut(&source)
-            .expect("source is registered")
-            .incident[index]
-            .enabled = enabled;
-        self.nodes
-            .get_mut(&target)
-            .expect("target is registered")
-            .incident[reverse]
-            .enabled = enabled;
+        let slots = &mut self.catalog.slots;
+        let both_active = slots[source_slot].is_active() && slots[target_slot].is_active();
+        slots[source_slot].incident[index].set_enabled(enabled);
+        slots[target_slot].incident[reverse].set_enabled(enabled);
         if enabled {
             self.enabled_edges += 1;
             if both_active {
@@ -1199,38 +1502,48 @@ impl LifecycleGraph {
     ///
     /// Costs `O(d + sum of neighbor degrees)` catalog work for registered
     /// degree `d`, one engine update per effective incident edge, and an
-    /// amortized share of engine compaction.
+    /// amortized share of engine and catalog-slot compaction.
     pub fn remove_node(&mut self, node: NodeId) -> bool {
-        let Some(record) = self.nodes.remove(&node) else {
+        let Some(slot) = self.catalog.slot(node) else {
             return false;
         };
+        let active = self.catalog.slots[slot].is_active();
+        let incident = std::mem::take(&mut self.catalog.slots[slot].incident);
         // Descending neighbor order. For `compact-bfs`, the only engine with
         // lifecycle support, whose adjacency vectors are sorted, this removes
         // from the end of the node's vector, so each removal shifts no elements
         // instead of up to `d`. (Earlier candidates also measured this order on
         // the now-deferred `ett` and `hdt` lifecycle support.)
-        for incidence in record.incident.iter().rev() {
-            let neighbor = self
-                .nodes
-                .get_mut(&incidence.neighbor)
-                .expect("neighbor is registered");
-            let neighbor_active = neighbor.active;
-            let reverse = neighbor.position(node).expect("incidence is symmetric");
+        for incidence in incident.iter().rev() {
+            let neighbor_slot = incidence.slot();
+            // The search translates slot `slot` to `node`: the slot is still
+            // occupied until `release` below.
+            let reverse = self
+                .catalog
+                .locate(neighbor_slot, node)
+                .expect("incidence is symmetric");
+            let neighbor = &mut self.catalog.slots[neighbor_slot];
+            let neighbor_active = neighbor.is_active();
+            let neighbor_id = neighbor.id;
             neighbor.remove_at(reverse);
             self.registered_edges -= 1;
-            if incidence.enabled {
+            if incidence.enabled() {
                 self.enabled_edges -= 1;
-                if record.active && neighbor_active {
-                    self.engine_cut(node, incidence.neighbor);
+                if active && neighbor_active {
+                    self.engine_cut(node, neighbor_id);
                 }
             }
         }
-        if record.active {
+        drop(incident);
+        // No incidence names `slot` any more (symmetry), so it can be reused.
+        self.catalog.release(slot);
+        if active {
             self.active_nodes -= 1;
         }
         // The retired slot is isolated now; release its adjacency allocation
         // so it retains only its ID-map entry and an empty vector header.
         self.engine.release_isolated_storage(node);
+        self.catalog.compact_if_needed();
         self.compact_if_needed();
         true
     }
@@ -1240,11 +1553,11 @@ impl LifecycleGraph {
     /// [`Self::build_engine`]. The old engine is dropped after the new one is
     /// built, so both are live at the peak.
     fn compact_if_needed(&mut self) {
-        let retired = self.engine.node_count() - self.nodes.len();
-        if retired <= self.nodes.len().max(MIN_RETIRED_BEFORE_COMPACTION) {
+        let retired = self.engine.node_count() - self.catalog.len();
+        if retired <= self.catalog.len().max(MIN_RETIRED_BEFORE_COMPACTION) {
             return;
         }
-        let (engine, effective) = Self::build_engine(self.engine.engine(), &mut self.nodes, &[]);
+        let (engine, effective) = Self::build_engine(self.engine.engine(), &mut self.catalog);
         debug_assert_eq!(effective, self.effective_edges);
         self.engine = engine;
     }
@@ -1261,14 +1574,14 @@ impl LifecycleGraph {
     /// registered.
     pub fn connected(&self, source: NodeId, target: NodeId) -> Result<bool, GraphError> {
         let source_record = self
-            .nodes
-            .get(&source)
+            .catalog
+            .record(source)
             .ok_or(GraphError::UnknownNode { node: source })?;
         let target_record = self
-            .nodes
-            .get(&target)
+            .catalog
+            .record(target)
             .ok_or(GraphError::UnknownNode { node: target })?;
-        if !source_record.active || !target_record.active {
+        if !source_record.is_active() || !target_record.is_active() {
             return Ok(false);
         }
         self.engine.connected(source, target)
@@ -1277,14 +1590,16 @@ impl LifecycleGraph {
     /// Returns `Some(active)` for a registered node, `None` otherwise.
     #[must_use]
     pub fn node_active(&self, node: NodeId) -> Option<bool> {
-        self.nodes.get(&node).map(|record| record.active)
+        self.catalog.record(node).map(NodeRecord::is_active)
     }
 
     /// Returns the number of registered edges incident to `node` (enabled or
     /// not), or `None` if it is not registered. Expected O(1).
     #[must_use]
     pub fn degree(&self, node: NodeId) -> Option<usize> {
-        self.nodes.get(&node).map(|record| record.incident.len())
+        self.catalog
+            .record(node)
+            .map(|record| record.incident.len())
     }
 
     /// Iterates the registered edges incident to `node` in ascending neighbor
@@ -1296,8 +1611,8 @@ impl LifecycleGraph {
     /// the list is visited exactly once; edges registered or removed meanwhile
     /// may or may not be visited.
     ///
-    /// Positioning is O(log deg(node)); each step costs one expected-O(1)
-    /// catalog lookup of the neighbor (for `effective`).
+    /// Positioning is O(log deg(node)); each step reads the neighbor's
+    /// catalog entry once (O(1)), for its ID and for `effective`.
     ///
     /// ```rust
     /// use knotrel_core::{EngineConfig, LifecycleGraph};
@@ -1319,19 +1634,23 @@ impl LifecycleGraph {
         node: NodeId,
         after: Option<NodeId>,
     ) -> Option<impl Iterator<Item = (NodeId, EdgeState)> + '_> {
-        let record = self.nodes.get(&node)?;
+        let record = self.catalog.record(node)?;
+        let slots = &self.catalog.slots;
+        // A lower bound by external ID: the cursor itself is never looked up,
+        // so it may name a removed or never-registered node (invariants 1, I5).
         let start = after.map_or(0, |cursor| {
             record
                 .incident
-                .partition_point(|incidence| incidence.neighbor <= cursor)
+                .partition_point(|incidence| slots[incidence.slot()].id <= cursor)
         });
         Some(record.incident[start..].iter().map(move |incidence| {
-            let neighbor_active = self.nodes[&incidence.neighbor].active;
+            let neighbor = &slots[incidence.slot()];
+            let enabled = incidence.enabled();
             (
-                incidence.neighbor,
+                neighbor.id,
                 EdgeState {
-                    enabled: incidence.enabled,
-                    effective: incidence.enabled && record.active && neighbor_active,
+                    enabled,
+                    effective: enabled && record.is_active() && neighbor.is_active(),
                 },
             )
         }))
@@ -1341,17 +1660,21 @@ impl LifecycleGraph {
     /// if it is not registered. A self-loop pair is never registered.
     #[must_use]
     pub fn edge_state(&self, source: NodeId, target: NodeId) -> Option<EdgeState> {
-        let source_record = self.nodes.get(&source)?;
-        let index = source_record.position(target).ok()?;
-        let enabled = source_record.incident[index].enabled;
-        let effective = enabled && source_record.active && self.nodes[&target].active;
+        let source_slot = self.catalog.slot(source)?;
+        let index = self.catalog.locate(source_slot, target).ok()?;
+        let source_record = &self.catalog.slots[source_slot];
+        let incidence = source_record.incident[index];
+        let enabled = incidence.enabled();
+        let effective = enabled
+            && source_record.is_active()
+            && self.catalog.slots[incidence.slot()].is_active();
         Some(EdgeState { enabled, effective })
     }
 
     /// Returns the number of registered nodes, active or inactive.
     #[must_use]
     pub fn node_count(&self) -> usize {
-        self.nodes.len()
+        self.catalog.len()
     }
 
     /// Returns the number of registered edges, enabled or disabled.
@@ -1395,46 +1718,91 @@ impl LifecycleGraph {
     /// values are guaranteed and which are implementation-dependent.
     #[must_use]
     pub fn storage_stats(&self) -> LifecycleStorage {
+        // Vacant slots hold empty, unallocated incident vectors.
         let (incident_entries, incident_capacity) =
-            self.nodes.values().fold((0, 0), |(len, cap), record| {
-                (
-                    len + record.incident.len(),
-                    cap + record.incident.capacity(),
-                )
-            });
+            self.catalog
+                .slots
+                .iter()
+                .fold((0, 0), |(len, cap), record| {
+                    (
+                        len + record.incident.len(),
+                        cap + record.incident.capacity(),
+                    )
+                });
         let engine_vertices = self.engine.node_count();
         LifecycleStorage {
             engine_vertices,
-            retired_vertices: engine_vertices - self.nodes.len(),
-            catalog_nodes: self.nodes.len(),
-            catalog_node_capacity: self.nodes.capacity(),
+            retired_vertices: engine_vertices - self.catalog.len(),
+            catalog_nodes: self.catalog.len(),
+            catalog_node_capacity: self.catalog.ids.capacity(),
             incident_entries,
             incident_capacity,
         }
     }
 
-    /// Verifies every internal invariant; panics on violation. Test support.
+    /// Verifies every internal invariant (1 to 4 and I5 to I7 of the module
+    /// documentation); panics on violation. Test support.
     #[cfg(test)]
     pub(crate) fn validate(&self) {
+        let catalog = &self.catalog;
+        let slots = &catalog.slots;
+        // I6: the ID map and the occupied slots are in bijection.
+        for (&node, &slot) in &catalog.ids {
+            assert!(slots[slot].is_occupied(), "map names a vacant slot");
+            assert_eq!(slots[slot].id, node, "map and slot disagree");
+        }
+        let occupied = slots.iter().filter(|record| record.is_occupied()).count();
+        assert_eq!(occupied, catalog.ids.len());
+        // Free list: exactly the vacant slots, each once, LIFO-linked.
+        let mut on_list = vec![false; slots.len()];
+        let mut cursor = catalog.free_head;
+        let mut listed = 0;
+        while cursor != NO_SLOT {
+            assert!(
+                !slots[cursor].is_occupied(),
+                "free list names an occupied slot"
+            );
+            assert!(!on_list[cursor], "free list has a cycle");
+            on_list[cursor] = true;
+            listed += 1;
+            cursor = slots[cursor].id as usize;
+        }
+        assert_eq!(listed, catalog.vacant);
+        assert_eq!(listed, slots.len() - occupied);
+        assert!(catalog.vacant <= catalog.len().max(MIN_VACANT_BEFORE_SLOT_COMPACTION));
+
         let mut registered = 0;
         let mut enabled = 0;
         let mut effective = 0;
         let mut active = 0;
-        for (&node, record) in &self.nodes {
-            active += usize::from(record.active);
+        for (slot, record) in slots.iter().enumerate() {
+            assert_eq!(record.pending, 0, "construction scratch is reset");
+            if !record.is_occupied() {
+                assert_eq!(record.incident.capacity(), 0, "vacant slot holds no list");
+                continue;
+            }
+            let node = record.id;
+            active += usize::from(record.is_active());
             assert!(self.engine.contains_node(node));
+            for incidence in &record.incident {
+                // I5: every stored index names an occupied slot.
+                let other = &slots[incidence.slot()];
+                assert!(other.is_occupied(), "incidence names a vacant slot");
+                assert_ne!(incidence.slot(), slot);
+                assert_ne!(other.id, node);
+            }
             for pair in record.incident.windows(2) {
-                assert!(pair[0].neighbor < pair[1].neighbor);
+                assert!(slots[pair[0].slot()].id < slots[pair[1].slot()].id);
             }
             for incidence in &record.incident {
-                assert_ne!(incidence.neighbor, node);
-                let other = &self.nodes[&incidence.neighbor];
-                let back = other.position(node).expect("symmetric");
-                assert_eq!(other.incident[back].enabled, incidence.enabled);
-                if node < incidence.neighbor {
+                let other = &slots[incidence.slot()];
+                let back = catalog.locate(incidence.slot(), node).expect("symmetric");
+                assert_eq!(other.incident[back].slot(), slot);
+                assert_eq!(other.incident[back].enabled(), incidence.enabled());
+                if node < other.id {
                     registered += 1;
-                    enabled += usize::from(incidence.enabled);
-                    if incidence.enabled && record.active && other.active {
+                    enabled += usize::from(incidence.enabled());
+                    if incidence.enabled() && record.is_active() && other.is_active() {
                         effective += 1;
                     }
                 }
@@ -1445,13 +1813,34 @@ impl LifecycleGraph {
         assert_eq!(effective, self.effective_edges);
         assert_eq!(active, self.active_nodes);
         assert_eq!(effective, self.engine.edge_count());
-        assert!(self.engine.node_count() <= 2 * self.nodes.len() + MIN_RETIRED_BEFORE_COMPACTION);
+        assert!(self.engine.node_count() <= 2 * catalog.len() + MIN_RETIRED_BEFORE_COMPACTION);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// One slot as compared by tests: external ID, state, and the incident
+    /// list translated to `(neighbor ID, enabled)` pairs.
+    type CatalogRow = (NodeId, SlotState, Vec<(NodeId, bool)>);
+
+    /// A catalog's slots in slot order (see [`CatalogRow`]).
+    fn catalog_rows(catalog: &Catalog) -> Vec<CatalogRow> {
+        catalog
+            .slots
+            .iter()
+            .map(|record| {
+                let incident = record
+                    .incident
+                    .iter()
+                    .map(|i| (catalog.slots[i.slot()].id, i.enabled()))
+                    .collect();
+                (record.id, record.state, incident)
+            })
+            .collect()
+    }
 
     /// `incident_after` pages in ascending neighbor ID, reports flags, and keeps
     /// working with a cursor whose neighbor was removed.
@@ -1504,11 +1893,11 @@ mod tests {
         for neighbor in 1..=64 {
             graph.link(0, neighbor).unwrap();
         }
-        let before = graph.nodes[&0].incident.capacity();
+        let before = graph.catalog.record(0).unwrap().incident.capacity();
         for neighbor in 1..=60 {
             graph.cut(0, neighbor).unwrap();
         }
-        assert!(graph.nodes[&0].incident.capacity() < before);
+        assert!(graph.catalog.record(0).unwrap().incident.capacity() < before);
         graph.validate();
 
         graph.add_node(200).unwrap();
@@ -1551,10 +1940,15 @@ mod tests {
         graph.validate();
     }
 
+    /// The B64 layout of `docs/design/compact-node-index.md`, section 3:
+    /// 8-byte incidences, 40-byte slot records (the scratch word and the
+    /// state share the padding) and 16-byte ID-map entries.
     #[cfg(target_pointer_width = "64")]
     #[test]
-    fn node_record_degree_hint_fits_in_padding() {
-        assert_eq!(size_of::<NodeRecord>(), 32);
+    fn catalog_layout_sizes() {
+        assert_eq!(size_of::<Incidence>(), 8);
+        assert_eq!(size_of::<NodeRecord>(), 40);
+        assert_eq!(size_of::<(NodeId, usize)>(), 16);
     }
 
     /// The fast catalog path agrees with the exact path: identical catalogs
@@ -1606,20 +2000,15 @@ mod tests {
             let exact = LifecycleGraph::catalog_exact(limits, &nodes, &edges);
             let fast = LifecycleGraph::catalog_fast(limits, &nodes, &edges);
             match (&exact, fast) {
-                (Ok((exact_catalog, exact_order)), Some((fast_catalog, fast_order))) => {
+                (Ok(exact_catalog), Some(fast_catalog)) => {
                     fast_successes += 1;
-                    assert_eq!(exact_order, &fast_order, "case {case}");
-                    assert_eq!(exact_catalog.len(), fast_catalog.len());
-                    for (node, record) in exact_catalog {
-                        let other = &fast_catalog[node];
-                        assert_eq!(record.active, other.active);
-                        let pairs = |r: &NodeRecord| {
-                            r.incident
-                                .iter()
-                                .map(|i| (i.neighbor, i.enabled))
-                                .collect::<Vec<_>>()
-                        };
-                        assert_eq!(pairs(record), pairs(other), "case {case}");
+                    // Same slots in the same (registration) order, same IDs,
+                    // flags and incident lists.
+                    assert_eq!(catalog_rows(exact_catalog), catalog_rows(&fast_catalog));
+                    for catalog in [exact_catalog, &fast_catalog] {
+                        for (&node, &slot) in &catalog.ids {
+                            assert_eq!(catalog.slots[slot].id, node, "case {case}");
+                        }
                     }
                 }
                 (Err(_), None) => exact_errors += 1,
@@ -1672,22 +2061,21 @@ mod tests {
                     });
                 }
             }
-            let Ok((mut catalog, order)) =
+            let Ok(mut catalog) =
                 LifecycleGraph::catalog_exact(GraphLimits::default(), &nodes, &edges)
             else {
                 continue; // conflicting repeated flags
             };
-            let (incremental, incremental_edges) = LifecycleGraph::build_engine_incremental(
-                EngineConfig::CompactBfs,
-                &catalog,
-                &order,
-            );
+            // Registration order: the slot order of the assembled catalog.
+            let order: Vec<NodeId> = catalog.slots.iter().map(|record| record.id).collect();
+            let (incremental, incremental_edges) =
+                LifecycleGraph::build_engine_incremental(EngineConfig::CompactBfs, &catalog);
             let (bulk, bulk_edges) =
-                LifecycleGraph::build_engine(EngineConfig::CompactBfs, &mut catalog, &order);
+                LifecycleGraph::build_engine(EngineConfig::CompactBfs, &mut catalog);
             assert_eq!(bulk_edges, incremental_edges, "case {case}");
             assert_eq!(bulk.edge_count(), incremental.edge_count(), "case {case}");
             assert_eq!(bulk.node_count(), incremental.node_count(), "case {case}");
-            assert!(catalog.values().all(|record| record.pending == 0));
+            assert!(catalog.slots.iter().all(|record| record.pending == 0));
             for &a in &order {
                 for &b in &order {
                     assert_eq!(
@@ -1697,20 +2085,22 @@ mod tests {
                     );
                 }
             }
-            let graph = LifecycleGraph::finish(
-                EngineConfig::CompactBfs,
-                GraphLimits::default(),
-                catalog,
-                order,
-            );
+            let graph =
+                LifecycleGraph::finish(EngineConfig::CompactBfs, GraphLimits::default(), catalog);
             graph.validate();
+            // Bulk import leaves the slots dense, in ascending ID order, and
+            // the slot vector exactly reserved.
+            let slots = &graph.catalog.slots;
+            assert!(slots.windows(2).all(|pair| pair[0].id < pair[1].id));
+            assert_eq!(slots.len(), graph.node_count());
+            assert_eq!(slots.capacity(), slots.len(), "case {case}");
         }
     }
 
     /// The incremental fallback of `build_engine` (non-`compact-bfs`
-    /// engines) registers every catalog node, whether it receives the full
-    /// insertion order or the empty slice that compaction passes, and agrees
-    /// with the one-pass `compact-bfs` build on edges and connectivity.
+    /// engines) registers every catalog node, on an assembled catalog and on
+    /// one with vacant slots (as compaction sees it), and agrees with the
+    /// one-pass `compact-bfs` build on edges and connectivity.
     #[test]
     fn fallback_engine_build_registers_every_catalog_node() {
         let nodes: Vec<NodeSpec> = [(9, true), (3, false), (7, true), (1, true), (5, true)]
@@ -1725,15 +2115,31 @@ mod tests {
                 enabled,
             })
             .collect();
-        let (mut catalog, order) =
+        let assembled =
             LifecycleGraph::catalog_exact(GraphLimits::default(), &nodes, &edges).unwrap();
-        let (compact, compact_edges) =
-            LifecycleGraph::build_engine(EngineConfig::CompactBfs, &mut catalog, &order);
-        for given in [&order[..], &[][..]] {
+        let mut graph = LifecycleGraph::try_from_topology(
+            EngineConfig::CompactBfs,
+            GraphLimits::default(),
+            &nodes,
+            &edges,
+        )
+        .unwrap();
+        graph.link(9, 11).unwrap();
+        graph.link(11, 1).unwrap();
+        assert!(graph.remove_node(7));
+        assert!(graph.add_node(13).unwrap());
+        assert!(graph.remove_node(11));
+        assert!(graph.catalog.vacant > 0);
+        let mut churned = graph.catalog;
+        for catalog in [&mut { assembled }, &mut churned] {
+            let order: Vec<NodeId> = catalog.ids.keys().copied().collect();
+            let (compact, compact_edges) =
+                LifecycleGraph::build_engine(EngineConfig::CompactBfs, catalog);
             let (fallback, fallback_edges) =
-                LifecycleGraph::build_engine(EngineConfig::EulerTour, &mut catalog, given);
+                LifecycleGraph::build_engine(EngineConfig::EulerTour, catalog);
             assert_eq!(fallback.engine(), EngineConfig::EulerTour);
             assert_eq!(fallback.node_count(), catalog.len());
+            assert_eq!(compact.node_count(), catalog.len());
             assert_eq!(fallback_edges, compact_edges);
             assert_eq!(fallback.edge_count(), compact.edge_count());
             for &a in &order {
@@ -1826,19 +2232,19 @@ mod tests {
             graph.link(0, v).unwrap();
         }
         graph.set_node_active(N - 1, false).unwrap();
-        let full = graph.nodes.capacity();
-        assert_eq!(graph.catalog_full_capacity, full);
+        let full = graph.catalog.ids.capacity();
+        assert_eq!(graph.catalog.full_capacity, full);
         // Node 0 (the hub) and node N - 1 (inactive) stay; the others are churned.
         let mut live: std::collections::VecDeque<u64> = (1..N - 1).collect();
         let mut rebuilds = 0;
         for round in 0..(8 * N) {
-            let before = graph.nodes.capacity();
+            let before = graph.catalog.ids.capacity();
             let old = live.pop_front().unwrap();
             assert!(graph.remove_node(old));
             let fresh = 10 * N + round;
             graph.link(0, fresh).unwrap();
             live.push_back(fresh);
-            let after = graph.nodes.capacity();
+            let after = graph.catalog.ids.capacity();
             assert!(after <= full, "round {round}: the catalog grew to {after}");
             // A rebuild restores the headroom that tombstones had consumed: a jump
             // of more than one (a plain insert into a tombstone slot adds at most one).
@@ -1851,7 +2257,7 @@ mod tests {
         }
         graph.validate();
         assert!(rebuilds > 0, "the churn produced no tombstone rebuild");
-        assert_eq!(graph.catalog_full_capacity, full);
+        assert_eq!(graph.catalog.full_capacity, full);
         assert_eq!(graph.node_count(), N as usize);
         assert_eq!(graph.node_active(N - 1), Some(false));
         assert!(graph.connected(0, *live.back().unwrap()).unwrap());
@@ -1865,12 +2271,439 @@ mod tests {
         for v in 0..1_000 {
             graph.add_node(v).unwrap();
         }
-        let first = graph.nodes.capacity();
+        let first = graph.catalog.ids.capacity();
         for v in 1_000..10_000 {
             graph.add_node(v).unwrap();
         }
-        assert!(graph.nodes.capacity() > first);
-        assert!(graph.catalog_full_capacity >= graph.nodes.capacity());
+        assert!(graph.catalog.ids.capacity() > first);
+        assert!(graph.catalog.full_capacity >= graph.catalog.ids.capacity());
         graph.validate();
+    }
+
+    /// The packed incidence keeps slot and flag independent, up to the
+    /// largest slot index below the flag bit.
+    #[test]
+    fn incidence_packs_slot_and_enabled_flag() {
+        for slot in [0, 1, 12_345, ENABLED_BIT - 1] {
+            for enabled in [false, true] {
+                let mut incidence = Incidence::new(slot, enabled);
+                assert_eq!(incidence.slot(), slot);
+                assert_eq!(incidence.enabled(), enabled);
+                incidence.set_enabled(!enabled);
+                assert_eq!((incidence.slot(), incidence.enabled()), (slot, !enabled));
+                incidence.set_slot(7);
+                assert_eq!((incidence.slot(), incidence.enabled()), (7, !enabled));
+            }
+        }
+    }
+
+    /// Vacant slots are reused last-in first-out; new slots grow the slot
+    /// vector in step with the ID map's capacity.
+    #[test]
+    fn slots_are_reused_lifo_and_grow_with_the_id_map() {
+        let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
+        for node in 0..10_000 {
+            graph.add_node(node).unwrap();
+            assert_eq!(
+                graph.catalog.slots.capacity(),
+                graph.catalog.ids.capacity(),
+                "node {node}"
+            );
+        }
+        let slot_of = |graph: &LifecycleGraph, node| graph.catalog.slot(node).unwrap();
+        let (two, four) = (slot_of(&graph, 2), slot_of(&graph, 4));
+        graph.link(2, 4).unwrap();
+        graph.link(4, 5).unwrap();
+        assert!(graph.remove_node(2));
+        assert!(graph.remove_node(4));
+        assert_eq!(graph.catalog.vacant, 2);
+        let length = graph.catalog.slots.len();
+        graph.link(20_000, 5).unwrap(); // reuses the slot of 4, the last freed
+        graph.add_node(20_001).unwrap(); // then the slot of 2
+        assert_eq!(slot_of(&graph, 20_000), four);
+        assert_eq!(slot_of(&graph, 20_001), two);
+        assert_eq!(graph.catalog.slots.len(), length);
+        assert_eq!(graph.catalog.slot_reuses, 2);
+        // The reused slots carry no stale incidence.
+        assert_eq!(graph.degree(20_001), Some(0));
+        assert_eq!(
+            graph
+                .incident_after(5, None)
+                .unwrap()
+                .map(|e| e.0)
+                .collect::<Vec<_>>(),
+            [20_000]
+        );
+        graph.validate();
+    }
+
+    /// A slot compaction renumbers slots densely in ascending ID while every
+    /// incident list keeps its order, so a cursor captured before it resolves
+    /// to the same position after it; cursors naming a removed node or a
+    /// never-registered ID work on both sides of the compaction.
+    #[test]
+    fn cursors_survive_slot_compaction() {
+        const SPOKES: u64 = 3_000;
+        let hub = 1 << 40;
+        let spoke = |k: u64| (k.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 8) | 1;
+        let mut graph = LifecycleGraph::new(EngineConfig::CompactBfs).unwrap();
+        // Spokes in scrambled ID order, so slot order differs from ID order.
+        for k in 0..SPOKES {
+            graph.link(hub, spoke(k)).unwrap();
+        }
+        let filler: Vec<NodeId> = (0..SPOKES).map(|k| 2 * k + (1 << 62)).collect();
+        for &node in &filler {
+            graph.add_node(node).unwrap();
+        }
+        let mut sorted: Vec<NodeId> = (0..SPOKES).map(spoke).collect();
+        sorted.sort_unstable();
+        let page = |graph: &LifecycleGraph, cursor| -> Vec<NodeId> {
+            graph
+                .incident_after(hub, cursor)
+                .unwrap()
+                .take(100)
+                .map(|e| e.0)
+                .collect()
+        };
+        assert_eq!(page(&graph, None), sorted[..100]);
+        let removed = sorted[99];
+        assert!(graph.remove_node(removed));
+        let unregistered = sorted[500] + 1; // even: never a spoke
+        assert!(graph.node_active(unregistered).is_none());
+        let cursors = [Some(removed), Some(unregistered), Some(sorted[1_234]), None];
+        let before: Vec<Vec<NodeId>> = cursors.iter().map(|&c| page(&graph, c)).collect();
+        assert_eq!(before[0], sorted[100..200]);
+        assert_eq!(before[1], sorted[501..601]);
+        assert_eq!(graph.catalog.slot_compactions, 0);
+        for &node in &filler {
+            assert!(graph.remove_node(node));
+        }
+        assert_eq!(graph.catalog.slot_compactions, 1, "the removals compacted");
+        assert_eq!(graph.catalog.vacant, 0);
+        assert_eq!(graph.catalog.slots.len(), graph.node_count());
+        let ids: Vec<NodeId> = graph.catalog.slots.iter().map(|r| r.id).collect();
+        assert!(
+            ids.windows(2).all(|pair| pair[0] < pair[1]),
+            "slots in ID order"
+        );
+        let after: Vec<Vec<NodeId>> = cursors.iter().map(|&c| page(&graph, c)).collect();
+        assert_eq!(before, after);
+        graph.validate();
+    }
+
+    /// Reference model for the differential test: ordered maps, a BFS for
+    /// connectivity, no shared code with `LifecycleGraph`.
+    #[derive(Default)]
+    struct Model {
+        nodes: BTreeMap<NodeId, bool>,
+        /// Edge flags keyed by the ordered endpoint pair.
+        edges: BTreeMap<(NodeId, NodeId), bool>,
+        adjacency: BTreeMap<NodeId, BTreeSet<NodeId>>,
+    }
+
+    impl Model {
+        fn key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
+            (a.min(b), a.max(b))
+        }
+
+        fn add_node(&mut self, node: NodeId) -> Result<bool, GraphError> {
+            if self.nodes.contains_key(&node) {
+                return Ok(false);
+            }
+            self.nodes.insert(node, true);
+            self.adjacency.insert(node, BTreeSet::new());
+            Ok(true)
+        }
+
+        fn link(&mut self, a: NodeId, b: NodeId) -> Result<bool, GraphError> {
+            GraphError::check_distinct(a, b)?;
+            if self.edges.contains_key(&Self::key(a, b)) {
+                return Ok(false);
+            }
+            self.add_node(a)?;
+            self.add_node(b)?;
+            self.edges.insert(Self::key(a, b), true);
+            self.adjacency.get_mut(&a).unwrap().insert(b);
+            self.adjacency.get_mut(&b).unwrap().insert(a);
+            Ok(true)
+        }
+
+        fn cut(&mut self, a: NodeId, b: NodeId) -> Result<bool, GraphError> {
+            GraphError::check_distinct(a, b)?;
+            if self.edges.remove(&Self::key(a, b)).is_none() {
+                return Ok(false);
+            }
+            self.adjacency.get_mut(&a).unwrap().remove(&b);
+            self.adjacency.get_mut(&b).unwrap().remove(&a);
+            Ok(true)
+        }
+
+        fn set_node_active(&mut self, node: NodeId, active: bool) -> Result<bool, LifecycleError> {
+            let flag = self
+                .nodes
+                .get_mut(&node)
+                .ok_or(GraphError::UnknownNode { node })?;
+            Ok(std::mem::replace(flag, active) != active)
+        }
+
+        fn set_edge_enabled(
+            &mut self,
+            a: NodeId,
+            b: NodeId,
+            enabled: bool,
+        ) -> Result<bool, LifecycleError> {
+            GraphError::check_distinct(a, b)?;
+            for node in [a, b] {
+                if !self.nodes.contains_key(&node) {
+                    return Err(GraphError::UnknownNode { node }.into());
+                }
+            }
+            let flag = self
+                .edges
+                .get_mut(&Self::key(a, b))
+                .ok_or(LifecycleError::UnknownEdge {
+                    source: a,
+                    target: b,
+                })?;
+            Ok(std::mem::replace(flag, enabled) != enabled)
+        }
+
+        fn remove_node(&mut self, node: NodeId) -> bool {
+            if self.nodes.remove(&node).is_none() {
+                return false;
+            }
+            for neighbor in self.adjacency.remove(&node).unwrap() {
+                self.adjacency.get_mut(&neighbor).unwrap().remove(&node);
+                self.edges.remove(&Self::key(node, neighbor));
+            }
+            true
+        }
+
+        fn state(&self, a: NodeId, b: NodeId) -> EdgeState {
+            let enabled = self.edges[&Self::key(a, b)];
+            EdgeState::new(enabled, enabled && self.nodes[&a] && self.nodes[&b])
+        }
+
+        fn connected(&self, a: NodeId, b: NodeId) -> Result<bool, GraphError> {
+            for node in [a, b] {
+                if !self.nodes.contains_key(&node) {
+                    return Err(GraphError::UnknownNode { node });
+                }
+            }
+            if !self.nodes[&a] || !self.nodes[&b] {
+                return Ok(false);
+            }
+            let mut seen = BTreeSet::from([a]);
+            let mut stack = vec![a];
+            while let Some(node) = stack.pop() {
+                if node == b {
+                    return Ok(true);
+                }
+                for &next in &self.adjacency[&node] {
+                    if self.state(node, next).effective && seen.insert(next) {
+                        stack.push(next);
+                    }
+                }
+            }
+            Ok(false)
+        }
+
+        fn incident_after(
+            &self,
+            node: NodeId,
+            after: Option<NodeId>,
+        ) -> Option<Vec<(NodeId, EdgeState)>> {
+            let neighbors = self.adjacency.get(&node)?;
+            let start = after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+            Some(
+                neighbors
+                    .range((start, std::ops::Bound::Unbounded))
+                    .map(|&n| (n, self.state(node, n)))
+                    .collect(),
+            )
+        }
+
+        fn counts(&self) -> [usize; 5] {
+            let effective = self
+                .edges
+                .iter()
+                .filter(|&(&(a, b), &enabled)| enabled && self.nodes[&a] && self.nodes[&b])
+                .count();
+            [
+                self.nodes.len(),
+                self.edges.len(),
+                self.nodes.values().filter(|&&active| active).count(),
+                self.edges.values().filter(|&&enabled| enabled).count(),
+                effective,
+            ]
+        }
+    }
+
+    /// Deterministic SplitMix64 generator.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+
+        fn below(&mut self, bound: usize) -> usize {
+            (self.next() % bound as u64) as usize
+        }
+    }
+
+    /// Compares counts, every registered node's flag and degree, full
+    /// paginated traversals of sampled nodes (with random page sizes) and
+    /// single pages at random cursors (registered, removed or
+    /// never-registered IDs), and sampled connectivity queries.
+    fn assert_same(graph: &LifecycleGraph, model: &Model, universe: &[NodeId], rng: &mut Rng) {
+        let counts = [
+            graph.node_count(),
+            graph.edge_count(),
+            graph.active_node_count(),
+            graph.enabled_edge_count(),
+            graph.effective_edge_count(),
+        ];
+        assert_eq!(counts, model.counts());
+        for (&node, &active) in &model.nodes {
+            assert_eq!(graph.node_active(node), Some(active));
+            assert_eq!(graph.degree(node), Some(model.adjacency[&node].len()));
+        }
+        let pick = |rng: &mut Rng| universe[rng.below(universe.len())];
+        for round in 0..24 {
+            let node = if round == 0 { universe[0] } else { pick(rng) };
+            let Some(expected) = model.incident_after(node, None) else {
+                assert!(graph.incident_after(node, None).is_none());
+                continue;
+            };
+            let limit = 1 + rng.below(64);
+            let mut paged = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page: Vec<_> = graph
+                    .incident_after(node, cursor)
+                    .unwrap()
+                    .take(limit)
+                    .collect();
+                let Some(last) = page.last() else { break };
+                cursor = Some(last.0);
+                paged.extend(page);
+            }
+            assert_eq!(paged, expected, "node {node}");
+            for _ in 0..4 {
+                let cursor = Some(pick(rng));
+                let got: Vec<_> = graph.incident_after(node, cursor).unwrap().collect();
+                assert_eq!(Some(got), model.incident_after(node, cursor));
+            }
+        }
+        for _ in 0..64 {
+            let (a, b) = (pick(rng), pick(rng));
+            assert_eq!(graph.connected(a, b), model.connected(a, b), "{a}-{b}");
+        }
+    }
+
+    /// One random operation on both, comparing the results. `hub` takes a
+    /// quarter of the first endpoints, so it collects a high degree.
+    fn random_step(
+        graph: &mut LifecycleGraph,
+        model: &mut Model,
+        universe: &[NodeId],
+        rng: &mut Rng,
+    ) {
+        let pick = |rng: &mut Rng| universe[rng.below(universe.len())];
+        let a = if rng.below(4) == 0 {
+            universe[0]
+        } else {
+            pick(rng)
+        };
+        let b = pick(rng);
+        let flag = rng.below(2) == 0;
+        match rng.below(100) {
+            0..=29 => assert_eq!(graph.link(a, b), model.link(a, b)),
+            30..=39 => assert_eq!(graph.cut(a, b), model.cut(a, b)),
+            40..=49 => assert_eq!(graph.add_node(b), model.add_node(b)),
+            50..=61 => assert_eq!(
+                graph.set_node_active(b, flag),
+                model.set_node_active(b, flag)
+            ),
+            62..=79 => assert_eq!(
+                graph.set_edge_enabled(a, b, flag),
+                model.set_edge_enabled(a, b, flag)
+            ),
+            80..=84 => assert_eq!(graph.remove_node(b), model.remove_node(b)),
+            85..=89 => assert_eq!(
+                graph.edge_state(a, b),
+                model
+                    .edges
+                    .get(&Model::key(a, b))
+                    .map(|_| model.state(a, b))
+            ),
+            90..=94 => {
+                let cursor = Some(pick(rng));
+                let got = graph
+                    .incident_after(a, cursor)
+                    .map(|edges| edges.take(32).collect::<Vec<_>>());
+                let mut expected = model.incident_after(a, cursor);
+                if let Some(edges) = expected.as_mut() {
+                    edges.truncate(32);
+                }
+                assert_eq!(got, expected);
+            }
+            _ => assert_eq!(graph.connected(a, b), model.connected(a, b)),
+        }
+    }
+
+    /// Long seeded sequences against the reference model, alternating growth
+    /// phases with heavy removal phases (85% of the registered nodes, each
+    /// removal followed by a random operation), so that vacant slots are
+    /// reused and slot compactions run; both are asserted.
+    #[test]
+    fn randomized_sequences_match_a_reference_model_through_slot_reuse_and_compaction() {
+        // IDs are scrambled over the whole u64 range, so slot order and ID
+        // order are unrelated; universe[0] is the hub.
+        let universe: Vec<NodeId> = (0..4_096_u64)
+            .map(|k| k.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17))
+            .collect();
+        for (engine, seeds, cycles) in [
+            (EngineConfig::CompactBfs, 0..3_u64, 3),
+            (EngineConfig::ClusterForest, 3..4_u64, 2),
+        ] {
+            for seed in seeds {
+                let mut rng = Rng(seed.wrapping_mul(0x5851_f42d_4c95_7f2d) ^ 0x151);
+                let mut graph = LifecycleGraph::new(engine).unwrap();
+                let mut model = Model::default();
+                for _ in 0..cycles {
+                    for _ in 0..6_000 {
+                        random_step(&mut graph, &mut model, &universe, &mut rng);
+                    }
+                    graph.validate();
+                    assert_same(&graph, &model, &universe, &mut rng);
+                    let mut victims: Vec<NodeId> = model.nodes.keys().copied().collect();
+                    for index in (1..victims.len()).rev() {
+                        victims.swap(index, rng.below(index + 1));
+                    }
+                    victims.truncate(victims.len() * 85 / 100);
+                    for (index, &node) in victims.iter().enumerate() {
+                        assert_eq!(graph.remove_node(node), model.remove_node(node));
+                        random_step(&mut graph, &mut model, &universe, &mut rng);
+                        if index % 512 == 0 {
+                            graph.validate();
+                        }
+                    }
+                    graph.validate();
+                    assert_same(&graph, &model, &universe, &mut rng);
+                }
+                let catalog = &graph.catalog;
+                assert!(catalog.slot_reuses > 0, "seed {seed}: no slot was reused");
+                assert!(
+                    catalog.slot_compactions > 0,
+                    "seed {seed}: no slot compaction"
+                );
+            }
+        }
     }
 }
