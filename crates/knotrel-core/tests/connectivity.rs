@@ -427,3 +427,52 @@ fn bidirectional_search_matches_reference_on_all_pairs() {
     }
     check(&compact, &reference, "after cuts");
 }
+
+/// Leaner bidirectional search (#182 diagnosis): random dynamic histories over
+/// mark-word boundaries (vertex counts around multiples of 32), long paths and
+/// isolated endpoints answer every queried pair like the reference.
+#[test]
+fn bidirectional_search_matches_reference_on_random_histories() {
+    for (nodes, seed) in [
+        (31_u64, 1_u64),
+        (32, 2),
+        (33, 3),
+        (65, 4),
+        (130, 5),
+        (257, 6),
+    ] {
+        let mut compact = Graph::new();
+        let mut reference = knotrel_core::ReferenceGraph::new();
+        let mut state = seed;
+        let mut next = |bound: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % bound
+        };
+        for node in 0..nodes {
+            assert_eq!(compact.add_node(node), reference.add_node(node));
+        }
+        // A long path over the first half, then random churn with queries.
+        for step in 0..nodes / 2 {
+            assert_eq!(compact.link(step, step + 1), reference.link(step, step + 1));
+        }
+        for _ in 0..nodes * 20 {
+            let (a, b) = (next(nodes), next(nodes));
+            match next(4) {
+                0 if a != b => assert_eq!(compact.link(a, b), reference.link(a, b)),
+                1 if a != b => assert_eq!(compact.cut(a, b), reference.cut(a, b)),
+                _ => assert_eq!(
+                    compact.connected(a, b),
+                    reference.connected(a, b),
+                    "nodes {nodes}: {a} -> {b}"
+                ),
+            }
+        }
+        for a in 0..nodes {
+            for b in 0..nodes {
+                assert_eq!(compact.connected(a, b), reference.connected(a, b));
+            }
+        }
+    }
+}
