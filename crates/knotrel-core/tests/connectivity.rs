@@ -367,11 +367,12 @@ fn link_endpoint_resolution_and_registration_invariants() {
     assert_eq!(graph.connected(u64::MAX, u64::MAX), Ok(true));
 }
 
-/// Bidirectional search (#181): every ordered pair of a graph with several
-/// components, hubs, paths and isolated vertices answers like the reference,
-/// in both directions and after bridge cuts that split components.
+/// Every ordered pair of a graph with several components, hubs, paths and
+/// isolated vertices answers like the reference, in both directions and after
+/// bridge cuts that split components (added with #181, kept after restoring
+/// the v1.1.0 search).
 #[test]
-fn bidirectional_search_matches_reference_on_all_pairs() {
+fn search_matches_reference_on_all_pairs() {
     let mut compact = Graph::new();
     let mut reference = knotrel_core::ReferenceGraph::new();
     let mut seed = 181_u64;
@@ -426,4 +427,53 @@ fn bidirectional_search_matches_reference_on_all_pairs() {
         assert_eq!(compact.cut(a, b), reference.cut(a, b));
     }
     check(&compact, &reference, "after cuts");
+}
+
+/// Random dynamic histories over bitset word boundaries (vertex counts around
+/// multiples of 32 and 64), a long path and isolated vertices: every queried
+/// pair answers like the reference (from the #203/#204 estimates, kept as a
+/// differential test of the restored v1.1.0 search).
+#[test]
+fn search_matches_reference_on_random_histories() {
+    for (nodes, seed) in [
+        (31_u64, 1_u64),
+        (32, 2),
+        (33, 3),
+        (65, 4),
+        (130, 5),
+        (257, 6),
+    ] {
+        let mut compact = Graph::new();
+        let mut reference = knotrel_core::ReferenceGraph::new();
+        let mut state = seed;
+        let mut next = |bound: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % bound
+        };
+        for node in 0..nodes {
+            assert_eq!(compact.add_node(node), reference.add_node(node));
+        }
+        for step in 0..nodes / 2 {
+            assert_eq!(compact.link(step, step + 1), reference.link(step, step + 1));
+        }
+        for _ in 0..nodes * 20 {
+            let (a, b) = (next(nodes), next(nodes));
+            match next(4) {
+                0 if a != b => assert_eq!(compact.link(a, b), reference.link(a, b)),
+                1 if a != b => assert_eq!(compact.cut(a, b), reference.cut(a, b)),
+                _ => assert_eq!(
+                    compact.connected(a, b),
+                    reference.connected(a, b),
+                    "nodes {nodes}: {a} -> {b}"
+                ),
+            }
+        }
+        for a in 0..nodes {
+            for b in 0..nodes {
+                assert_eq!(compact.connected(a, b), reference.connected(a, b));
+            }
+        }
+    }
 }

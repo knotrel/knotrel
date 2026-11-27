@@ -514,12 +514,9 @@ impl Graph {
 
     /// Reports whether a path exists between two existing vertices.
     ///
-    /// Existing vertices connect to themselves. The search is a bidirectional
-    /// breadth-first search: it grows one frontier from each endpoint and stops
-    /// as soon as they touch, or when either side is exhausted. Worst-case time
-    /// O(V + E), with O(1) endpoint lookup and O(V) local scratch
-    /// initialization/allocation (two bitsets of V bits). Scratch is private to
-    /// each call, so shared queries need no internal lock.
+    /// Existing vertices connect to themselves. Worst-case time O(V + E), with
+    /// O(1) endpoint lookup and O(V) local scratch initialization/allocation.
+    /// Scratch is private to each call, so shared queries need no internal lock.
     ///
     /// ```
     /// let mut graph = knotrel_core::Graph::new();
@@ -545,31 +542,25 @@ impl Graph {
         if a == b {
             return Ok(true);
         }
-        let mut source_side = Side::new(self.adjacency.len(), a, self.adjacency[a].len());
-        let mut target_side = Side::new(self.adjacency.len(), b, self.adjacency[b].len());
-        let mut next = Vec::new();
-        // Invariants: every vertex marked by a side is reachable from that
-        // side's endpoint, and each side's frontier holds exactly the vertices
-        // it marked in its last expanded layer. If the endpoints are connected,
-        // a shortest path between them crosses from source-marked to
-        // target-marked vertices along some edge; expanding a frontier examines
-        // every edge leaving it, so the first such edge is found before either
-        // side runs out of vertices. Conversely, an empty frontier means that
-        // side has marked its whole component without meeting the other side,
-        // whose endpoint is therefore in another component. Each vertex is
-        // marked at most once per side, so the work is O(V + E) in the worst
-        // case. Expanding the side with fewer pending incidences first keeps
-        // the two searches balanced (an informal heuristic; it does not change
-        // the bound).
-        while !source_side.frontier.is_empty() && !target_side.frontier.is_empty() {
-            let (expand, other) = if source_side.pending <= target_side.pending {
-                (&mut source_side, &target_side)
-            } else {
-                (&mut target_side, &source_side)
-            };
-            if expand.expand(&self.adjacency, &other.marked, &mut next) {
-                return Ok(true);
+        let mut visited = FixedBitSet::with_capacity(self.adjacency.len());
+        let mut queue = Vec::new();
+        visited.insert(a);
+        queue.push(a);
+        let mut cursor = 0;
+        // Mark on enqueue: each vertex is visited at most once and every queued
+        // vertex is reachable. Exhaustion proves the target is disconnected.
+        // Integer adjacency avoids ordered-map lookups inside the traversal.
+        while cursor < queue.len() {
+            for &neighbor in &self.adjacency[queue[cursor]] {
+                if neighbor == b {
+                    return Ok(true);
+                }
+                if !visited.contains(neighbor) {
+                    visited.insert(neighbor);
+                    queue.push(neighbor);
+                }
             }
+            cursor += 1;
         }
         Ok(false)
     }
@@ -740,59 +731,6 @@ impl Graph {
         self.ids
             .get(&node)
             .map(|&index| self.adjacency[index].capacity())
-    }
-}
-
-/// One side of the bidirectional search of [`Graph::connected`].
-///
-/// `marked` holds every vertex this side has reached, `frontier` the vertices
-/// it reached in its last expanded layer, and `pending` the sum of their
-/// degrees (the number of incidences the next expansion will examine).
-struct Side {
-    marked: FixedBitSet,
-    frontier: Vec<usize>,
-    pending: usize,
-}
-
-impl Side {
-    /// A side that has reached only `start`, whose degree is `degree`.
-    fn new(vertices: usize, start: usize, degree: usize) -> Self {
-        let mut marked = FixedBitSet::with_capacity(vertices);
-        marked.insert(start);
-        Self {
-            marked,
-            frontier: vec![start],
-            pending: degree,
-        }
-    }
-
-    /// Expands the whole frontier by one layer. Returns `true` as soon as an
-    /// examined neighbor is marked by `other` (the sides touch); otherwise
-    /// replaces the frontier with the newly marked vertices, using `next` as
-    /// reusable storage. O(1 + incidences examined).
-    fn expand(
-        &mut self,
-        adjacency: &[Vec<usize>],
-        other: &FixedBitSet,
-        next: &mut Vec<usize>,
-    ) -> bool {
-        next.clear();
-        let mut pending = 0;
-        for &vertex in &self.frontier {
-            for &neighbor in &adjacency[vertex] {
-                if other.contains(neighbor) {
-                    return true;
-                }
-                if !self.marked.contains(neighbor) {
-                    self.marked.insert(neighbor);
-                    next.push(neighbor);
-                    pending += adjacency[neighbor].len();
-                }
-            }
-        }
-        std::mem::swap(&mut self.frontier, next);
-        self.pending = pending;
-        false
     }
 }
 
