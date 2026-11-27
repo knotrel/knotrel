@@ -8529,6 +8529,27 @@ mod query_limiter_tests {
         ));
     }
 
+    /// The limiter works without metrics: no telemetry, same answers.
+    #[tokio::test]
+    async fn limiter_without_metrics_answers_queries() {
+        let config = crate::ServerConfig::default()
+            .with_max_concurrent_queries(Some(1))
+            .unwrap();
+        let service =
+            Service::with_config(ConnectivityGraph::default(), 4, Lifecycle::new(), &config);
+        assert!(service.telemetry().is_none());
+        service.execute(vec![add(1), add(2)]).await.unwrap();
+        let result = service.execute(vec![connected(1, 2)]).await.unwrap();
+        assert!(matches!(
+            result.outcomes.as_slice(),
+            [Outcome::Connected { connected: false }]
+        ));
+        assert_eq!(
+            service.query_limiter.as_ref().unwrap().available_permits(),
+            1
+        );
+    }
+
     /// A mixed request (one mutation) is a writer and is not limited.
     #[tokio::test]
     async fn mixed_requests_are_writers_and_not_limited() {
