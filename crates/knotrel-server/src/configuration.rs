@@ -44,10 +44,11 @@ enum Setting {
     TopologyLifecycle,
     Inspection,
     FeederReservedJobs,
+    MaxConcurrentQueries,
 }
 
 impl Setting {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::Address,
         Self::Engine,
         Self::MaxPendingJobs,
@@ -65,6 +66,7 @@ impl Setting {
         Self::TopologyLifecycle,
         Self::Inspection,
         Self::FeederReservedJobs,
+        Self::MaxConcurrentQueries,
     ];
 
     const fn as_str(self) -> &'static str {
@@ -86,6 +88,7 @@ impl Setting {
             Self::TopologyLifecycle => "KNOTREL_TOPOLOGY_LIFECYCLE",
             Self::Inspection => "KNOTREL_INSPECTION",
             Self::FeederReservedJobs => "KNOTREL_FEEDER_RESERVED_JOBS",
+            Self::MaxConcurrentQueries => "KNOTREL_MAX_CONCURRENT_QUERIES",
         }
     }
 
@@ -124,6 +127,7 @@ pub struct ServerConfig {
     topology_lifecycle: bool,
     inspection: bool,
     feeder_reserved_jobs: usize,
+    max_concurrent_queries: Option<usize>,
 }
 
 /// A malformed or unsupported startup setting.
@@ -156,6 +160,7 @@ impl Default for ServerConfig {
             topology_lifecycle: false,
             inspection: false,
             feeder_reserved_jobs: Self::DEFAULT_FEEDER_RESERVED_JOBS,
+            max_concurrent_queries: None,
         }
     }
 }
@@ -284,6 +289,7 @@ impl ServerConfig {
             topology_lifecycle: false,
             inspection: false,
             feeder_reserved_jobs: Self::DEFAULT_FEEDER_RESERVED_JOBS,
+            max_concurrent_queries: None,
         })
     }
 
@@ -313,6 +319,34 @@ impl ServerConfig {
             )));
         }
         self.feeder_reserved_jobs = jobs;
+        Ok(self)
+    }
+
+    /// Bounds how many all-query requests may hold or wait for the graph's
+    /// shared guard at once (B2, `docs/design/b2-bounded-query-concurrency.md`).
+    ///
+    /// `None` (the default) means no bound: query requests run as soon as
+    /// they are admitted. `Some(k)` makes admitted query requests wait, without
+    /// a worker thread and outside the graph lock, until fewer than `k` others
+    /// are running; writers, feeder jobs, stats and inspection never wait on
+    /// it. A waiting request keeps its admission permit, so admission and
+    /// `503 busy` are unchanged. Must be from 1 to the admission capacity
+    /// ([`Self::max_pending_jobs`]).
+    pub fn with_max_concurrent_queries(
+        mut self,
+        limit: Option<usize>,
+    ) -> Result<Self, ConfigError> {
+        if let Some(k) = limit
+            && (k == 0 || k > self.max_pending_jobs)
+        {
+            return Err(ConfigError(format!(
+                "{} must be between 1 and {} ({})",
+                Setting::MaxConcurrentQueries,
+                self.max_pending_jobs,
+                Setting::MaxPendingJobs
+            )));
+        }
+        self.max_concurrent_queries = limit;
         Ok(self)
     }
 
@@ -417,6 +451,11 @@ impl ServerConfig {
         self.feeder_reserved_jobs
     }
 
+    /// Returns the bound on concurrently running query requests, if any.
+    pub fn max_concurrent_queries(&self) -> Option<usize> {
+        self.max_concurrent_queries
+    }
+
     /// Replaces the open-connection ceiling.
     ///
     /// Returns [`ConfigError`] unless `limit` is in `1..=`[`Self::MAX_CONNECTIONS_LIMIT`].
@@ -497,6 +536,9 @@ impl ServerConfig {
     /// `KNOTREL_SHUTDOWN_TIMEOUT_MS` (10000) are positive millisecond counts of at most
     /// one hour. `KNOTREL_METRICS_ENABLED` and
     /// `KNOTREL_TOPOLOGY_LIFECYCLE` are exactly `true` or `false` (default).
+    /// `KNOTREL_MAX_CONCURRENT_QUERIES` (unset by default, meaning no bound) is
+    /// a positive integer of at most `KNOTREL_MAX_PENDING_JOBS`; see
+    /// [`Self::with_max_concurrent_queries`].
     ///
     /// Returns [`ConfigError`] for unknown `KNOTREL_` keys, non-Unicode names
     /// or values in that namespace, unsupported engines and malformed values.
@@ -631,6 +673,10 @@ impl ServerConfig {
             Some(value) => parse_decimal(Setting::DedupWindowSize, value)?,
             None => defaults.dedup_window_size,
         };
+        let max_concurrent_queries = settings
+            .get(&Setting::MaxConcurrentQueries)
+            .map(|value| parse_decimal(Setting::MaxConcurrentQueries, value))
+            .transpose()?;
         let feeder_reserved_jobs = match settings.get(&Setting::FeederReservedJobs) {
             Some(value) => parse_decimal(Setting::FeederReservedJobs, value)?,
             None => defaults.feeder_reserved_jobs,
@@ -692,6 +738,7 @@ impl ServerConfig {
             .with_max_import_body_bytes(max_import_body_bytes)?
             .with_dedup_window_size(dedup_window_size)?
             .with_feeder_reserved_jobs(feeder_reserved_jobs)?
+            .with_max_concurrent_queries(max_concurrent_queries)?
             .with_graph_limits(limits)
             .with_max_connections(max_connections)?
             .with_header_read_timeout(timeout(
@@ -791,6 +838,7 @@ mod tests {
                 "KNOTREL_TOPOLOGY_LIFECYCLE",
                 "KNOTREL_INSPECTION",
                 "KNOTREL_FEEDER_RESERVED_JOBS",
+                "KNOTREL_MAX_CONCURRENT_QUERIES",
             ]
         );
         for (setting, name) in Setting::ALL.into_iter().zip(names) {
@@ -1120,6 +1168,52 @@ mod tests {
                 .with_shutdown_timeout(Duration::from_secs(3601))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn max_concurrent_queries_configuration_and_limits() {
+        let defaults = ServerConfig::default();
+        assert_eq!(defaults.max_concurrent_queries(), None);
+        let parsed =
+            ServerConfig::from_variables([("KNOTREL_MAX_CONCURRENT_QUERIES".into(), "4".into())])
+                .unwrap();
+        assert_eq!(parsed.max_concurrent_queries(), Some(4));
+        let parsed = ServerConfig::from_variables([
+            ("KNOTREL_MAX_PENDING_JOBS".into(), "8".into()),
+            ("KNOTREL_MAX_CONCURRENT_QUERIES".into(), "8".into()),
+        ])
+        .unwrap();
+        assert_eq!(parsed.max_concurrent_queries(), Some(8));
+        for (pending, limit) in [
+            ("32", "0"),
+            ("8", "9"),
+            ("32", "-1"),
+            ("32", "four"),
+            ("32", ""),
+        ] {
+            let err = ServerConfig::from_variables([
+                ("KNOTREL_MAX_PENDING_JOBS".into(), pending.into()),
+                ("KNOTREL_MAX_CONCURRENT_QUERIES".into(), limit.into()),
+            ])
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("KNOTREL_MAX_CONCURRENT_QUERIES"),
+                "{pending} {limit}: {err}"
+            );
+        }
+        assert!(
+            defaults
+                .clone()
+                .with_max_concurrent_queries(Some(32))
+                .is_ok()
+        );
+        assert!(
+            defaults
+                .clone()
+                .with_max_concurrent_queries(Some(33))
+                .is_err()
+        );
+        assert!(defaults.with_max_concurrent_queries(None).is_ok());
     }
 
     #[test]

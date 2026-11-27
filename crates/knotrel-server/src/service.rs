@@ -906,6 +906,10 @@ pub(crate) struct ServiceInner {
     import_permits: Arc<Semaphore>,
     /// Permit limit of `feeder_permits`, for the lane capacity gauge.
     feeder_reserved_jobs: usize,
+    /// B2 query execution limiter (`KNOTREL_MAX_CONCURRENT_QUERIES`): absent
+    /// unless configured. All-query requests await a permit after admission
+    /// and before their worker starts; nothing else uses it.
+    query_limiter: Option<Arc<Semaphore>>,
     // Lock-free mirror of GraphState::failed so readiness never waits for graph work.
     unavailable: Arc<AtomicBool>,
     published_readiness: Arc<AtomicU64>,
@@ -2142,9 +2146,14 @@ impl Service {
         let mode = config.mode();
         let instance_id = fresh_instance_id();
         let max_import_body_bytes = config.max_import_body_bytes();
-        let telemetry = config
-            .metrics_enabled()
-            .then(|| ServiceTelemetry::new(mode, topology_lifecycle, graph.is_inspectable()));
+        let telemetry = config.metrics_enabled().then(|| {
+            ServiceTelemetry::new(
+                mode,
+                topology_lifecycle,
+                graph.is_inspectable(),
+                config.max_concurrent_queries().is_some(),
+            )
+        });
         if let Some(telemetry) = &telemetry {
             telemetry.publish_graph_counts(&graph);
         }
@@ -2179,6 +2188,9 @@ impl Service {
             feeder_control_permits: Arc::new(Semaphore::new(FEEDER_CONTROL_PERMITS)),
             import_permits: Arc::new(Semaphore::new(IMPORT_PERMIT_CAPACITY)),
             feeder_reserved_jobs: config.feeder_reserved_jobs(),
+            query_limiter: config
+                .max_concurrent_queries()
+                .map(|limit| Arc::new(Semaphore::new(limit))),
             unavailable: Arc::new(AtomicBool::new(false)),
             published_readiness: Arc::new(AtomicU64::new(PublishedReadiness::pack(
                 SyncStatus::Uninitialized,
@@ -2706,7 +2718,7 @@ impl Service {
         let queries: Option<Vec<Query>> = operations.iter().map(Operation::as_query).collect();
         if let Some(queries) = queries {
             return self
-                .run_read(kind, move |state| {
+                .run_read_limited(kind, move |state| {
                     if let Some(refused) =
                         state.refuse_unsynchronized(mode, &instance_id, queries.len())
                     {
@@ -3041,6 +3053,23 @@ impl Service {
         Ok((permit, self.lifecycle.track_job()))
     }
 
+    /// Waits for a permit of the B2 query limiter, recording the wait and the
+    /// number of waiting requests when metrics are enabled. The waiting count
+    /// is decremented also when the caller's future is dropped mid-wait.
+    async fn wait_query_limiter(
+        &self,
+        limiter: &Arc<Semaphore>,
+    ) -> tokio::sync::OwnedSemaphorePermit {
+        let waiting = crate::metrics::LimiterWait::begin(self.telemetry.as_ref());
+        let permit = limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("the query limiter is never closed");
+        waiting.finish();
+        permit
+    }
+
     /// Awaits a graph worker. A worker that panicked or was aborted marks the
     /// service unavailable; its error is never logged, because a panic
     /// message may embed request data.
@@ -3143,7 +3172,34 @@ impl Service {
         kind: JobKind,
         work: impl FnOnce(&GraphState) -> R + Send + 'static,
     ) -> Result<R, ServiceError> {
+        self.run_read_in(kind, false, work).await
+    }
+
+    /// [`Service::run_read`] for all-query requests: when the B2 limiter is
+    /// configured, the admitted request awaits a limiter permit before its
+    /// worker starts (asynchronously, holding no worker thread and no lock),
+    /// and the worker keeps that permit until it ends, whatever the outcome.
+    /// A caller that times out or disconnects while waiting has run nothing,
+    /// and both permits are released.
+    async fn run_read_limited<R: Send + 'static>(
+        &self,
+        kind: JobKind,
+        work: impl FnOnce(&GraphState) -> R + Send + 'static,
+    ) -> Result<R, ServiceError> {
+        self.run_read_in(kind, true, work).await
+    }
+
+    async fn run_read_in<R: Send + 'static>(
+        &self,
+        kind: JobKind,
+        limited: bool,
+        work: impl FnOnce(&GraphState) -> R + Send + 'static,
+    ) -> Result<R, ServiceError> {
         let (permit, job_guard) = self.admit()?;
+        let limiter_permit = match (&self.query_limiter, limited) {
+            (Some(limiter), true) => Some(self.wait_query_limiter(limiter).await),
+            _ => None,
+        };
         let service = self.clone();
         let clock = JobClock::submit(self.telemetry.as_ref(), kind);
         let span = tracing::Span::current();
@@ -3152,6 +3208,7 @@ impl Service {
             JobClock::start(clock.as_ref());
             let _job_guard = job_guard;
             let _permit = permit;
+            let _limiter_permit = limiter_permit;
             let mut panic_guard = WorkerPanicGuard {
                 unavailable: Arc::clone(&service.unavailable),
                 panic_telemetry: None,
@@ -8272,6 +8329,220 @@ mod read_lock_tests {
                 );
             }
         }
+    }
+}
+
+/// B2 query limiter (`KNOTREL_MAX_CONCURRENT_QUERIES`,
+/// `docs/design/b2-bounded-query-concurrency.md`, invariants I1–I6). Waits are
+/// bounded and observed through channels, semaphore state or lock state;
+/// nothing sleeps.
+#[cfg(test)]
+mod query_limiter_tests {
+    use super::*;
+    use crate::api::WireNode;
+    use std::sync::mpsc;
+
+    const BOUND: Duration = Duration::from_secs(5);
+
+    fn add(node: u64) -> Operation {
+        Operation::AddNode {
+            node: WireNode(node),
+        }
+    }
+
+    fn connected(source: u64, target: u64) -> Operation {
+        Operation::Connected {
+            source: WireNode(source),
+            target: WireNode(target),
+        }
+    }
+
+    fn limited(limit: Option<usize>, capacity: usize) -> Service {
+        let config = crate::ServerConfig::default()
+            .with_metrics_enabled(true)
+            .with_max_concurrent_queries(limit)
+            .unwrap();
+        Service::with_config(
+            ConnectivityGraph::default(),
+            capacity,
+            Lifecycle::new(),
+            &config,
+        )
+    }
+
+    type HeldQuery = (
+        tokio::task::JoinHandle<Result<(), ServiceError>>,
+        tokio::sync::oneshot::Receiver<()>,
+        mpsc::Sender<()>,
+    );
+
+    /// A limited query job that reports entry, then holds until released.
+    fn held_query(service: &Service) -> HeldQuery {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let reader = service.clone();
+        let job = tokio::spawn(async move {
+            reader
+                .run_read_limited(JobKind::Batch, move |_| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(BOUND).unwrap();
+                })
+                .await
+        });
+        (job, entered_rx, release_tx)
+    }
+
+    async fn until(mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(BOUND, async {
+            while !condition() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("condition reached");
+    }
+
+    /// I5: unset means no limiter object at all.
+    #[test]
+    fn unset_setting_creates_no_limiter() {
+        let service = limited(None, 4);
+        assert!(service.query_limiter.is_none());
+        assert_eq!(
+            service.telemetry().unwrap().query_limiter_waiting(),
+            None,
+            "no limiter metrics without the setting"
+        );
+    }
+
+    /// I1 and I3: with K = 2, a third admitted query waits at the limiter,
+    /// holding its admission permit and no worker, until one of the two
+    /// running queries ends; then it runs.
+    #[tokio::test]
+    async fn limiter_bounds_running_queries_and_keeps_admission() {
+        let service = limited(Some(2), 8);
+        let limiter = Arc::clone(service.query_limiter.as_ref().unwrap());
+        let (first, first_in, first_release) = held_query(&service);
+        let (second, second_in, second_release) = held_query(&service);
+        first_in.await.unwrap();
+        second_in.await.unwrap();
+        assert_eq!(limiter.available_permits(), 0);
+
+        let (third, mut third_in, third_release) = held_query(&service);
+        let telemetry = Arc::clone(service.telemetry().unwrap());
+        until(|| telemetry.query_limiter_waiting() == Some(1)).await;
+        assert_eq!(service.permits.available_permits(), 8 - 3, "three admitted");
+        assert!(
+            third_in.try_recv().is_err(),
+            "the third waits at the limiter"
+        );
+
+        first_release.send(()).unwrap();
+        first.await.unwrap().unwrap();
+        tokio::time::timeout(BOUND, &mut third_in)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(telemetry.query_limiter_waiting(), Some(0));
+        second_release.send(()).unwrap();
+        third_release.send(()).unwrap();
+        second.await.unwrap().unwrap();
+        third.await.unwrap().unwrap();
+        assert_eq!(limiter.available_permits(), 2);
+        assert_eq!(service.permits.available_permits(), 8);
+    }
+
+    /// I4: a query abandoned while waiting at the limiter ran nothing and
+    /// releases its admission permit and its waiting count.
+    #[tokio::test]
+    async fn abandoned_wait_releases_permits_and_runs_nothing() {
+        let service = limited(Some(1), 4);
+        let telemetry = Arc::clone(service.telemetry().unwrap());
+        let (holder, holder_in, holder_release) = held_query(&service);
+        holder_in.await.unwrap();
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let service = service.clone();
+            let ran = Arc::clone(&ran);
+            tokio::spawn(async move {
+                service
+                    .run_read_limited(JobKind::Batch, move |_| ran.store(true, Ordering::SeqCst))
+                    .await
+            })
+        };
+        until(|| telemetry.query_limiter_waiting() == Some(1)).await;
+        assert_eq!(service.permits.available_permits(), 4 - 2);
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        until(|| service.permits.available_permits() == 4 - 1).await;
+        assert_eq!(telemetry.query_limiter_waiting(), Some(0));
+
+        holder_release.send(()).unwrap();
+        holder.await.unwrap().unwrap();
+        assert!(!ran.load(Ordering::SeqCst), "the abandoned query never ran");
+        assert_eq!(service.permits.available_permits(), 4);
+    }
+
+    /// I1 and the scope: with every limiter permit taken, writers, stats and
+    /// inspection-free reads proceed; only all-query requests wait. Answers
+    /// are unchanged once the permit returns (I2).
+    #[tokio::test]
+    async fn writers_and_stats_never_wait_on_the_limiter() {
+        let service = limited(Some(1), 8);
+        service.execute(vec![add(1), add(2)]).await.unwrap();
+        let limiter = Arc::clone(service.query_limiter.as_ref().unwrap());
+        let taken = limiter.clone().acquire_owned().await.unwrap();
+
+        let write = tokio::time::timeout(BOUND, service.execute(vec![add(3)]))
+            .await
+            .expect("a writer does not wait on the limiter")
+            .unwrap();
+        assert_eq!(write.metadata.state_version, "3");
+        tokio::time::timeout(BOUND, service.stats())
+            .await
+            .expect("stats do not wait on the limiter")
+            .unwrap();
+
+        let query = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .execute(vec![connected(1, 2), connected(1, 1)])
+                    .await
+            })
+        };
+        let telemetry = Arc::clone(service.telemetry().unwrap());
+        until(|| telemetry.query_limiter_waiting() == Some(1)).await;
+        assert!(!query.is_finished(), "the query waits for the permit");
+        drop(taken);
+        let result = tokio::time::timeout(BOUND, query)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            result.outcomes.as_slice(),
+            [
+                Outcome::Connected { connected: false },
+                Outcome::Connected { connected: true }
+            ]
+        ));
+    }
+
+    /// A mixed request (one mutation) is a writer and is not limited.
+    #[tokio::test]
+    async fn mixed_requests_are_writers_and_not_limited() {
+        let service = limited(Some(1), 8);
+        let limiter = Arc::clone(service.query_limiter.as_ref().unwrap());
+        let _taken = limiter.clone().acquire_owned().await.unwrap();
+        let result = tokio::time::timeout(BOUND, service.execute(vec![add(1), connected(1, 1)]))
+            .await
+            .expect("a mixed request does not wait on the limiter")
+            .unwrap();
+        assert!(matches!(
+            result.outcomes.as_slice(),
+            [_, Outcome::Connected { connected: true }]
+        ));
     }
 }
 

@@ -803,6 +803,7 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_INSPECTION` | Exactly `true` or `false`; `true` enables the read-only [inspection routes](#inspection-opt-in) and keeps an ordered node index | `false` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
 | `KNOTREL_FEEDER_RESERVED_JOBS` | ASCII decimal integer from 1 through 64; admission permits for feeder events, barriers and gaps, used in source-managed mode only | `4` |
+| `KNOTREL_MAX_CONCURRENT_QUERIES` | Experimental (B2, new in 1.2). ASCII decimal integer from 1 through `KNOTREL_MAX_PENDING_JOBS`. When set, at most that many all-query requests (`/v1/batch` or `/v1/operations` whose operations are all queries) run at once; further admitted query requests wait, keeping their admission permit, until one ends, within `KNOTREL_REQUEST_TIMEOUT_MS`. Writers, feeder jobs, stats and inspection never wait on it. Admission and `503 busy` are unchanged. It trades query throughput and latency for CPU and lock time left to the feeder ([design](design/b2-bounded-query-concurrency.md)) | unset (no bound) |
 | `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
 | `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |
 | `KNOTREL_MAX_CONNECTIONS` | ASCII decimal integer from 1 through 1000000 | `1024` |

@@ -765,10 +765,82 @@ pub(crate) struct ServiceTelemetry {
     last_applied: AtomicU64,
     imports: Option<ImportMetrics>,
     catchup: Option<CatchupMetrics>,
+    // Present only when `KNOTREL_MAX_CONCURRENT_QUERIES` is set (B2).
+    query_limiter: Option<LimiterMetrics>,
+}
+
+/// B2 query limiter observations: wait for a permit, and requests waiting.
+#[derive(Debug)]
+struct LimiterMetrics {
+    wait: Histogram,
+    waiting: Gauge,
+}
+
+/// One admitted query request waiting for a B2 limiter permit. Created
+/// before the wait; [`LimiterWait::finish`] records the wait when the permit
+/// arrives, and dropping it (finished or not) decrements the waiting gauge,
+/// so a caller that goes away mid-wait leaves no stale count.
+pub(crate) struct LimiterWait {
+    telemetry: Option<Arc<ServiceTelemetry>>,
+    started: Instant,
+}
+
+impl LimiterWait {
+    pub(crate) fn begin(telemetry: Option<&Arc<ServiceTelemetry>>) -> Self {
+        let telemetry = telemetry
+            .filter(|t| t.query_limiter.is_some())
+            .map(Arc::clone);
+        if let Some(limiter) = telemetry.as_ref().and_then(|t| t.query_limiter.as_ref()) {
+            limiter.waiting.inc();
+        }
+        Self {
+            telemetry,
+            started: timing_now(),
+        }
+    }
+
+    pub(crate) fn finish(&self) {
+        if let Some(limiter) = self
+            .telemetry
+            .as_ref()
+            .and_then(|t| t.query_limiter.as_ref())
+        {
+            limiter.wait.observe(
+                timing_now()
+                    .saturating_duration_since(self.started)
+                    .as_secs_f64(),
+            );
+        }
+    }
+}
+
+impl Drop for LimiterWait {
+    fn drop(&mut self) {
+        if let Some(limiter) = self
+            .telemetry
+            .as_ref()
+            .and_then(|t| t.query_limiter.as_ref())
+        {
+            limiter.waiting.dec();
+        }
+    }
 }
 
 impl ServiceTelemetry {
-    pub(crate) fn new(mode: ServerMode, lifecycle: bool, inspection: bool) -> Arc<Self> {
+    /// Requests waiting at the B2 query limiter, when it is configured.
+    #[cfg(test)]
+    pub(crate) fn query_limiter_waiting(&self) -> Option<i64> {
+        self.query_limiter
+            .as_ref()
+            .map(|limiter| limiter.waiting.get())
+    }
+
+    pub(crate) fn new(
+        mode: ServerMode,
+        lifecycle: bool,
+        inspection: bool,
+        query_limiter: bool,
+    ) -> Arc<Self> {
         let rejected_family = Family::<RejectionLabels, Counter>::default();
         let uncertain_family = Family::<OutcomeLabels, Counter>::default();
         let rejected = Rejection::ALL.map(|reason| {
@@ -886,6 +958,10 @@ impl ServiceTelemetry {
             last_applied: AtomicU64::new(0),
             imports,
             catchup,
+            query_limiter: query_limiter.then(|| LimiterMetrics {
+                wait: job_phase_histogram(),
+                waiting: Gauge::default(),
+            }),
         })
     }
 
@@ -981,6 +1057,18 @@ impl ServiceTelemetry {
                 "knotrel_import_duration_seconds",
                 "Import time by phase on the monotonic clock: receive (permit acquired to body read returned), prepare (worker parse and off-lock candidate build), publish (graph-lock request to the worker's end, including lock wait, validation and swap); disjoint, excluding the handler's pre-spawn work, the blocking-pool queue and the worker start; a failed phase is observed up to its error, a phase interrupted by a panic or an abandoned body read, or never reached, is not",
                 imports.durations_family.clone(),
+            );
+        }
+        if let Some(limiter) = &self.query_limiter {
+            registry.register(
+                "knotrel_query_limiter_wait_seconds",
+                "Time an admitted all-query request waited for a permit of the query limiter (KNOTREL_MAX_CONCURRENT_QUERIES) before its worker was submitted; recorded when the permit arrives, not for callers that left while waiting; present only when the limiter is configured",
+                limiter.wait.clone(),
+            );
+            registry.register(
+                "knotrel_query_limiter_waiting",
+                "Admitted all-query requests currently waiting for a query limiter permit; present only when the limiter is configured",
+                limiter.waiting.clone(),
             );
         }
         if let Some(catchup) = &self.catchup {

@@ -113,6 +113,7 @@ pub fn knotrel_server::ServerConfig::graph_limits(&self) -> knotrel_core::GraphL
 pub fn knotrel_server::ServerConfig::header_read_timeout(&self) -> core::time::Duration
 pub fn knotrel_server::ServerConfig::inspection(&self) -> bool
 pub fn knotrel_server::ServerConfig::is_exposed(&self) -> bool
+pub fn knotrel_server::ServerConfig::max_concurrent_queries(&self) -> core::option::Option<usize>
 pub fn knotrel_server::ServerConfig::max_connections(&self) -> usize
 pub fn knotrel_server::ServerConfig::max_import_body_bytes(&self) -> usize
 pub fn knotrel_server::ServerConfig::max_pending_jobs(&self) -> usize
@@ -128,6 +129,7 @@ pub fn knotrel_server::ServerConfig::with_feeder_reserved_jobs(self, jobs: usize
 pub fn knotrel_server::ServerConfig::with_graph_limits(self, limits: knotrel_core::GraphLimits) -> Self
 pub fn knotrel_server::ServerConfig::with_header_read_timeout(self, timeout: core::time::Duration) -> core::result::Result<Self, knotrel_server::ConfigError>
 pub fn knotrel_server::ServerConfig::with_inspection(self, enabled: bool) -> Self
+pub fn knotrel_server::ServerConfig::with_max_concurrent_queries(self, limit: core::option::Option<usize>) -> core::result::Result<Self, knotrel_server::ConfigError>
 pub fn knotrel_server::ServerConfig::with_max_connections(self, limit: usize) -> core::result::Result<Self, knotrel_server::ConfigError>
 pub fn knotrel_server::ServerConfig::with_max_import_body_bytes(self, bytes: usize) -> core::result::Result<Self, knotrel_server::ConfigError>
 pub fn knotrel_server::ServerConfig::with_metrics_enabled(self, enabled: bool) -> Self
