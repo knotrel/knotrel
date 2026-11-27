@@ -427,3 +427,163 @@ fn bidirectional_search_matches_reference_on_all_pairs() {
     }
     check(&compact, &reference, "after cuts");
 }
+
+/// Adaptive search: random dynamic histories over mark-word boundaries
+/// (vertex counts around multiples of 32), long paths and isolated endpoints
+/// answer every queried pair like the reference.
+#[test]
+fn adaptive_search_matches_reference_on_random_histories() {
+    for (nodes, seed) in [
+        (31_u64, 1_u64),
+        (32, 2),
+        (33, 3),
+        (65, 4),
+        (130, 5),
+        (257, 6),
+    ] {
+        let mut compact = Graph::new();
+        let mut reference = knotrel_core::ReferenceGraph::new();
+        let mut state = seed;
+        let mut next = |bound: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % bound
+        };
+        for node in 0..nodes {
+            assert_eq!(compact.add_node(node), reference.add_node(node));
+        }
+        for step in 0..nodes / 2 {
+            assert_eq!(compact.link(step, step + 1), reference.link(step, step + 1));
+        }
+        for _ in 0..nodes * 20 {
+            let (a, b) = (next(nodes), next(nodes));
+            match next(4) {
+                0 if a != b => assert_eq!(compact.link(a, b), reference.link(a, b)),
+                1 if a != b => assert_eq!(compact.cut(a, b), reference.cut(a, b)),
+                _ => assert_eq!(
+                    compact.connected(a, b),
+                    reference.connected(a, b),
+                    "nodes {nodes}: {a} -> {b}"
+                ),
+            }
+        }
+        for a in 0..nodes {
+            for b in 0..nodes {
+                assert_eq!(compact.connected(a, b), reference.connected(a, b));
+            }
+        }
+    }
+}
+
+/// Adaptive search, the cases of the impact-estimate protocol (section 1.3),
+/// in both endpoint orders: a chain, two disconnected segments, two equal
+/// halves, a cycle, a hub with leaves (spoke present, spoke cut, isolated
+/// leaf) and a hub-rich small-world graph.
+#[test]
+fn adaptive_search_protocol_cases_in_both_orders() {
+    fn both(compact: &Graph, reference: &knotrel_core::ReferenceGraph, a: u64, b: u64, case: &str) {
+        assert_eq!(
+            compact.connected(a, b),
+            reference.connected(a, b),
+            "{case}: {a} -> {b}"
+        );
+        assert_eq!(
+            compact.connected(b, a),
+            reference.connected(b, a),
+            "{case}: {b} -> {a}"
+        );
+    }
+    let build = |edges: &[(u64, u64)], isolated: &[u64]| {
+        let mut compact = Graph::new();
+        let mut reference = knotrel_core::ReferenceGraph::new();
+        for &(a, b) in edges {
+            assert_eq!(compact.link(a, b), reference.link(a, b));
+        }
+        for &node in isolated {
+            assert_eq!(compact.add_node(node), reference.add_node(node));
+        }
+        (compact, reference)
+    };
+    let n = 1_000_u64;
+    // Chain, then cut into two segments at several points.
+    let chain: Vec<(u64, u64)> = (0..n - 1).map(|v| (v, v + 1)).collect();
+    let (mut compact, mut reference) = build(&chain, &[]);
+    both(&compact, &reference, 0, n - 1, "chain");
+    both(&compact, &reference, 17, 900, "chain interior");
+    for k in [0, 1, n / 2, n - 3, n - 2] {
+        assert_eq!(compact.cut(k, k + 1), reference.cut(k, k + 1));
+        both(&compact, &reference, 0, n - 1, "two segments");
+        both(&compact, &reference, k, k + 1, "two segments at the cut");
+        assert_eq!(compact.link(k, k + 1), reference.link(k, k + 1));
+    }
+    // Cycle with a vertex isolated and reattached edge by edge.
+    let cycle: Vec<(u64, u64)> = (0..n).map(|v| (v, (v + 1) % n)).collect();
+    let (mut compact, mut reference) = build(&cycle, &[]);
+    for v in [0, 123, n - 1] {
+        let target = (v + n / 2) % n;
+        let (left, right) = ((v + n - 1) % n, (v + 1) % n);
+        both(&compact, &reference, v, target, "cycle");
+        assert_eq!(compact.cut(v, left), reference.cut(v, left));
+        both(&compact, &reference, v, target, "cycle, one edge cut");
+        assert_eq!(compact.cut(v, right), reference.cut(v, right));
+        both(&compact, &reference, v, target, "cycle, vertex isolated");
+        assert_eq!(compact.link(v, right), reference.link(v, right));
+        assert_eq!(compact.link(v, left), reference.link(v, left));
+    }
+    // Hub fan: 0 adjacent to all, plus a path 1..n-1 (the K1 hub-alternatives graph).
+    let mut fan: Vec<(u64, u64)> = (1..n).map(|v| (0, v)).collect();
+    fan.extend((1..n - 1).map(|v| (v, v + 1)));
+    let (mut compact, mut reference) = build(&fan, &[]);
+    for v in [1, 2, 500, n - 1] {
+        both(&compact, &reference, 0, v, "hub and leaf, spoke present");
+        assert_eq!(compact.cut(0, v), reference.cut(0, v));
+        both(&compact, &reference, 0, v, "hub and leaf, spoke cut");
+        let neighbors: Vec<u64> = [v - 1, v + 1]
+            .into_iter()
+            .filter(|&w| w >= 1 && w < n)
+            .collect();
+        for &w in &neighbors {
+            assert_eq!(compact.cut(v, w), reference.cut(v, w));
+        }
+        both(&compact, &reference, 0, v, "hub and isolated leaf");
+        for &w in &neighbors {
+            assert_eq!(compact.link(v, w), reference.link(v, w));
+        }
+        assert_eq!(compact.link(0, v), reference.link(0, v));
+    }
+    // Two equal halves joined and split by one link (components-join-split).
+    let halves: Vec<(u64, u64)> = (0..n - 1)
+        .filter(|&v| v + 1 != n / 2)
+        .map(|v| (v, v + 1))
+        .collect();
+    let (mut compact, mut reference) = build(&halves, &[]);
+    both(&compact, &reference, 0, n - 1, "two halves, split");
+    assert_eq!(compact.link(100, 700), reference.link(100, 700));
+    both(&compact, &reference, 0, n - 1, "two halves, joined");
+    // Ring with chords and a hub of random spokes (the #181 hub topology).
+    let mut ring: Vec<(u64, u64)> = (0..n).map(|v| (v, (v + 1) % n)).collect();
+    let mut seed = 196_u64;
+    let mut next = |bound: u64| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) % bound
+    };
+    for _ in 0..300 {
+        let spoke = next(n);
+        if spoke != 7 {
+            ring.push((7, spoke));
+        }
+    }
+    let (compact, reference) = build(&ring, &[n, n + 1]);
+    for _ in 0..500 {
+        both(
+            &compact,
+            &reference,
+            next(n + 2),
+            next(n + 2),
+            "small world",
+        );
+    }
+}

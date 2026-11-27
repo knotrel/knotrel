@@ -285,7 +285,6 @@
 //!   their documentation lists as guaranteed are stable; the exact values are implementation-dependent.
 //!   [`ReferenceGraph`] is an internal test oracle.
 
-use fixedbitset::FixedBitSet;
 use nohash_hasher::IntMap;
 use std::{collections::hash_map::Entry, error::Error, fmt};
 
@@ -514,12 +513,14 @@ impl Graph {
 
     /// Reports whether a path exists between two existing vertices.
     ///
-    /// Existing vertices connect to themselves. The search is a bidirectional
-    /// breadth-first search: it grows one frontier from each endpoint and stops
-    /// as soon as they touch, or when either side is exhausted. Worst-case time
-    /// O(V + E), with O(1) endpoint lookup and O(V) local scratch
-    /// initialization/allocation (two bitsets of V bits). Scratch is private to
-    /// each call, so shared queries need no internal lock.
+    /// Existing vertices connect to themselves. The search grows one
+    /// breadth-first frontier from each endpoint, expanding one vertex at a time
+    /// on the side whose pending work is not more than twice the other's, and
+    /// stops as soon as the sides touch or either is exhausted (see
+    /// `adaptive_search`). Worst-case time O(V + E), with O(1) endpoint lookup
+    /// and O(V) local scratch initialization/allocation (two bits per vertex
+    /// and one queue per side). Scratch is private to each call, so shared
+    /// queries need no internal lock.
     ///
     /// ```
     /// let mut graph = knotrel_core::Graph::new();
@@ -545,33 +546,11 @@ impl Graph {
         if a == b {
             return Ok(true);
         }
-        let mut source_side = Side::new(self.adjacency.len(), a, self.adjacency[a].len());
-        let mut target_side = Side::new(self.adjacency.len(), b, self.adjacency[b].len());
-        let mut next = Vec::new();
-        // Invariants: every vertex marked by a side is reachable from that
-        // side's endpoint, and each side's frontier holds exactly the vertices
-        // it marked in its last expanded layer. If the endpoints are connected,
-        // a shortest path between them crosses from source-marked to
-        // target-marked vertices along some edge; expanding a frontier examines
-        // every edge leaving it, so the first such edge is found before either
-        // side runs out of vertices. Conversely, an empty frontier means that
-        // side has marked its whole component without meeting the other side,
-        // whose endpoint is therefore in another component. Each vertex is
-        // marked at most once per side, so the work is O(V + E) in the worst
-        // case. Expanding the side with fewer pending incidences first keeps
-        // the two searches balanced (an informal heuristic; it does not change
-        // the bound).
-        while !source_side.frontier.is_empty() && !target_side.frontier.is_empty() {
-            let (expand, other) = if source_side.pending <= target_side.pending {
-                (&mut source_side, &target_side)
-            } else {
-                (&mut target_side, &source_side)
-            };
-            if expand.expand(&self.adjacency, &other.marked, &mut next) {
-                return Ok(true);
-            }
+        if self.adjacency[a].is_empty() || self.adjacency[b].is_empty() {
+            // Distinct endpoints, one of them isolated: no path.
+            return Ok(false);
         }
-        Ok(false)
+        Ok(adaptive_search(&self.adjacency, a, b))
     }
 
     /// Returns the number of vertices, including isolated ones, in O(1) time.
@@ -743,56 +722,100 @@ impl Graph {
     }
 }
 
-/// One side of the bidirectional search of [`Graph::connected`].
-///
-/// `marked` holds every vertex this side has reached, `frontier` the vertices
-/// it reached in its last expanded layer, and `pending` the sum of their
-/// degrees (the number of incidences the next expansion will examine).
+/// Marks of [`Graph::connected`]'s search: two bits per vertex in one
+/// allocation, so one load tells whether a neighbor is unmarked, the source
+/// side's or the target side's.
+const MARK_BITS: usize = 2;
+const MARKS_PER_WORD: usize = u64::BITS as usize / MARK_BITS;
+const MARK_MASK: u64 = 0b11;
+const UNMARKED: u64 = 0;
+const SOURCE_MARK: u64 = 1;
+const TARGET_MARK: u64 = 2;
+
+/// Hysteresis of the side choice: the active side keeps expanding while its
+/// pending work is at most `SWITCH_FACTOR` times the other side's.
+const SWITCH_FACTOR: usize = 2;
+
+/// One side of [`adaptive_search`]: the vertices it marked in FIFO order, the
+/// first one not yet expanded, and `pending`, the summed degree of the
+/// unexpanded vertices (the adjacency entries their expansion will examine).
 struct Side {
-    marked: FixedBitSet,
-    frontier: Vec<usize>,
+    queue: Vec<usize>,
+    cursor: usize,
     pending: usize,
+    mark: u64,
 }
 
-impl Side {
-    /// A side that has reached only `start`, whose degree is `degree`.
-    fn new(vertices: usize, start: usize, degree: usize) -> Self {
-        let mut marked = FixedBitSet::with_capacity(vertices);
-        marked.insert(start);
-        Self {
-            marked,
-            frontier: vec![start],
-            pending: degree,
-        }
-    }
-
-    /// Expands the whole frontier by one layer. Returns `true` as soon as an
-    /// examined neighbor is marked by `other` (the sides touch); otherwise
-    /// replaces the frontier with the newly marked vertices, using `next` as
-    /// reusable storage. O(1 + incidences examined).
-    fn expand(
-        &mut self,
-        adjacency: &[Vec<usize>],
-        other: &FixedBitSet,
-        next: &mut Vec<usize>,
-    ) -> bool {
-        next.clear();
-        let mut pending = 0;
-        for &vertex in &self.frontier {
-            for &neighbor in &adjacency[vertex] {
-                if other.contains(neighbor) {
-                    return true;
-                }
-                if !self.marked.contains(neighbor) {
-                    self.marked.insert(neighbor);
-                    next.push(neighbor);
-                    pending += adjacency[neighbor].len();
-                }
+/// The search behind [`Graph::connected`], for distinct endpoints `a` and `b`
+/// that both have at least one incident edge (knotrel docs/design/
+/// adaptive-bfs-impact-estimate.md, section 1).
+///
+/// It starts on the endpoint of lower degree (the source on a tie) and expands
+/// one vertex at a time. After each expansion it changes side only when the
+/// active side's pending work exceeds twice the other side's; equal or
+/// near-equal costs keep the current side. On narrow frontiers (paths,
+/// cycles) the costs stay within that factor, so the search runs from one
+/// side like a plain breadth-first search; when one frontier grows much
+/// faster, the sides take turns as in a balanced bidirectional search.
+///
+/// Correctness: an edge between a source-marked and a target-marked vertex is
+/// detected by whichever side scans it second, and an exhausted side has
+/// scanned every vertex it marked, so its component holds no target-marked
+/// vertex (the first one on a path would have been seen from its scanned
+/// predecessor). The other side always has an unexpanded vertex of positive
+/// degree, so its pending work is at least one. Each vertex is marked at most
+/// once: O(V + E).
+fn adaptive_search(adjacency: &[Vec<usize>], a: usize, b: usize) -> bool {
+    let mut marks = vec![0_u64; adjacency.len().div_ceil(MARKS_PER_WORD)];
+    let set = |marks: &mut [u64], vertex: usize, mark: u64| {
+        marks[vertex / MARKS_PER_WORD] |= mark << (MARK_BITS * (vertex % MARKS_PER_WORD));
+    };
+    set(&mut marks, a, SOURCE_MARK);
+    set(&mut marks, b, TARGET_MARK);
+    let mut sides = [
+        Side {
+            queue: vec![a],
+            cursor: 0,
+            pending: adjacency[a].len(),
+            mark: SOURCE_MARK,
+        },
+        Side {
+            queue: vec![b],
+            cursor: 0,
+            pending: adjacency[b].len(),
+            mark: TARGET_MARK,
+        },
+    ];
+    let mut active = usize::from(adjacency[a].len() > adjacency[b].len());
+    loop {
+        let [first, second] = &mut sides;
+        let (side, other) = if active == 0 {
+            (first, &*second)
+        } else {
+            (second, &*first)
+        };
+        let vertex = side.queue[side.cursor];
+        side.cursor += 1;
+        side.pending -= adjacency[vertex].len();
+        for &neighbor in &adjacency[vertex] {
+            let word = neighbor / MARKS_PER_WORD;
+            let shift = MARK_BITS * (neighbor % MARKS_PER_WORD);
+            let state = (marks[word] >> shift) & MARK_MASK;
+            if state == other.mark {
+                return true;
+            }
+            if state == UNMARKED {
+                marks[word] |= side.mark << shift;
+                side.queue.push(neighbor);
+                side.pending += adjacency[neighbor].len();
             }
         }
-        std::mem::swap(&mut self.frontier, next);
-        self.pending = pending;
-        false
+        if side.cursor == side.queue.len() {
+            return false;
+        }
+        if side.pending > SWITCH_FACTOR * other.pending {
+            active = 1 - active;
+        }
     }
 }
 
