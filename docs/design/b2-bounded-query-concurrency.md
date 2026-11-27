@@ -1,8 +1,14 @@
 # B2: bounded concurrent query execution (#87)
 
-**Status: DESIGN PROPOSAL FOR MAINTAINER APPROVAL (2026-11-27).** Nothing is implemented or
-measured.
+**Status: APPROVED BY THE MAINTAINER (2026-11-27), recorded before implementation and
+measurement.**
 
+- The maintainer chose Q5 **option B**: Q5 decides in the default mode, and is computed and
+  published as the operational cost in the opt-in mode.
+- Approved together with it:
+  - a single opt-in value, **K = 4**;
+  - the two-hour budget;
+  - the comparison of section 5, with the reporting added in section 5.1.
 - Approval fixes the mechanism, the bound, the comparison and the adoption criteria before
   any code is written or measured.
 - Under the per-release measurement policy (#186) this is an **impact estimate**: it
@@ -158,6 +164,19 @@ for `off` and once for `on`, each with the `before` reference arm in the same se
 - feeder lock wait, `limiter_wait` and query batch execution from the phase histograms;
 - host CPU.
 
+### 5.1 Reporting required by the approval
+
+For **each mode** (`off`, `on`) and for the `before` reference, side by side:
+- feeder catch-up **events/s without load** (L2 C=0) and **under load** (L2 C=16, C=64);
+- the **share kept** (C=16 and C=64 against C=0);
+- **query throughput** (req/s);
+- **end-to-end client p99**, as measured by the load tool's clients, so it **includes the
+  wait for the limiter permit** and admission;
+- **admission refusals:** feeder `503` refusals and query errors or `503`s, as recorded by
+  the load tool.
+
+This shows whether the feeder really drains more events, and what that costs.
+
 **Two summary quantities, reported separately:**
 - **feeder recovery against `before`:** (share_on − share_before) / share_before at C=16;
 - **distance from Q3:** share_on − 50 % at C=16, in points.
@@ -172,14 +191,11 @@ for `off` and once for `on`, each with the `before` reference arm in the same se
 Thresholds: Q1 marker lag p99 ≤ 1 s and max ≤ 3 s; Q2 no growing lag and retained WAL ≤
 start + 16 MB; Q3 as above; Q4 time to `ready` ≤ 60 s; Q5 throughput ≥ 90 % and p99 ≤ 125 %.
 
-**Q5 in the `on` mode: a decision needed now.**
-- **(A) Q5 deciding in both modes.** By the model, the `on` mode fails Q5 and B2 is
-  REJECTED. Q3 then stays FAIL as a declared limitation, and v1.2.0 has no product change.
-- **(B) Q5 deciding in the default mode only; in the `on` mode it is reported as the
-  declared cost of an explicit opt-in.** The release notes would state the measured
-  throughput and p99 change next to the feeder gain.
-  - *Recommended.* Defaults stay Q5-clean, and the trade-off is the operator's informed
-    choice.
+**Q5 in the `on` mode: option B, chosen by the maintainer.**
+- Q5 decides in the default mode (`off`) against v1.1.0.
+- In the `on` mode it is computed under the same rule and **published as the operational
+  cost** of the explicit opt-in. It does not decide.
+- (Option A, Q5 deciding in both modes, was not chosen.)
 
 **Adopt only if** every deciding cell passes, in both modes, under the chosen Q5 option, and
 the correctness checks hold. Otherwise the result is "no change": Q3 keeps its declared
