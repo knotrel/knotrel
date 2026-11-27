@@ -132,6 +132,9 @@ export interface paths {
      *     `set_edge_enabled` and `remove_node` and the queries `node_state` and `edge_state`
      *     are also executed; without it they always parse but are rejected with 409
      *     `topology_lifecycle_disabled` before execution.
+     *     With the experimental `KNOTREL_MAX_CONCURRENT_QUERIES` set, an admitted query may first
+     *     wait until fewer than that many all-query requests are running; the wait counts toward
+     *     the request timeout, and responses, status codes and admission are unchanged.
      */
     post: operations['execute_operation'];
     delete?: never;
@@ -163,6 +166,9 @@ export interface paths {
      *     In source-managed mode, while the graph is uninitialized, loading or desynchronized, an
      *     all-query batch is answered 200 with one error outcome per operation (`uninitialized`,
      *     `loading` or `desynchronized`) and the version headers; nothing was executed.
+     *     With the experimental `KNOTREL_MAX_CONCURRENT_QUERIES` set, an admitted all-query batch
+     *     may first wait until fewer than that many all-query requests are running; the wait counts
+     *     toward the request timeout, and responses, status codes and admission are unchanged.
      */
     post: operations['execute_batch'];
     delete?: never;
