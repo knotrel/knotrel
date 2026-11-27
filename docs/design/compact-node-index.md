@@ -1,6 +1,6 @@
 # Compact internal node indices (option B): design and comparison protocol
 
-**Status: APPROVED (2026-11-26) — design and protocol approved by the maintainer with the decisions below; implementation and comparison authorized; nothing measured yet. The host-time cap is still to be approved after the pilot, before the freeze.**
+**Status: CLOSED — REJECTED (2026-11-27).** The frozen comparison of section 6 (base `2d7fa9d`, candidate `0f46322`, 141 cells, within the approved 9 h cap) returned REJECT under section 6.7. D4 fails because 13 primary metrics are SLOWER, up to 1.57× on `cut` in `sparse-10⁶`. D5 fails because inspection criterion C4 on the candidate is 77.6 bytes per node, against 40. G1 and G2 pass. B64 is not adopted; the implementation (#199) is closed unmerged, and nothing enters #182. Results: knotrel-benchmarks `results/v1.2.0-151/REPORT.md`. The design and protocol below are kept as approved on 2026-11-26.
 
 **Maintainer decisions (2026-11-26).** Q1: B64 is the only formal candidate;
 B32 and the width promotion are not pursued. Q2: the `compact-bfs` engine
