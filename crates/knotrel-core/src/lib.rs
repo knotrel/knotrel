@@ -285,6 +285,7 @@
 //!   their documentation lists as guaranteed are stable; the exact values are implementation-dependent.
 //!   [`ReferenceGraph`] is an internal test oracle.
 
+use fixedbitset::FixedBitSet;
 use nohash_hasher::IntMap;
 use std::{collections::hash_map::Entry, error::Error, fmt};
 
@@ -723,14 +724,15 @@ impl Graph {
 }
 
 /// Marks of [`Graph::connected`]'s search: two bits per vertex in one
-/// allocation, so one load tells whether a neighbor is unmarked, the source
+/// allocation (a [`FixedBitSet`] of 2V bits read and written by whole
+/// blocks), so one load tells whether a neighbor is unmarked, the source
 /// side's or the target side's.
 const MARK_BITS: usize = 2;
-const MARKS_PER_WORD: usize = u64::BITS as usize / MARK_BITS;
-const MARK_MASK: u64 = 0b11;
-const UNMARKED: u64 = 0;
-const SOURCE_MARK: u64 = 1;
-const TARGET_MARK: u64 = 2;
+const MARKS_PER_WORD: usize = usize::BITS as usize / MARK_BITS;
+const MARK_MASK: usize = 0b11;
+const UNMARKED: usize = 0;
+const SOURCE_MARK: usize = 1;
+const TARGET_MARK: usize = 2;
 
 /// Hysteresis of the side choice: the active side keeps expanding while its
 /// pending work is at most `SWITCH_FACTOR` times the other side's.
@@ -743,7 +745,7 @@ struct Side {
     queue: Vec<usize>,
     cursor: usize,
     pending: usize,
-    mark: u64,
+    mark: usize,
 }
 
 /// The search behind [`Graph::connected`], for distinct endpoints `a` and `b`
@@ -766,12 +768,13 @@ struct Side {
 /// degree, so its pending work is at least one. Each vertex is marked at most
 /// once: O(V + E).
 fn adaptive_search(adjacency: &[Vec<usize>], a: usize, b: usize) -> bool {
-    let mut marks = vec![0_u64; adjacency.len().div_ceil(MARKS_PER_WORD)];
-    let set = |marks: &mut [u64], vertex: usize, mark: u64| {
+    let mut bits = FixedBitSet::with_capacity(MARK_BITS * adjacency.len());
+    let marks = bits.as_mut_slice();
+    let set = |marks: &mut [usize], vertex: usize, mark: usize| {
         marks[vertex / MARKS_PER_WORD] |= mark << (MARK_BITS * (vertex % MARKS_PER_WORD));
     };
-    set(&mut marks, a, SOURCE_MARK);
-    set(&mut marks, b, TARGET_MARK);
+    set(marks, a, SOURCE_MARK);
+    set(marks, b, TARGET_MARK);
     let mut sides = [
         Side {
             queue: vec![a],
