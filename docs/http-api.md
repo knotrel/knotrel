@@ -431,6 +431,85 @@ Admission occurs after JSON parsing; this limit bounds graph work, not buffered
 HTTP bodies (those are bounded by the connection limit times 1 MiB). Workers
 run outside Tokio's async executor. `busy` means no graph operation was admitted.
 
+### Bounded query concurrency (experimental, new in 1.2)
+
+Lanes only decide admission. Once admitted, query batches and feeder jobs
+compete for the same CPUs and the same graph lock. A source-managed feeder that
+has to drain a backlog while many clients query can therefore fall far behind:
+with `compact-bfs` it kept 16 % of its no-load event rate under 16 query
+clients, and 9 % under 64.
+
+`KNOTREL_MAX_CONCURRENT_QUERIES` (unset by default) bounds how many all-query
+requests run at once. These are `/v1/batch` and `/v1/operations` requests whose
+operations are all queries.
+- Further admitted query requests keep their admission permit and wait for a
+  free slot, within `KNOTREL_REQUEST_TIMEOUT_MS`. The wait is part of the
+  client's latency.
+- Writers, feeder jobs, stats and inspection never wait on the bound.
+- Admission, the lanes and `503 busy` are unchanged.
+- With metrics enabled, `knotrel_query_limiter_wait_seconds` and
+  `knotrel_query_limiter_waiting` report the wait
+  ([observability contract](observability-contract.md)).
+
+**Intended use: a feeder that must catch up a backlog under query load.**
+Examples are recovery after a feeder or database outage, bulk change bursts,
+and backlogs after an import or replacement. In general, it suits setups where
+freshness under load matters more than peak query throughput. It is not useful:
+- in standalone mode, where there is no feeder and only the cost remains;
+- when maximum query throughput matters most;
+- with fewer concurrent query clients than the bound, where it has no effect.
+
+**Measured configuration: `KNOTREL_MAX_CONCURRENT_QUERIES=4` on 8 CPUs.**
+- The host was an Apple M3 (8 CPUs) with `compact-bfs`, over loopback.
+- The workload was the frozen v1.0.0 block-Q procedure at 100,000 nodes, three
+  observations per cell.
+- No other value was measured. Start from about half the CPUs and measure on
+  the target host.
+- Report:
+  [B2 impact estimate](https://github.com/knotrel/knotrel-benchmarks/blob/main/results/v1.2.0-b2-estimate/REPORT.md).
+
+**Feeder catch-up of a 100,000-change backlog.** The baseline is the same
+build with the setting unset, in the same session. Medians of three
+observations; the share is relative to each mode's no-load rate.
+
+| Query clients | Unset: events/s (share) | `K=4`: events/s (share) |
+|---|---|---|
+| 0 | 179,889 | 176,842 |
+| 16 | 29,125 (16.2 %) | 99,475 (56.3 %) |
+| 64 | 15,966 (8.9 %) | 97,258 (55.0 %) |
+
+With `K=4`, the release criterion Q3 passes: it requires at least 50 % of the
+no-load rate at 16 clients and at least 25 % at 64. With the setting unset,
+it does not.
+
+**Cost to queries during catch-up.** The baseline is the same build with the
+setting unset, in the same session, while the feeder drains the backlog.
+
+| Query clients | Unset: req/s, p99 | `K=4`: req/s, p99 | Change |
+|---|---|---|---|
+| 16 | 1,418.8, 57.5 ms | 783.1, 60.8 ms | throughput −45 %, p99 +6 % |
+| 64 | 1,442.7, 97.2 ms | 789.2, 96.8 ms | throughput −45 %, p99 unchanged |
+
+**Cost to queries at steady feeding.** The baseline is the v1.1.0 server
+measured in the same session (the release criterion Q5 comparison). The
+feeder applies changes at a steady rate.
+
+| Query clients | v1.1.0: req/s, p99 | `K=4`: req/s, p99 | Ratio to v1.1.0 |
+|---|---|---|---|
+| 16 | 1,203.2, 76.5 ms | 1,058.1, 22.1 ms | throughput 0.879, p99 0.29 |
+| 64 | 1,116.7, 157.9 ms | 993.8, 46.2 ms | throughput 0.890, p99 0.29 |
+
+- At steady feeding the bound costs 11–12 % of query throughput and cuts
+  client p99 to under a third.
+- Q5 requires at least 90 % of v1.1.0's throughput and at most 125 % of its
+  p99. With `K=4` it fails on throughput, and that is the published cost of
+  the option.
+- **Q5 passes in the default mode** (setting unset) against v1.1.0, so
+  deployments that do not set the option see no regression.
+- These are impact-estimate results; the v1.2.0 release verdict comes from its
+  qualification
+  ([#182](https://github.com/knotrel/knotrel/issues/182)).
+
 Once admitted, a job may complete after a client disconnects. A lost response or
 `unavailable` error leaves the mutation outcome uncertain. Mutations can be
 retried idempotently, although `changed` may differ on retry. A retry of a batch
@@ -803,6 +882,7 @@ its listener. There is no file loader or runtime reload in this version.
 | `KNOTREL_INSPECTION` | Exactly `true` or `false`; `true` enables the read-only [inspection routes](#inspection-opt-in) and keeps an ordered node index | `false` |
 | `KNOTREL_MAX_PENDING_JOBS` | ASCII decimal integer from 1 through Tokio's `Semaphore::MAX_PERMITS` | `32` |
 | `KNOTREL_FEEDER_RESERVED_JOBS` | ASCII decimal integer from 1 through 64; admission permits for feeder events, barriers and gaps, used in source-managed mode only | `4` |
+| `KNOTREL_MAX_CONCURRENT_QUERIES` | Experimental (B2, new in 1.2). ASCII decimal integer from 1 through `KNOTREL_MAX_PENDING_JOBS`. When set, at most that many all-query requests (`/v1/batch` or `/v1/operations` whose operations are all queries) run at once; further admitted query requests wait, keeping their admission permit, until one ends, within `KNOTREL_REQUEST_TIMEOUT_MS`. Writers, feeder jobs, stats and inspection never wait on it. Admission and `503 busy` are unchanged. It trades query throughput and latency for CPU and lock time left to the feeder. Use case, measured configuration (`4` on 8 CPUs) and costs: [bounded query concurrency](#bounded-query-concurrency-experimental-new-in-12); [design](design/b2-bounded-query-concurrency.md) | unset (no bound) |
 | `KNOTREL_MAX_NODES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `100000` |
 | `KNOTREL_MAX_EDGES` | Nonnegative ASCII decimal integer fitting `usize`, or exactly `unlimited` | `500000` |
 | `KNOTREL_MAX_CONNECTIONS` | ASCII decimal integer from 1 through 1000000 | `1024` |

@@ -87,6 +87,7 @@ fail when it disagrees with the classification file.
 | `ServerConfig`, `ServerConfig::DEFAULT_*`, `ServerConfig::MAX_*`, `ServerMode`, `ConfigError` | Stable | Constructors, `from_env`, `with_*` builders, accessors and constants, except the rows below. `ServerMode` is frozen exhaustive |
 | `ServerConfig::with_inspection`, `ServerConfig::inspection` | Experimental | With `KNOTREL_INSPECTION` and the inspection routes (R6; [reclassified](#reclassified-from-stable-to-experimental)) |
 | `ServerConfig::with_feeder_reserved_jobs`, `ServerConfig::feeder_reserved_jobs` | Experimental | New in 0.9.0, with `KNOTREL_FEEDER_RESERVED_JOBS` |
+| `ServerConfig::with_max_concurrent_queries`, `ServerConfig::max_concurrent_queries` | Experimental | New in 1.2, with `KNOTREL_MAX_CONCURRENT_QUERIES` (B2) |
 | `ServerConfig::DEFAULT_FEEDER_RESERVED_JOBS`, `ServerConfig::MAX_FEEDER_RESERVED_JOBS` | Experimental | With `KNOTREL_FEEDER_RESERVED_JOBS` (R6; [reclassified](#reclassified-from-stable-to-experimental)) |
 | `Lifecycle`, `Phase` | Stable | `Phase` is `#[non_exhaustive]` from 1.0 |
 | `router_with_seeded_version`, `router_with_seeded_state`, `GateDecision`, `WorkerPauseHandle`, `advance_clock`, `lock_clock_for_test`, `reset_clock`, `percent_decode_position`, `percent_encode_position` | Internal | Behind the `test-support` feature: test instrumentation, unsupported in production |

@@ -1761,3 +1761,18 @@ samples instead of 2. No request path changes. The metrics overhead budget
 of section 6 applies; the change is part of the v1.0.0 candidate measured by
 the v1.0.0 performance campaign, and no overhead claim is made before that
 measurement.
+
+## 22. Query limiter metrics (B2, experimental, new in 1.2)
+
+Registered only when `KNOTREL_MAX_CONCURRENT_QUERIES` is set
+([design](design/b2-bounded-query-concurrency.md)):
+
+| Series | Type | Meaning |
+| --- | --- | --- |
+| `knotrel_query_limiter_wait_seconds` | histogram (the job-phase buckets) | time an admitted all-query request waited for a limiter permit before its worker was submitted; recorded when the permit arrives, not for callers that left while waiting |
+| `knotrel_query_limiter_waiting` | gauge | admitted all-query requests currently waiting for a permit; a caller that leaves mid-wait is removed |
+
+The limiter wait happens before `knotrel_graph_job_queue_seconds` starts, so the
+four phases of an all-query request are disjoint: limiter wait, blocking-pool
+queue, lock wait, execution. A waiting request keeps its `shared` lane permit,
+so `knotrel_graph_jobs_outstanding{lane="shared"}` counts it.

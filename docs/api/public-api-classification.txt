@@ -555,6 +555,7 @@ stable       knotrel_server::ServerConfig::address
 stable       knotrel_server::ServerConfig::dedup_window_size
 stable       knotrel_server::ServerConfig::engine
 experimental knotrel_server::ServerConfig::feeder_reserved_jobs
+experimental knotrel_server::ServerConfig::max_concurrent_queries
 stable       knotrel_server::ServerConfig::from_env
 stable       knotrel_server::ServerConfig::graph_limits
 stable       knotrel_server::ServerConfig::header_read_timeout
@@ -572,6 +573,7 @@ stable       knotrel_server::ServerConfig::shutdown_timeout
 stable       knotrel_server::ServerConfig::topology_lifecycle
 stable       knotrel_server::ServerConfig::with_dedup_window_size
 experimental knotrel_server::ServerConfig::with_feeder_reserved_jobs
+experimental knotrel_server::ServerConfig::with_max_concurrent_queries
 stable       knotrel_server::ServerConfig::with_graph_limits
 stable       knotrel_server::ServerConfig::with_header_read_timeout
 experimental knotrel_server::ServerConfig::with_inspection

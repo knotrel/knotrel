@@ -4280,3 +4280,45 @@ mod lanes {
         }
     }
 }
+
+/// B2 query limiter series (observability contract §22): registered only
+/// with `KNOTREL_MAX_CONCURRENT_QUERIES`, one wait observation per limited
+/// query request, writers never observed, and no request left waiting.
+#[tokio::test]
+async fn query_limiter_series_exist_only_when_configured() {
+    let limited = router_with_config(config(4).with_max_concurrent_queries(Some(2)).unwrap());
+    let (status, _) = send(&limited, Method::POST, "/v1/operations", LINK).await;
+    assert_eq!(status, StatusCode::OK);
+    let query = r#"{"op":"connected","source":"1","target":"2"}"#;
+    let (status, body) = send(&limited, Method::POST, "/v1/operations", query).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &limited,
+        Method::POST,
+        "/v1/batch",
+        &format!(r#"{{"operations":[{query},{query}]}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let samples = scrape(&limited).await;
+    assert_eq!(
+        value(&samples, "knotrel_query_limiter_wait_seconds_count", &[]),
+        Some(2.0),
+        "one observation per all-query request, none for the writer"
+    );
+    assert_eq!(
+        value(&samples, "knotrel_query_limiter_waiting", &[]),
+        Some(0.0)
+    );
+
+    let unlimited = router_with_config(config(4));
+    send(&unlimited, Method::POST, "/v1/operations", LINK).await;
+    send(&unlimited, Method::POST, "/v1/operations", query).await;
+    let samples = scrape(&unlimited).await;
+    assert!(
+        !samples
+            .iter()
+            .any(|s| s.name.starts_with("knotrel_query_limiter")),
+        "no limiter series without the setting"
+    );
+}
