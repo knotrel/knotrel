@@ -210,6 +210,11 @@ It then stops heartbeating and exits. It asserts that `/ready` is 503 at
 start, so it needs a freshly started, unfed server. In `--addr` mode it does
 not restart the server; restarts are driven externally as below.
 
+If a feeder must catch up a backlog while clients keep querying, as after an
+outage, consider the experimental `KNOTREL_MAX_CONCURRENT_QUERIES` (new in
+1.2). It is measured at `4` on 8 CPUs, and it costs query throughput
+([bounded query concurrency](http-api.md#bounded-query-concurrency-experimental-new-in-12)).
+
 ## Stop and drain
 
 ```sh
