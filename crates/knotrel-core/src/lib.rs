@@ -923,6 +923,68 @@ impl Graph {
 mod tests {
     use super::*;
 
+    /// Resetting side scratch clears every mark (per vertex, or in one pass
+    /// when cheaper) and drops buffers above the retention caps.
+    #[test]
+    fn side_scratch_reset_clears_marks_and_enforces_caps() {
+        let mut side = SideScratch::default();
+        side.marked.grow(1_000);
+        side.marked.insert(3);
+        side.queue.push(3);
+        side.reset();
+        assert_eq!((side.marked.len(), side.marked.count_ones(..)), (1_000, 0));
+        assert!(side.queue.is_empty());
+
+        side.queue.reserve(RETAIN_QUEUE + 1);
+        side.marked.grow(RETAIN_MARK_BITS + 1);
+        for vertex in 0..RETAIN_QUEUE {
+            side.marked.insert(vertex);
+            side.queue.push(vertex);
+        }
+        side.reset();
+        assert_eq!((side.marked.len(), side.queue.capacity()), (0, 0));
+    }
+
+    /// A search that unwound leaves its scratch dirty; the next query starts
+    /// from fresh scratch, so stale marks cannot change its answer.
+    #[test]
+    fn dirty_scratch_is_replaced_before_the_next_query() {
+        let mut graph = Graph::new();
+        graph.link(0, 1).unwrap();
+        graph.link(2, 3).unwrap();
+        SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            scratch.dirty = true;
+            scratch.source.marked.grow(4);
+            scratch.source.marked.insert_range(..);
+            scratch.target.marked.grow(4);
+            scratch.target.marked.insert_range(..);
+        });
+        assert!(!graph.connected(0, 3).unwrap());
+        assert!(graph.connected(2, 3).unwrap());
+        SCRATCH.with(|cell| {
+            let scratch = cell.borrow();
+            assert!(!scratch.dirty);
+            assert_eq!(scratch.source.marked.count_ones(..), 0);
+            assert_eq!(scratch.target.marked.count_ones(..), 0);
+        });
+    }
+
+    /// A query issued while this thread's scratch is borrowed uses private
+    /// scratch and still answers correctly.
+    #[test]
+    fn query_with_borrowed_thread_scratch_uses_private_scratch() {
+        let mut graph = Graph::new();
+        graph.link(0, 1).unwrap();
+        graph.link(1, 2).unwrap();
+        graph.link(5, 6).unwrap();
+        SCRATCH.with(|cell| {
+            let _held = cell.borrow_mut();
+            assert!(graph.connected(0, 2).unwrap());
+            assert!(!graph.connected(0, 6).unwrap());
+        });
+    }
+
     /// Paging through a hub's neighbors with `neighbors_after` visits every
     /// neighbor that stays linked exactly once, even when other edges are cut
     /// and added between pages; cursors stay valid after their edge is cut.
