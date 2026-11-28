@@ -372,7 +372,6 @@ name = "knotrel-core"
 version = "1.1.0"
 dependencies = [
  "fixedbitset",
- "nohash-hasher",
  "rustc-hash",
  "tinyvec",
 ]
@@ -510,12 +509,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "nohash-hasher"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "nu-ansi-term"

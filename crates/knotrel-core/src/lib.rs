@@ -140,7 +140,7 @@
 //!
 //! The asymptotic costs in the table below describe the core graph and forest algorithms
 //! operating on internal indices. The public API maps external 64-bit [`NodeId`] keys to internal
-//! indices using hash maps (`IntMap` / `FxHashMap`), which rely on expected `O(1)` lookups and do
+//! indices using hash maps (`FxHashMap`), which rely on expected `O(1)` lookups and do
 //! not provide deterministic worst-case constant-time bounds for arbitrary ID distributions.
 //! Furthermore, collection and arena vector growth is amortized; a single vertex insertion or
 //! capacity reallocation may take `O(V)` in the worst case.
@@ -286,7 +286,7 @@
 //!   [`ReferenceGraph`] is an internal test oracle.
 
 use fixedbitset::FixedBitSet;
-use nohash_hasher::IntMap;
+use rustc_hash::FxHashMap;
 use std::{collections::hash_map::Entry, error::Error, fmt};
 
 mod workspace;
@@ -402,7 +402,7 @@ impl Error for IncidenceError {}
 /// degree. No query answers are cached.
 #[derive(Debug, Default)]
 pub struct Graph {
-    ids: IntMap<NodeId, usize>,
+    ids: FxHashMap<NodeId, usize>,
     /// Inverse of `ids` (the ID registered at each index), kept only after
     /// [`Graph::enable_neighbor_listing`]. Indices are never reused or removed,
     /// so it only grows, in step with `adjacency`.
@@ -698,8 +698,8 @@ impl Graph {
     /// no adjacency vector is reallocated.
     pub(crate) fn from_sorted_adjacency(ids: Vec<NodeId>, adjacency: Vec<Vec<usize>>) -> Self {
         assert_eq!(ids.len(), adjacency.len(), "one adjacency list per ID");
-        let mut map: IntMap<NodeId, usize> =
-            IntMap::with_capacity_and_hasher(ids.len(), Default::default());
+        let mut map: FxHashMap<NodeId, usize> =
+            FxHashMap::with_capacity_and_hasher(ids.len(), Default::default());
         for (index, &node) in ids.iter().enumerate() {
             let previous = map.insert(node, index);
             debug_assert!(previous.is_none(), "distinct IDs");

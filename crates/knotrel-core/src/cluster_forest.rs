@@ -45,7 +45,6 @@
 //! `O(V + E)` words.
 
 use crate::{GraphError, NodeId};
-use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
 
 /// Absent handle.
@@ -234,7 +233,7 @@ pub(crate) struct ClusterForestStats {
 /// [`crate::EngineConfig::ClusterForest`]).
 #[derive(Debug, Default)]
 pub(crate) struct ClusterForestGraph {
-    ids: IntMap<NodeId, u32>,
+    ids: FxHashMap<NodeId, u32>,
     nodes: Vec<Node>,
     free_nodes: Vec<u32>,
     vertex_lists: Vec<Vec<LevelList>>,
