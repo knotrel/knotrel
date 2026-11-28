@@ -6,7 +6,6 @@
 //! next power of two of the current vertex count. Growing U only relaxes bounds.
 
 use crate::{GraphError, NodeId, hdt_forest::Forest, index::remove_incidence};
-use nohash_hasher::IntMap;
 use rustc_hash::FxHashMap;
 use std::collections::{BTreeSet, hash_map::Entry};
 
@@ -97,7 +96,7 @@ struct Level {
     tree: Vec<BTreeSet<usize>>,
     non_tree: Vec<BTreeSet<usize>>,
     dense: bool,
-    local_ids: IntMap<usize, usize>,
+    local_ids: FxHashMap<usize, usize>,
     global_ids: Vec<usize>,
     free_locals: Vec<usize>,
 }
@@ -254,7 +253,7 @@ impl Level {
 /// Neither graph state nor query answers are protected by internal locks.
 #[derive(Debug, Default)]
 pub struct HdtGraph {
-    ids: IntMap<NodeId, usize>,
+    ids: FxHashMap<NodeId, usize>,
     edges: FxHashMap<Key, Edge>,
     levels: Vec<Level>,
     stats: HdtStats,

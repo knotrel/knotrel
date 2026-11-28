@@ -127,7 +127,7 @@ Knotrel provides three released dynamic connectivity engines via `EngineConfig`,
 
 ### Complexity & Memory Notes
 
-- **Algorithmic vs. API costs**: Algorithmic complexity bounds apply to internal index structures. The public API maps external `NodeId` (`u64`) keys via hash maps (`IntMap` / `FxHashMap`), which rely on expected `O(1)` lookups and do not offer deterministic worst-case constant bounds for arbitrary ID distributions.
+- **Algorithmic vs. API costs**: Algorithmic complexity bounds apply to internal index structures. The public API maps external `NodeId` (`u64`) keys via hash maps (`FxHashMap`), which rely on expected `O(1)` lookups and do not offer deterministic worst-case constant bounds for arbitrary ID distributions.
 - **Logical memory vs. heap/RSS**: Stated memory bounds (`O(V + E)` and `O(E + V log V)`) describe logical graph entity storage. Allocated vector capacities are retained after cuts and do not bound process heap memory or RSS.
 - **Amortized bounds**: HDT update bounds are amortized sequence averages, not per-request latency guarantees; large promotion searches or vector growths can produce latency spikes, and it may have higher constant factors on small or sparse graphs; verify against your actual workload.
 
