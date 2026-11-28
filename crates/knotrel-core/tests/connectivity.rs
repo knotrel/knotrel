@@ -477,3 +477,55 @@ fn search_matches_reference_on_random_histories() {
         }
     }
 }
+
+/// Hubs wider than one search round (hundreds of leaves), long paths hanging
+/// off them, and components of very different sizes: every sampled pair, in
+/// both directions, answers like the reference, before and after the bridges
+/// between the hubs are cut.
+#[test]
+fn search_matches_reference_around_wide_hubs() {
+    let mut compact = Graph::new();
+    let mut reference = knotrel_core::ReferenceGraph::new();
+    let mut edges = Vec::new();
+    // Hub 0 with 300 leaves and hub 1000 with 1200 leaves, joined by a path.
+    for leaf in 1..=300 {
+        edges.push((0, leaf));
+    }
+    for leaf in 1001..=2200 {
+        edges.push((1000, leaf));
+    }
+    for step in 3000..3400 {
+        edges.push((step, step + 1));
+    }
+    edges.push((150, 3000));
+    edges.push((3400, 2000));
+    // A long path hanging off a leaf, and a separate small triangle.
+    for step in 4000..4600 {
+        edges.push((step, step + 1));
+    }
+    edges.push((77, 4000));
+    edges.extend([(9000, 9001), (9001, 9002), (9002, 9000)]);
+    for (a, b) in edges {
+        assert_eq!(compact.link(a, b), reference.link(a, b));
+    }
+    let probes = [
+        0, 1, 77, 150, 300, 1000, 1001, 1600, 2000, 2200, 3000, 3200, 3400, 4000, 4300, 4600, 9000,
+        9002,
+    ];
+    let check = |compact: &Graph, reference: &knotrel_core::ReferenceGraph, phase: &str| {
+        for &a in &probes {
+            for &b in &probes {
+                assert_eq!(
+                    compact.connected(a, b),
+                    reference.connected(a, b),
+                    "{phase}: {a} -> {b}"
+                );
+            }
+        }
+    };
+    check(&compact, &reference, "joined");
+    assert_eq!(compact.cut(3200, 3201), reference.cut(3200, 3201));
+    check(&compact, &reference, "hubs split");
+    assert_eq!(compact.cut(77, 4000), reference.cut(77, 4000));
+    check(&compact, &reference, "path detached");
+}

@@ -411,6 +411,109 @@ pub struct Graph {
     edges: usize,
 }
 
+/// Minimum entries examined per round before [`Graph::connected`] chooses a
+/// side again. It amortizes the choice on graphs with tiny frontiers and costs
+/// at most this many extra entries when the sides would have met sooner.
+const MIN_ROUND: usize = 256;
+
+/// One side of the bidirectional search of [`Graph::connected`]: the vertices
+/// it marked (as a set and in order), how many of them it has expanded, and the
+/// cached degree sum of the rest. A vertex is marked on enqueue, so every
+/// marked vertex is reachable from the side's endpoint and queued once.
+struct SearchSide {
+    marked: FixedBitSet,
+    queue: Vec<usize>,
+    cursor: usize,
+    pending: Option<usize>,
+}
+
+impl SearchSide {
+    fn new(vertices: usize, endpoint: usize) -> Self {
+        let mut marked = FixedBitSet::with_capacity(vertices);
+        marked.insert(endpoint);
+        Self {
+            marked,
+            queue: vec![endpoint],
+            cursor: 0,
+            pending: None,
+        }
+    }
+
+    /// Sum of the degrees of the marked, unexpanded vertices. It is computed
+    /// once per round of this side, over vertices that round produced, so its
+    /// cost is bounded by the entries already examined.
+    fn pending_degree(&mut self, adjacency: &[Vec<usize>]) -> usize {
+        *self.pending.get_or_insert_with(|| {
+            self.queue[self.cursor..]
+                .iter()
+                .map(|&vertex| adjacency[vertex].len())
+                .sum()
+        })
+    }
+
+    /// Expands queued vertices in order for one round of at least
+    /// `max(pending, MIN_ROUND)` entries; the first vertex always expands.
+    /// Returns `Some(true)` on reaching a vertex marked by `other`,
+    /// `Some(false)` when the queue is exhausted, and `None` when the round
+    /// ends undecided.
+    fn expand(
+        &mut self,
+        adjacency: &[Vec<usize>],
+        other: &FixedBitSet,
+        pending: usize,
+    ) -> Option<bool> {
+        self.pending = None;
+        expand_round(
+            adjacency,
+            &mut self.marked,
+            &mut self.queue,
+            &mut self.cursor,
+            other,
+            pending.max(MIN_ROUND),
+        )
+    }
+}
+
+/// The loop of [`SearchSide::expand`], with the side's state passed as
+/// separate arguments and the cursor kept in a local.
+fn expand_round(
+    adjacency: &[Vec<usize>],
+    marked: &mut FixedBitSet,
+    queue: &mut Vec<usize>,
+    cursor_out: &mut usize,
+    other: &FixedBitSet,
+    budget: usize,
+) -> Option<bool> {
+    let mut cursor = *cursor_out;
+    let mut examined = 0;
+    let outcome = loop {
+        let Some(&vertex) = queue.get(cursor) else {
+            break Some(false);
+        };
+        let neighbors = &adjacency[vertex];
+        if examined > 0 && examined + neighbors.len() > budget {
+            break None;
+        }
+        cursor += 1;
+        examined += neighbors.len();
+        if neighbors.iter().any(|&neighbor| {
+            if marked.contains(neighbor) {
+                return false;
+            }
+            if other.contains(neighbor) {
+                return true;
+            }
+            marked.insert(neighbor);
+            queue.push(neighbor);
+            false
+        }) {
+            break Some(true);
+        }
+    };
+    *cursor_out = cursor;
+    outcome
+}
+
 impl Graph {
     /// Reports whether `node` is registered; expected O(1) ID-map lookup.
     pub(crate) fn contains_node(&self, node: NodeId) -> bool {
@@ -518,6 +621,11 @@ impl Graph {
     /// O(1) endpoint lookup and O(V) local scratch initialization/allocation.
     /// Scratch is private to each call, so shared queries need no internal lock.
     ///
+    /// The search grows from both endpoints and stops when they meet or when
+    /// either side exhausts its component, so queries between nearby vertices,
+    /// through hubs, or against a small component finish early. On path-like
+    /// graphs it examines the same entries as a one-sided search from `source`.
+    ///
     /// ```
     /// let mut graph = knotrel_core::Graph::new();
     /// graph.link(1, 2)?;
@@ -542,27 +650,26 @@ impl Graph {
         if a == b {
             return Ok(true);
         }
-        let mut visited = FixedBitSet::with_capacity(self.adjacency.len());
-        let mut queue = Vec::new();
-        visited.insert(a);
-        queue.push(a);
-        let mut cursor = 0;
-        // Mark on enqueue: each vertex is visited at most once and every queued
-        // vertex is reachable. Exhaustion proves the target is disconnected.
-        // Integer adjacency avoids ordered-map lookups inside the traversal.
-        while cursor < queue.len() {
-            for &neighbor in &self.adjacency[queue[cursor]] {
-                if neighbor == b {
-                    return Ok(true);
-                }
-                if !visited.contains(neighbor) {
-                    visited.insert(neighbor);
-                    queue.push(neighbor);
-                }
+        let mut source_side = SearchSide::new(self.adjacency.len(), a);
+        let mut target_side = SearchSide::new(self.adjacency.len(), b);
+        // Each round expands the side with fewer pending incidences (the source
+        // on a tie, so path-like graphs do a one-sided search), for at least
+        // MIN_ROUND entries, without overshooting into a vertex whose list would
+        // exceed the round. Any edge between the two marked sets proves a path;
+        // an exhausted queue proves its endpoint's component holds no vertex of
+        // the other side. Each vertex is expanded at most once: O(V + E).
+        loop {
+            let source_pending = source_side.pending_degree(&self.adjacency);
+            let target_pending = target_side.pending_degree(&self.adjacency);
+            let outcome = if target_pending < source_pending {
+                target_side.expand(&self.adjacency, &source_side.marked, target_pending)
+            } else {
+                source_side.expand(&self.adjacency, &target_side.marked, source_pending)
+            };
+            if let Some(found) = outcome {
+                return Ok(found);
             }
-            cursor += 1;
         }
-        Ok(false)
     }
 
     /// Returns the number of vertices, including isolated ones, in O(1) time.
