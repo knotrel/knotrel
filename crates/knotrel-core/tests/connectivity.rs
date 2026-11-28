@@ -529,3 +529,84 @@ fn search_matches_reference_around_wide_hubs() {
     assert_eq!(compact.cut(77, 4000), reference.cut(77, 4000));
     check(&compact, &reference, "path detached");
 }
+
+/// Queries share per-thread scratch: alternating between graphs of very
+/// different sizes, after long and short searches, connected and not, must
+/// leave no stale mark that changes a later answer.
+#[test]
+fn reused_scratch_leaves_no_stale_marks_across_graphs() {
+    let mut big = Graph::new();
+    let mut big_ref = knotrel_core::ReferenceGraph::new();
+    for step in 0..3_000_u64 {
+        if step % 1_000 != 999 {
+            assert_eq!(big.link(step, step + 1), big_ref.link(step, step + 1));
+        }
+    }
+    let mut small = Graph::new();
+    let mut small_ref = knotrel_core::ReferenceGraph::new();
+    for (a, b) in [(0, 1), (1, 2), (5, 6)] {
+        assert_eq!(small.link(a, b), small_ref.link(a, b));
+    }
+    for _ in 0..3 {
+        for (a, b) in [
+            (0, 2_999),
+            (0, 998),
+            (1_000, 1_999),
+            (2_000, 3_000),
+            (10, 2_500),
+        ] {
+            assert_eq!(big.connected(a, b), big_ref.connected(a, b), "big {a}-{b}");
+            for a in [0, 1, 2, 5, 6] {
+                for b in [0, 1, 2, 5, 6] {
+                    assert_eq!(
+                        small.connected(a, b),
+                        small_ref.connected(a, b),
+                        "small {a}-{b}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Concurrent queries on one shared graph, each thread with its own scratch,
+/// answer like a single-threaded reference.
+#[test]
+fn concurrent_queries_with_reused_scratch_match_reference() {
+    let mut graph = Graph::new();
+    let mut reference = knotrel_core::ReferenceGraph::new();
+    let mut seed = 7_u64;
+    let mut next = |bound: u64| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) % bound
+    };
+    for _ in 0..1_500 {
+        let (a, b) = (next(1_000), next(1_000));
+        if a != b {
+            assert_eq!(graph.link(a, b), reference.link(a, b));
+        }
+    }
+    for node in 0..1_100 {
+        assert_eq!(graph.add_node(node), reference.add_node(node));
+    }
+    let pairs: Vec<(u64, u64)> = (0..400).map(|_| (next(1_100), next(1_100))).collect();
+    let expected: Vec<_> = pairs
+        .iter()
+        .map(|&(a, b)| reference.connected(a, b))
+        .collect();
+    std::thread::scope(|scope| {
+        for offset in 0..8 {
+            let (graph, pairs, expected) = (&graph, &pairs, &expected);
+            scope.spawn(move || {
+                for round in 0..20 {
+                    for i in 0..pairs.len() {
+                        let k = (i + offset * 37 + round * 11) % pairs.len();
+                        assert_eq!(graph.connected(pairs[k].0, pairs[k].1), expected[k]);
+                    }
+                }
+            });
+        }
+    });
+}

@@ -416,24 +416,77 @@ pub struct Graph {
 /// at most this many extra entries when the sides would have met sooner.
 const MIN_ROUND: usize = 256;
 
+/// Most queue entries one side's scratch keeps between queries (64 KiB).
+const RETAIN_QUEUE: usize = 1 << 13;
+/// Most mark bits one side's scratch keeps between queries (64 KiB, so
+/// graphs of up to 524,288 vertices reuse their marks).
+const RETAIN_MARK_BITS: usize = 1 << 19;
+
+/// The reusable buffers of one search side: marks and queue. Between
+/// queries every mark is clear and the queue is empty.
+#[derive(Default)]
+struct SideScratch {
+    marked: FixedBitSet,
+    queue: Vec<usize>,
+}
+
+impl SideScratch {
+    /// Clears what the last query used and drops capacity above the caps.
+    /// Clearing costs O(visited), or one pass over the marks when cheaper.
+    fn reset(&mut self) {
+        if self.queue.len() > self.marked.len() / 64 {
+            self.marked.clear();
+        } else {
+            for &vertex in &self.queue {
+                self.marked.set(vertex, false);
+            }
+        }
+        self.queue.clear();
+        if self.queue.capacity() > RETAIN_QUEUE {
+            self.queue = Vec::new();
+        }
+        if self.marked.len() > RETAIN_MARK_BITS {
+            self.marked = FixedBitSet::new();
+        }
+    }
+}
+
+/// Per-thread scratch of [`Graph::connected`], so queries allocate and zero
+/// nothing in the steady state. `dirty` is set while a search runs: if one
+/// unwinds, the next query clears everything before use.
+#[derive(Default)]
+struct Scratch {
+    source: SideScratch,
+    target: SideScratch,
+    dirty: bool,
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
+}
+
 /// One side of the bidirectional search of [`Graph::connected`]: the vertices
 /// it marked (as a set and in order), how many of them it has expanded, and the
 /// cached degree sum of the rest. A vertex is marked on enqueue, so every
 /// marked vertex is reachable from the side's endpoint and queued once.
-struct SearchSide {
-    marked: FixedBitSet,
-    queue: Vec<usize>,
+struct SearchSide<'s> {
+    marked: &'s mut FixedBitSet,
+    queue: &'s mut Vec<usize>,
     cursor: usize,
     pending: Option<usize>,
 }
 
-impl SearchSide {
-    fn new(vertices: usize, endpoint: usize) -> Self {
-        let mut marked = FixedBitSet::with_capacity(vertices);
-        marked.insert(endpoint);
+impl<'s> SearchSide<'s> {
+    /// Starts a side on clean scratch sized for `vertices`.
+    fn new(scratch: &'s mut SideScratch, vertices: usize, endpoint: usize) -> Self {
+        if scratch.marked.len() < vertices {
+            scratch.marked.grow(vertices);
+        }
+        scratch.marked.insert(endpoint);
+        scratch.queue.push(endpoint);
         Self {
-            marked,
-            queue: vec![endpoint],
+            marked: &mut scratch.marked,
+            queue: &mut scratch.queue,
             cursor: 0,
             pending: None,
         }
@@ -465,8 +518,8 @@ impl SearchSide {
         self.pending = None;
         expand_round(
             adjacency,
-            &mut self.marked,
-            &mut self.queue,
+            self.marked,
+            self.queue,
             &mut self.cursor,
             other,
             pending.max(MIN_ROUND),
@@ -618,8 +671,10 @@ impl Graph {
     /// Reports whether a path exists between two existing vertices.
     ///
     /// Existing vertices connect to themselves. Worst-case time O(V + E), with
-    /// O(1) endpoint lookup and O(V) local scratch initialization/allocation.
-    /// Scratch is private to each call, so shared queries need no internal lock.
+    /// O(1) endpoint lookup. Scratch is per thread and reused: a query costs
+    /// no allocation or O(V) initialization once the thread's scratch has
+    /// grown, and shared queries need no internal lock. Each thread keeps at
+    /// most 256 KiB of scratch between queries.
     ///
     /// The search grows from both endpoints and stops when they meet or when
     /// either side exhausts its component, so queries between nearby vertices,
@@ -650,26 +705,49 @@ impl Graph {
         if a == b {
             return Ok(true);
         }
-        let mut source_side = SearchSide::new(self.adjacency.len(), a);
-        let mut target_side = SearchSide::new(self.adjacency.len(), b);
-        // Each round expands the side with fewer pending incidences (the source
-        // on a tie, so path-like graphs do a one-sided search), for at least
-        // MIN_ROUND entries, without overshooting into a vertex whose list would
-        // exceed the round. Any edge between the two marked sets proves a path;
-        // an exhausted queue proves its endpoint's component holds no vertex of
-        // the other side. Each vertex is expanded at most once: O(V + E).
-        loop {
-            let source_pending = source_side.pending_degree(&self.adjacency);
-            let target_pending = target_side.pending_degree(&self.adjacency);
-            let outcome = if target_pending < source_pending {
-                target_side.expand(&self.adjacency, &source_side.marked, target_pending)
-            } else {
-                source_side.expand(&self.adjacency, &target_side.marked, source_pending)
-            };
-            if let Some(found) = outcome {
-                return Ok(found);
-            }
+        Ok(SCRATCH.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut scratch) => self.search(&mut scratch, a, b),
+            // Re-entrant use on this thread (not expected): private scratch.
+            Err(_) => self.search(&mut Scratch::default(), a, b),
+        }))
+    }
+
+    /// The bidirectional search of [`Self::connected`] between distinct
+    /// internal indices, on `scratch`, which it leaves clean.
+    fn search(&self, scratch: &mut Scratch, a: usize, b: usize) -> bool {
+        if scratch.dirty {
+            scratch.source = SideScratch::default();
+            scratch.target = SideScratch::default();
         }
+        scratch.dirty = true;
+        let vertices = self.adjacency.len();
+        let found = {
+            let mut source_side = SearchSide::new(&mut scratch.source, vertices, a);
+            let mut target_side = SearchSide::new(&mut scratch.target, vertices, b);
+            // Each round expands the side with fewer pending incidences (the
+            // source on a tie, so path-like graphs do a one-sided search), for
+            // at least MIN_ROUND entries, without overshooting into a vertex
+            // whose list would exceed the round. Any edge between the two
+            // marked sets proves a path; an exhausted queue proves its
+            // endpoint's component holds no vertex of the other side. Each
+            // vertex is expanded at most once: O(V + E).
+            loop {
+                let source_pending = source_side.pending_degree(&self.adjacency);
+                let target_pending = target_side.pending_degree(&self.adjacency);
+                let outcome = if target_pending < source_pending {
+                    target_side.expand(&self.adjacency, source_side.marked, target_pending)
+                } else {
+                    source_side.expand(&self.adjacency, target_side.marked, source_pending)
+                };
+                if let Some(found) = outcome {
+                    break found;
+                }
+            }
+        };
+        scratch.source.reset();
+        scratch.target.reset();
+        scratch.dirty = false;
+        found
     }
 
     /// Returns the number of vertices, including isolated ones, in O(1) time.
