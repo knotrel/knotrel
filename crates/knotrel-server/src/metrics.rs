@@ -1306,7 +1306,7 @@ impl Drop for ImportObservation {
 ///
 /// Exists only when catch-up metrics do (source-managed mode with metrics
 /// enabled); otherwise no clock is read.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CatchupInterval {
     kind: CatchupKind,
     started: Instant,
@@ -1332,7 +1332,7 @@ impl CatchupInterval {
 }
 
 /// A finished catch-up interval awaiting observation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CompletedCatchup {
     kind: CatchupKind,
     elapsed: Duration,
@@ -1430,32 +1430,7 @@ impl JobClock {
     }
 }
 
-/// Acquires the graph lock exclusively, timing the wait when `clock` is present.
-///
-/// The returned guard records lock wait and execution only after it has
-/// released the lock, on normal drop, early return or unwinding alike, so
-/// histogram synchronization stays outside the critical section.
-pub(crate) fn lock_timed<'a, T>(
-    lock: &'a parking_lot::RwLock<T>,
-    clock: Option<&'a JobClock>,
-    lifecycle: &Lifecycle,
-) -> TimedGuard<'a, parking_lot::RwLockWriteGuard<'a, T>> {
-    acquire_timed(clock, lifecycle, || lock.write())
-}
-
-/// Acquires the graph lock shared, for read-only jobs; see [`lock_timed`].
-///
-/// `parking_lot::RwLock` is task-fair: while a writer waits, this call blocks
-/// even if only readers hold the lock, so readers cannot starve writers.
-pub(crate) fn read_timed<'a, T>(
-    lock: &'a parking_lot::RwLock<T>,
-    clock: Option<&'a JobClock>,
-    lifecycle: &Lifecycle,
-) -> TimedGuard<'a, parking_lot::RwLockReadGuard<'a, T>> {
-    acquire_timed(clock, lifecycle, || lock.read())
-}
-
-fn acquire_timed<'a, G>(
+pub(crate) fn acquire_timed<'a, G>(
     clock: Option<&'a JobClock>,
     lifecycle: &Lifecycle,
     acquire: impl FnOnce() -> G,
@@ -1483,10 +1458,17 @@ struct LockTiming<'a> {
     acquired: Instant,
 }
 
-/// Graph-lock guard from [`lock_timed`] or [`read_timed`].
+/// Graph guard from [`acquire_timed`].
 pub(crate) struct TimedGuard<'a, G> {
     guard: Option<G>,
     timing: Option<LockTiming<'a>>,
+}
+
+impl<G> TimedGuard<'_, G> {
+    /// The guard itself, for operations of the guard type.
+    pub(crate) fn inner_mut(&mut self) -> &mut G {
+        self.guard.as_mut().expect("guard is held until drop")
+    }
 }
 
 impl<G: Deref> Deref for TimedGuard<'_, G> {

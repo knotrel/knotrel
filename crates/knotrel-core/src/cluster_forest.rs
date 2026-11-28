@@ -168,7 +168,7 @@ struct EdgeRecord {
 }
 
 /// One side of a deletion search.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Side {
     /// Reached children of the searched cluster, in discovery order.
     queue: Vec<u32>,
@@ -231,7 +231,7 @@ pub(crate) struct ClusterForestStats {
 
 /// Exact dynamic connectivity with a cluster forest (crate-private backend of
 /// [`crate::EngineConfig::ClusterForest`]).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ClusterForestGraph {
     ids: FxHashMap<NodeId, u32>,
     nodes: Vec<Node>,

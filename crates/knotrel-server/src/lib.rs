@@ -103,6 +103,7 @@ mod logging;
 mod metrics;
 mod serve;
 mod service;
+mod versions;
 pub use configuration::{ConfigError, ServerConfig, ServerMode};
 #[cfg(feature = "test-support")]
 pub use lifecycle::{GateDecision, WorkerPauseHandle};

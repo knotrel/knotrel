@@ -310,7 +310,7 @@ struct Incidence {
 }
 
 /// Catalog entry of one registered node.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct NodeRecord {
     active: bool,
     /// Construction-only scratch, zero between public calls: the saturating
@@ -406,7 +406,7 @@ impl NodeRecord {
 /// assert!(!graph.connected(1, 2)?);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LifecycleGraph {
     // `FxHashMap`, not the identity-hashed `IntMap`: with hashbrown, identity
     // hashes of small IDs or IDs sharing their high bits collide in the 7-bit

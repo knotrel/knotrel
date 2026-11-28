@@ -8,7 +8,7 @@ use crate::{Graph, GraphError, NodeId};
 /// growth, mutations and different graphs. It never caches connectivity answers.
 /// Marks use four bytes per registered vertex. Storage retains O(N + R) capacity for the largest registered node count N and
 /// largest visited set R so far; drop the workspace to release that memory.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct BfsWorkspace {
     visited: Vec<u32>,
     generation: u32,

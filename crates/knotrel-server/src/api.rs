@@ -723,7 +723,7 @@ pub(crate) struct GapResponse {
 /// The lifecycle variants always parse, whatever the server setting, so the
 /// shape check (validation step 5) is independent of configuration; requests
 /// using them without lifecycle support are rejected before execution.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Operation {
     AddNode {

@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque, btree_map::Entry};
 /// tests and benchmarks and may change or disappear in any release; see
 /// `docs/stability.md`. Use [`Graph`](crate::Graph) or
 /// [`ConnectivityGraph`](crate::ConnectivityGraph) instead.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ReferenceGraph {
     adjacency: BTreeMap<NodeId, BTreeSet<NodeId>>,
     edges: usize,

@@ -23,7 +23,7 @@ pub(crate) struct LifecycleCounts {
 }
 
 /// The graph owned by the service, under the graph lock.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ServiceGraph {
     topology: Topology,
     /// Registered node IDs in ascending order, kept only when inspection is
@@ -33,7 +33,7 @@ pub(crate) struct ServiceGraph {
 }
 
 /// The engine or lifecycle facade.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Topology {
     /// Lifecycle support disabled: the plain engine.
     Plain(ConnectivityGraph),

@@ -138,13 +138,13 @@ impl EngineConfig {
 /// assert!(graph.connected(1, u64::MAX)?);
 /// # Ok::<(), knotrel_core::GraphError>(())
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConnectivityGraph {
     backend: Backend,
     limits: GraphLimits,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Backend {
     Compact(Graph),
     EulerTour(ForestGraph),

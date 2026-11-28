@@ -75,7 +75,7 @@ pub struct HdtStats {
     pub levels_visited: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Edge {
     level: usize,
     // Empty for non-tree edges; otherwise one handle pair for each F_0..F_level.
@@ -90,7 +90,7 @@ struct Edge {
 // for the next materialization. Upper-level records therefore track the
 // vertices currently in F_i or holding level-i incidences, not every vertex
 // ever promoted. Local handles of live records never change.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Level {
     forest: Forest,
     tree: Vec<BTreeSet<usize>>,
@@ -251,7 +251,7 @@ impl Level {
 /// levels store only vertices touched by promotions; creating these records is
 /// charged to promotions. Vector reallocations can still cause linear spikes.
 /// Neither graph state nor query answers are protected by internal locks.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct HdtGraph {
     ids: FxHashMap<NodeId, usize>,
     edges: FxHashMap<Key, Edge>,

@@ -86,7 +86,7 @@ pub struct ForestStats {
 /// arenas retain O(V) high-water capacity, removed tree-edge slots are reused and an emptied
 /// non-tree incidence set frees its storage.
 /// Queries allocate no scratch, cache no answers and use no internal locks.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ForestGraph {
     ids: FxHashMap<NodeId, usize>,
     non_tree: Vec<BTreeSet<usize>>,

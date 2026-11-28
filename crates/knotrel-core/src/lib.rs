@@ -400,7 +400,7 @@ impl Error for IncidenceError {}
 /// historical maximum degree (capacity is retained) and, for a graph built in
 /// bulk by the lifecycle facade, starts at the vertex's enabled registered
 /// degree. No query answers are cached.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Graph {
     ids: FxHashMap<NodeId, usize>,
     /// Inverse of `ids` (the ID registered at each index), kept only after

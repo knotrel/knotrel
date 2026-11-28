@@ -153,7 +153,7 @@ impl CandidateTracker for u8 {
 ///
 /// Each vertex has one permanent token. Each tree edge has two directed tokens.
 /// Released edge tokens are returned to a free list and reused before the arena grows.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct GenericForest<C: CandidateTracker> {
     pub(crate) tokens: Vec<Token<C>>,
     pub(crate) free: Vec<usize>,
